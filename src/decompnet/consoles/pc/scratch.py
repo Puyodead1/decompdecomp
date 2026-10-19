@@ -45,9 +45,11 @@ DIR32, REL32 = 0x06, 0x14
 PAD = 0x90  # what Visual C++ 6 pads a function's section with (the linker pads between objects with 0xCC or zeros)
 # Visual C++ versions by the build number its tools leave in the program's Rich header, for the C/C++ compiler
 RICH_BUILDS = {8168: "6.0", 8447: "6.0", 8799: "6.0", 8966: "6.0", 9044: "6.0", 9782: "6.0", 9466: "7.0", 9955: "7.0",
-               3052: "7.1", 3077: "7.1", 4035: "7.1", 6030: "7.1"}
+               3052: "7.1", 3077: "7.1", 4035: "7.1", 6030: "7.1",
+               50727: "8.0-sp1"}  # 2005: RTM and SP1 both leave 50727, and the pack has SP1
 # Rich header product ids from Visual C++ 2005 on (its C compiler is 0x6D; 7.1 and older use lower ids): a program
-# built with them is newer than the compiler pack (GitHub #12: a 2010 game only said "Ghidra found no functions")
+# built with them and none of the builds above is newer than the compiler pack (GitHub #12: a 2010 game only said
+# "Ghidra found no functions")
 NEWER_TOOLS_FIRST_PRODUCT = 0x6D
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -210,11 +212,19 @@ def guess_compiler(data: bytes) -> tuple[str, str]:
     if not seen:
         return MSVC_DEFAULT, "the program doesn't say which Visual C++ built it; 6.0 built most games of its time"
     version = max(seen, key=seen.get)
+    if version == "8.0-sp1":  # the header's build number is the same for both
+        return version, "the program's Rich header names Visual C++ 2005's tools (8.0 or 8.0 SP1: it can't tell which)"
     return version, f"the program's Rich header names Visual C++ {version}'s tools"
 
 
+def version_key(version: str) -> tuple[int, ...]:
+    """A Visual C++ version ("7.1") as numbers to compare."""
+    return tuple(int(n) for n in re.findall(r"\d+", version))
+
+
 def newer_tools(builds: list[tuple[int, int, int]]) -> bool:
-    """Whether the Rich header's tools are Visual C++ 2005 or newer: none of the compiler pack's builds, and newer ids."""
+    """Whether the Rich header's tools are newer than Visual C++ 2005: none of the compiler pack's builds, and newer
+    ids."""
     known = any(build in RICH_BUILDS for _, build, _ in builds)
     return not known and any(product >= NEWER_TOOLS_FIRST_PRODUCT for product, _, _ in builds)
 
@@ -505,6 +515,14 @@ def _run(cmd: list[str], root: Path, what: str, log) -> None:
         raise ForkError(f"{what} failed:\n{tail[-ERROR_TAIL:]}")
 
 
+def settings(configure: str, compiler: str) -> str:
+    """tools/configure.py's settings for the game's Visual C++."""
+    text = configure.replace(f'MSVC_VERSION = "{MSVC_DEFAULT}"', f'MSVC_VERSION = "{compiler}"')
+    if version_key(compiler) >= (8, 0):  # 8.0 deprecated /GX (warning D9035) for what it meant, /EHsc
+        text = text.replace('"/GX"]  # /GX: C++ exceptions', '"/EHsc"]  # /EHsc: C++ exceptions')
+    return text
+
+
 def create(root: Path, game: Path, *, compiler: str | None = None, log=print) -> dict:
     """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
     from ...forks import ghidra
@@ -513,8 +531,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     version = info["id"]
     compiler = (compiler or f"MSVC/{info['compiler']}").removeprefix("MSVC/")
     args = tool_args()
-    if not (toolchains.path("msvc") / compiler).is_dir():
-        raise ForkError(f"Visual C++ {compiler} isn't in the installed compiler pack")
+    if not (toolchains.path("msvc") / compiler).is_dir():  # a pack installed before this version was pinned
+        raise ForkError(f"Visual C++ {compiler} isn't in the installed compiler pack: update Visual C++ in Compilers & "
+                        "tools, then try again")
     if not ghidra.available():
         if ghidra.java_home() is not None and toolchains.installed("jdk") is None:
             log("installing a Java development kit for Ghidra (200 MB, once): this computer has none of its own")
@@ -526,13 +545,13 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     pe = read_pe(data)
     newer = newer_tools(rich_builds(data))
     if newer:
-        log("its Rich header names Visual C++ 2005 or newer: decompdecomp builds with 6.0 to 7.1 for now, so expect "
+        log("its Rich header names a Visual C++ newer than 2005: decompdecomp builds with 6.0 to 8.0 SP1 for now, so expect "
             "little to match")
     log(f"analysing {game.name} with Ghidra (finds every function; a big game takes a few minutes)")
     found = ghidra.functions(game)
     if not found:
-        why = ("it was built with Visual C++ 2005 or newer (its Rich header says so), and decompdecomp supports 6.0 "
-               "to 7.1 for now" if newer else "a program that is packed or protected (some games' DRM wraps their code) "
+        why = ("it was built with a Visual C++ newer than 2005 (its Rich header says so), and decompdecomp supports "
+               "6.0 to 8.0 SP1 for now" if newer else "a program that is packed or protected (some games' DRM wraps their code) "
                "shows none until it's unpacked")
         raise ForkError(f"Ghidra found no functions in this program: {why}.")
     functions = analyse(pe, found)
@@ -549,8 +568,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     (root / "include").mkdir()
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     cfg = root / "tools" / "configure.py"
-    cfg.write_text(cfg.read_text(encoding="utf-8").replace(f'MSVC_VERSION = "{MSVC_DEFAULT}"',
-                                                           f'MSVC_VERSION = "{compiler}"'), encoding="utf-8")
+    cfg.write_text(settings(cfg.read_text(encoding="utf-8"), compiler), encoding="utf-8")
     conf = root / "config" / version
     conf.mkdir(parents=True)
     (conf / "functions.json").write_text(json.dumps({
