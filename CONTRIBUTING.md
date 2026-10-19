@@ -174,10 +174,10 @@ A console works in one of two modes:
 
 ### Adding a compiler to a console
 
-Example: PC has Visual C++ 6.0, 7.0 and 7.1, and you want Visual C++ 2005 (8.0).
+Example: PC has Visual C++ 6.0, 7.0, 7.1 and 8.0 SP1, and you want Visual C++ 2008 (9.0).
 
 1. **Pin it** in `src/decompnet/toolchains.toml`. A new part of the `msvc` pack (or a pack of its own) with its
-   `url`, its `sha256` (`sha256sum` of the archive) and `into = "8.0"`. Take it from where the decomp community
+   `url`, its `sha256` (`sha256sum` of the archive) and `into = "9.0"`. Take it from where the decomp community
    keeps it; never from the vendor's site with someone's account.
 2. **Proprietary means opt-in.** Its entry says `license = "proprietary"`. The app installs it only after the user
    accepts its licence in Setup. Never download it in code, a test or CI: public CI can't have it, and its tests
@@ -186,12 +186,13 @@ Example: PC has Visual C++ 6.0, 7.0 and 7.1, and you want Visual C++ 2005 (8.0).
    there. A Linux compiler needs nothing; a 32-bit one may need `requires = ["runtime-i386"]`.
 4. **The console lists it**: `consoles/pc/__init__.py`, `MSVC_VERSIONS`. A ROM console's compilers are its
    `compilers` tuple: `Compiler(id, name, built, guess)` (see `consoles/ps2/__init__.py`).
-5. **Which game used it.** PC reads the program's Rich header: add 8.0's build numbers to `RICH_BUILDS` in
+5. **Which game used it.** PC reads the program's Rich header: add 9.0's build numbers to `RICH_BUILDS` in
    `consoles/pc/scratch.py`. A PS2 program's `.comment` note says its GCC: `_GCC` in `consoles/ps2/elf.py`, and the
    compiler's `guess` names it.
 6. **Its flags.** The defaults are the toolchain's `flags`, and the console's `default_flags` adjusts them (the PS2's
    small data). PC projects write theirs in `project_template/tools/configure.py` (`CL_FLAGS`; from 8.0 on, `/GX`
-   is `/EHsc`).
+   is `/EHsc`: `create` swaps it).
+   A pack installed before the new part was pinned shows Update in Compilers & tools (`toolchains.outdated`).
 7. **MIPS only**: `search_flags` tries flags by compiler family (`FLAG_FAMILIES` in `app/engine/compilers.py`), and
    the compiler map tells compilers apart by their habits (`compilermap.py`, `quirks`). Add the new family there.
 8. **Prove it builds matching code**: build the demo with it (`projects/demo-ps2/build.py <toolchain>` does this

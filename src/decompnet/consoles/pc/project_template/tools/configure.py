@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 parser = argparse.ArgumentParser(description="Writes build.ninja and objdiff.json")
 parser.add_argument("version", help="game version (a directory in config/)")
-parser.add_argument("--msvc", required=True, help="Visual C++ directory (holds 6.0/Bin/CL.EXE, 7.1/Bin/cl.exe, ...)")
+parser.add_argument("--msvc", required=True, help="Visual C++ directory (holds 6.0/Bin/CL.EXE, 8.0-sp1/bin/cl.exe, ...)")
 parser.add_argument("--wibo", default="", help="runs the Windows compilers on Linux and macOS")
 args = parser.parse_args()
 
@@ -34,7 +34,9 @@ VERSION = args.version
 CONFIG = Path("config") / VERSION / "functions.json"
 BUILD = Path("build") / VERSION
 MSVC = Path(args.msvc) / MSVC_VERSION
-CL = next((p for p in (MSVC / "Bin" / "CL.EXE", MSVC / "Bin" / "cl.exe") if p.exists()), MSVC / "Bin" / "CL.EXE")
+CL = next((p for p in (MSVC / b / e for b in ("Bin", "bin") for e in ("CL.EXE", "cl.exe")) if p.exists()),
+          MSVC / "Bin" / "CL.EXE")
+INCLUDE = next((p for p in (MSVC / "Include", MSVC / "include") if p.is_dir()), MSVC / "Include")  # 8.0 SP1's are lowercase
 WRAP = f'"{args.wibo}" ' if args.wibo and sys.platform != "win32" else ""
 PY = f'"{sys.executable}"'
 SH = "cmd /c " if sys.platform == "win32" else ""  # ninja starts commands without a shell: && needs one on Windows
@@ -61,7 +63,7 @@ def main() -> None:
         n = ninja_syntax.Writer(f)
         n.rule("delink", f"{PY} tools/delink.py {CONFIG} {BUILD / 'target'}", restat=True)
         # then the original's names on what it compiled to (C++ mangles them: tools/names.py)
-        n.rule("cl", f'{SH}{WRAP}"{CL}" {q(CL_FLAGS)} /Iinclude "/I{MSVC / "Include"}" $cflags /Fo$out $in'
+        n.rule("cl", f'{SH}{WRAP}"{CL}" {q(CL_FLAGS)} /Iinclude "/I{INCLUDE}" $cflags /Fo$out $in'
                f' && {PY} tools/names.py {CONFIG} $out')
         n.rule("configure", f"{PY} tools/configure.py {q(sys.argv[1:])}", generator=True)
 

@@ -389,12 +389,12 @@ url = "https://files.decomp.dev/compilers_20251118.zip"
 sha256 = "69b0d4980a2eccea4ae6e70b486714b5190cb6c75e3bc7b8fb5878a8854d0d1c"
 
 [msvc]
-name = "Microsoft Visual C++ 6.0, 7.0 and 7.1 (PC)"
+name = "Microsoft Visual C++ 6.0, 7.0, 7.1 and 8.0 SP1 (PC)"
 kind = "compiler-pack"
 platform = "PC"
 license = "proprietary"
-source = "the decomp community's archives, as decomp.me uses them (OmniBlade/decomp.me msvcwin9x, roblabla/MSVC-7.0-Portable)"
-description = "The compilers most Windows games of 1998-2005 were built with: Visual C++ 6.0, .NET 2002 (7.0) and .NET 2003 (7.1). Windows programs, run through wibo on Linux and macOS."
+source = "the decomp community's archives, as decomp.me uses them (OmniBlade/decomp.me msvcwin9x, roblabla/MSVC-7.0-Portable), and Puyodead1/msvc8.0-sp1"
+description = "The compilers most Windows games of 1998-2008 were built with: Visual C++ 6.0, .NET 2002 (7.0), .NET 2003 (7.1) and 2005 SP1 (8.0 SP1). Windows programs, run through wibo on Linux and macOS."
 [[msvc.parts]]
 url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.0.tar.gz"
 sha256 = "5c81e9c2ab0ac5545022c1418a23392cb514db950cf6dcb1f48327270403fcd3"
@@ -408,6 +408,10 @@ into = "7.0"
 url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc7.0.tar.gz"  # holds 7.1 (13.10.3077)
 sha256 = "49eba7f9f72644f6f872a4176baeac544e8b5dfb2be1f47bb4d439b1136ffeac"
 into = "7.1"
+[[msvc.parts]]
+url = "https://github.com/Puyodead1/msvc8.0-sp1/releases/download/release/msvc8.0-sp1.tar.gz"  # 2005 SP1 (14.00.50727.762); bin/, include/ in lowercase
+sha256 = "ba6d230e346b508d5a82b73ce85b407ddf94c037639723067a44bf518b759b63"
+into = "8.0-sp1"  # not plain 8.0: 2005 RTM is another compiler
 
 [sjiswrap]
 name = "sjiswrap"

@@ -106,7 +106,7 @@ const platformName = (p) => (p === "gcwii" ? "GameCube or Wii" : consoleOf(p)?.n
 const CW_PACK = {
   mwcc: { title: "CodeWarrior", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "Not sure? Keep the default; you can change it later in configure.py if functions don't match." },
-  msvc: { title: "Visual C++", text: "Install Visual C++ 6.0, 7.0 and 7.1, the compilers most PC games of 1998-2005 were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
+  msvc: { title: "Visual C++", text: "Install Visual C++ 6.0, 7.0, 7.1 and 8.0 SP1, the compilers most PC games of 1998-2008 were built with (about 95 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "decompdecomp reads which Visual C++ built the game from the program itself when it can; you can change it later in tools/configure.py. The functions are found by Ghidra (installed once, 540 MB, needs Java 21+)." },
 };
 const packOf = (p) => CW_PACK[consoleOf(p)?.packs[0]] ? consoleOf(p).packs[0] : "mwcc";
