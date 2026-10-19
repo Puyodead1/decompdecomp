@@ -81,6 +81,25 @@ def test_install_records_a_manifest(tc_root, monkeypatch):
     assert toolchains.require("fake") == toolchains.path("fake")
 
 
+def test_a_pack_installed_before_a_new_part_was_pinned_can_be_updated(tc_root, monkeypatch):
+    """Visual C++ 8.0 SP1 joined the msvc pack after people had installed it: the pack still works (installed), Setup
+    offers to update it (outdated), and installing it again brings the new part."""
+    _fake(monkeypatch, tc_root, sha=None)
+    toolchains.install("fake", log=lambda *_: None)
+    assert not toolchains.outdated("fake")
+    (tc_root / "src" / "cl").write_text("#!/bin/sh\n")
+    newer = tc_root / "newer.tar.gz"
+    with tarfile.open(newer, "w:gz") as t:
+        t.add(tc_root / "src" / "cl", arcname="cl")
+    fake = toolchains.registry()["fake"]
+    fake.parts.append({"url": newer.as_uri(), "sha256": hashlib.sha256(newer.read_bytes()).hexdigest(), "into": "8.0-sp1"})
+    assert toolchains.installed("fake") and toolchains.outdated("fake")
+    assert [t["outdated"] for t in toolchains.status()] == [True]
+    toolchains.install("fake", log=lambda *_: None)
+    assert not toolchains.outdated("fake") and (toolchains.path("fake") / "8.0-sp1" / "cl").exists()
+    assert (toolchains.path("fake") / "cc").exists()
+
+
 def test_a_folder_of_scripts_gets_an_environment_for_what_it_imports(tc_root, monkeypatch):
     """decomp-permuter is a folder of scripts, not a package: it's unpacked from its pinned archive, and its own
     environment gets only the libraries its scripts import."""

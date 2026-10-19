@@ -144,6 +144,18 @@ def installed(tid: str, linux: bool | None = None) -> dict | None:
     return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
 
+def outdated(tid: str, linux: bool | None = None) -> bool:
+    """Whether an installed toolchain lacks a part pinned since it was installed (Visual C++ 8.0 SP1 joined the msvc
+    pack later): it still works as it is, and installing it again brings what's new."""
+    m = installed(tid, linux)
+    if m is None:
+        return False
+    tc = get(tid)
+    linux = tc.via_wsl if linux is None else linux
+    have = {p.get("sha256") for p in m.get("parts", [])}
+    return any(p.get("sha256") and p["sha256"] not in have for p in (tc.linux_parts() if linux else tc.parts_for()))
+
+
 def require(tid: str, linux: bool | None = None) -> Path:
     """Directory of an installed toolchain, or a clear error telling the operator how to install it."""
     if installed(tid, linux) is None:
@@ -253,7 +265,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     for dep in tc.requires:
         if installed(dep, linux) is None or force:
             install(dep, accept_license=accept_license, force=force, log=log, linux=linux)
-    if installed(tid, linux) and not force:
+    if installed(tid, linux) and not force and not outdated(tid, linux):
         log(f"{tid}: already installed at {path(tid, linux)}")
         return path(tid, linux)
     parts = tc.linux_parts() if linux else tc.parts_for()
@@ -397,7 +409,8 @@ def status() -> list[dict]:
     for tc in registry().values():
         m = installed(tc.id)
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
-                     "installed": m is not None, "supported": tc.supported, "description": tc.description,
+                     "installed": m is not None, "outdated": outdated(tc.id), "supported": tc.supported,
+                     "description": tc.description,
                      "wsl": tc.via_wsl,
                      "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit)})
     return rows
