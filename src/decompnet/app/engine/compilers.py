@@ -424,7 +424,8 @@ class CompilerMixin:
         """`guard` (auto-adjust, unattended): matched functions must still match with it, checked on up to 40 of them
         across the game, or nothing changes."""
         if self.fork_slug(slug):
-            raise NetworkError("a fork builds with the project's own compilers and flags")
+            self.forks.set_pc_compiler(slug, toolchain, flags)
+            return
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)

@@ -76,8 +76,11 @@ $("stopAll").onclick = async () => {
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
 const LZ = { kind: null, model: "", count: 1, per: null, effort: "" };
-// opencode 2 picks a model's reasoning effort as a variant of it: provider/model#high
-const withEffort = (a, model) => (a.id === "opencode" && LZ.effort && model ? `${model.split("#")[0]}#${LZ.effort}` : model);
+const modelVariants = (a, model) => ((a.models || []).find((x) => x.id === model)?.variants || []);
+// opencode 2 picks a model's reasoning effort as a variant of it: provider/model#high. Variants belong to a
+// particular model; never append a generic effort that its catalog does not offer.
+const withEffort = (a, model) => (a.id === "opencode" && modelVariants(a, model).includes(LZ.effort)
+  ? `${model.split("#")[0]}#${LZ.effort}` : model);
 function launcherInit() {
   if (LZ.kind || !S.st) return;
   const l = S.st.settings.launcher || {};
@@ -108,7 +111,8 @@ function launchLabel(a, model, count) {
     if (picked.length > 1) return `Start ${count} across ${picked.length} endpoints`;
     return `Start ${picked[0] ? picked[0].name : "API model"}${count > 1 ? ` × ${count}` : ""}`;
   }
-  return `Start ${a.name}${model ? ` · ${modelName(a, model)}` : ""}${a.id === "opencode" && LZ.effort && model ? ` · ${LZ.effort}` : ""}${count > 1 ? ` × ${count}` : ""}`;
+  const effort = modelVariants(a, model).includes(LZ.effort) ? LZ.effort : "";
+  return `Start ${a.name}${model ? ` · ${modelName(a, model)}` : ""}${effort ? ` · ${effort}` : ""}${count > 1 ? ` × ${count}` : ""}`;
 }
 
 async function startAgents(a, model, count, btn, extra = {}) {
@@ -136,6 +140,8 @@ function renderLauncher(box, compact = false) {
   launcherInit();
   const list = S.st.agents;
   const a = list.find((x) => x.id === LZ.kind) || list[0];
+  const variants = modelVariants(a, LZ.model);
+  if (!variants.includes(LZ.effort)) LZ.effort = "";
   const kinds = list.map((x) => `<button type="button" class="lz-kind ${x.id === a.id ? "on" : ""}" data-k="${esc(x.id)}">
       <b>${esc(x.name)}</b><span>${x.id === "api" ? "DeepSeek, OpenRouter, Ollama…" : x.installed ? esc(x.version ? x.version.replace(/\s*\(.*\)/, "") : x.vendor) : "not installed"}</span>
       ${x.installed || x.id === "api" ? "" : `<em>install</em>`}</button>`).join("");
@@ -159,7 +165,7 @@ function renderLauncher(box, compact = false) {
     body = `<label class="field"><span>Model</span><select data-f="model">${opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === LZ.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")}
         <option value="__other" ${known ? "" : "selected"}>Another model…</option></select></label>
       <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${known ? "" : esc(LZ.model)}" ${known ? "hidden" : ""}>
-      ${a.id === "opencode" ? `<label class="field"><span>Effort (how hard the model thinks; opencode 2, for models that offer it)</span><select data-f="effort">${[["", "Model's default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]].map(([v, l]) => `<option value="${v}" ${LZ.effort === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}`;
+      ${a.id === "opencode" && variants.length ? `<label class="field"><span>Effort (available for this model)</span><select data-f="effort">${[["", "Model's default"], ...variants.map((v) => [v, v.charAt(0).toUpperCase() + v.slice(1)])].map(([v, l]) => `<option value="${esc(v)}" ${LZ.effort === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}`;
   }
   const ready = a.installed;
   box.innerHTML = `<div class="lz-kinds">${kinds}</div>
@@ -176,8 +182,11 @@ function renderLauncher(box, compact = false) {
   box.querySelectorAll(".lz-kind").forEach((b) => { b.onclick = () => { LZ.kind = b.dataset.k; LZ.model = (S.st.settings.launcher || {}).kind === LZ.kind ? S.st.settings.launcher.model || "" : ""; rerender(); }; });
   const sel = box.querySelector('select[data-f="model"]'), custom = box.querySelector('[data-f="custom"]');
   const label = () => { const btn = box.querySelector('[data-act="start"]'); if (btn) btn.textContent = launchLabel(a, LZ.model, LZ.count); };
-  if (sel) sel.onchange = () => { if (sel.value === "__other") { custom.hidden = false; custom.focus(); LZ.model = custom.value.trim(); } else { custom.hidden = true; LZ.model = sel.value; } label(); };
-  if (custom) custom.oninput = () => { LZ.model = custom.value.trim(); label(); };
+  if (sel) sel.onchange = () => {
+    if (sel.value === "__other") { custom.hidden = false; custom.focus(); LZ.model = custom.value.trim(); LZ.effort = ""; label(); }
+    else { LZ.model = sel.value; LZ.effort = ""; rerender(); }
+  };
+  if (custom) custom.oninput = () => { LZ.model = custom.value.trim(); LZ.effort = ""; label(); };
   const eff = box.querySelector('[data-f="effort"]');
   if (eff) eff.onchange = () => { LZ.effort = eff.value; label(); };
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(8, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });

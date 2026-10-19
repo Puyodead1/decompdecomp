@@ -24,6 +24,8 @@ def test_registry_is_pinned_and_labelled():
             assert all(p["sha256"] for p in tc.parts) or tc.commit, tc.id
     assert reg["ido-7.1"].proprietary and not reg["gcc-2.7.2-kmc"].proprietary
     assert reg["ee-gcc-2.96"].requires == ["runtime-i386"]
+    msvc8 = next(p for p in reg["msvc"].parts if p.get("into") == "8.0-sp1")
+    assert msvc8["sha256"] == "ba6d230e346b508d5a82b73ce85b407ddf94c037639723067a44bf518b759b63"
 
 
 def test_proprietary_toolchains_need_explicit_acceptance(tc_root):

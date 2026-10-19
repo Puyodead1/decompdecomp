@@ -102,8 +102,10 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    or #pragma lines it needs); several at once: function="a, b, c" with all definitions in source. Each
    goes into the source file in place of the old one, the file is built with the project's compiler and
    diffed. Fix structure first (control flow, calls), then types and expressions, registers last.
-4. 100% = matched, committed to git. Structs, prototypes, globals or helpers you need go in with
-   edit_file (a header or the top of the source file); an edit that breaks any match is undone. Found a
+4. 100% = matched, committed to git. Keep structs, prototypes, globals and helpers used by one unit in that
+   source file with edit_file; this rebuilds only the unit. In a generated Windows project, edit_context is
+   reserved for declarations genuinely needed by multiple source files because it rebuilds the entire project.
+   An edit that breaks any match is undone. Found a
    compiler quirk or project convention others should know? add_note with no function: every new session
    starts with those notes.
 5. The goal is linked files: the game built from the C, byte for byte. When a match finishes a file's
@@ -193,7 +195,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
-        net.edit_context(agent, slug, old, new, message, function or None),
+        (net.forks.edit_context(agent, slug, old, new, message) if net.fork_slug(slug)
+         else net.edit_context(agent, slug, old, new, message, function or None)),
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
@@ -223,7 +226,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "report_boundary", "get_class",
+ROM_ONLY = {"get_context", "rename_symbol", "split_function", "report_boundary", "get_class",
             "compiler_map"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
@@ -326,7 +329,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     @mcp.tool(meta=ALWAYS_LOAD)
     async def edit_context(ctx: Context, old: str, new: str, message: str, function: str = "") -> str:
         """Edit the shared header: replace `old` (must occur exactly once) with `new`, or append `new` when
-        old is "". Accepted only if every matched function still matches. Add prototypes and structs here."""
+        old is "". Accepted only if every matched function still matches. In generated Windows projects this
+        rebuilds every source file, so use it only for declarations genuinely needed by multiple units; keep
+        function-specific declarations in that function's source file."""
         return await run(ctx, "edit_context", old=old, new=new, message=message, function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -446,7 +451,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def edit_file(ctx: Context, path: str, old: str, new: str, message: str) -> str:
         """Forks only: change a C/C++ source or header file. Replace `old` (exactly once) with `new`, or
         append `new` when old is "". The project is rebuilt and measured; the edit is undone if any matched
-        function stops matching. Use it for structs, prototypes, globals and helpers."""
+        function stops matching. Keep declarations used by one unit in that unit's source file. Generated
+        Windows projects require edit_context for the global include/common.h."""
         return await run(ctx, "edit_file", path=path, old=old, new=new, message=message)
 
     @mcp.tool(meta=ALWAYS_LOAD)

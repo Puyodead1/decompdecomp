@@ -361,12 +361,12 @@
       <section class="panel" id="compilerPanel">
         <header class="panel-head"><h2>Compiler</h2></header>
         <div class="pad">
-          <p class="muted small">Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.</p>
+          <p class="muted small" id="compilerHelp">Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.</p>
           <label class="field"><span>Compiler</span><select id="setTc"></select></label>
           <label class="field"><span>Flags</span><input id="setFlags" class="mono"></label>
-          <label class="field"><span>Only for these address ranges (optional: parts of the game built with another compiler)</span><input id="setRanges" class="mono" placeholder="0x10BFD0-0x10CD40, 0x1106C0-0x1107C0"></label>
+          <label class="field" id="setRangesField"><span>Only for these address ranges (optional: parts of the game built with another compiler)</span><input id="setRanges" class="mono" placeholder="0x10BFD0-0x10CD40, 0x1106C0-0x1107C0"></label>
           <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
-          <label class="check"><input type="checkbox" id="autoAdjust"><span><b>Auto-adjust the compiler for this game</b>: agents' compiler suggestions apply by themselves once proven (a function's C matches with them; a range also needs a neighbouring function to confirm it) or three agents agree. Otherwise they wait for you on the Agents tab.</span></label>
+          <label class="check" id="autoAdjustField"><input type="checkbox" id="autoAdjust"><span><b>Auto-adjust the compiler for this game</b>: agents' compiler suggestions apply by themselves once proven (a function's C matches with them; a range also needs a neighbouring function to confirm it) or three agents agree. Otherwise they wait for you on the Agents tab.</span></label>
           <div id="rangeList"></div>
         </div>
       </section>

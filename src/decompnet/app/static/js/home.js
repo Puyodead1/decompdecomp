@@ -86,7 +86,7 @@ const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStatio
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
-  win32: { id: "msvc", text: "Install Visual C++ 6.0, 7.0 and 7.1, the compilers most PC games of 1998-2005 were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
+  win32: { id: "msvc", text: "Install Visual C++ 6.0 through 8.0 SP1, the compilers most PC games of 1998-2008 were built with (about 100 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
 };
 function crc16(bytes, from, to) {
   let crc = 0xffff;
@@ -202,7 +202,7 @@ function setupCompilers(info) {
     $("compilerRow").hidden = true; note.hidden = false;
     note.textContent = "The compiler is picked from the disc: PSY-Q-era GCC for PlayStation, EE-GCC for PlayStation 2. You can change it later.";
   } else if (p === "win32") {
-    select.innerHTML = `<optgroup label="Windows PC">${(cw.msvc || []).map((v) => `<option value="${esc(v)}" ${v === "MSVC/6.0" ? "selected" : ""}>Visual C++ ${esc(v.slice(5))}</option>`).join("")}</optgroup><option value="">Let decompdecomp pick (from the program's Rich header)</option>`;
+    select.innerHTML = `<optgroup label="Windows PC">${(cw.msvc || []).map((v) => `<option value="${esc(v)}" ${v === "MSVC/6.0" ? "selected" : ""}>Visual C++ ${esc(v === "MSVC/8.0-sp1" ? "8.0 SP1" : v.slice(5))}</option>`).join("")}</optgroup><option value="">Let decompdecomp pick (from the program's Rich header)</option>`;
     select.value = "";
     note.hidden = false;
     note.textContent = "decompdecomp reads which Visual C++ built the game from the program itself when it can; you can change it later in tools/configure.py. The functions are found by Ghidra (installed once, 540 MB, needs Java 21+).";

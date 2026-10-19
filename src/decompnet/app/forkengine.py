@@ -387,6 +387,50 @@ class ForkEngine:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
 
     @staticmethod
+    def _pc_scratch(cfg: dict) -> bool:
+        return cfg.get("origin") == "scratch" and cfg.get("platform") == "win32"
+
+    def set_pc_compiler(self, slug: str, compiler: str, flags: list[str] | None = None) -> None:
+        """Change a generated PC project's compiler settings, then rebuild and remeasure it."""
+        proj, fp, cfg = self.get(slug)
+        if not self._pc_scratch(cfg):
+            raise NetworkError("a fork builds with the project's own compilers and flags")
+        configure = fp.root / "tools" / "configure.py"
+        manifest_path = fp.root / ".decomp.wtf.json"
+        saved_configure = configure.read_text(encoding="utf-8")
+        saved_manifest = manifest_path.read_text(encoding="utf-8")
+        with self._tree(proj).exclusive():
+            try:
+                compiler, flags = scratch_pe.set_compiler_settings(fp.root, compiler, flags)
+                manifest = fp.manifest or {}
+                manifest["compiler"] = compiler
+                manifest["compiler_flags"] = flags
+                manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+                command = fp.setup_commands(cfg.get("version"))[0]
+                ok, tail = fp.run(command)
+                if not ok:
+                    raise ForkError(f"the PC build couldn't use those compiler settings:\n{tail[-2500:]}")
+                failed: list[str] = []
+                self._build_all(proj, fp, failed=failed)
+                broken = fp.failed_units(failed)
+                rep = fp.report()
+            except (ForkError, OSError, ValueError):
+                configure.write_text(saved_configure, encoding="utf-8")
+                manifest_path.write_text(saved_manifest, encoding="utf-8")
+                # Restore build.ninja's compiler command too; keep the original error if recovery itself fails.
+                try:
+                    fp.run(fp.setup_commands(cfg.get("version"))[0])
+                except (ForkError, OSError):
+                    pass
+                raise
+        cfg["compiler"] = compiler
+        self._save_cfg(proj, cfg)
+        self._scores = {key: value for key, value in self._scores.items() if key[0] != proj["id"]}
+        self.sync(slug, rep=rep, broken=broken)
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], None, "compiler", f"{compiler} {' '.join(flags)}")
+
+    @staticmethod
     def _meta(fn) -> dict:
         return json.loads(fn["meta"]) if fn["meta"] else {}
 
@@ -2193,10 +2237,32 @@ class ForkEngine:
         if _CHEAT.search(_strip_comments(new)):
             raise NetworkError("inline assembly, asm functions and asm includes aren't allowed")
         rel = Path(os.path.relpath(p, fp.root)).as_posix()
+        if self._pc_scratch(cfg) and rel.casefold() == "include/common.h":
+            raise NetworkError(
+                "include/common.h is included by every generated PC source file, so editing it with edit_file "
+                "would rebuild the whole project. Put declarations used by one function in that function's .cpp "
+                "source; for a declaration genuinely shared by multiple source files, use edit_context explicitly")
         units = [u for u in fp.units_for(rel) if u.base is not None]
         if units:  # a unit's own source file: only that unit can change
             return self._edit_source(agent, proj, fp, p, rel, units, old, new, message)
         return self._edit_shared(agent, proj, fp, slug, p, rel, old, new, message)
+
+    def edit_context(self, agent: Agent, slug: str, old: str, new: str, message: str) -> str:
+        """Explicitly edit a generated PC project's global header, accepting a whole-project rebuild."""
+        if (link := self.net.links.get(slug)) is not None:
+            text = link.call("/collab/context", agent, old=old, new=new, message=message)
+            if text.startswith(("✅", "⚠️")):
+                link.sync()
+            return text
+        proj, fp, cfg = self.get(slug)
+        if not self._pc_scratch(cfg):
+            raise NetworkError("edit_context is for the global header in a generated Windows project")
+        if not message.strip():
+            raise NetworkError("give a short message explaining the shared change")
+        if _CHEAT.search(_strip_comments(new)):
+            raise NetworkError("inline assembly, asm functions and asm includes aren't allowed")
+        rel = "include/common.h"
+        return self._edit_shared(agent, proj, fp, slug, fp.safe_path(rel, write=True), rel, old, new, message)
 
     @staticmethod
     def _edited(p: Path, path: str, old: str, new: str) -> tuple[bool, str, str]:
@@ -2335,6 +2401,8 @@ class ForkEngine:
             "FROM functions WHERE project_id=?", proj["id"])
         m = cfg.get("measures") or {}
         need = fp.needs(cfg.get("version")) if not cfg.get("ready") else None
+        pc = self._pc_scratch(cfg)
+        compiler, flags = scratch_pe.compiler_settings(fp.root) if pc else ("project", [])
         return {
             "slug": slug, "title": proj["name"], "description": proj["description"], "kind": "fork",
             "platform": cfg.get("platform"), "platform_name": catalog.PLATFORMS.get(cfg.get("platform"), cfg.get("platform") or ""),
@@ -2343,9 +2411,10 @@ class ForkEngine:
             "versions": fp.versions(), "ready": bool(cfg.get("ready")), "needs": need,
             "rom": {"game_code": cfg.get("version") or "", "region": catalog.PLATFORMS.get(cfg.get("platform"), ""),
                     "title": proj["name"]},
-            "compiler": {"toolchain": "project", "name": "Project's own build", "flags": [], "installed": True,
-                         "proprietary": False, "supported": True},
-            "compilers": [],
+            "compiler": {"toolchain": compiler, "name": f"Visual C++ {compiler.removeprefix('MSVC/')}" if pc else
+                         "Project's own build", "flags": flags, "installed": True,
+                         "proprietary": pc, "supported": True, "editable": pc},
+            "compilers": [f"MSVC/{version}" for version in scratch_pe.MSVC_VERSIONS] if pc else [],
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "context_version": 0, "folder": proj["root"], "room": self.net._room_info(slug),

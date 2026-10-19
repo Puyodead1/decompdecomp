@@ -180,6 +180,8 @@ def no_credit(said: str) -> str | None:
 
 _versions: dict[str, tuple[float, str | None]] = {}
 _models: dict[str, tuple[float, list[dict]]] = {}
+_opencode_catalog: tuple[float, dict] | None = None
+_opencode_run_flags: dict[str, set[str]] = {}
 
 # Claude Code's aliases always point at Anthropic's latest model of each kind.
 CLAUDE_MODELS = [("fable", "Fable", "Anthropic's most capable model"), ("opus", "Opus", "very capable"),
@@ -228,6 +230,48 @@ def _config_model(kind: str) -> str | None:
     return None
 
 
+def _opencode_model_variants(model_ids: list[str]) -> dict[str, list[str]]:
+    """Effort variants OpenCode actually offers for each model, including the user's custom variants.
+
+    `opencode models` deliberately prints only IDs. models.dev is OpenCode's own catalog; when it cannot be reached,
+    offering no effort choices is safer than presenting made-up choices which turn into missing-model errors.
+    """
+    global _opencode_catalog
+    now = time.time()
+    if _opencode_catalog is None or now - _opencode_catalog[0] > 600:
+        try:
+            response = httpx.get("https://models.dev/api.json", timeout=5)
+            response.raise_for_status()
+            catalog = response.json()
+            if not isinstance(catalog, dict):
+                catalog = {}
+        except (httpx.HTTPError, ValueError):
+            catalog = {}
+        _opencode_catalog = (now, catalog)
+    catalog = _opencode_catalog[1]
+    custom = {}
+    try:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        custom = json.loads((base / "opencode" / "opencode.json").read_text(encoding="utf-8")).get("provider") or {}
+    except (OSError, ValueError, AttributeError):
+        pass
+    out = {}
+    for full in model_ids:
+        provider, model = full.split("/", 1)
+        info = ((catalog.get(provider) or {}).get("models") or {}).get(model) or {}
+        variants = [value for option in info.get("reasoning_options") or [] if option.get("type") == "effort"
+                    for value in option.get("values") or [] if isinstance(value, str)]
+        configured = (((custom.get(provider) or {}).get("models") or {}).get(model) or {}).get("variants") or {}
+        if isinstance(configured, dict):
+            for variant, settings in configured.items():
+                if isinstance(settings, dict) and settings.get("disabled") is True:
+                    variants = [value for value in variants if value != variant]
+                elif variant not in variants:
+                    variants.append(variant)
+        out[full] = variants
+    return out
+
+
 def models(kind: str, path: str | None) -> list[dict]:
     """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's and Antigravity's
     own lists (what the user's sign-in offers); for Codex the user's default plus any model name they type."""
@@ -246,7 +290,10 @@ def models(kind: str, path: str | None) -> list[dict]:
         lines = []
     if kind == "opencode":
         rows = [r for r in lines if re.fullmatch(r"[\w.-]+/[\w.:/-]+", r)]
-        out = [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0]} for r in rows[:200]]
+        rows = rows[:200]
+        variants = _opencode_model_variants(rows)
+        out = [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0],
+                "variants": variants.get(r, [])} for r in rows]
     else:  # agy: "<slug>\t<name>" per model
         rows = [r.split("\t", 1) for r in lines if re.fullmatch(r"[\w.:-]+\t.+", r)]
         out = [{"id": slug, "name": name.strip(), "note": slug.split("-", 1)[0]} for slug, name in rows[:200]]
@@ -309,6 +356,18 @@ def _opencode_2(exe: str) -> bool:
             text = ""
     m = re.search(r"(\d+)\.\d+", text or "")
     return bool(m) and int(m.group(1)) >= 2
+
+
+def _opencode_flags(exe: str) -> set[str]:
+    """Flags this installed OpenCode's `run` command accepts (the 1.x and 2.x CLIs differ)."""
+    if exe not in _opencode_run_flags:
+        try:
+            result = subprocess.run(argv([exe, "run", "--help"]), capture_output=True, text=True, encoding="utf-8",
+                                    errors="replace", timeout=15)
+            _opencode_run_flags[exe] = set(re.findall(r"--[a-z][a-z-]+", result.stdout + result.stderr))
+        except (OSError, subprocess.TimeoutExpired):
+            _opencode_run_flags[exe] = set()
+    return _opencode_run_flags[exe]
 
 
 def argv(cmd: list[str]) -> list[str]:
@@ -459,6 +518,22 @@ def clean_stderr(kind: str, line: str) -> str:
     return line
 
 
+def unsupported_opencode_variant(model: str, said: str) -> tuple[str, str] | None:
+    """Return the base model and variant when OpenCode treated an unsupported ``#variant`` as a model ID.
+
+    OpenCode only recognizes a suffix when that particular model advertises it. Otherwise its error says the
+    complete suffixed name is a missing model, even though the base model exists (DeepSeek V4.1 Flash on OpenCode Go
+    exposed this). A genuinely missing base model must keep failing instead of silently changing what the user chose.
+    """
+    if "#" not in model or "ProviderModelNotFoundError" not in said:
+        return None
+    base, variant = model.rsplit("#", 1)
+    if not base or not variant:
+        return None
+    missing = re.search(rf"Model not found:\s*{re.escape(model)}(?:\.|\s|$)", said)
+    return (base, variant) if missing else None
+
+
 def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[str, str]]:
     """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error, usage.
     `state` carries what spans lines (Antigravity streams text in pieces) for one session."""
@@ -558,6 +633,7 @@ class Session:
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
     throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
     limited: bool = False  # the last run ended on the plan's usage limit: wait for it to reset (LIMIT_WAIT)
+    retry_now: bool = False  # the CLI rejected an optional setting; retry immediately after removing it
 
     def push(self, kind: str, text: str) -> None:
         self.seq += 1
@@ -759,6 +835,9 @@ class Manager:
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
+            if s.retry_now and not s.stop.is_set():
+                s.retry_now = False
+                continue
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = "the session ended without compiling anything (check the agent's output)"
                 s.push("error", s.error)
@@ -900,14 +979,27 @@ class Manager:
                 "mcp": {"decompdecomp": {"type": "remote", "url": self.mcp_url, "enabled": True,
                                          "headers": {"Authorization": f"Bearer {token}"}},
                         "decomp": {"type": "remote", "url": self.mcp_url, "enabled": False}},
-                "permission": {"edit": never, "bash": never, "webfetch": never},
+                # OpenCode permits its built-ins by default. The helper gets only this session's decompdecomp tools;
+                # `tools` covers older 1.x releases, `permission` current 1.x releases. Zen's free models must still
+                # see tools in the request, so their built-ins are `ask` (a headless run rejects the ask) rather than
+                # removed; other providers do not receive them at all.
+                "tools": {"*": zen, "decompdecomp_*": True},
+                "permission": {"*": never, "decompdecomp_*": "allow"},
             }), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
-            # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag. No --log-level either: before
-            # 2.0 it took only ERROR, from 2.0 only error, and either stops the other at once.)
-            cmd = [exe, "run", *(["--standalone"] if _opencode_2(exe) else []), "--format", "json", "--print-logs"]
+            # OpenCode 1.19's local server lost Popen's cwd and created sessions in $HOME: --dir makes the generated
+            # config and its tool restrictions apply. Older 1.x has no flag; 2.x uses --standalone for the same
+            # isolation. No --log-level: before 2.0 it took only ERROR, from 2.0 only error.
+            flags = _opencode_flags(exe)
+            cmd = [exe, "run", *(["--standalone"] if _opencode_2(exe) else []),
+                   *(["--dir", str(workdir)] if "--dir" in flags else []),
+                   "--format", "json", "--print-logs"]
             if model:
-                cmd += ["-m", model]
+                if "#" in model and "--variant" in flags:
+                    base, variant = model.rsplit("#", 1)
+                    cmd += ["-m", base, "--variant", variant]
+                else:
+                    cmd += ["-m", model]
         else:
             raise RuntimeError(s.kind)
         return argv(cmd), env, prompt
@@ -976,6 +1068,14 @@ class Manager:
             return False
         if code != 0 and not s.stop.is_set():
             tail = " · ".join(list(errors)[-3:]) or last_error or f"exited with code {code}"
+            model = s.options.get("model") or ""
+            if s.kind == "opencode" and (fallback := unsupported_opencode_variant(model, tail)):
+                base, variant = fallback
+                s.options["model"] = base
+                s.error = ""
+                s.retry_now = True
+                s.push("info", f"{base} does not offer the {variant} effort; retrying with the model's default")
+                return False
             s.error = tail[:300]
             s.push("error", f"exited with code {code}: {tail[:600]}" if tail != f"exited with code {code}" else tail)
             return False
@@ -1125,7 +1225,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "release_function": ("Give up a function with notes for the next agent.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True))),
         "get_context": ("The shared header included in every compile.", s()),
-        "edit_context": ("Replace `old` (exactly once) with `new` in the shared header, or append when old is empty.",
+        "edit_context": ("Edit the shared header. In generated Windows projects this rebuilds every source file; "
+                         "use it only for declarations genuinely shared by multiple units.",
                          s(old=st("text to replace, or empty", True), new=st("replacement", True),
                            message=st("why", True))),
         "rename_symbol": ("Give a function or data address a real name.",
@@ -1159,7 +1260,9 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "search_code": ("Regex search over the project's C/C++ sources and headers.",
                         s(pattern=st("regular expression", True), glob=st("optional file glob"))),
         "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
-                      "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),
+                      "Keep one-unit declarations in that source file; use edit_context for a generated Windows "
+                      "project's global include/common.h. Undone if any match breaks.",
+                      s(path=st("file", True), old=st("text to replace, or empty", True),
                                                        new=st("replacement", True), message=st("why", True))),
         "file_status": ("How far a source file (or a function's file) is from being linked: functions left, its data "
                         "next to the original's, why the last link failed.", s(path=st("file or function", True))),

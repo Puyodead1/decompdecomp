@@ -2,6 +2,8 @@
 stdin, `decomp connect`, and the compact context agents get (assembly, diffs)."""
 
 import json
+import os
+import sys
 
 import pytest
 
@@ -57,6 +59,60 @@ def test_opencode_errors_say_what_failed():
     assert agents.clean_stderr("antigravity", agy) == "quota exhausted"
 
 
+def test_opencode_unsupported_effort_falls_back_only_for_the_exact_missing_model():
+    """OpenCode Go's DeepSeek model has no medium variant: OpenCode reports the suffixed ID as a missing model."""
+    model = "opencode-go/deepseek-v4.1-flash#medium"
+    error = ("ProviderModelNotFoundError: Model not found: opencode-go/deepseek-v4.1-flash#medium. "
+             "Did you mean: deepseek-v4.1-flash, deepseek-v4-pro, glm-5.3-flash?")
+    assert agents.unsupported_opencode_variant(model, error) == ("opencode-go/deepseek-v4.1-flash", "medium")
+    assert agents.unsupported_opencode_variant("opencode-go/missing#medium", error) is None
+    assert agents.unsupported_opencode_variant(model, "ProviderAuthError: sign in") is None
+
+
+def test_opencode_models_offer_only_their_own_catalog_and_custom_variants(tmp_path, monkeypatch):
+    catalog = {"opencode-go": {"models": {
+        "deepseek-v4.1-flash": {"reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]},
+        "deepseek-v4-pro": {"reasoning_options": []},
+    }}}
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return catalog
+
+    config = tmp_path / "opencode" / "opencode.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"provider": {"opencode-go": {"models": {"deepseek-v4.1-flash": {
+        "variants": {"high": {"disabled": True}, "turbo": {"reasoningEffort": "high"}},
+    }}}}}))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(agents.httpx, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(agents, "_opencode_catalog", None)
+    variants = agents._opencode_model_variants([
+        "opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-pro",
+    ])
+    assert variants == {
+        "opencode-go/deepseek-v4.1-flash": ["low", "max", "turbo"],
+        "opencode-go/deepseek-v4-pro": [],
+    }
+
+
+def test_opencode_retries_an_unsupported_effort_with_the_base_model(tmp_path, monkeypatch):
+    manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
+    model = "opencode-go/deepseek-v4.1-flash#medium"
+    error = ("ProviderModelNotFoundError: Model not found: opencode-go/deepseek-v4.1-flash#medium. "
+             "Did you mean: deepseek-v4.1-flash, deepseek-v4-pro, glm-5.3-flash?")
+    code = f"import sys; print({error!r}, file=sys.stderr); raise SystemExit(1)"
+    monkeypatch.setattr(manager, "_command",
+                        lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ), ""))
+    s = agents.Session("opencode-1", "opencode", "opencode #1", "game", "opencode-1", {"model": model})
+    assert manager._run_cli(s, "token", tmp_path) is False
+    assert s.retry_now and s.options["model"] == "opencode-go/deepseek-v4.1-flash"
+    assert "does not offer the medium effort" in s.feed[-1]["text"]
+
+
 def test_opencode_2_starts_and_its_quota_error_says_so(tmp_path, monkeypatch):
     """opencode 2.0 takes `--log-level error` only, earlier versions `ERROR` only, and either stops the other at once
     (an `InvalidValue` stack trace, shown with "run opencode auth login" though the user was signed in). The command
@@ -66,6 +122,23 @@ def test_opencode_2_starts_and_its_quota_error_says_so(tmp_path, monkeypatch):
     assert "--log-level" not in cmd and "--print-logs" in cmd
     assert agents.clean_stderr("opencode", 'level=error message=failed error="quota exceeded"') == "quota exceeded"
     assert not agents._SIGNIN.search("quota exceeded") and agents._SIGNIN.search("ProviderAuthError: no key")
+
+
+def test_opencode_1_uses_its_directory_and_separate_variant_flags(tmp_path, monkeypatch):
+    """1.19 otherwise starts its session in $HOME, ignoring the helper's MCP and permission config."""
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    exe = str(tmp_path / "bin" / "opencode")
+    monkeypatch.setitem(agents._versions, "opencode", (0, "1.19.3"))
+    monkeypatch.setitem(agents._opencode_run_flags, exe, {"--dir", "--variant"})
+    work = tmp_path / "helper"
+    work.mkdir()
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1",
+                       {"model": "opencode-go/deepseek-v4.1-flash#high"})
+    cmd, _, _ = m._command(s, "tok", work)
+    assert cmd[cmd.index("--dir") + 1] == str(work)
+    assert cmd[cmd.index("-m") + 1] == "opencode-go/deepseek-v4.1-flash"
+    assert cmd[cmd.index("--variant") + 1] == "high"
+    assert "--standalone" not in cmd
 
 
 def test_a_used_up_plan_waits_instead_of_stopping():
@@ -125,7 +198,9 @@ def test_opencode_free_models_keep_their_tools_but_never_get_to_use_them(tmp_pat
         work = tmp_path / f"oc-{rule}-{model.replace('/', '_')}"
         work.mkdir()
         m._command(s, "tok", work)
-        assert json.loads((work / "opencode.json").read_text())["permission"] == {"edit": rule, "bash": rule, "webfetch": rule}
+        cfg = json.loads((work / "opencode.json").read_text())
+        assert cfg["permission"] == {"*": rule, "decompdecomp_*": "allow"}
+        assert cfg["tools"] == {"*": rule == "ask", "decompdecomp_*": True}
     # its own connection, with its own token; the user's `decomp` (decomp connect) off: opencode 2's shared service ran
     # that one without the session's token, so every helper worked as the user's one chat agent
     for version, standalone in (("opencode v2.0.28", True), ("0.15.4", False)):  # opencode 2's shared service

@@ -20,6 +20,7 @@ what this reads; there's no relink of the whole .exe yet, so files aren't linked
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -37,13 +38,17 @@ from .. import toolchains
 from .project import ForkError, ForkProject
 
 UNIT_BYTES = 0x1000
+MIN_JUMP_ISLAND = 8  # link.exe's incremental-link table; ordinary source does not contain long E9-only runs
 TEMPLATE = Path(__file__).with_name("pc_template")
 MSVC_DEFAULT = "6.0"
+MSVC_VERSIONS = ("6.0", "7.0", "7.1", "8.0-sp1")
+DEFAULT_CL_FLAGS = ["/nologo", "/c", "/O2", "/W3", "/GX"]
 DIR32, REL32 = 0x06, 0x14
 PAD = 0x90  # what Visual C++ 6 pads a function's section with (the linker pads between objects with 0xCC or zeros)
-# Visual C++ versions by the build number its tools leave in the program's Rich header, for the C/C++ compiler
+# Visual C++ versions by the build number its tools leave in the program's Rich header, for the C/C++ compiler.
+# The Rich header keeps 50727 but not SP1's .762 revision; SP1 is the supported 8.0 compiler in this pack.
 RICH_BUILDS = {8168: "6.0", 8447: "6.0", 8799: "6.0", 8966: "6.0", 9044: "6.0", 9782: "6.0", 9466: "7.0", 9955: "7.0",
-               3052: "7.1", 3077: "7.1", 4035: "7.1", 6030: "7.1"}
+               3052: "7.1", 3077: "7.1", 4035: "7.1", 6030: "7.1", 50727: "8.0-sp1"}
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -192,6 +197,8 @@ class Function:
     size: int
     name: str  # the symbol, decorated as MSVC decorates the C name
     relocs: list[tuple[int, int, str | None, int]] = field(default_factory=list)  # (offset, type, symbol, addend)
+    library: bool = False  # a function Ghidra positively identified from a library, not an address-range guess
+    generated: bool = False  # linker/compiler glue that source code cannot sensibly reproduce as its own function
 
 
 def decorate(name: str, convention: str, purge: int, params: int) -> str:
@@ -204,6 +211,34 @@ def decorate(name: str, convention: str, purge: int, params: int) -> str:
     if purge > 0:
         return f"_{name}@{purge}"
     return f"_{name}"
+
+
+def _analysis_symbol(row: dict) -> str | None:
+    """A COFF symbol recovered by Ghidra's Function ID analyser. Its library names are already decorated; a
+    FID_conflict can still be useful when every matching library calls the function by the same symbol."""
+    if row.get("source") != "ANALYSIS":
+        return None
+    name = row.get("name", "")
+    if name.startswith("FID_conflict:"):
+        name = name.removeprefix("FID_conflict:")
+    if not _IDENT.fullmatch(name):
+        return None
+    if name.startswith(("_", "@")):
+        return name
+    return decorate(name, row.get("convention", ""), int(row.get("purge") or 0), int(row.get("params") or 0))
+
+
+def _thunk_symbol(row: dict) -> str | None:
+    """The linker thunk's destination symbol. Ghidra gives a thunk the destination's name, but usually marks that
+    name DEFAULT rather than ANALYSIS; retain it so callers don't see an opaque func_<address> dependency."""
+    if not row.get("thunk"):
+        return None
+    name = row.get("name", "")
+    if not _IDENT.fullmatch(name) or name.startswith("thunk_FUN_"):
+        return None
+    if name.startswith(("_", "@")):
+        return name  # Ghidra retained the decorated COFF symbol.
+    return decorate(name, row.get("convention", ""), int(row.get("purge") or 0), int(row.get("params") or 0))
 
 
 def _disasm(md, code: bytes, addr: int):
@@ -243,6 +278,84 @@ def _tables(md, pe: PE, start: int, code_end: int, limit: int) -> tuple[int, int
     return code_end, data_end, entries
 
 
+def _jump_islands(pe: PE) -> dict[int, int]:
+    """Entry -> destination for link.exe incremental-link thunks.
+
+    An incremental MSVC link begins .text with an ILT: hundreds or thousands of adjacent five-byte ``jmp rel32``
+    instructions. Ghidra recognizes some entries and misses others, so treating its function list literally made
+    the missed portion one enormous source function (and could even trim the displacement's final zero byte).
+    Require a long uninterrupted run so an ordinary source-level tail jump is never hidden by this heuristic.
+    """
+    out: dict[int, int] = {}
+    for section in pe.sections:
+        if not section.code:
+            continue
+        data = pe.read(section.va, section.size)
+        at = 0
+        while at + 5 <= len(data):
+            if data[at] != 0xE9:
+                at += 1
+                continue
+            run: list[tuple[int, int]] = []
+            end = at
+            while end + 5 <= len(data) and data[end] == 0xE9:
+                addr = section.va + end
+                displacement = struct.unpack_from("<i", data, end + 1)[0]
+                target = (addr + 5 + displacement) & 0xFFFFFFFF
+                target_section = pe.section_at(target)
+                if target_section is None or not target_section.code:
+                    break
+                run.append((addr, target))
+                end += 5
+            if len(run) >= MIN_JUMP_ISLAND:
+                out.update(run)
+                at = end
+            else:
+                at += 1
+    return out
+
+
+def _missed_ranges(md, pe: PE, begin: int, limit: int) -> list[tuple[int, int]]:
+    """Conservative function ranges in code between two Ghidra functions.
+
+    MSVC/link.exe alignment bytes are not source code. A return or unconditional tail jump followed by that
+    padding is a reliable boundary between two otherwise-unreferenced functions; without this split, agents were
+    handed several functions and linker padding as one impossible target. A trailing zero is deliberately retained:
+    it can be the last byte of an instruction's immediate or displacement.
+    """
+    gap = pe.read(begin, limit - begin)
+    left = 0
+    while left < len(gap) and gap[left] in (0x00, 0x90, 0xCC):
+        left += 1
+    right = len(gap)
+    while right > left and gap[right - 1] in (0x90, 0xCC):
+        right -= 1
+    if left == right:
+        return []
+
+    base = begin + left
+    code = gap[left:right]
+    ranges: list[tuple[int, int]] = []
+    start = at = 0
+    terminal = (x86.X86_INS_JMP, x86.X86_INS_RET, x86.X86_INS_RETF)
+    while at < len(code):
+        ins = next(md.disasm(code[at:], base + at, count=1), None)
+        if ins is None:
+            break
+        end = at + ins.size
+        if ins.id in terminal:
+            following = end
+            while following < len(code) and code[following] in (0x90, 0xCC):
+                following += 1
+            if following > end and following < len(code):
+                ranges.append((base + start, base + end))
+                start = at = following
+                continue
+        at = end
+    ranges.append((base + start, base + len(code)))
+    return ranges
+
+
 def analyse(pe: PE, found: list[dict]) -> list[Function]:
     """Every function's extent, name and relocations, from Ghidra's function list."""
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
@@ -250,9 +363,17 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
     rows: dict[int, dict] = {}
     for r in found:
         s = pe.section_at(r["entry"])
-        if r.get("thunk") or s is None or not s.code or pe.offset(r["entry"]) is None:
+        if s is None or not s.code or pe.offset(r["entry"]) is None:
             continue
         rows[r["entry"]] = r
+    jump_thunks = _jump_islands(pe)
+    for entry, target in jump_thunks.items():
+        # Override Ghidra's inconsistent ILT coverage with the exact instruction boundaries from the executable.
+        rows[entry] = {"entry": entry, "end": entry + 5, "name": "", "source": "DEFAULT", "purge": 0,
+                       "convention": "__cdecl", "thunk": True, "thunk_target": target, "generated": True}
+    for row in rows.values():
+        if row.get("thunk"):
+            row["generated"] = True
     starts = sorted(rows)
     i = 0
     extents: dict[int, tuple[int, int, list[int]]] = {}  # start -> (code end, end, jump table entries)
@@ -263,14 +384,14 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         code_end = max(start + 1, min(rows[start].get("end", limit), limit))
         code_end, end, entries = _tables(md, pe, start, code_end, limit)
         gap = pe.read(end, limit - end)
-        rest = gap.lstrip(b"\x90").lstrip(b"\xcc\x00")
-        if rest and not rest.strip(b"\x90\xcc\x00") == b"":
+        missed_ranges = _missed_ranges(md, pe, end, limit)
+        if missed_ranges:
             # code nobody calls directly (callbacks, vtables) that Ghidra didn't make a function: one of its own
-            missed = limit - len(rest)
-            rows[missed] = {"entry": missed, "end": missed + len(rest.rstrip(b"\x90\xcc\x00")), "name": "",
-                            "source": "DEFAULT", "purge": 0, "convention": "__cdecl"}
-            starts.insert(i + 1, missed)
-            limit = missed
+            for missed, missed_end in missed_ranges:
+                rows[missed] = {"entry": missed, "end": missed_end, "name": "", "source": "DEFAULT", "purge": 0,
+                                "convention": "__cdecl"}
+            starts[i + 1:i + 1] = [start for start, _ in missed_ranges]
+            limit = missed_ranges[0][0]
             gap = pe.read(end, limit - end)
         if gap and gap.strip(b"\x90") == b"":
             end = limit  # Visual C++ 6's own padding: part of the compiled function's section too
@@ -279,23 +400,52 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
 
     names = {}
     for start, r in rows.items():
+        if r.get("generated"):
+            continue
         base = r.get("name", "")
         named = r.get("source") in ("IMPORTED", "USER_DEFINED") and _IDENT.fullmatch(base) and base != "entry"
-        names[start] = decorate(base if named else f"func_{start:08X}", r.get("convention", ""),
-                                int(r.get("purge") or 0), int(r.get("params") or 0))
+        names[start] = _analysis_symbol(r) or _thunk_symbol(r) or decorate(
+            base if named else f"func_{start:08X}", r.get("convention", ""), int(r.get("purge") or 0),
+            int(r.get("params") or 0))
+
+    def resolved_symbol(addr: int, seen: set[int] | None = None) -> str | None:
+        """The source-visible symbol behind a linker thunk, following chains without trusting Ghidra's names."""
+        seen = set() if seen is None else seen
+        if addr in seen:
+            return None
+        seen.add(addr)
+        target = jump_thunks.get(addr)
+        if target is not None:
+            return resolved_symbol(target, seen)
+        if addr in names:
+            return names[addr]
+        if addr in pe.imports:
+            return f"__imp__{pe.imports[addr]}"
+        section = pe.section_at(addr)
+        if section is not None and section.code:
+            return decorate(f"func_{addr:08X}", "__cdecl", 0, 0)
+        return None
+
+    for start, r in rows.items():
+        if r.get("generated"):
+            names[start] = _thunk_symbol(r) or resolved_symbol(int(r.get("thunk_target", start))) \
+                or f"_func_{start:08X}"
 
     out = []
     for start in starts:
         code_end, end, entries = extents[start]
-        fn = Function(start, end - start, names[start])
+        # Ghidra's FID match identifies this function, not its neighbours. LEGO Batman has an FID match near the
+        # start of .text followed by megabytes of game code, so an address-wide "library tail" loses the game.
+        library = rows[start].get("source") == "ANALYSIS"
+        generated = bool(rows[start].get("generated"))
+        fn = Function(start, end - start, names[start], library=library, generated=generated)
 
         def symbol(addr: int) -> tuple[str | None, int]:
             if start <= addr < end:  # noqa: B023  called within this pass of the loop
                 return None, addr - start  # noqa: B023  called within this pass of the loop
-            if addr in names:
-                return names[addr], 0
-            if addr in pe.imports:
-                return f"__imp__{pe.imports[addr]}", 0
+            resolved = resolved_symbol(addr)
+            if resolved is not None:
+                return resolved, 0
             return f"_D_{addr:08X}", 0
 
         for ins in _disasm(md, pe.read(start, code_end - start), start):
@@ -348,6 +498,56 @@ def tool_args() -> list[str]:
         toolchains.ensure("wibo", log=lambda *_: None)
         args += ["--wibo", str(toolchains.binary("wibo"))]
     return args
+
+
+def compiler_settings(root: Path) -> tuple[str, list[str]]:
+    """The Visual C++ version and flags in a generated PC project's configure.py."""
+    text = (root / "tools" / "configure.py").read_text(encoding="utf-8")
+    values = {}
+    for name in ("MSVC_VERSION", "CL_FLAGS"):
+        match = re.search(rf"^{name}\s*=\s*(.+?)(?:\s+#.*)?$", text, re.M)
+        if match is None:
+            raise ForkError(f"tools/configure.py has no {name} setting")
+        try:
+            values[name] = ast.literal_eval(match.group(1))
+        except (SyntaxError, ValueError):
+            raise ForkError(f"tools/configure.py has an invalid {name} setting") from None
+    version, flags = values["MSVC_VERSION"], values["CL_FLAGS"]
+    if not isinstance(version, str) or not isinstance(flags, list) or not all(isinstance(f, str) for f in flags):
+        raise ForkError("tools/configure.py has invalid Visual C++ settings")
+    return f"MSVC/{version}", flags
+
+
+def set_compiler_settings(root: Path, compiler: str, flags: list[str] | None) -> tuple[str, list[str]]:
+    """Change the two settings decompdecomp owns in a generated PC project's configure.py."""
+    version = compiler.removeprefix("MSVC/")
+    if version not in MSVC_VERSIONS:
+        raise ForkError(f"Visual C++ {version} isn't supported (choose {', '.join(MSVC_VERSIONS)})")
+    if not (toolchains.path("msvc") / version).is_dir():
+        raise ForkError(f"Visual C++ {version} isn't in the installed compiler pack")
+    chosen = list(DEFAULT_CL_FLAGS if flags is None else flags)
+    if not chosen or any(not isinstance(flag, str) or not flag.strip() for flag in chosen):
+        raise ForkError("give at least one Visual C++ compiler flag")
+    if any(re.search(r"[&|<>;`$()\r\n]", flag) for flag in chosen):
+        raise ForkError("Visual C++ flags can't contain shell control characters")
+    lowered = [flag.lower() for flag in chosen]
+    if "/link" in lowered or any(flag.startswith("/incremental") for flag in lowered):
+        raise ForkError("PC functions are compared as compiled .obj files, before linking: remove /link and linker-only flags")
+    if any(flag.startswith(("/fo", "/fe", "/tc", "/tp")) for flag in lowered):
+        raise ForkError("output and input-file flags (/Fo, /Fe, /Tc and /Tp) are managed by the PC project")
+    for required in reversed(("/nologo", "/c")):
+        if required not in lowered:
+            chosen.insert(0, required)
+            lowered.insert(0, required)
+
+    path = root / "tools" / "configure.py"
+    text = path.read_text(encoding="utf-8")
+    text, versions = re.subn(r'^MSVC_VERSION\s*=.*$', f'MSVC_VERSION = "{version}"', text, count=1, flags=re.M)
+    text, flag_sets = re.subn(r'^CL_FLAGS\s*=.*$', f"CL_FLAGS = {chosen!r}", text, count=1, flags=re.M)
+    if versions != 1 or flag_sets != 1:
+        raise ForkError("tools/configure.py doesn't have the generated Visual C++ settings")
+    path.write_text(text, encoding="utf-8")
+    return f"MSVC/{version}", chosen
 
 
 TYPES_H = """/* Basic types for this decompilation (32-bit x86, Visual C++, written in C++). Agents add structs, classes and
@@ -443,8 +643,17 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     if not found:
         raise ForkError("Ghidra found no functions in this program (did its analysis fail or time out?)")
     functions = analyse(pe, found)
-    groups = units(functions)
-    log(f"{len(functions)} functions; {info['compiler_why']}: Visual C++ {compiler}")
+    application = [f for f in functions if not f.library and not f.generated]
+    libraries = [f for f in functions if f.library]
+    generated = [f for f in functions if f.generated and not f.library]
+    groups = units(application)
+    skipped = []
+    if generated:
+        skipped.append(f"{len(generated)} linker/compiler thunks")
+    if libraries:
+        skipped.append(f"{len(libraries)} individually recognized library functions")
+    log(f"{len(application)} game functions" + (f"; skipped {', '.join(skipped)}" if skipped else ""))
+    log(f"{info['compiler_why']}: Visual C++ {compiler}")
 
     shutil.copytree(TEMPLATE, root)
     (root / "orig").mkdir()
@@ -464,6 +673,10 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
         "exe": f"orig/{version}.exe", "sha1": info["sha1"], "image_base": pe.image_base,
         "units": {u: [{"name": f.name, "addr": f.addr, "offset": pe.offset(f.addr), "size": f.size,
                        "relocs": [list(r) for r in f.relocs]} for f in fns] for u, fns in groups.items()},
+        "libraries": [{"name": f.name, "addr": f.addr, "offset": pe.offset(f.addr), "size": f.size}
+                      for f in libraries],
+        "generated": [{"name": f.name, "addr": f.addr, "offset": pe.offset(f.addr), "size": f.size}
+                      for f in generated],
     }, indent=1), encoding="utf-8")
     for u, fns in groups.items():
         src = root / "src" / "auto" / f"{u}.cpp"  # C++, as PC games of the time were written (C compiles too)
@@ -481,6 +694,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
         "created": "from scratch", "platform": "win32", "version": version, "compiler": f"MSVC/{compiler}",
+        "compiler_flags": DEFAULT_CL_FLAGS,
         "game": {"what": "your copy of the game's program (.exe)", "path": f"orig/{version}.exe", "sha1": info["sha1"]},
         "setup": [["python", "tools/configure.py", version, *args], ["ninja", "prepare"]],
     }, indent=2), encoding="utf-8")
@@ -495,9 +709,11 @@ copy of its program and compared with what `src/` compiles to, function by funct
 2. `python tools/configure.py {version} --msvc <Visual C++ folder> [--wibo <wibo>]`, then `ninja`.
 3. Decompiled code goes in `src/`; `objdiff.json` shows each function's progress in [objdiff](https://github.com/encounter/objdiff).
 
-Compiler: Visual C++ {compiler} (change `MSVC_VERSION` and `CL_FLAGS` in tools/configure.py if the game was built
-with another version or other flags). `config/{version}/functions.json` holds what the analysis found: every
-function's address, size, symbol and relocations.
+Compiler: Visual C++ {compiler} (change its version and compiler flags in decompdecomp's project Settings, or edit
+`MSVC_VERSION` and `CL_FLAGS` in tools/configure.py). `config/{version}/functions.json` holds the game functions' addresses, sizes,
+symbols and relocations. Its `libraries` list records functions Ghidra individually recognized from libraries, and
+its `generated` list records linker/compiler thunks; neither kind is assigned to agents. Unrecognized functions
+always remain game-code targets: one library signature never hides the functions after it.
 """, encoding="utf-8")
     if shutil.which("git"):
         for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],

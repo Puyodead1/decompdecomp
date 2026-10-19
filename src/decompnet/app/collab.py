@@ -374,8 +374,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def context(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        return {"text": net.edit_context(agent, room.slug, str(d.get("old", "")), str(d.get("new", "")),
-                                         str(d.get("message", "")), d.get("function") or None)}
+        if room.fork:
+            text = net.forks.edit_context(agent, room.slug, str(d.get("old", "")), str(d.get("new", "")),
+                                          str(d.get("message", "")))
+        else:
+            text = net.edit_context(agent, room.slug, str(d.get("old", "")), str(d.get("new", "")),
+                                    str(d.get("message", "")), d.get("function") or None)
+        return {"text": text}
 
     def rename(room, member, d):
         agent = room.agent_for(member, d.get("agent"))

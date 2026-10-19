@@ -300,19 +300,31 @@ async function renderProjectSettings() {
   const ov = S.ov;
   if (!ov) return;
   const fork = ov.kind === "fork";
-  $("compilerPanel").hidden = fork;
-  if (!fork) {
+  const pcCompiler = fork && !!ov.compiler?.editable;
+  $("compilerPanel").hidden = fork && !pcCompiler;
+  if (!fork || pcCompiler) {
     if (!S.st) await loadState();
-    fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
+    if (pcCompiler) {
+      $("setTc").innerHTML = ov.compilers.map((id) => `<option value="${esc(id)}" ${id === ov.compiler.toolchain ? "selected" : ""}>Visual C++ ${esc(id.slice(5))}</option>`).join("");
+    } else {
+      fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
+    }
     $("setFlags").value = ov.compiler.flags.join(" ");
     $("autoAdjust").checked = !!ov.auto_compiler;
     $("setRanges").value = "";
+    $("setRangesField").hidden = pcCompiler;
+    $("autoAdjustField").hidden = pcCompiler;
+    $("rangeList").hidden = pcCompiler;
+    $("compilerHelp").textContent = pcCompiler
+      ? "Every function is compiled to an object with these flags. Saving rebuilds and remeasures the project; linker flags such as /link and /INCREMENTAL:NO do not apply to object comparison."
+      : "Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.";
     const hex = (n) => "0x" + n.toString(16).toUpperCase();
     $("rangeList").innerHTML = (ov.compiler_ranges || []).length ? `<p class="col-title">Built with another compiler</p>` + ov.compiler_ranges.map((r) =>
       `<div class="row"><code class="grow">${hex(r.start)}-${hex8(r.end)}</code><span class="small">${esc(r.name)} ${esc(r.flags.join(" "))}${r.check ? `<br><span class="muted">checked: ${esc(r.check)}</span>` : ""}</span><button class="ghost small-btn" type="button" data-unrange="${hex(r.start)}-${hex8(r.end)}">Remove</button></div>`).join("") : "";
   }
   const facts = [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
     !fork && ov.rom?.region ? ["Region", ov.rom.region] : null, fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
+    pcCompiler ? ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`] : null,
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
@@ -344,11 +356,12 @@ $("rangeList").onclick = async (e) => {
 $("setTc").onchange = () => { $("setFlags").value = ""; };  // one compiler's flags aren't another's (-G8 vs -sdatathreshold): its defaults
 $("setTcSave").onclick = async () => {
   try {
+    const pcCompiler = S.ov.kind === "fork" && !!S.ov.compiler?.editable;
     const flags = $("setFlags").value.trim();
     S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null, ranges: $("setRanges").value.trim() } });
     renderStats(S.ov);
     renderProjectSettings();
-    toast("Compiler settings saved.");
+    toast(pcCompiler ? "Visual C++ settings saved; the project was rebuilt and remeasured." : "Compiler settings saved.");
   } catch (e) { toast(esc(e.message), "err"); }
 };
 $("folderBtn").onclick = () => openFolder();

@@ -50,7 +50,7 @@ MW_VERSIONS = {
            "DS/2.0/sp1p2", "DS/2.0/sp1p5", "DS/2.0/sp1p6", "DS/2.0/sp1p7", "DS/2.0/sp2", "DS/2.0/sp2p2", "DS/2.0/sp2p3",
            "DS/2.0/sp2p4", "DS/dsi/1.1", "DS/dsi/1.1p1", "DS/dsi/1.2", "DS/dsi/1.2p1", "DS/dsi/1.2p2", "DS/dsi/1.3",
            "DS/dsi/1.3p1", "DS/dsi/1.6sp1", "DS/dsi/1.6sp2"],
-    "msvc": ["MSVC/6.0", "MSVC/7.0", "MSVC/7.1"],  # the `msvc` pack (PC)
+    "msvc": ["MSVC/6.0", "MSVC/7.0", "MSVC/7.1", "MSVC/8.0-sp1"],  # the `msvc` pack (PC)
 }
 
 # Tools shown in Setup besides the compilers.
@@ -60,7 +60,7 @@ TOOLS = {
     "ghidra": "drafts for PC, Switch and other platforms m2c can't read (540 MB, needs Java 21+)",
     "mwcc": "CodeWarrior, the compilers of GameCube and Wii games (proprietary)",
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
-    "msvc": "Visual C++ 6.0, 7.0 and 7.1, the compilers of PC games (proprietary)",
+    "msvc": "Visual C++ 6.0 through 8.0 SP1, the compilers of PC games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
 }
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
