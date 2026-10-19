@@ -203,3 +203,35 @@ def test_a_program_built_with_a_newer_visual_cpp_is_told_apart():
     assert not scratch_pe.newer_tools(vc6_game)
     assert not scratch_pe.newer_tools(vc71_with_a_newer_library)  # the game's own compiler is in the pack
     assert not scratch_pe.newer_tools([])  # no Rich header: nothing to go by
+
+
+def test_a_program_built_with_visual_cpp_2005_gets_8_0(monkeypatch):
+    """Visual C++ 2005 (RTM and SP1 both leave build 50727) is in the pack: no longer "newer", and the guess."""
+    vs2005_game = [(0x6D, 50727, 140), (0x6E, 50727, 60), (0x78, 50727, 1)]
+    assert not scratch_pe.newer_tools(vs2005_game)
+    monkeypatch.setattr(scratch_pe, "rich_builds", lambda data: vs2005_game)
+    assert scratch_pe.guess_compiler(b"")[0] == "8.0-sp1"
+
+
+def test_the_project_is_set_up_for_its_visual_cpp(tmp_path):
+    """8.0 deprecated /GX for /EHsc, and 8.0 SP1's pack keeps bin/ and include/ in lowercase."""
+    template = (scratch_pe.TEMPLATE / "tools" / "configure.py").read_text(encoding="utf-8")
+    assert '"/GX"]' in scratch_pe.settings(template, "7.1") and 'MSVC_VERSION = "7.1"' in scratch_pe.settings(template, "7.1")
+    eight = scratch_pe.settings(template, "8.0-sp1")
+    assert '"/EHsc"]' in eight and '"/GX"' not in eight and 'MSVC_VERSION = "8.0-sp1"' in eight
+
+    root = tmp_path / "game"
+    for d in ("tools", "src", "include", "config/game"):
+        (root / d).mkdir(parents=True)
+    for f in ("ninja_syntax.py", "delink.py", "names.py"):
+        (root / "tools" / f).write_text((scratch_pe.TEMPLATE / "tools" / f).read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "tools" / "configure.py").write_text(eight, encoding="utf-8")
+    (root / "config" / "game" / "functions.json").write_text('{"units": {}}', encoding="utf-8")
+    msvc = tmp_path / "msvc"
+    (msvc / "8.0-sp1" / "bin").mkdir(parents=True)
+    (msvc / "8.0-sp1" / "include").mkdir()
+    (msvc / "8.0-sp1" / "bin" / "cl.exe").write_bytes(b"MZ")
+    subprocess.run([sys.executable, "tools/configure.py", "game", "--msvc", str(msvc)], cwd=root, check=True)
+    ninja = (root / "build.ninja").read_text(encoding="utf-8")
+    assert f'"{msvc / "8.0-sp1" / "bin" / "cl.exe"}"' in ninja and f'"/I{msvc / "8.0-sp1" / "include"}"' in ninja
+    assert "/EHsc" in ninja

@@ -1,4 +1,5 @@
-"""Windows PC games: 32-bit x86 programs (.exe) built with Microsoft Visual C++ 6.0, 7.0 or 7.1, PROJECT mode. Only
+"""Windows PC games: 32-bit x86 programs (.exe) built with Microsoft Visual C++ 6.0, 7.0, 7.1 or 8.0 SP1,
+PROJECT mode. Only
 the game is a Windows program: decompdecomp runs on Linux, and so do the compilers (through wibo).
 
 - scratch.py: a project for the user's .exe: Ghidra finds its functions, decompdecomp cuts each one out of the
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from .. import BETA, PROJECT, Compiler, Console
 
-MSVC_VERSIONS = ["MSVC/6.0", "MSVC/7.0", "MSVC/7.1"]  # the `msvc` pack
+MSVC_VERSIONS = ["MSVC/6.0", "MSVC/7.0", "MSVC/7.1", "MSVC/8.0-sp1"]  # the `msvc` pack
 
 
 class WindowsPC(Console):
@@ -29,8 +30,8 @@ class WindowsPC(Console):
     arch = "x86"
     mode = PROJECT
     layout = "Ghidra + objdiff"
-    compilers = tuple(Compiler(v, f"Visual C++ {v.removeprefix('MSVC/')}") for v in MSVC_VERSIONS)
-    packs = (("msvc", "Visual C++ 6.0, 7.0 and 7.1, the compilers of PC games (proprietary)"),
+    compilers = tuple(Compiler(v, f"Visual C++ {v.removeprefix('MSVC/').replace('-sp', ' SP')}") for v in MSVC_VERSIONS)
+    packs = (("msvc", "Visual C++ 6.0, 7.0, 7.1 and 8.0 SP1, the compilers of PC games (proprietary)"),
              ("ghidra", "finds a PC game's functions, and drafts for platforms m2c can't read (540 MB, needs Java 21+)"))
     guides = ("x86", "cpp")
     compiler_guide = "x86"
