@@ -83,7 +83,10 @@ def register(app: App) -> None:
 
     @mcp.custom_route("/api/state", methods=["GET"])
     async def api_state(request: Request) -> Response:
-        return guard(request) or JSONResponse(await call(state))
+        if (bad := guard(request)):
+            return bad
+        # a paired browser is on another computer: what opens on this one's screen (the chooser), it can't see
+        return JSONResponse(await call(state) | {"viewer": request.state.viewer})
 
     @mcp.custom_route("/api/restore", methods=["POST"])
     async def api_restore(request: Request) -> Response:
@@ -104,6 +107,8 @@ def register(app: App) -> None:
         """A folder or file the user picks in the system's own chooser (picker.py): "" if they cancelled."""
         if (bad := guard(request, write=True)):
             return bad
+        if request.state.viewer == "browser":  # the chooser would open on the server's screen, not this browser's
+            return fail(ValueError("the file chooser opens on the computer decompdecomp runs on: type the path"))
         data = await body(request)
         try:
             return JSONResponse({"path": await call(picker.choose, str(data.get("kind") or ""), str(data.get("title") or ""))})

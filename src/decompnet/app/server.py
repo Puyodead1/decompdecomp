@@ -1,8 +1,9 @@
 """The local decompdecomp server: the GUI, its API, and the MCP endpoint agents connect to.
 
 It listens on 127.0.0.1 only. The GUI answers only the app's own window, whose user agent carries the per-launch
-secret (window.py); helper agents need their own bearer token. Host headers are checked on every request, so web
-pages can't reach it through DNS rebinding.
+secret (window.py), and browsers paired with it (browsers.py: another computer, through `tailscale serve`); helper
+agents need their own bearer token, and their endpoint answers only 127.0.0.1. Host headers are checked on every
+request, so web pages can't reach it through DNS rebinding.
 
 build() sets up what the routes share (the engine, helper agents, jobs, settings, the request checks) and hands it to
 the modules in routes/, one per part of the app; what they share beyond that is in support.py.
@@ -24,8 +25,9 @@ from starlette.responses import JSONResponse, Response
 from .. import agents as kinds
 from .. import hostenv
 from ..network import NetworkError
-from . import agents, collab, routes, saves, tools, updates, window
+from . import agents, browsers, collab, routes, saves, tools, updates, window
 from .engine import RomNetwork
+from .routes import browsers as browser_routes
 from .routes import forks, life, pages, projects, rooms, setup, state
 from .support import Jobs, Settings, session_options
 
@@ -74,6 +76,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return agent, slug
 
     threading.Thread(target=collab.local_addresses, daemon=True).start()  # `tailscale status` can take seconds
+    threading.Thread(target=browsers.tailnet_name, daemon=True).start()  # (the same, for paired browsers)
     # rooms this computer belongs to reconnect (members keep their place; their agents wait while the host is away)
     net.restore_links()
 
@@ -118,11 +121,28 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
 
+    paired = browsers.Browsers(home / "browsers.json")
+
+    def host_ok(request: Request) -> bool:
+        """This computer by its local name, or by its tailnet name (a paired browser, through `tailscale serve`)."""
+        host = request.headers.get("host")
+        return host in allowed_hosts or browsers.remote_host(host)
+
+    def viewer(request: Request) -> str | None:
+        """Who asks: "window" (the app's own window, or `decomp` itself), "browser" (a paired one), or None."""
+        if secrets.compare_digest(window.token_of(request.headers.get("user-agent", "")), secret):
+            return "window"
+        if paired.session(request.cookies.get(browsers.COOKIE)):
+            return "browser"
+        return None
+
     def guard(request: Request, write: bool = False) -> Response | None:
-        if request.headers.get("host") not in allowed_hosts:
+        if not host_ok(request):
             return JSONResponse({"error": "bad host"}, status_code=403)
-        if not secrets.compare_digest(window.token_of(request.headers.get("user-agent", "")), secret):
-            return JSONResponse({"error": "decompdecomp only answers its own window: open it with `decomp`"},
+        request.state.viewer = viewer(request)
+        if request.state.viewer is None:
+            return JSONResponse({"error": "decompdecomp only answers its own window and paired browsers: open it "
+                                          "with `decomp`, or pair this browser with `decomp pair` on the server"},
                                 status_code=401)
         if write and request.headers.get("x-decomp") != "1":
             return JSONResponse({"error": "missing header"}, status_code=403)
@@ -148,8 +168,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     # whose autopilot and with_project they use
     app = routes.App(net, mcp, home, port, secret, mcp_url, build_id, manager, jobs, settings, allowed_hosts,
                      guard, body, call, fail, updater=updates.Updater(before_restart, port, secret),
-                     busy=busy, quit_app=quit_app)
-    for part in (pages, state, projects, forks, setup, life, rooms):
+                     busy=busy, quit_app=quit_app, browsers=paired, host_ok=host_ok, viewer=viewer)
+    for part in (pages, state, projects, forks, setup, life, rooms, browser_routes):
         part.register(app)
 
     security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=sorted(allowed_hosts),

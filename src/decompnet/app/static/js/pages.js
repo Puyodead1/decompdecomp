@@ -126,6 +126,28 @@ async function showSettingsPage() {
   $("perSession").onchange = () => save({ per_session: Number($("perSession").value) }, "Saved.");
   $("autopilotSet").onchange = () => save({ autopilot: $("autopilotSet").checked }, "Saved.");
   $("budgetSet").onchange = () => save({ budget_usd: Number($("budgetSet").value) || 0 }, "Budget saved.");
+  renderBrowsers();
+}
+
+/* Browsers on other computers (app/browsers.py): decompdecomp on a server, used through Tailscale. A pairing link
+   works once; each paired browser stays until it's removed here. */
+async function renderBrowsers(paired) {
+  let b;
+  try { b = await api("/api/browsers"); } catch (e) { $("setBrowsers").innerHTML = `<p class="muted small">${esc(e.message)}</p>`; return; }
+  const where = b.address
+    ? `With <code>tailscale serve --bg ${location.port || 6464}</code> running on this computer, browsers in your tailnet reach it at <code>https://${esc(b.address)}</code>.`
+    : `To use decompdecomp from another computer, install Tailscale on both and run <code>tailscale serve --bg ${location.port || 6464}</code> on this one.`;
+  $("setBrowsers").innerHTML = `<p class="small muted">${where} Edge and Chrome can then install it as an app of its own.</p>
+    ${paired ? `<div class="field"><span>Open this in the browser to pair (once, within ${paired.minutes} minutes)</span>${cmdBox(paired.link)}</div>` : ""}
+    <div class="row"><button class="ghost small-btn" id="brPair" type="button">Pair a browser</button></div>
+    ${b.browsers.length ? `<ul class="plain-list">${b.browsers.map((x) => `<li class="row"><span class="grow small"><b>${esc(x.name)}</b> <span class="muted">paired ${since(x.created)}, last used ${since(x.seen)}</span></span><button class="ghost small-btn" data-unpair="${esc(x.id)}" type="button">Remove</button></li>`).join("")}</ul>` : `<p class="small muted">No browser is paired.</p>`}`;
+  wireCopies($("setBrowsers"));
+  $("brPair").onclick = async () => {
+    try { renderBrowsers(await api("/api/browsers", { method: "POST", body: { pair: true } })); } catch (e) { toast(esc(e.message), "err"); }
+  };
+  $("setBrowsers").querySelectorAll("[data-unpair]").forEach((x) => { x.onclick = async () => {
+    try { await api("/api/browsers", { method: "POST", body: { remove: x.dataset.unpair } }); renderBrowsers(); } catch (e) { toast(esc(e.message), "err"); }
+  }; });
 }
 
 /* ------------------------------------------------------------------ updates (app/updates.py)

@@ -1,17 +1,16 @@
-"""The GUI's page, for the app's own window only (its user agent carries the per-launch secret: window.py), its
-assets, and the health check `decomp` asks to find a running app and its version.
+"""The GUI's page, for the app's own window (its user agent carries the per-launch secret: window.py) and paired
+browsers (browsers.py), its assets, and the health check `decomp` asks to find a running app and its version.
 """
 
 from __future__ import annotations
 
 import mimetypes
-import secrets
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from ... import __version__, hostenv
-from .. import edition, window
+from .. import browsers, edition
 from ..support import static_file
 from . import App
 
@@ -24,22 +23,28 @@ OLD_PAGE_WINDOWS = ("<p><b>This version of decompdecomp doesn't run on Windows.<
                     "are safe, and update checks are now off, so 1.0.2 won't update itself again.</p>"
                     "<p>Go back to 1.0.2: in PowerShell, run</p><pre style='white-space:pre-wrap'>"
                     + hostenv.WSL_GO_BACK + "</pre><p>then start decompdecomp as before.</p>")
+# what a browser that isn't paired yet sees at the tailnet address
+PAIR_PAGE = ("<p><b>Pair this browser with decompdecomp.</b></p><p>On the computer decompdecomp runs on, run "
+             "<code>decomp pair</code> (or use Settings, Browsers, in its window or in a browser paired already), "
+             "then open the link it gives you here. The link works once, for a few minutes.</p>")
 
 
 def register(app: App) -> None:
-    mcp, secret, build_id, allowed_hosts = app.mcp, app.secret, app.build_id, app.allowed_hosts
+    mcp, build_id, host_ok, viewer = app.mcp, app.build_id, app.host_ok, app.viewer
 
     @mcp.custom_route("/", methods=["GET"])
     async def index(request: Request) -> Response:
-        if request.headers.get("host") not in allowed_hosts:
+        if not host_ok(request):
             return JSONResponse({"error": "bad host"}, status_code=403)
-        if not secrets.compare_digest(window.token_of(request.headers.get("user-agent", "")), secret):
+        if viewer(request) is None:
+            if browsers.remote_host(request.headers.get("host")):
+                return HTMLResponse(OLD_PAGE + PAIR_PAGE, status_code=401)
             return HTMLResponse(OLD_PAGE + (OLD_PAGE_WINDOWS if hostenv.in_old_windows_install() else OLD_PAGE_LINUX), status_code=401)
         return HTMLResponse(static_file("index.html").decode(), headers={"Cache-Control": "no-store"})
 
     @mcp.custom_route("/assets/{name:path}", methods=["GET"])
     async def asset(request: Request) -> Response:
-        if request.headers.get("host") not in allowed_hosts:
+        if not host_ok(request):
             return Response(status_code=403)
         name = request.path_params["name"]
         data = static_file(name)
