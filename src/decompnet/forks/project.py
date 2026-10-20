@@ -97,6 +97,8 @@ _NINJA_PROGRAM = re.compile(r"^(?:([A-Za-z_][\w.-]*)|\s+command)\s*=\s*(.*)$")
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
+# ninja's build file gone or cut short: "loading 'build.ninja': No such file or directory", "build.ninja:12: expected..."
+_NO_BUILD_FILE = re.compile(r"ninja: error: (loading 'build\.ninja'|build\.ninja:\d+:)")
 _NOISE = re.compile(r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbol|(doesn't )?exist\.\s+Ignored\.|"
                     r"Section '\.note\.split' is unknown)")
 
@@ -592,7 +594,8 @@ class ForkProject:
         cmd = [console_python(executable), *cmd[1:]]  # not pythonw.exe: its tools' compilers would flash consoles
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
-            # (in a process group of its own off Windows, so a step stopped at its limit takes its compilers with it)
+            # (in a session of its own off Windows, so a step stopped at its limit takes its compilers with it, and
+            # Ctrl-C in the app's terminal doesn't reach it: ninja interrupted while it rewrites build.ninja deletes it)
             proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8",
                                     creationflags=NO_WINDOW, start_new_session=os.name != "nt")
@@ -842,7 +845,10 @@ class ForkProject:
         make = cfg.get("custom_make") or "make"
         tool = _tool(make) or make
         rel = self._target(unit.base)  # (named from the build's folder: `-C sub` builds final.o for sub/final.o)
-        return self.run([tool, *cfg.get("custom_args", []), rel], log=log, timeout=UNIT_SECONDS)
+        ok, out = self.run([tool, *cfg.get("custom_args", []), rel], log=log, timeout=UNIT_SECONDS)
+        if not ok and self._rewrite_build_file(out, log):
+            ok, out = self.run([tool, *cfg.get("custom_args", []), rel], log=log, timeout=UNIT_SECONDS)
+        return ok, out
 
     def build_units(self, units: list[Unit], log=lambda *_: None) -> list[tuple[bool, str]]:
         """Build several units' objects in one run of the build: (built, the log) for each, in the order given.
@@ -888,6 +894,19 @@ class ForkProject:
         that's missing says nothing (a project's --quiet), "no work to do" does."""
         code, said, _ = self._execute([*ninja, "-n", *targets], lambda *_: None, 120, None)
         return code == 0 and any(line.strip() == _NO_WORK for line in said)
+
+    def _rewrite_build_file(self, out: str, log) -> bool:
+        """When the build failed for want of build.ninja (gone, or cut short by an interrupted rewrite), write it
+        again with the project's own configure step, the first of its setup commands. Whether that worked."""
+        if not _NO_BUILD_FILE.search(out) or self.kind() not in ("manifest", "configure", "dtk"):
+            return False
+        if self.kind() == "dtk" and len(self.versions()) > 1:  # which version it was set up for isn't known here
+            return False
+        first = (self.setup_commands() or [[]])[0]
+        if not first or Path(first[0]).name.startswith("ninja"):
+            return False
+        log("build.ninja is missing or incomplete: writing it again")
+        return self.run(first, log=log, timeout=1800)[0]
 
     def failed_units(self, targets: list[str]) -> set[str]:
         """Units whose source object the build couldn't make: it failed, or a step it's made from did. A unit built
@@ -983,12 +1002,19 @@ class ForkProject:
         collects the ones that didn't."""
         cfg = self.objdiff_config()
         make = cfg.get("custom_make") or "make"
-        if (make == "ninja" or Path(make).name.startswith("ninja")) and self._all_source():
-            # -k 0: keep going past work in progress that doesn't compile yet
-            return self.run([_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"], log=log,
-                            failed=failed)
-        keep_going = ["-k"] if Path(make).name in ("make", "gmake", "mingw32-make") else []
-        return self.run([_tool(make) or make, *cfg.get("custom_args", []), *keep_going], log=log, failed=failed)
+
+        def command() -> list[str]:  # (asked again after build.ninja is written again: it says which)
+            if (make == "ninja" or Path(make).name.startswith("ninja")) and self._all_source():
+                # -k 0: keep going past work in progress that doesn't compile yet
+                return [_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"]
+            keep_going = ["-k"] if Path(make).name in ("make", "gmake", "mingw32-make") else []
+            return [_tool(make) or make, *cfg.get("custom_args", []), *keep_going]
+        ok, out = self.run(command(), log=log, failed=failed)
+        if not ok and self._rewrite_build_file(out, log):
+            if failed is not None:
+                failed.clear()
+            ok, out = self.run(command(), log=log, failed=failed)
+        return ok, out
 
     def report(self) -> dict:
         return objdiff.report(self.root, self.root / STATE / "report.json")
