@@ -105,7 +105,10 @@ def register(app: App) -> None:
         return net.compiler_answer(slug, check_now=request.method == "POST")
 
     def p_open(slug, request, data):
-        why = hostenv.open_folder(Path(net.project_row(slug)["root"]))
+        root = Path(net.project_row(slug)["root"])
+        if request.state.viewer == "browser":  # a file manager would open on the server's screen
+            return {"ok": False, "message": f"The project is on the computer decompdecomp runs on, in {root}"}
+        why = hostenv.open_folder(root)
         return {"ok": why is None, "message": why}
 
     def p_delete(slug, request, data):
