@@ -8,6 +8,7 @@ builds it and has an agent work through the guarded tools.
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from decompnet import toolchains
 from decompnet.app.engine import RomNetwork
 from decompnet.forks import csource
+from decompnet.forks.project import ForkProject
 from decompnet.network import NetworkError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -631,3 +633,58 @@ def test_a_match_that_is_lost_gets_its_score_back_so_the_queue_doesnt_say_it_is_
     # and the reopen is in the events, with what measured it and how much it scored
     events = [(r["kind"], r["detail"]) for r in store.all("SELECT kind, detail FROM events")]
     assert events == [("reopen", "F (unit diff before a compile: 52.70%)")]
+
+
+GENERATE = '''text = ("rule gen\\n  command = python3 gen.py\\n  generator = 1\\nbuild build.ninja: gen gen.py\\n"
+        "rule cp\\n  command = cp $in $out\\nbuild build/a.o: cp src/a.c\\ndefault build/a.o\\n")
+open("build.ninja", "w").write(text)
+'''
+
+
+def _ninja_project(root: Path) -> ForkProject:
+    """A project like decompdecomp's PC ones: its setup's first step writes build.ninja, ninja builds each unit."""
+    (root / "src").mkdir(parents=True)
+    (root / "orig").mkdir()
+    (root / "src" / "a.c").write_text("int a;\n")
+    (root / "orig" / "a.o").write_bytes(b"x")
+    (root / "gen.py").write_text(GENERATE)
+    (root / ".decomp.wtf.json").write_text(json.dumps({"setup": [["python", "gen.py"], ["ninja"]]}))
+    (root / "objdiff.json").write_text(json.dumps({"custom_make": "ninja", "units": [
+        {"name": "a", "target_path": "orig/a.o", "base_path": "build/a.o", "metadata": {"source_path": "src/a.c"}}]}))
+    return ForkProject(root)
+
+
+def test_a_lost_build_file_is_written_again(tmp_path):
+    """legobatman: Ctrl-C in the app's terminal reached ninja while it rewrote build.ninja, ninja deleted it, and
+    every compile after that failed with "loading 'build.ninja': No such file or directory"."""
+    fp = _ninja_project(tmp_path)
+    unit = fp.unit("a")
+    assert not (tmp_path / "build.ninja").exists()
+    ok, out = fp.build_unit(unit)
+    assert ok, out
+    assert (tmp_path / "build" / "a.o").read_text() == "int a;\n"
+    (tmp_path / "build.ninja").write_text("rule cp\n  command = cp $in")  # cut short by an interrupted rewrite
+    (tmp_path / "src" / "a.c").write_text("int b;\n")
+    ok, out = fp.build_unit(unit)
+    assert ok, out
+    assert (tmp_path / "build" / "a.o").read_text() == "int b;\n"
+    assert fp.build_all()[0]
+
+
+def test_builds_run_in_a_session_of_their_own(tmp_path):
+    """So Ctrl-C (SIGINT) or a hangup in the app's terminal, sent to its whole process group, doesn't reach them."""
+    import os
+
+    ok, out = _ninja_project(tmp_path).run([sys.executable, "-c", "import os; print(os.getsid(0))"])
+    assert ok and int(out.split()[-1]) != os.getsid(0)
+
+
+def test_coff_objects_data_isnt_called_different(tmp_path):
+    """legobatman (PC): pyelftools can't read COFF ("Magic number does not match"), and file_status said the data
+    differed. No verdict is no line."""
+    from types import SimpleNamespace
+
+    obj = tmp_path / "a.obj"
+    obj.write_bytes(b"\x4c\x01\x03\x00" + bytes(60))  # an i386 COFF header
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path / "ws")
+    assert net.forks._data_status(SimpleNamespace(target=obj, base=obj)) is None
