@@ -158,3 +158,8 @@ def test_the_project_is_set_up_for_its_visual_cpp(tmp_path):
     ninja = (root / "build.ninja").read_text(encoding="utf-8")
     assert f'"{msvc / "8.0-sp1" / "bin" / "cl.exe"}"' in ninja and f'"/I{msvc / "8.0-sp1" / "include"}"' in ninja
     assert "/EHsc" in ninja
+    # build.ninja is written again when a file is added or removed, not after every edit (half a minute on a big
+    # game); and whole, from a temporary file
+    regen = next(line for line in ninja.replace("$\n", "").splitlines() if line.startswith("build build.ninja:"))
+    assert " src" in regen and " include" in regen and ".cpp" not in regen
+    assert not (root / "build.ninja.tmp").exists()

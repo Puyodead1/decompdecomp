@@ -10,6 +10,7 @@ Made by decompdecomp.
 """
 
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -50,6 +51,21 @@ def files(top: str, suffixes: tuple[str, ...]) -> list[Path]:
     return sorted(p for p in Path(top).rglob("*") if p.suffix.lower() in suffixes)
 
 
+def folders(*tops: str) -> list[str]:
+    """These folders and every folder in them. build.ninja depends on them, not on every file: a folder changes when
+    a file is added to it or removed, which is when build.ninja must change, and not when one is edited (on a big
+    game, writing build.ninja again took half a minute, before every compile)."""
+    return sorted(str(p) for t in tops if Path(t).is_dir() for p in [Path(t), *Path(t).rglob("*")] if p.is_dir())
+
+
+def write(path: str, text: str) -> None:
+    """Whole or not at all: ninja deletes a build.ninja it was interrupted writing, and a half-written one can't be
+    read."""
+    tmp = Path(path + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def source_of(unit: str) -> str:
     """A unit's source file: C++ (.cpp), or C (.c) in projects made before decompdecomp wrote C++."""
     cpp = Path("src") / "auto" / f"{unit}.cpp"
@@ -59,26 +75,25 @@ def source_of(unit: str) -> str:
 def main() -> None:
     units = json.loads(CONFIG.read_text(encoding="utf-8"))["units"]
     headers = [str(p) for p in files("include", (".h", ".hpp"))]
-    with open("build.ninja", "w", encoding="utf-8") as f:
-        n = ninja_syntax.Writer(f)
-        n.rule("delink", f"{PY} tools/delink.py {CONFIG} {BUILD / 'target'}", restat=True)
-        # then the original's names on what it compiled to (C++ mangles them: tools/names.py)
-        n.rule("cl", f'{SH}{WRAP}"{CL}" {q(CL_FLAGS)} /Iinclude "/I{INCLUDE}" $cflags /Fo$out $in'
-               f' && {PY} tools/names.py {CONFIG} $out')
-        n.rule("configure", f"{PY} tools/configure.py {q(sys.argv[1:])}", generator=True)
+    f = io.StringIO()
+    n = ninja_syntax.Writer(f)
+    n.rule("delink", f"{PY} tools/delink.py {CONFIG} {BUILD / 'target'}", restat=True)
+    # then the original's names on what it compiled to (C++ mangles them: tools/names.py)
+    n.rule("cl", f'{SH}{WRAP}"{CL}" {q(CL_FLAGS)} /Iinclude "/I{INCLUDE}" $cflags /Fo$out $in'
+           f' && {PY} tools/names.py {CONFIG} $out')
+    n.rule("configure", f"{PY} tools/configure.py {q(sys.argv[1:])}", generator=True)
 
-        targets = [str(BUILD / "target" / f"{u}.obj") for u in units]
-        n.build(targets, "delink", [str(CONFIG), "tools/delink.py"])
-        objs = []
-        for src in files("src", (".c", ".cpp")):
-            obj = BUILD / src.with_suffix(".obj")
-            n.build(str(obj), "cl", str(src), implicit=[*headers, str(CONFIG), "tools/names.py"])
-            objs.append(str(obj))
-        n.build("all_source", "phony", objs)
-        n.build("prepare", "phony", [*targets, *objs])
-        n.build("build.ninja", "configure", ["tools/configure.py", str(CONFIG), *headers,
-                                             *[str(s) for s in files("src", (".c", ".cpp"))]])
-        n.default(["prepare"])
+    targets = [str(BUILD / "target" / f"{u}.obj") for u in units]
+    n.build(targets, "delink", [str(CONFIG), "tools/delink.py"])
+    objs = []
+    for src in files("src", (".c", ".cpp")):
+        obj = BUILD / src.with_suffix(".obj")
+        n.build(str(obj), "cl", str(src), implicit=[*headers, str(CONFIG), "tools/names.py"])
+        objs.append(str(obj))
+    n.build("all_source", "phony", objs)
+    n.build("prepare", "phony", [*targets, *objs])
+    n.build("build.ninja", "configure", ["tools/configure.py", str(CONFIG), *folders("src", "include")])
+    n.default(["prepare"])
 
     objdiff = {
         "$schema": "https://raw.githubusercontent.com/encounter/objdiff/main/config.schema.json",
@@ -88,7 +103,8 @@ def main() -> None:
                    "base_path": str(BUILD / "src" / "auto" / f"{u}.obj"),
                    "metadata": {"source_path": source_of(u), "complete": False}} for u in units],
     }
-    Path("objdiff.json").write_text(json.dumps(objdiff, indent=2), encoding="utf-8")
+    write("objdiff.json", json.dumps(objdiff, indent=2))
+    write("build.ninja", f.getvalue())  # last: the moment it changes, ninja takes this run as done
 
 
 if __name__ == "__main__":
