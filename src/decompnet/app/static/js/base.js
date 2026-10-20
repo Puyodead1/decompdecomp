@@ -255,7 +255,8 @@ async function copyText(text) {
 }
 
 async function loadState() {
-  S.st = await api("/api/state"); $("navVersion").textContent = `v${S.st.version}`;
+  S.st = await api("/api/state"); document.body.dataset.viewer = S.st.viewer || "window";
+  $("navVersion").textContent = `v${S.st.version}`;
   const i = S.st.install || {}, branch = !S.st.dev && i.channel === "branch";
   $("navBranch").hidden = !branch;
   if (branch) {
