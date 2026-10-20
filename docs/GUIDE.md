@@ -264,10 +264,20 @@ not supported in this version.
 
 **Its window and the tray.** decompdecomp opens in a window of its own. It uses GTK and WebKitGTK from your
 system, not a browser. The installer and the packages install them; without them, `decomp` tells you the command
-for your distribution. Only that window can open the app: its address does nothing in a browser. There is only one
+for your distribution. Only that window, and browsers you pair, can open the app: its address alone does nothing in a
+browser. There is only one
 window: `decomp` or the apps menu shows the open one. When you close it while helper agents work, the app asks: stop
 them and quit, or keep them working. They keep working without the window; the tray icon (or `decomp`) brings it
 back. **Quit** ends the app and every helper agent it started.
+
+**Browsers on other computers.** `decomp serve` runs the app with no window; the README's "Use it from another
+computer" says how to reach it through Tailscale. The app still listens on 127.0.0.1 only: `tailscale serve` gives it
+an HTTPS address in your tailnet and passes requests on. Those requests come from 127.0.0.1 like the window's, so the
+app lets a browser in only with a session it got by pairing. A pairing link (`decomp pair`, or Settings, Browsers)
+works once, for 10 minutes. The session is a cookie the page's scripts can't read, sent only over HTTPS, and the app
+keeps only a hash of it. Writes still need the page's own header, so another site can't act for you. Remove a
+browser in Settings to end its session. The agents' endpoint never answers the tailnet address. A paired browser can
+do everything the window can, so pair only your own.
 
 **Updates.** When a new version is available, the app asks you one time. One click installs it and restarts the app.
 Helper agents continue their work. To change this behavior, go to Settings.
