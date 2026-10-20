@@ -8,9 +8,11 @@ module's register(), which adds that part's routes to the MCP server's web app:
 - setup:    compilers and tools, helper agents and their sign-in, settings
 - life:     updates, the window, quitting
 - rooms:    decompiling together (collab.py)
+- browsers: pairing browsers on other computers (browsers.py) and the page's web app manifest
 
-Routes check the request with app.guard (the window's secret, the host, and a header for writes) before anything
-else, run blocking work with app.call (a thread), and answer errors with app.fail.
+Routes check the request with app.guard (the window's secret or a paired browser's session, the host, and a header
+for writes) before anything else; it leaves who asked in request.state.viewer ("window" or "browser"). They run
+blocking work with app.call (a thread), and answer errors with app.fail.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
-    from .. import agents, updates
+    from .. import agents, browsers, updates
     from ..engine import RomNetwork
     from ..support import Jobs, Settings
 
@@ -48,6 +50,9 @@ class App:
     updater: updates.Updater | None = None
     busy: Callable[[], bool] | None = None  # whether helpers or a job are working
     quit_app: Callable[[], None] | None = None  # quit: the window, every helper, the server
+    browsers: browsers.Browsers | None = None  # browsers paired with the app (browsers.py)
+    host_ok: Callable[..., bool] | None = None  # host_ok(request): the Host header names this computer
+    viewer: Callable[..., str | None] | None = None  # viewer(request): "window", "browser" or None
     # what one part of the app lends another (set by the module that defines it)
     autopilot: Callable[[str], None] | None = None  # state: start autopilot on a project
     with_project: Callable[..., Any] | None = None  # projects: a project route from fn(slug, request, data)
