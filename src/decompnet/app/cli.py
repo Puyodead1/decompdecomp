@@ -184,7 +184,8 @@ def run(args) -> int:
     # with a tray icon, helpers kept working without the window have a way back to it
     window.IN_TRAY = tray.start(window.open_app, quit_app)
     print(f"{edition.NAME} {__import__('decompnet').__version__}\nyour projects: {hostenv.shown_path(home)}"
-          + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C, or quit it in its window"), flush=True)
+          + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C, or quit it in its window" if window.wanted()
+             else "\nno window: pair a browser with `decomp pair`; stop with Ctrl-C or `decomp stop`"), flush=True)
     # (1.0.2 and older restart into a new version without saying: they had a browser tab, which can't follow)
     if not restarted or restarted.get("window", True):
         _open_when_ready(port)
@@ -294,6 +295,31 @@ def stop(args) -> int:
     return 1
 
 
+def serve(args) -> int:
+    """The app with no window and no tray icon: on a server, used from paired browsers (`decomp pair`)."""
+    os.environ["DECOMP_WINDOW"] = "0"
+    os.environ["DECOMP_TRAY"] = "0"
+    return run(args)
+
+
+def pair(args) -> int:
+    """A one-time link that pairs a browser on another computer with the running app (app/browsers.py)."""
+    running = _state(home_dir() / ".decomp" / "server.json")
+    if running is None:
+        print(f"{edition.NAME} is not running: start it first (`decomp serve` runs it without a window)", file=sys.stderr)
+        return 1
+    try:
+        res = _call(running, "/api/browsers", {"pair": True})
+    except (OSError, ValueError) as e:
+        print(f"{edition.NAME} didn't answer: {e}", file=sys.stderr)
+        return 1
+    print(f"Open this in the browser to pair (it works once, for {res['minutes']} minutes):\n\n  {res['link']}\n")
+    if not res["link"].startswith("https://"):
+        print(f"For a browser on another computer: with Tailscale on both, run `tailscale serve --bg {running['port']}`"
+              " here, then `decomp pair` again for a link at this computer's tailnet address.")
+    return 0
+
+
 def shortcut(args) -> int:
     from .launcher import install_launcher
 
@@ -310,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
     sub.add_parser("stop", help="quit the running app (and every helper it started)")
     sub.add_parser("shortcut", help="add decompdecomp to your apps menu")
+    sub.add_parser("serve", help="run without a window, for browsers on other computers (see `decomp pair`)")
+    sub.add_parser("pair", help="a one-time link that lets a browser on another computer in (through Tailscale)")
     up = sub.add_parser("update", help="install the newest decompdecomp (the running app restarts into it)")
     up.add_argument("--check", action="store_true", help="only say whether there is one")
     ii = sub.add_parser("install-info", help=argparse.SUPPRESS)  # the installers: where updates come from
@@ -319,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     ii.add_argument("--repo", default="n-delic/decompdecomp")
     args = ap.parse_args(argv)
     __import__("decompnet").utf8_output()
-    return {"setup": setup, "stop": stop, "shortcut": shortcut, "update": update_cmd,
+    return {"setup": setup, "stop": stop, "shortcut": shortcut, "update": update_cmd, "serve": serve, "pair": pair,
             "install-info": install_info}.get(args.cmd, run)(args)
 
 
