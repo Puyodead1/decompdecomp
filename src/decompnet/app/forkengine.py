@@ -24,6 +24,8 @@ from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from elftools.common.exceptions import ELFError
+
 from .. import arch, consoles, similarity, toolchains
 from ..forks import csource, datadiff, drafts, dtksplits, ghidra, objdiff
 from ..forks.objdiff import ObjdiffError
@@ -1070,18 +1072,23 @@ class ForkEngine:
             return ""
         data = self._data_status(unit)
         self.link_soon(slug, agent)  # the checksum decides; the comparison below is what to fix if it fails
+        if data is None:  # (objects whose data can't be compared here)
+            return f"\n🔗 Every function in {unit.source} matches: decompdecomp is linking the file into the game now."
         if not data:
             return (f"\n🔗 Every function and all data in {unit.source} match: decompdecomp is linking the file into the "
                     "game now (it stays linked if the game still builds byte for byte).")
         return (f"\n🔗 Every function in {unit.source} matches. To link the file into the game (the goal: the game "
                 f"built from this C), its data must match too. Fix it with edit_file, then file_status to check:\n{data}")
 
-    def _data_status(self, unit, max_rows: int = 40) -> str:
-        """The file's data sections that differ from the original's ("" when all match)."""
+    def _data_status(self, unit, max_rows: int = 40) -> str | None:
+        """The file's data sections that differ from the original's ("" when all match, None when there's no
+        verdict: COFF objects, PC and Xbox, which pyelftools can't read)."""
         if unit.target is None or not unit.target.exists():
             return ""
         try:
             return datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
+        except ELFError:  # "Magic number does not match" was shown as "data: differs" (legobatman, PC)
+            return None
         except Exception as e:  # an object pyelftools can't read: say so rather than fail the tool
             return f"(couldn't compare the data: {e})"
 
@@ -1101,7 +1108,7 @@ class ForkEngine:
         lines = [f"## {rel}"]
         lines.append("🔗 LINKED: the game is built from this file's C and checked byte for byte." if state == "Matching"
                      else f"not linked yet ({state or 'not in configure.py'})" if fp.linkable()
-                     else "this project has no link step decompdecomp knows")
+                     else "this project isn't linked file by file (each function is compared on its own)")
         for u in units:
             rows = self.net.store.all("SELECT name, status, n_insns FROM functions WHERE project_id=? AND unit=? "
                                       "ORDER BY vram, name", proj["id"], u.name)
@@ -1110,8 +1117,7 @@ class ForkEngine:
                          f"{len(rows) - len(left)}/{len(rows)} functions match")
                          + (": still to do " + ", ".join(f"{r['name']} ({r['n_insns']} insns)" for r in left[:12])
                             if left else ""))
-            if state != "Matching":
-                data = self._data_status(u)
+            if state != "Matching" and (data := self._data_status(u)) is not None:
                 lines.append(f"data: {'matches' if not data else 'differs'}" + (f"\n{data}" if data else ""))
         try:
             mods = self._modules(fp, cfg)
