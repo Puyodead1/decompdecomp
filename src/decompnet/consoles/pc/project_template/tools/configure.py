@@ -14,6 +14,7 @@ it against your copy. Made by decompdecomp.
 """
 
 import argparse
+import io
 import json
 import os
 import shlex
@@ -99,6 +100,21 @@ def files(top: str, suffixes: tuple[str, ...]) -> list[Path]:
     return sorted(p for p in Path(top).rglob("*") if p.suffix.lower() in suffixes)
 
 
+def folders(*tops: str) -> list[str]:
+    """These folders and every folder in them. build.ninja depends on them, not on every file: a folder changes when
+    a file is added to it or removed, which is when build.ninja must change, and not when one is edited (on a big
+    game, writing build.ninja again took half a minute, before every compile)."""
+    return sorted(p.as_posix() for t in tops if Path(t).is_dir() for p in [Path(t), *Path(t).rglob("*")] if p.is_dir())
+
+
+def write(path: str, text: str) -> None:
+    """Whole or not at all: ninja deletes a build.ninja it was interrupted writing, and a half-written one can't be
+    read."""
+    tmp = Path(path + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def source_of(unit: str) -> str:
     """A unit's source file: C++ (.cpp), or C (.c) in projects made before decompdecomp wrote C++."""
     cpp = Path("src") / "auto" / f"{unit}.cpp"
@@ -109,47 +125,47 @@ def main() -> None:
     info = json.loads(CONFIG.read_text(encoding="utf-8"))
     units = info["units"]
     headers = [p.as_posix() for p in files("include", (".h", ".hpp"))]
-    with open("build.ninja", "w", encoding="utf-8") as f:
-        n = ninja_syntax.Writer(f)
-        n.rule("delink", f"{PY} tools/delink.py {CONFIG.as_posix()} {(BUILD / 'target').as_posix()}", restat=True)
-        compiler = [PYTHON, "tools/compile.py", "--config", CONFIG.as_posix()]
-        # The runner invokes the compiler and names.py separately: cmd /c misparsed quoted compiler paths.
-        # $runner: what runs the file's compiler (wibo, wine or nothing: runner())
-        n.rule("cl", q(compiler).replace("$", "$$") + " $runner --compiler $cl $includes --output $out "
-               "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
-        n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
+    f = io.StringIO()
+    n = ninja_syntax.Writer(f)
+    n.rule("delink", f"{PY} tools/delink.py {CONFIG.as_posix()} {(BUILD / 'target').as_posix()}", restat=True)
+    compiler = [PYTHON, "tools/compile.py", "--config", CONFIG.as_posix()]
+    # The runner invokes the compiler and names.py separately: cmd /c misparsed quoted compiler paths.
+    # $runner: what runs the file's compiler (wibo, wine or nothing: runner())
+    n.rule("cl", q(compiler).replace("$", "$$") + " $runner --compiler $cl $includes --output $out "
+           "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
+    n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
 
-        targets = [(BUILD / "target" / f"{u}.obj").as_posix() for u in units]
-        n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"])
-        objs = []
-        versions, more = file_compilers(), file_flags()
-        for src in files("src", (".c", ".cpp")):
-            obj = (BUILD / src.with_suffix(".obj")).as_posix()
-            src_posix = src.as_posix()
-            version = versions.get(src_posix, MSVC_VERSION)
-            cl, includes = msvc(version)
-            n.build(obj, "cl", src_posix, implicit=[*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"],
-                    variables={"cl": q([cl]).replace("$", "$$"),
-                               "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
-                               "runner": q(runner(version)).replace("$", "$$"),
-                               "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
-            objs.append(obj)
-        n.build("all_source", "phony", objs)
-        n.build("prepare", "phony", [*targets, *objs])
-        # the whole program, from what src/ compiles to and the delinked functions (not the default: a build for
-        # objdiff needs only the objects)
-        # (each program where rebuild.py writes it: the game's DLLs too, functions.json's "modules")
-        exes = [Path(info["exe"]).as_posix(), *(Path(m["exe"]).as_posix() for m in info.get("modules", []))]
-        programs = [(BUILD / (Path(exe).relative_to("orig") if Path(exe).parts[0] == "orig" else Path(exe).name)).as_posix()
-                    for exe in exes]
-        n.rule("rebuild", f"{PY} tools/rebuild.py {CONFIG.as_posix()} {BUILD.as_posix()}")
-        n.build(programs, "rebuild", [*targets, *objs],
-                implicit=[CONFIG.as_posix(), *exes, "tools/rebuild.py", "tools/delink.py"])
-        n.build("rebuild", "phony", programs)
-        n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *headers,
-                                             *[s.as_posix() for s in files("src", (".c", ".cpp"))],
-                                             *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()]])
-        n.default(["prepare"])
+    targets = [(BUILD / "target" / f"{u}.obj").as_posix() for u in units]
+    n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"])
+    objs = []
+    versions, more = file_compilers(), file_flags()
+    for src in files("src", (".c", ".cpp")):
+        obj = (BUILD / src.with_suffix(".obj")).as_posix()
+        src_posix = src.as_posix()
+        version = versions.get(src_posix, MSVC_VERSION)
+        cl, includes = msvc(version)
+        n.build(obj, "cl", src_posix, implicit=[*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"],
+                variables={"cl": q([cl]).replace("$", "$$"),
+                           "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
+                           "runner": q(runner(version)).replace("$", "$$"),
+                           "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
+        objs.append(obj)
+    n.build("all_source", "phony", objs)
+    n.build("prepare", "phony", [*targets, *objs])
+    # the whole program, from what src/ compiles to and the delinked functions (not the default: a build for
+    # objdiff needs only the objects)
+    # (each program where rebuild.py writes it: the game's DLLs too, functions.json's "modules")
+    exes = [Path(info["exe"]).as_posix(), *(Path(m["exe"]).as_posix() for m in info.get("modules", []))]
+    programs = [(BUILD / (Path(exe).relative_to("orig") if Path(exe).parts[0] == "orig" else Path(exe).name)).as_posix()
+                for exe in exes]
+    n.rule("rebuild", f"{PY} tools/rebuild.py {CONFIG.as_posix()} {BUILD.as_posix()}")
+    n.build(programs, "rebuild", [*targets, *objs],
+            implicit=[CONFIG.as_posix(), *exes, "tools/rebuild.py", "tools/delink.py"])
+    n.build("rebuild", "phony", programs)
+    # the source folders, not each file: on a game of 9,608 files every edit rewrote build.ninja (20-37 s)
+    n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *folders("src", "include"),
+                                         *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()]])
+    n.default(["prepare"])
 
     objdiff = {
         "$schema": "https://raw.githubusercontent.com/encounter/objdiff/main/config.schema.json",
@@ -159,7 +175,8 @@ def main() -> None:
                    "base_path": (BUILD / "src" / "auto" / f"{u}.obj").as_posix(),
                    "metadata": {"source_path": source_of(u), "complete": False}} for u in units],
     }
-    Path("objdiff.json").write_text(json.dumps(objdiff, indent=2), encoding="utf-8")
+    write("objdiff.json", json.dumps(objdiff, indent=2))
+    write("build.ninja", f.getvalue())  # last: the moment it changes, ninja takes this run as done
 
 
 if __name__ == "__main__":
