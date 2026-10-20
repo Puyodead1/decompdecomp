@@ -99,6 +99,22 @@ Type `decomp`, or open decompdecomp from your apps menu. It opens in its own win
 
 No whole game has been decompiled yet. The export uses matched C and assembly for the rest, so it still builds the game.
 
+## Use it from another computer
+
+decompdecomp can run on a server (or any computer without a screen) and be used from a browser on another computer,
+through [Tailscale](https://tailscale.com). It stays reachable only from your own tailnet.
+
+1. On the server: `decomp serve` (decompdecomp with no window), then `tailscale serve --bg 6464`. Tailscale gives it
+   an HTTPS address, `https://<computer>.<tailnet>.ts.net`, that only your tailnet can open.
+2. Still on the server: `decomp pair`. It prints a link that works once, for 10 minutes. Open it in the browser on
+   your other computer: that browser stays paired until you remove it in **Settings**, **Browsers** (where you can
+   also make pairing links).
+3. In Edge or Chrome, **Install decompdecomp** (in the address bar or the browser's menu) gives it a window, a
+   taskbar icon and a Start menu entry of its own.
+
+Everything works from the browser, except what opens on the server's own screen: there you type paths instead of
+picking them, and **Open folder** tells you where the project is.
+
 ## Platforms
 
 | Console | Status | Start from |
