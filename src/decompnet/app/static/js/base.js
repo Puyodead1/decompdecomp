@@ -204,7 +204,7 @@ async function copyText(text) {
   } catch { return false; }
 }
 
-async function loadState() { S.st = await api("/api/state"); $("navVersion").textContent = `v${S.st.version}`; markPlatforms(); agentsFound(); reportLink(); renderBridgesNotice(); return S.st; }
+async function loadState() { S.st = await api("/api/state"); document.body.dataset.viewer = S.st.viewer || "window"; $("navVersion").textContent = `v${S.st.version}`; markPlatforms(); agentsFound(); reportLink(); renderBridgesNotice(); return S.st; }
 /* The app looks for installed agents in the background (it runs each one's CLI: seconds): ask again until it's done,
    then show their models where agents are picked. */
 const DETECT_POLL_MS = 1500;
