@@ -115,6 +115,21 @@ def files(top: str, suffixes: tuple[str, ...]) -> list[Path]:
     return sorted(p for p in Path(top).rglob("*") if p.suffix.lower() in suffixes)
 
 
+def folders(*tops: str) -> list[str]:
+    """These folders and every folder in them. build.ninja depends on them, not on every file: a folder changes when
+    a file is added to it or removed, which is when build.ninja must change, and not when one is edited (on a big
+    game, writing build.ninja again took half a minute, before every compile)."""
+    return sorted(p.as_posix() for t in tops if Path(t).is_dir() for p in [Path(t), *Path(t).rglob("*")] if p.is_dir())
+
+
+def write(path: str, text: str) -> None:
+    """Whole or not at all: ninja deletes a build.ninja it was interrupted writing, and a half-written one can't be
+    read."""
+    tmp = Path(path + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def source_of(unit: str) -> str:
     """A unit's source file: C++ (.cpp), or C (.c) in projects made before decompdecomp wrote C++."""
     cpp = Path("src") / "auto" / f"{unit}.cpp"
@@ -179,12 +194,11 @@ def main() -> None:
         n.build(programs, "rebuild", [*targets, *objs],
                 implicit=[CONFIG.as_posix(), *exes, "tools/rebuild.py", "tools/delink.py"])
         n.build("rebuild", "phony", programs)
-        n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *headers,
-                                             *[s.as_posix() for s in files("src", (".c", ".cpp"))],
+        # the source folders, not each file: on a game of 9,608 files every edit rewrote build.ninja (20-37 s)
+        n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *folders("src", "include"),
                                              *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()],
                                              *harness_files])
         n.default(["prepare"])
-    os.replace("build.ninja.tmp", "build.ninja")
 
     objdiff = {
         "$schema": "https://raw.githubusercontent.com/encounter/objdiff/main/config.schema.json",
@@ -194,7 +208,8 @@ def main() -> None:
                    "base_path": (BUILD / "src" / "auto" / f"{u}.obj").as_posix(),
                    "metadata": {"source_path": source_of(u), "complete": False}} for u in units],
     }
-    Path("objdiff.json").write_text(json.dumps(objdiff, indent=2), encoding="utf-8")
+    write("objdiff.json", json.dumps(objdiff, indent=2))
+    os.replace("build.ninja.tmp", "build.ninja")  # last: the moment it changes, ninja takes this run as done
 
 
 if __name__ == "__main__":

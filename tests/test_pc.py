@@ -2533,3 +2533,23 @@ def test_a_game_without_a_rich_header_names_old_visual_cpp_by_its_linker_and_tak
     path.write_bytes(game)
     why = scratch_pe.game_info(path)["compiler_why"]
     assert "your newest copy of it" in why and "by its linker's version" in why
+
+
+def test_build_ninja_is_written_again_only_when_files_come_or_go(tmp_path):
+    """On a PC game of 9,608 source files build.ninja depended on each, so every edit wrote it again first (20-37 s
+    before each compile); and ninja, interrupted while writing it, deleted it. It depends on the source folders now,
+    and is written whole, from a temporary file."""
+    root = tmp_path / "proj"
+    shutil.copytree(scratch_pe.TEMPLATE / "tools", root / "tools")
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"exe": "orig/v.exe", "units": {"text_00401000": []}}))
+    (root / "src" / "auto").mkdir(parents=True)
+    (root / "src" / "auto" / "text_00401000.cpp").write_text("")
+    (root / "include").mkdir()
+    (tmp_path / "msvc" / "6.0" / "Bin").mkdir(parents=True)
+    (tmp_path / "msvc" / "6.0" / "Bin" / "CL.EXE").write_text("")
+    subprocess.run([sys.executable, "tools/configure.py", "v", "--msvc", str(tmp_path / "msvc")], cwd=root, check=True)
+    ninja = (root / "build.ninja").read_text(encoding="utf-8")
+    regen = next(line for line in ninja.replace("$\n", "").splitlines() if line.startswith("build build.ninja:"))
+    assert " src/auto" in regen and " include" in regen and ".cpp" not in regen
+    assert not (root / "build.ninja.tmp").exists()
