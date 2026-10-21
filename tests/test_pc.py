@@ -368,3 +368,64 @@ def test_the_project_is_set_up_for_its_visual_cpp(tmp_path):
     regen = next(line for line in ninja.replace("$\n", "").splitlines() if line.startswith("build build.ninja:"))
     assert " src" in regen and " include" in regen and ".cpp" not in regen
     assert not (root / "build.ninja.tmp").exists()
+
+
+GHIDRA_PROJECT = {"names": {0x492AB0: "_func_00492AB0", 0x4F6C80: "_func_004F6C80@4", 0x401000: "_func_00401000",
+                            0x401020: "_func_00401020@8", 0x401040: "@func_00401040@8"},
+                  "imports": {"Sleep": "__imp__Sleep@4"}}
+
+
+def test_ghidras_c_becomes_a_draft_visual_cpp_compiles():
+    """Autopilot on PC (m2c reads no x86): Ghidra's C with the project's names, conventions and declarations."""
+    from decompnet.consoles.pc import ghidra_c
+
+    row = {"entry": 0x401000, "refs": {
+        "Sleep": {"at": 0, "kind": "import", "ret": "void", "args": ["DWORD"]},
+        "FUN_00401020": {"at": 0x401020, "kind": "func", "ret": "int", "args": ["char *", "undefined4"]},
+        "DAT_00402034": {"at": 0x402034, "kind": "data", "type": "undefined4", "size": 4},
+        "_DAT_00402038": {"at": 0x402038, "kind": "data", "type": "Thing *", "size": 4}},
+        "c": "\nint FUN_00401000(char *param_1)\n\n{\n  int iVar1;\n  Sleep(5);\n"
+             "  iVar1 = FUN_00401020(param_1,DAT_00402034);\n  return iVar1 + (int)_DAT_00402038;\n}\n"}
+    code, outer = ghidra_c.draft(row, GHIDRA_PROJECT)
+    assert outer == 'extern "C" __declspec(dllimport) void __stdcall Sleep(DWORD);'
+    assert code.startswith("int __cdecl func_00401000(char *param_1)\n{\n")
+    assert "  int __stdcall func_00401020(char *, undefined4);\n" in code
+    assert "  extern undefined4 D_00402034;\n" in code and "  extern void * D_00402038;\n" in code
+    assert "func_00401020(param_1,D_00402034)" in code and "FUN_" not in code and "DAT_" not in code
+
+
+def test_methods_and_unused_arguments_keep_the_originals_convention():
+    """`mov eax, ecx; ret` is a method returning this (Ghidra: a __fastcall of one argument, the project: _f); a
+    __stdcall pops its arguments even when Ghidra saw none used (`ret 4`)."""
+    from decompnet.consoles.pc import ghidra_c
+
+    method = {"entry": 0x492AB0, "refs": {},
+              "c": "\nundefined4 __fastcall FUN_00492ab0(undefined4 param_1)\n\n{\n  return param_1;\n}\n"}
+    code, outer = ghidra_c.draft(method, GHIDRA_PROJECT)
+    assert outer == "struct M_00492AB0 { undefined4 func_00492AB0(void); };"
+    assert code.startswith("undefined4 M_00492AB0::func_00492AB0(void)\n{\n  undefined4 param_1 = (undefined4)this;")
+    stdcall = {"entry": 0x4F6C80, "refs": {}, "c": "\nvoid FUN_004f6c80(void)\n\n{\n  return;\n}\n"}
+    assert ghidra_c.draft(stdcall, GHIDRA_PROJECT)[0].startswith("void __stdcall func_004F6C80(undefined4 unused_0)")
+
+
+def test_what_cant_compile_as_it_is_gets_no_draft():
+    from decompnet.consoles.pc import ghidra_c
+
+    def c(body, refs=None, entry=0x401000):
+        return ghidra_c.draft({"entry": entry, "refs": refs or {}, "c": f"\nint FUN_00401000(void)\n\n{{\n{body}\n}}\n"},
+                              GHIDRA_PROJECT)
+    assert c("  return in_EAX;") is None  # a register Ghidra couldn't place
+    assert c("  return FUN_00409990();") is None  # a call no token said where to
+    assert c("  return FUN_00401040(1);", {"FUN_00401040": {"at": 0x401040, "kind": "func", "ret": "int",
+                                                            "args": ["int"]}}) is None  # arguments in registers
+    assert c("  return 0;", entry=0x777777) is None  # not one of the project's functions
+    assert ghidra_c.draft({"entry": 0x401000, "thunk": True, "refs": {}, "c": "\nvoid f(void)\n{\n}\n"}, GHIDRA_PROJECT) is None
+    assert c("  return 0;") is not None
+
+
+def test_ghidras_types_go_into_common_h_once():
+    from decompnet.consoles.pc import ghidra_c, scratch
+
+    once = ghidra_c.add_types(scratch.TYPES_H)
+    assert "typedef unsigned int undefined4;" in once and once.rstrip().endswith("#endif")
+    assert ghidra_c.add_types(once) is None
