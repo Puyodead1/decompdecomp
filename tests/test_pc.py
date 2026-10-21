@@ -429,3 +429,50 @@ def test_ghidras_unknown_purge_is_no_byte_count():
     assert ghidra_c.draft({"entry": 0x401000, "refs": {}, "c": "\nvoid FUN_00401000(void)\n\n{\n  return;\n}\n"},
                           project) is None
     assert time.monotonic() - t < 1
+
+
+def test_functions_ending_in_zero_bytes_arent_cut_short(tmp_path, monkeypatch):
+    """Code Ghidra didn't make a function of ended where its bytes stopped being padding, zeros included: a PC game
+    had 217 functions cut in the middle of their last instruction (a jmp e9 2b 21 00 00 as 3 bytes, a ret 8 as 2),
+    which objdiff could never match. New projects end them at the last whole instruction; older ones are fixed."""
+    from types import SimpleNamespace
+
+    import capstone
+
+    code = {0x401000: bytes.fromhex("e92b210000") + b"\xcc" * 11,  # jmp 0x403130, padding
+            0x401010: bytes.fromhex("c20800") + b"\xcc" * 13}  # ret 8, padding
+    blob = b"".join(code[a] for a in sorted(code))
+
+    class FakePE:
+        imports = {}
+
+        def read(self, at, n):
+            return blob[at - 0x401000:at - 0x401000 + n]
+
+        def section_at(self, at):
+            return SimpleNamespace(va=0x401000, size=len(blob), code=True)
+
+        def contains(self, at):
+            return False
+    pe = FakePE()
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    assert scratch_pe._whole(md, pe, 0x401000, 0x401003, 0x401010) == 0x401005
+    assert scratch_pe._whole(md, pe, 0x401010, 0x401012, 0x401020) == 0x401013
+    assert scratch_pe._whole(md, pe, 0x401000, 0x401005, 0x401010) == 0x401005  # whole already: as it was
+
+    root = tmp_path / "game"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "orig").mkdir()
+    (root / "orig" / "v.exe").write_bytes(b"MZ")
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"exe": "orig/v.exe", "units": {
+        "text_00401000": [{"name": "_func_00401000", "addr": 0x401000, "size": 3, "relocs": []},
+                          {"name": "_func_00401010@8", "addr": 0x401010, "size": 2, "relocs": []}],
+        "text_00403130": [{"name": "_func_00403130", "addr": 0x403130, "size": 1, "relocs": []}]}}))
+    monkeypatch.setattr(scratch_pe, "read_pe", lambda data: pe)
+    assert scratch_pe.fix_short_ends(root, "v") == ["_func_00401000", "_func_00401010@8"]
+    fns = {f["name"]: f for u in json.loads((root / "config" / "v" / "functions.json").read_text())["units"].values()
+           for f in u}
+    assert fns["_func_00401000"]["size"] == 5 and fns["_func_00401000"]["relocs"] == [[1, 20, "_func_00403130", 0]]
+    assert fns["_func_00401010@8"]["size"] == 3
+    assert scratch_pe.fix_short_ends(root, "v") == []  # fixed already: nothing to change
