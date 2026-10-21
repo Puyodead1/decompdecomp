@@ -251,9 +251,15 @@ class Function:
     relocs: list[tuple[int, int, str | None, int]] = field(default_factory=list)  # (offset, type, symbol, addend)
 
 
+MAX_PURGE = 1024  # bytes of arguments a function pops (ret N): more is Ghidra's "don't know" (0x7FFFFFFF)
+
+
 def decorate(name: str, convention: str, purge: int, params: int) -> str:
     """The symbol MSVC makes for a C function: _f (__cdecl), _f@8 (__stdcall), @f@8 (__fastcall). __thiscall
-    functions (C++ methods, `this` in ecx) are written in C as __fastcall with an unused second argument (edx)."""
+    functions (C++ methods, `this` in ecx) are written in C as __fastcall with an unused second argument (edx).
+    A purge Ghidra couldn't work out (0x7FFFFFFF: a PC game had 91 such names) counts as none."""
+    if not 0 <= purge <= MAX_PURGE:
+        purge = 0
     if convention == "__thiscall":
         return f"@{name}@{purge + 8}"
     if convention == "__fastcall":

@@ -390,3 +390,19 @@ def test_an_agents_draft_never_waits_for_ghidra(monkeypatch, tmp_path):
         threading.Event().wait(0.05)
     assert len(runs) == 1 and runs[0] == [0x401000]
     assert ghidra_c.program_c(fp, "_func_00401000").startswith("void __cdecl func_00401000(void)")
+
+
+def test_ghidras_unknown_purge_is_no_byte_count():
+    """Ghidra says 0x7FFFFFFF for a purge it couldn't work out. A PC game had 91 functions named _f@2147483647, and
+    their drafts made a list of 500 million unused parameters: the app ran an 8 GB server out of memory."""
+    import time
+
+    from decompnet.consoles.pc import ghidra_c
+
+    assert scratch_pe.decorate("func_00401000", "__stdcall", 0x7FFFFFFF, 0) == "_func_00401000"
+    assert scratch_pe.decorate("func_00401000", "__fastcall", 0x7FFFFFFF, 2) == "@func_00401000@8"
+    project = {"names": {0x401000: "_func_00401000@2147483647"}, "imports": {}}
+    t = time.monotonic()
+    assert ghidra_c.draft({"entry": 0x401000, "refs": {}, "c": "\nvoid FUN_00401000(void)\n\n{\n  return;\n}\n"},
+                          project) is None
+    assert time.monotonic() - t < 1
