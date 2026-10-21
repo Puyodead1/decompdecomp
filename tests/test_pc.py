@@ -361,7 +361,9 @@ def test_the_project_is_set_up_for_its_visual_cpp(tmp_path):
     (msvc / "8.0-sp1" / "bin" / "cl.exe").write_bytes(b"MZ")
     subprocess.run([sys.executable, "tools/configure.py", "game", "--msvc", str(msvc)], cwd=root, check=True)
     ninja = (root / "build.ninja").read_text(encoding="utf-8")
-    assert f'"{msvc / "8.0-sp1" / "bin" / "cl.exe"}"' in ninja and f'"/I{msvc / "8.0-sp1" / "include"}"' in ninja
+    unwrapped = re.sub(r" ?\$\n *", " ", ninja)  # (ninja_syntax wraps long lines)
+    assert f"--compiler {msvc / '8.0-sp1' / 'bin' / 'cl.exe'}" in unwrapped
+    assert f"--include {msvc / '8.0-sp1' / 'include'}" in unwrapped
     assert "/EHsc" in ninja
     # build.ninja is written again when a file is added or removed, not after every edit (half a minute on a big
     # game); and whole, from a temporary file
@@ -542,6 +544,23 @@ def test_an_agents_draft_never_waits_for_ghidra(monkeypatch, tmp_path):
     assert len(runs) == 1 and runs[0] == [0x401000]
     assert ghidra_c.program_c(fp, "_func_00401000").startswith("void __cdecl func_00401000(void)")
 
+
+
+def test_a_ghidra_that_doesnt_run_leaves_no_drafts_and_says_why(monkeypatch, tmp_path):
+    """Ghidra that didn't get to run raises (forks/ghidra.py, "Ghidra didn't run: ..."): the background run that
+    makes the drafts says so in the log rather than dying with a traceback, and the next ask runs it again."""
+    import threading
+
+    from decompnet.consoles.pc import ghidra_c
+
+    def program_drafts(exe, addresses, out, timeout=0):
+        raise ForkError("Ghidra didn't run: no JDK")
+    monkeypatch.setattr(ghidra, "program_drafts", program_drafts)
+    said, done = [], threading.Event()
+    ghidra_c._RUNNING[tmp_path] = done
+    ghidra_c._make(tmp_path, tmp_path / "g.exe", [0x401000], tmp_path / "drafts.jsonl", done, said.append)
+    assert done.is_set() and tmp_path not in ghidra_c._RUNNING
+    assert said[-1] == "No machine drafts: Ghidra didn't run: no JDK"
 
 def test_ghidras_unknown_purge_is_no_byte_count():
     """Ghidra says 0x7FFFFFFF for a purge it couldn't work out. A PC game had 91 functions named _f@2147483647, and
