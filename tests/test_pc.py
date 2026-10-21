@@ -504,3 +504,46 @@ def test_code_no_compiler_makes_is_set_aside():
     assert why("55 57 33 ff 83 cd ff 8b c5 5f 5d c3") is None  # or ebp,-1: Visual C++'s ebp = -1
     assert why("6a 0c 68 98 15 93 00 e8 e2 88 00 00 8b 45 08 c3") is None  # __SEH_prolog4 sets ebp up for it
     assert why("e9 2b 21 00 00") is None and why("c2 08 00") is None
+
+
+def test_two_functions_ghidra_took_for_one_are_split(tmp_path, monkeypatch):
+    """`xor eax,eax; ret`, int3 padding to a 16-byte boundary, another `xor eax,eax; ret`: Ghidra made one 19-byte
+    function of them, which no C matches. A PC game had 1,228 such, holding 4,433 functions; none ever matched."""
+    from types import SimpleNamespace
+
+    import capstone
+
+    blob = bytes.fromhex("33c0c3") + b"\xcc" * 13 + bytes.fromhex("33c0c3") + b"\xcc" * 13 \
+        + bytes.fromhex("ff2485") + b"\x00" * 4 + b"\xcc" * 9 + bytes.fromhex("33c0c3")  # a switch, then padding
+
+    class FakePE:
+        imports = {}
+
+        def read(self, at, n):
+            return blob[at - 0x401000:at - 0x401000 + n]
+
+        def offset(self, at):
+            return at - 0x401000
+
+        def section_at(self, at):
+            return SimpleNamespace(va=0x401000, size=len(blob), code=True)
+
+        def contains(self, at):
+            return False
+    pe = FakePE()
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    assert scratch_pe._split_point(md, pe, 0x401000, 0x401013) == 0x401003
+    assert scratch_pe._split_point(md, pe, 0x401020, 0x401033) is None  # a switch: its table may follow padding
+    root = tmp_path / "game"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "orig").mkdir()
+    (root / "orig" / "v.exe").write_bytes(b"MZ")
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"exe": "orig/v.exe", "units": {
+        "text_00401000": [{"name": "_func_00401000", "addr": 0x401000, "size": 19, "relocs": []}]}}))
+    monkeypatch.setattr(scratch_pe, "read_pe", lambda data: pe)
+    assert scratch_pe.split_merged(root, "v") == ["_func_00401010"]
+    unit = json.loads((root / "config" / "v" / "functions.json").read_text())["units"]["text_00401000"]
+    assert [(f["name"], f["addr"], f["size"]) for f in unit] == [("_func_00401000", 0x401000, 3),
+                                                                ("_func_00401010", 0x401010, 3)]
+    assert scratch_pe.split_merged(root, "v") == []
