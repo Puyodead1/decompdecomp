@@ -325,6 +325,8 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         sec = pe.section_at(start)
         limit = min(starts[i + 1] if i + 1 < len(starts) else sec.va + sec.size, sec.va + sec.size)
         code_end = max(start + 1, min(rows[start].get("end", limit), limit))
+        if (split := _split_point(md, pe, start, code_end)):  # two functions Ghidra took for one
+            code_end = split
         code_end, end, entries = _tables(md, pe, start, code_end, limit)
         gap = pe.read(end, limit - end)
         rest = gap.lstrip(b"\x90").lstrip(b"\xcc\x00")
@@ -356,6 +358,28 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         fn.relocs = _relocs(md, pe, start, code_end, end, entries, names)
         out.append(fn)
     return out
+
+
+def _split_point(md, pe: PE, start: int, end: int) -> int | None:
+    """Where a function Ghidra made of two really ends, or None: after a ret or jmp that int3 padding follows up to a
+    16-byte boundary with code after it, below `end`. Visual C++ pads with int3 between functions only, and starts
+    each at a 16-byte boundary; Ghidra counted the next one in when nothing else called it (a PC game had 1,228 such
+    pairs, none ever matched: `xor eax,eax; ret` then padding then another, as one 19-byte function). A function with
+    a switch (an indirect jmp) is left as it is: its jump table may follow padding."""
+    code = pe.read(start, end - start)
+    if not any(code[a - start - 1] == 0xCC and code[a - start] != 0xCC  # (padding, then code at a boundary: rare)
+               for a in range((start | 15) + 1, end, 16)):
+        return None
+    for ins in _disasm(md, code, start):
+        if ins.mnemonic == "jmp" and ins.operands and ins.operands[0].type != x86.X86_OP_IMM:
+            return None
+        if ins.mnemonic in ("ret", "jmp"):
+            after = k = ins.address + ins.size
+            while k < end and pe.read(k, 1) == b"\xcc":
+                k += 1
+            if after < k < end and k % 16 == 0:
+                return after
+    return None
 
 
 def _whole(md, pe: PE, start: int, rough: int, limit: int) -> int:
@@ -765,21 +789,77 @@ def fix_short_ends(root: Path, version: str) -> list[str]:
     return fixed
 
 
+ASM_CHECK = 1  # set_aside's version, in each function it checked: a better check (a bigger number) looks again
+
+
 def set_aside(net, proj, fp, version: str, reason) -> int:
     """The project's open functions whose original code `reason` says no compiler makes (Console.asm_reason) get
-    status 'asm', with that reason: agents kept claiming them and burning compiles on code C can't give. How many."""
+    status 'asm', with that reason: agents kept claiming them and burning compiles on code C can't give. Each is
+    checked once (its meta says so): the check of 13,000 functions took seconds at every start. How many."""
     try:
         info = json.loads((Path(fp.root) / "config" / version / "functions.json").read_text(encoding="utf-8"))
         data = (Path(fp.root) / info["exe"]).read_bytes()
     except (OSError, ValueError, KeyError):
         return 0
     where = {f["name"]: (f["offset"], f["size"]) for u in info["units"].values() for f in u}
-    n = 0
-    for r in net.store.all("SELECT * FROM functions WHERE project_id=? AND status='open'", proj["id"]):
+    n, checked = 0, []
+    for r in net.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND status='open'", proj["id"]):
         meta = json.loads(r["meta"] or "{}")
+        if meta.get("asm_check") == ASM_CHECK:
+            continue
         at = where.get(meta.get("symbol") or r["name"])
-        why = reason(data[at[0]:at[0] + at[1]]) if at else None
-        if why:
-            net.forks.mark_asm(r, reason=why)
+        if at is None:
+            continue
+        meta["asm_check"] = ASM_CHECK
+        if (why := reason(data[at[0]:at[0] + at[1]])):
+            net.forks.mark_asm({**dict(r), "meta": json.dumps(meta)}, reason=why)
             n += 1
+        else:
+            checked.append((json.dumps(meta), r["id"]))
+    if checked:
+        with net.store.tx() as db:
+            db.executemany("UPDATE functions SET meta=? WHERE id=?", checked)
     return n
+
+
+def split_merged(root: Path, version: str) -> list[str]:
+    """Projects made before _split_point: a function Ghidra made of two (one, int3 padding, the next) ends where the
+    first does, and the next becomes a function of its own (_func_<address>) in the same source file; both get their
+    relocations read again. Functions with jump tables are left as they are. Returns the new functions' names
+    (config/<version>/functions.json is written when there are any)."""
+    config = root / "config" / version / "functions.json"
+    info = json.loads(config.read_text(encoding="utf-8"))
+    pe = read_pe((root / info["exe"]).read_bytes())
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    names = {f["addr"]: f["name"] for u in info["units"].values() for f in u}
+    made: list[str] = []
+    for fns in info["units"].values():
+        i = 0
+        while i < len(fns):
+            f = fns[i]
+            i += 1
+            if any(r[2] is None for r in f["relocs"]):  # (a jump table)
+                continue
+            start, end = f["addr"], f["addr"] + f["size"]
+            first_end = _split_point(md, pe, start, end)
+            if first_end is None:
+                continue
+            k = first_end
+            while pe.read(k, 1) == b"\xcc":
+                k += 1
+            name = f"_func_{k:08X}"
+            names[k] = name
+            f["size"] = first_end - start
+            fns.insert(i, {"name": name, "addr": k, "offset": pe.offset(k), "size": end - k, "relocs": []})
+            made.append(name)
+    if made:
+        for fns in info["units"].values():  # every function that may call or jump to a new one: read again
+            for f in fns:
+                if not any(r[2] is None for r in f["relocs"]):
+                    f["relocs"] = [list(r) for r in _relocs(md, pe, f["addr"], f["addr"] + f["size"],
+                                                            f["addr"] + f["size"], [], names)]
+        tmp = config.with_name(config.name + ".tmp")
+        tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
+        os.replace(tmp, config)
+    return made

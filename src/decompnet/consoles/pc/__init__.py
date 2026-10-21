@@ -79,6 +79,18 @@ class WindowsPC(Console):
                               "instruction\n\nWritten by decompdecomp: their sizes stopped at trailing zero bytes "
                               "(a jmp or ret N), and objdiff could never match them.")
             log(f"{slug}: {len(fixed)} functions that were cut short end at their last whole instruction now")
+        made = scratch.split_merged(fp.root, str(manifest.get("version")))
+        if made:
+            net.forks._commit(proj, fp, rel, f"Split {len(made)} functions off the ones Ghidra had merged them into"
+                              "\n\nWritten by decompdecomp: one function, int3 padding to a 16-byte boundary, the next, "
+                              "taken for one, which objdiff could never match.")
+            log(f"{slug}: {len(made)} functions Ghidra had merged into others are functions of their own now: "
+                "measuring the project again")
+            from ...forks.project import _tool
+            target = next((u.target for u in fp.units() if u.target is not None), None)
+            if target is not None:  # the original's objects, cut again (one step makes them all), then measured
+                fp.run([_tool("ninja") or "ninja", str(target.relative_to(fp.root))], log=lambda *_: None)
+            net.forks.sync(slug, log=log)
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
 
