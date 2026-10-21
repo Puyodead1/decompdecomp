@@ -65,6 +65,7 @@ class Console:
     packs: tuple[tuple[str, str], ...] = ()  # (toolchain, what it's for): more that Setup offers for it
     guides: tuple[str, ...] = ()  # guide topics worth reading first (files in its guides/ folder or app/guide/)
     m2c = ""  # m2c's target for drafts of its code, without the language ("mipsee-gcc"); "" when m2c can't read it
+    machine_drafts = ""  # where autopilot's drafts come from when m2c can't read its code ("Ghidra"): machine_draft
     compiler_guide = ""  # the guide on matching what most of its games were built with ("mwcc"): see up_front_guide
     compiler_family = ""  # their family, when a project names no toolchain (a fork): the permuter's weights ("mwcc")
     ram = (0, 0)  # where its programs' code and data live: words in this range read as pointers
@@ -239,6 +240,17 @@ class Console:
     def m2c_target(self, compiler: str = "") -> str:
         """m2c's target for drafts of code `compiler` built, without the language; "" when m2c can't read it."""
         return self.m2c
+
+    def draft_types(self, header: str) -> str | None:
+        """PROJECT mode, games started from scratch: the common header with what machine_draft's drafts use (their
+        decompiler's types), or None when it has it already or needs none."""
+        return None
+
+    def machine_draft(self, fp, symbol: str, log=print) -> tuple[str, str] | None:
+        """PROJECT mode, games started from scratch, when m2c can't read the code: a draft of the function `symbol`
+        that compiles as it is, and what it needs before it at file scope; None when there's none. The first call
+        may take long (a decompiler reads the whole program once): autopilot calls it in the background."""
+        return None
 
     def project_facts(self) -> dict:
         """What a project's page and its line in the project list say about its console."""
