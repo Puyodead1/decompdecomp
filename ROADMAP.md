@@ -23,7 +23,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | C++ methods drafted as `Class::method` | ✓ | ✓ | ✓ | — | — | — | — |
 | Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Permuter on near misses | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Hand-written assembly set aside | ✓ | ✓ | ✓ | ✓ | — | BIOS call stubs, pieces of functions | MIPS, PowerPC, ARM's BIOS stubs and pieces of functions |
+| Hand-written assembly set aside | ✓ | ✓ | ✓ | ✓ | ✓ also /LTCG's conventions, funclets | BIOS call stubs, pieces of functions | MIPS, PowerPC, ARM's BIOS stubs and pieces of functions |
 | Pieces of functions joined to their function | — | — | — | — | — | ✓ (`recover.merge_pieces`) | — |
 | Agents' verdict "no C makes this" (3 agents of 2 models: set aside, red in the map) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
