@@ -208,6 +208,20 @@ class Console:
         may take long (a decompiler reads the whole program once): autopilot calls it in the background."""
         return None
 
+    def file_flags(self, fp, source: str) -> tuple[str, list[str]] | None:
+        """PROJECT mode, games started from scratch: (compiler, flags) a source file builds with, when its project's
+        build takes flags file by file (search_flags); None when it doesn't."""
+        return None
+
+    def build_file_with(self, fp, unit, text: str, flags: list[str], log=print) -> tuple[Path | None, str]:
+        """Compile `text` as `unit`'s source file with `flags` into an object of its own, the project's file and
+        objects untouched: (the object, or None when it didn't build; the build's output)."""
+        return None, f"{self.name} projects don't build file by file with other flags"
+
+    def set_file_flags(self, fp, source: str, flags: list[str]) -> str:
+        """Build a source file with `flags` from now on; returns the project file that records it (to commit)."""
+        raise RomError(f"{self.name} projects don't take flags file by file")
+
     def project_facts(self) -> dict:
         """What a project's page and its line in the project list say about its console."""
         return {"platform": self.id, "platform_name": self.name, "platform_short": self.short or self.name,

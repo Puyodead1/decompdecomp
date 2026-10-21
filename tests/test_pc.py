@@ -6,6 +6,7 @@ must find every function with its exact extent, and agents' C must be judged by 
 Visual C++ is proprietary, so the end-to-end part runs only where `msvc` was installed with its license accepted.
 """
 
+import json
 import re
 import struct
 import subprocess
@@ -17,6 +18,7 @@ import pytest
 from decompnet import toolchains
 from decompnet.consoles.pc import scratch as scratch_pe
 from decompnet.forks import csource, ghidra
+from decompnet.forks.project import ForkError
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "projects" / "demo-pc"
@@ -224,3 +226,46 @@ def test_ghidras_types_go_into_common_h_once():
     once = ghidra_c.add_types(scratch.TYPES_H)
     assert "typedef unsigned int undefined4;" in once and once.rstrip().endswith("#endif")
     assert ghidra_c.add_types(once) is None
+
+
+def test_visual_cpps_flag_variants():
+    from decompnet.app.engine import RomNetwork
+
+    variants = RomNetwork.flag_variants(None, "MSVC/8.0-sp1", ["/nologo", "/c", "/O2", "/W3", "/EHsc"])
+    assert variants[0] == ["/nologo", "/c", "/O2", "/W3", "/EHsc"]
+    assert ["/nologo", "/c", "/O1", "/W3", "/EHsc"] in variants  # another optimisation level, in its place
+    assert ["/nologo", "/c", "/O2", "/W3", "/EHsc", "/Oy-"] in variants and len(variants) <= 12
+
+
+def test_a_file_builds_with_flags_of_its_own(tmp_path):
+    """Games built their parts with different flags: config/<version>/flags.json gives one file its own, after
+    CL_FLAGS (Visual C++ takes the last of a kind), and changing it writes build.ninja again."""
+    from types import SimpleNamespace
+
+    template = (scratch_pe.TEMPLATE / "tools" / "configure.py").read_text(encoding="utf-8")
+    root = tmp_path / "game"
+    for d in ("tools", "src/auto", "include", "config/game"):
+        (root / d).mkdir(parents=True)
+    for f in ("ninja_syntax.py", "delink.py", "names.py"):
+        (root / "tools" / f).write_text((scratch_pe.TEMPLATE / "tools" / f).read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "tools" / "configure.py").write_text(scratch_pe.settings(template, "8.0-sp1"), encoding="utf-8")
+    (root / "config" / "game" / "functions.json").write_text('{"units": {}}', encoding="utf-8")
+    (root / "src" / "auto" / "text_00401000.cpp").write_text("", encoding="utf-8")
+    fp = SimpleNamespace(root=root, manifest={"version": "game"})
+    assert scratch_pe.file_flags(fp, "src/auto/text_00401000.cpp") == ("MSVC/8.0-sp1", ["/nologo", "/c", "/O2", "/W3", "/EHsc"])
+    rel = scratch_pe.set_file_flags(fp, "src/auto/text_00401000.cpp", ["/nologo", "/c", "/O2", "/W3", "/EHsc", "/O1", "/Oy-"])
+    assert rel == "config/game/flags.json"
+    assert json.loads((root / rel).read_text()) == {"src/auto/text_00401000.cpp": ["/O1", "/Oy-"]}
+    assert scratch_pe.file_flags(fp, "src/auto/text_00401000.cpp")[1][-2:] == ["/O1", "/Oy-"]
+    subprocess.run([sys.executable, "tools/configure.py", "game", "--msvc", str(tmp_path / "msvc")], cwd=root, check=True)
+    ninja = (root / "build.ninja").read_text(encoding="utf-8").replace("$\n", "")
+    assert "cflags = /O1 /Oy-" in ninja
+    regen = next(line for line in ninja.splitlines() if line.startswith("build build.ninja:"))
+    assert "config/game " in regen + " " and "config/game/flags.json" in regen
+    # back to the project's flags: the file's own go
+    scratch_pe.set_file_flags(fp, "src/auto/text_00401000.cpp", ["/nologo", "/c", "/O2", "/W3", "/EHsc"])
+    assert json.loads((root / rel).read_text()) == {}
+    # a project made before flags file by file is told so, not left half-changed
+    (root / "tools" / "configure.py").write_text(template.replace("flags.json", "x"), encoding="utf-8")
+    with pytest.raises(ForkError, match="older than flags file by file"):
+        scratch_pe.set_file_flags(fp, "src/auto/text_00401000.cpp", ["/O1"])

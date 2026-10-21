@@ -17,12 +17,14 @@ from ...project import compiler_for
 from .common import parse_ranges
 
 # Flag search (search_flags): the flags of each compiler family worth trying, at most MAX_FLAG_VARIANTS compiles
-FLAG_FAMILIES = (("ido", "ido"), ("mwcps2", "mwcps2"), ("ee-gcc", "ee"), ("gcc", "gcc"))
+FLAG_FAMILIES = (("ido", "ido"), ("mwcps2", "mwcps2"), ("ee-gcc", "ee"), ("gcc", "gcc"), ("MSVC/", "msvc"))
 FLAG_LEVELS = {"gcc": ("-O1", "-O2", "-O3", "-Os"), "ee": ("-O1", "-O2", "-O3", "-Os"),
-               "ido": ("-O1", "-O2", "-O3", "-g"), "mwcps2": ("-O1", "-O2", "-O3", "-O4")}
+               "ido": ("-O1", "-O2", "-O3", "-g"), "mwcps2": ("-O1", "-O2", "-O3", "-O4"),
+               "msvc": ("/O2", "/O1", "/Ox", "/Od")}
+# Visual C++ (PC): the frame pointer kept, less inlining, 8.0's buffer checks off, and its floating point options
 FLAG_EXTRAS = {"gcc": ("-fno-strength-reduce", "-fno-schedule-insns"),
                "ee": ("-fno-strength-reduce", "-fno-schedule-insns", "-fno-common"),
-               "ido": (), "mwcps2": ()}
+               "ido": (), "mwcps2": (), "msvc": ("/Oy-", "/Ob1", "/Ob0", "/GS-", "/fp:fast", "/arch:SSE2")}
 SMALL_DATA_SIZES = (0, 8)
 MAX_FLAG_VARIANTS = 12
 FLAGS_SHOWN = 6
@@ -288,8 +290,10 @@ class CompilerMixin:
         proj = self._project(slug)
         cfg = self.cfg(proj)
         tc, flag_list, check = None, [], None
+        if (fork := self.fork_slug(slug)) and flags.strip() and not compiler:  # one file's flags (PC projects)
+            return self.forks.suggest_flags(agent, fork, text, flags.split(), function, source)
         if compiler:
-            if self.fork_slug(slug):
+            if fork:
                 raise NetworkError("a fork builds with its project's own compilers: suggest the change in words only")
             tc = self._toolchain_named(cfg, compiler)
             flag_list = flags.split() or consoles.of(cfg).default_flags(tc, cfg.get("gp"))
@@ -458,8 +462,8 @@ class CompilerMixin:
         """A function's C (its best attempt, or `source`) built with the variants of its compiler's flags
         (flag_variants), each judged like an attempt and recorded nowhere: when the C looks right but won't match,
         the flags are often what's wrong, and agents tried them one compile at a time."""
-        if self.fork_slug(slug):
-            raise NetworkError("a fork builds with its project's own compilers and flags")
+        if (fork := self.fork_slug(slug)):  # the project's own build, file by file (PC projects)
+            return self.forks.search_flags(fork, function, source)
         proj = self._project(slug)
         cfg = self.cfg(proj)
         fn = self._function(function, slug)
@@ -497,7 +501,9 @@ class CompilerMixin:
         hit = next((s for s in self.cfg(self._project(slug)).get("suggestions", []) if s["id"] == sid), None)
         if hit is None:
             raise NetworkError(f"no suggestion {sid}")
-        if apply and hit["toolchain"] and hit.get("ranges"):
+        if apply and hit.get("file"):  # one file's flags, in a fork's own build (PC projects)
+            self.forks.set_file_flags(slug, hit["file"], hit["flags"])
+        elif apply and hit["toolchain"] and hit.get("ranges"):
             self.set_compiler_ranges(slug, hit["ranges"], hit["toolchain"], hit["flags"])
         elif apply and hit["toolchain"]:
             self.set_compiler(slug, hit["toolchain"], hit["flags"], guard=guard)

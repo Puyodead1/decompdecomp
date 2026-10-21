@@ -20,9 +20,11 @@ what this reads; there's no relink of the whole .exe yet, so files aren't linked
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -576,3 +578,86 @@ function's address, size, symbol and relocations.
             subprocess.run(cmd, cwd=root, capture_output=True)
     return {"platform": "pc", "id": version, "title": info["title"], "compiler": f"MSVC/{compiler}",
             "sources": len(groups), "sha1": info["sha1"]}
+
+
+# ---------------------------------------------------------------------------------------------------- flags, file by file
+# Games built their parts with different flags (the engine with /O2, a library with /O1, middleware without the frame
+# pointer omitted): a file whose original was built otherwise never matches with the project's CL_FLAGS. Flags for
+# one file go in config/<version>/flags.json, after CL_FLAGS on its command line (Visual C++ takes the last of a kind).
+
+
+def _settings(fp) -> tuple[str, list[str], str] | None:
+    """(MSVC_VERSION, CL_FLAGS, the text) of the project's tools/configure.py; None when it isn't ours."""
+    try:
+        text = (Path(fp.root) / "tools" / "configure.py").read_text(encoding="utf-8")
+        version = re.search(r'^MSVC_VERSION = "([^"]+)"', text, re.M)
+        flags = re.search(r"^CL_FLAGS = (\[[^\]]*\])", text, re.M)
+        return (version.group(1), list(ast.literal_eval(flags.group(1))), text) if version and flags else None
+    except (OSError, ValueError, SyntaxError):
+        return None
+
+
+def _flags_file(fp) -> Path:
+    return Path(fp.root) / "config" / str((fp.manifest or {}).get("version")) / "flags.json"
+
+
+def _file_extras(fp) -> dict[str, list[str]]:
+    try:
+        data = json.loads(_flags_file(fp).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def file_flags(fp, source: str) -> tuple[str, list[str]] | None:
+    """("MSVC/<version>", the flags `source` builds with: CL_FLAGS and its own)."""
+    settings = _settings(fp)
+    if settings is None:
+        return None
+    version, flags, _ = settings
+    return f"MSVC/{version}", [*flags, *_file_extras(fp).get(Path(source).as_posix(), [])]
+
+
+def build_file_with(fp, unit, text: str, flags: list[str], log=print) -> tuple[Path | None, str]:
+    """`text` built as `unit`'s source with `flags`, by the project's own command for its files (build.ninja's cl
+    rule), into build/flagsearch/: the project's source and objects stay as they are."""
+    try:
+        ninja = re.sub(r"\$\n\s+", "", (Path(fp.root) / "build.ninja").read_text(encoding="utf-8"))
+    except OSError:
+        return None, "build.ninja is missing: build the project once first"
+    rule = re.search(r"^rule cl\n  command = (.*)$", ninja, re.M)
+    if not rule or "$cflags" not in rule.group(1):
+        return None, "this project's build.ninja has no cl rule decompdecomp knows"
+    work = Path(fp.root) / "build" / "flagsearch"
+    work.mkdir(parents=True, exist_ok=True)
+    src = work / (unit.name + Path(unit.source or "x.cpp").suffix)
+    out = src.with_suffix(".obj")
+    src.write_text(text, encoding="utf-8")
+    out.unlink(missing_ok=True)
+    rel = lambda p: p.relative_to(fp.root).as_posix()  # noqa: E731
+    cmd = (rule.group(1).replace("$cflags", shlex.join(flags)).replace("$out", shlex.quote(rel(out)))
+           .replace("$in", shlex.quote(rel(src))))
+    ok, output = ForkProject(Path(fp.root)).run(["/bin/sh", "-c", cmd], log=lambda *_: None, timeout=300)
+    return (out if ok and out.exists() else None), output
+
+
+def set_file_flags(fp, source: str, flags: list[str]) -> str:
+    """Build `source` with `flags` (all of them, as file_flags gives them) from now on: what isn't in CL_FLAGS goes
+    in flags.json. Returns flags.json's path in the project."""
+    settings = _settings(fp)
+    if settings is None:
+        raise ForkError("this project's tools/configure.py isn't one decompdecomp made: change its flags there")
+    _, base, text = settings
+    if "flags.json" not in text:
+        raise ForkError("this project's tools/configure.py is older than flags file by file: start the project again "
+                        "from the game, or add the file's flags to CL_FLAGS by hand")
+    data = _file_extras(fp)
+    extra = [f for f in flags if f not in base]
+    key = Path(source).as_posix()
+    if extra:
+        data[key] = extra
+    else:
+        data.pop(key, None)
+    path = _flags_file(fp)
+    path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return path.relative_to(fp.root).as_posix()
