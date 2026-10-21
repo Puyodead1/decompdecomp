@@ -386,12 +386,14 @@ def _pragmas_around(text: str, lo: int, hi: int) -> tuple[int, int]:
 def _with_includes(text: str, includes: list[str], prelude: str = "") -> str:
     """The file with new #include lines after its last one (or at the top), and `prelude` (type definitions)
     after those."""
-    if not includes and not prelude:
+    have = set(text.splitlines())  # (a declaration an earlier try left in the file isn't written twice)
+    prelude = "\n".join(ln for ln in prelude.splitlines() if not ln.strip() or ln not in have)
+    if not includes and not prelude.strip():
         return text
     last = None
     for m in re.finditer(r"^[ \t]*#\s*include\b[^\n]*\n", text, re.M):
         last = m
-    block = "".join(ln + "\n" for ln in includes) + (prelude.rstrip("\n") + "\n\n" if prelude else "")
+    block = "".join(ln + "\n" for ln in includes) + (prelude.strip("\n") + "\n\n" if prelude.strip() else "")
     return text[:last.end()] + block + text[last.end():] if last else block + text
 
 
@@ -2590,10 +2592,25 @@ class ForkEngine:
                                "what machine drafts need, and its easy functions are done already")
         if not cfg.get("ready"):
             raise NetworkError("finish setting the project up first")
-        if not drafts.supported(cfg.get("platform") or "") or toolchains.installed("m2c") is None:
+        console = consoles.get(cfg.get("platform") or "")
+        header = fp.root / "include" / "common.h"
+        if drafts.supported(console.id) and toolchains.installed("m2c") is not None:
+            if drafts.add_m2c_macros(header):  # projects made before autopilot ran on them
+                self._commit(proj, fp, "include/common.h", "Add the macros machine drafts use\n\nWritten by decompdecomp's autopilot.")
+        elif console.machine_drafts:  # m2c can't read its code: drafts from another decompiler (PC: Ghidra's)
+            if console.machine_drafts == "Ghidra" and not ghidra.available():
+                raise NetworkError(f"autopilot's drafts of {console.name} code come from Ghidra: install it in Setup "
+                                   "(it needs Java 21 or newer)")
+            try:
+                text = console.draft_types(header.read_text(encoding="utf-8"))
+            except OSError:
+                text = None
+            if text is not None:
+                header.write_text(text, encoding="utf-8")
+                self._commit(proj, fp, "include/common.h", f"Add the types {console.machine_drafts}'s drafts use\n\n"
+                             "Written by decompdecomp's autopilot.")
+        else:
             raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
-        if drafts.add_m2c_macros(fp.root / "include" / "common.h"):  # projects made before autopilot ran on them
-            self._commit(proj, fp, "include/common.h", "Add the macros machine drafts use\n\nWritten by decompdecomp's autopilot.")
         rows = self.net.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' ORDER BY n_insns, id",
                                   proj["id"])
         return [r["id"] for r in rows]
@@ -2613,18 +2630,28 @@ class ForkEngine:
             if not unit.source:
                 return "skip"
             meta = self._meta(fn)
-            hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
-            text = drafts.draft(fp.root, cfg.get("platform") or "", unit.name, meta.get("symbol") or fn["name"],
-                                unit.source, compiler_hint=hint, valid=True)
-            _, span = self._find(text, self._names(meta, fn)) if text else (None, None)
-            if span is None:
-                return "fail"
-            try:
-                current = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
-            except OSError:
-                current = ""
-            code = "/* machine draft (m2c), tried by autopilot */\n" + drafts.self_contained(text, span, current)
-            res = self.attempt(agent, proj["slug"], fn["name"], code, keep=False)
+            console = consoles.get(cfg.get("platform") or "")
+            prelude = ""
+            if not drafts.supported(console.id) and console.machine_drafts:  # (PC: Ghidra's C, made compilable)
+                found = console.machine_draft(fp, meta.get("symbol") or fn["name"],
+                                              log=logging.getLogger("decompdecomp").info)
+                if found is None:
+                    return "fail"
+                code, prelude = found
+                code = f"/* machine draft ({console.machine_drafts}), tried by autopilot */\n" + code
+            else:
+                hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
+                text = drafts.draft(fp.root, cfg.get("platform") or "", unit.name, meta.get("symbol") or fn["name"],
+                                    unit.source, compiler_hint=hint, valid=True)
+                _, span = self._find(text, self._names(meta, fn)) if text else (None, None)
+                if span is None:
+                    return "fail"
+                try:
+                    current = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+                except OSError:
+                    current = ""
+                code = "/* machine draft (m2c), tried by autopilot */\n" + drafts.self_contained(text, span, current)
+            res = self.attempt(agent, proj["slug"], fn["name"], code, keep=False, prelude=prelude)
             if res["matched"]:
                 return "match"
             if res["score"] is None:
