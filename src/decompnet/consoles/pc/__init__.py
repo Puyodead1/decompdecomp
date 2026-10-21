@@ -7,6 +7,7 @@ the game is a Windows program: decompdecomp runs on Linux, and so do the compile
   from the program's Rich header.
 - project_template/: what that project starts as (tools/configure.py writes its ninja build).
 - guides/x86.md: what agents read about x86 and matching Visual C++'s code.
+- ghidra_c.py: Ghidra's C made into drafts Visual C++ compiles, which autopilot tries (m2c reads no x86).
 
 Its demo game is projects/demo-pc (the Demo Quest game built with Visual C++ 6.0). Older projects' configs say
 "win32" (decomp.dev's id): that's this console too.
@@ -38,6 +39,7 @@ class WindowsPC(Console):
     ram = (0x00400000, 0x80000000)  # a 32-bit program's address space above its usual image base
     demo = "demo-pc"
     demo_tools = ("msvc", "objdiff-cli", "wibo", "ghidra", "java")  # Ghidra needs Java 21 or newer
+    machine_drafts = "Ghidra"
 
     def sniff(self, head: bytes, file) -> bool:
         from .scratch import is_pe
@@ -54,6 +56,16 @@ class WindowsPC(Console):
         from . import scratch
 
         return scratch.create(root, game, compiler=compiler, log=log)
+
+    def draft_types(self, header: str) -> str | None:
+        from .ghidra_c import add_types
+
+        return add_types(header)
+
+    def machine_draft(self, fp, symbol: str, log=print) -> tuple[str, str] | None:
+        from .ghidra_c import program_draft
+
+        return program_draft(fp, symbol, log=log)
 
     def game_info(self, game: Path) -> dict:
         from . import scratch
