@@ -1847,6 +1847,15 @@ class ForkEngine:
             return fn["seed"] or None
         hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
         meta = self._meta(fn)
+        console = consoles.get(cfg.get("platform") or "")
+        if console.machine_drafts and not drafts.supported(console.id):  # (PC: from Ghidra's run over the program)
+            text = console.machine_draft_text(fp, meta.get("symbol") or fn["name"])
+            if text is None:
+                return None  # not made yet (it's on its way): nothing saved, asked again next time
+            text = f"/* {console.machine_drafts} */\n" + text
+            with self.net.store.tx() as db:
+                db.execute("UPDATE functions SET seed=? WHERE id=?", (text, fn["id"]))
+            return text
         try:
             text = drafts.draft(fp.root, cfg.get("platform") or "", unit.name, meta.get("symbol") or fn["name"],
                                 unit.source, compiler_hint=hint)

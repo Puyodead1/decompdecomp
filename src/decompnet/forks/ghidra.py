@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from importlib import resources
 from pathlib import Path
 
@@ -21,6 +22,9 @@ from ..limits import capped
 from .project import ForkError
 
 JAVA_NEEDED = 21  # what the pinned Ghidra needs
+# One Ghidra at a time, app-wide: each is a JVM of 2 GB and more, and agents asking for drafts at once started one
+# each (a PC game's eight helpers ran an 8 GB server out of memory). The others wait their turn.
+_ONE_AT_A_TIME = threading.Lock()
 
 
 def java_home() -> Path | None:
@@ -64,8 +68,9 @@ def _run_script(binary: Path, script: str, timeout: float, *, analyse: bool = Tr
         argv = [str(_headless()), tmp, "decompwtf", "-import", str(target), "-scriptPath", str(scripts),
                 "-postScript", script, str(out), *args, "-deleteProject", *([] if analyse else ["-noanalysis"])]
         try:
-            res = subprocess.run(capped(argv), capture_output=True, text=True, timeout=timeout, env=_env(),
-                                 encoding="utf-8", errors="replace")
+            with _ONE_AT_A_TIME:
+                res = subprocess.run(capped(argv), capture_output=True, text=True, timeout=timeout, env=_env(),
+                                     encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return []
         except OSError as e:
