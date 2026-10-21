@@ -749,3 +749,23 @@ def fix_short_ends(root: Path, version: str) -> list[str]:
         tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
         os.replace(tmp, config)
     return fixed
+
+
+def set_aside(net, proj, fp, version: str, reason) -> int:
+    """The project's open functions whose original code `reason` says no compiler makes (Console.asm_reason) get
+    status 'asm', with that reason: agents kept claiming them and burning compiles on code C can't give. How many."""
+    try:
+        info = json.loads((Path(fp.root) / "config" / version / "functions.json").read_text(encoding="utf-8"))
+        data = (Path(fp.root) / info["exe"]).read_bytes()
+    except (OSError, ValueError, KeyError):
+        return 0
+    where = {f["name"]: (f["offset"], f["size"]) for u in info["units"].values() for f in u}
+    n = 0
+    for r in net.store.all("SELECT * FROM functions WHERE project_id=? AND status='open'", proj["id"]):
+        meta = json.loads(r["meta"] or "{}")
+        at = where.get(meta.get("symbol") or r["name"])
+        why = reason(data[at[0]:at[0] + at[1]]) if at else None
+        if why:
+            net.forks.mark_asm(r, reason=why)
+            n += 1
+    return n
