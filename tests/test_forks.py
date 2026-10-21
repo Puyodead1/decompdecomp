@@ -549,3 +549,24 @@ def test_a_from_scratch_brief_says_what_the_data_it_uses_is(fork, monkeypatch):
     assert lines[1:4] == ["### Data it uses", "- data_02225058: .bss, 2 bytes", "- g_score"]
     assert not any("add_score" in line for line in lines) and "extern" in lines[-1]
     assert net.forks._data_used(proj, ["add_score"]) == []
+
+
+def test_ninja_installed_into_a_package_folder_of_its_own_is_found(tmp_path, monkeypatch):
+    """The Windows setup installs decompdecomp's packages with --target into a folder of their own: ninja.exe went
+    to its bin folder, which neither PATH nor Python's own folders hold ("the first build failed: ninja isn't
+    installed")."""
+    import os
+
+    from decompnet.forks import project as project_mod
+
+    packages = tmp_path / "packages"
+    (packages / "bin").mkdir(parents=True)
+    exe = packages / "bin" / ("ninja.exe" if os.name == "nt" else "ninja")
+    exe.write_text("")
+    exe.chmod(0o755)
+    monkeypatch.setattr(project_mod.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(project_mod.sys, "executable", str(tmp_path / "python" / "pythonw.exe"))
+    monkeypatch.setattr(project_mod.sysconfig, "get_path", lambda *a, **k: str(tmp_path / "python" / "Scripts"))
+    monkeypatch.setattr(project_mod.sys, "path", ["", str(tmp_path / "python" / "Lib"), str(packages)])
+    assert project_mod._tool("ninja") == str(exe)
+    assert project_mod._tool("make") is None

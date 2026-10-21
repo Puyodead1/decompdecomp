@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass
@@ -92,12 +93,17 @@ _NOISE = re.compile(r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbo
 
 
 def _tool(name: str) -> str | None:
-    """A build tool from PATH or from decompdecomp's own environment (the ninja Python package)."""
+    """A build tool from PATH or from decompdecomp's own environment (the ninja Python package): next to its Python,
+    in its scripts folder, or in the bin (Scripts) folder of a folder its packages load from. The Windows setup
+    installs them with `--target` into a folder of their own, whose ninja.exe none of the others found ("the first
+    build failed: ninja isn't installed")."""
     found = shutil.which(name)
     if found:
         return found
-    local = Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
-    return str(local) if local.exists() else None
+    exe = f"{name}.exe" if os.name == "nt" else name
+    places = [Path(sys.executable).parent, Path(sysconfig.get_path("scripts"))]
+    places += [Path(p) / sub for p in sys.path if p for sub in ("bin", "Scripts")]
+    return next((str(d / exe) for d in places if (d / exe).is_file()), None)
 
 
 class ForkProject:
@@ -292,7 +298,8 @@ class ForkProject:
         env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
         # found on that PATH (decompdecomp's own ninja): Linux looks a command up there itself, Windows only in this
         # process's PATH, where decompdecomp's environment isn't when it's installed
-        executable = sys.executable if cmd[0] in ("python", "python3") else shutil.which(cmd[0], path=env["PATH"]) or cmd[0]
+        executable = (sys.executable if cmd[0] in ("python", "python3")
+                      else shutil.which(cmd[0], path=env["PATH"]) or _tool(cmd[0]) or cmd[0])
         cmd = [executable, *cmd[1:]]
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
