@@ -604,3 +604,31 @@ def test_functions_ending_in_zero_bytes_arent_cut_short(tmp_path, monkeypatch):
     assert fns["_func_00401000"]["size"] == 5 and fns["_func_00401000"]["relocs"] == [[1, 20, "_func_00403130", 0]]
     assert fns["_func_00401010@8"]["size"] == 3
     assert scratch_pe.fix_short_ends(root, "v") == []  # fixed already: nothing to change
+
+
+def test_code_no_compiler_makes_is_set_aside():
+    """Agents on a PC game built with /LTCG kept claiming code C can't give, and releasing it with notes: about one
+    function in ten took an argument in a register Visual C++ never passes one in, and Ghidra had listed exception
+    funclets and handler stubs, and jump tables, as functions of their own."""
+    from decompnet.arch import x86
+
+    def why(hexed):
+        return x86.asm_reason(bytes.fromhex(hexed.replace(" ", "")))
+    # an argument in eax: add eax,0x4000; push eax; call; add esp,4; ret
+    assert "reads eax" in why("05 00 40 00 00 50 e8 35 ff ff ff 83 c4 04 c3")
+    # `this` in esi: push ecx; movzx eax, word ptr [esi+0x5c]
+    assert "reads esi" in why("51 0f b7 46 5c d9 ee c3")
+    # an unwinding funclet: lea ecx,[ebp-0x58]; jmp <destructor>
+    assert "part of the function before it" in why("8d 4d a8 e9 48 b7 f4 ff")
+    # handler stubs: mov eax, <info>; jmp <handler>, and its /GS form
+    assert "handler stub" in why("b8 30 86 96 00 e9 76 63 ff ff")
+    assert "handler stub" in why("8b 54 24 08 8d 42 bc 8b 4a b8 33 c8 e8 42 26 ef ff b8 04 14 93 00 e9 e1 3d ef ff")
+    assert "table of addresses" in why("80 8d 5b 00 86 8d 5b 00 8c 8d 5b 00 92 8d 5b 00")
+    # what compiled code does
+    assert why("8b 44 24 04 c3") is None  # mov eax,[esp+4]; ret
+    assert why("8b c1 c3") is None  # mov eax,ecx; ret: a method returning this
+    assert why("55 8b ec 56 8b 75 08 5e 5d c3") is None  # a frame, esi saved then loaded
+    assert why("33 c0 c3") is None  # xor eax,eax: setting it
+    assert why("55 57 33 ff 83 cd ff 8b c5 5f 5d c3") is None  # or ebp,-1: Visual C++'s ebp = -1
+    assert why("6a 0c 68 98 15 93 00 e8 e2 88 00 00 8b 45 08 c3") is None  # __SEH_prolog4 sets ebp up for it
+    assert why("e9 2b 21 00 00") is None and why("c2 08 00") is None
