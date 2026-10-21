@@ -124,7 +124,8 @@ function suggestionHtml(s) {
   const ok = s.check && s.check.includes("matches the game");
   return `<div class="note">${saidHead(s.agents.length > 1 ? `${s.agents.length} agents agree` : "suggested", s.agents, s.t, true)}${saidText(s.text)}
     ${s.check ? `<p class="said-check${ok ? " ok" : ""}">${ok ? "✓ " : ""}${esc(s.check)}</p>` : ""}
-    <div class="row">${s.toolchain ? `<button class="primary small-btn" type="button" data-apply="${s.id}">Use ${esc(tcName(s.toolchain))} ${esc(s.flags.join(" "))}${(s.ranges || []).length ? ` for ${plural(s.ranges.length, "part")}` : ""}</button>` : ""}<button class="ghost small-btn" type="button" data-dismiss="${s.id}">${s.toolchain ? "Not now" : "Dismiss"}</button></div></div>`;
+    <div class="row">${s.toolchain ? `<button class="primary small-btn" type="button" data-apply="${s.id}">Use ${esc(tcName(s.toolchain))} ${esc(s.flags.join(" "))}${(s.ranges || []).length ? ` for ${plural(s.ranges.length, "part")}` : ""}</button>`
+      : s.file ? `<button class="primary small-btn" type="button" data-apply="${s.id}">Build <span class="mono">${esc(s.file)}</span> with ${esc(s.flags.join(" "))}</button>` : ""}<button class="ghost small-btn" type="button" data-dismiss="${s.id}">${s.toolchain || s.file ? "Not now" : "Dismiss"}</button></div></div>`;
 }
 $("suggestList").onclick = $("compilerWaiting").onclick = async (e) => {
   const cut = e.target.closest("button[data-bapply], button[data-bdismiss]");
