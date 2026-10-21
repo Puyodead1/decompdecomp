@@ -119,6 +119,16 @@ def _tool(name: str) -> str | None:
     return next((str(d / exe) for d in _tool_dirs() if (d / exe).exists()), None)
 
 
+
+def _absent_program(prog: str) -> bool:
+    """Whether a program build.ninja runs by absolute path isn't on this computer: a folder path, /home/... (not an
+    MSVC flag like /O2 or /DNDEBUG), that isn't there, or a Windows one, C:\\Users\\..., anywhere but Windows (a
+    project set up on Windows and copied to Linux, whose build ran the Windows install's pythonw.exe)."""
+    if re.match(r"^[A-Za-z]:[\\/]", prog):
+        return os.name != "nt" or not Path(prog).exists()
+    return bool(re.match(r"^/[^/\s]+/", prog)) and not Path(prog).exists()
+
+
 class ForkProject:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -422,18 +432,18 @@ class ForkProject:
             return None
         missing: list[str] = []
         try:
-            with open(ninja, errors="replace", encoding="utf-8") as f:
-                for line in f:
-                    m = _NINJA_PROGRAM.match(line)
-                    if m is None:
-                        continue
-                    first = m.group(2).strip().strip("'\"").split()[0] if m.group(2).strip() else ""
-                    prog = first.strip("'\"")
-                    # (a folder path, /home/...: not an MSVC flag like /O2 or /DNDEBUG)
-                    if re.match(r"^/[^/\s]+/", prog) and prog not in missing and not Path(prog).exists():
-                        missing.append(prog)
+            text = ninja.read_text(errors="replace", encoding="utf-8")
         except OSError as e:
             return f"build.ninja can't be read: {e}"
+        # (ninja_syntax wraps long lines with "$" and an indented continuation: "command = $\n      C:\...\python")
+        for line in re.sub(r"(?<!\$)\$\n[ \t]*", " ", text).splitlines():
+            m = _NINJA_PROGRAM.match(line)
+            if m is None:
+                continue
+            first = m.group(2).strip().strip("'\"").split()[0] if m.group(2).strip() else ""
+            prog = first.strip("'\"")
+            if prog not in missing and _absent_program(prog):
+                missing.append(prog)
         if missing:
             return (f"build.ninja runs {', '.join(missing[:3])}, which {'is' if len(missing) == 1 else 'are'} not on "
                     "this computer (the project was set up elsewhere, or decompdecomp moved)")
