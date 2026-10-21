@@ -292,6 +292,11 @@ class Console:
         may take long (a decompiler reads the whole program once): autopilot calls it in the background."""
         return None
 
+    def machine_draft_text(self, fp, symbol: str) -> str | None:
+        """What machine_draft's decompiler made of the function `symbol`, for an agent to read; None when it hasn't
+        yet (it's made in the background: an agent never waits for it, nor starts a decompiler of its own)."""
+        return None
+
     def file_flags(self, fp, source: str) -> tuple[str, list[str]] | None:
         """PROJECT mode, games started from scratch: (compiler, flags) a source file builds with, when its project's
         build takes flags file by file (search_flags); None when it doesn't."""

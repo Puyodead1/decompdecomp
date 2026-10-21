@@ -472,3 +472,72 @@ def test_a_file_builds_with_flags_of_its_own(tmp_path):
     (root / "tools" / "configure.py").write_text(template.replace("flags.json", "x"), encoding="utf-8")
     with pytest.raises(ForkError, match="older than flags file by file"):
         scratch_pe.set_file_flags(fp, "src/auto/text_00401000.cpp", ["/O1"])
+
+
+def test_one_ghidra_at_a_time(monkeypatch, tmp_path):
+    """Each Ghidra is a JVM of 2 GB and more: eight agents asking for drafts at once ran an 8 GB server out of memory."""
+    import threading
+    import time
+
+    now, most = [0], [0]
+    lock = threading.Lock()
+
+    def run(*args, **kwargs):
+        with lock:
+            now[0] += 1
+            most[0] = max(most[0], now[0])
+        time.sleep(0.2)
+        with lock:
+            now[0] -= 1
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(ghidra.subprocess, "run", run)
+    exe = tmp_path / "a.exe"
+    exe.write_bytes(b"MZ")
+
+    def one():
+        try:
+            ghidra._run_script(exe, "DecompWtfExport.java", 10)
+        except ForkError:  # (the fake Ghidra writes nothing)
+            pass
+    threads = [threading.Thread(target=one) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert most[0] == 1
+
+
+def test_an_agents_draft_never_waits_for_ghidra(monkeypatch, tmp_path):
+    """get_function on PC: drafts come from one Ghidra run over the whole program, made in the background; until
+    then there's none (not a Ghidra of each agent's own), and asking again doesn't start another run."""
+    import threading
+    from types import SimpleNamespace
+
+    from decompnet.consoles.pc import ghidra_c
+
+    root = tmp_path / "game"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "orig").mkdir()
+    (root / "orig" / "g.exe").write_bytes(b"MZ")
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"units": {"u": [
+        {"name": "_func_00401000", "addr": 0x401000, "size": 1, "relocs": []}]}}))
+    fp = SimpleNamespace(root=root, manifest={"game": {"path": "orig/g.exe"}, "version": "v"})
+    go, runs = threading.Event(), []
+
+    def program_drafts(exe, addresses, out, timeout=0):
+        runs.append(addresses)
+        go.wait(5)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({"entry": 0x401000, "refs": {}, "c": "\nvoid FUN_00401000(void)\n\n{\n  return;\n}\n"}) + "\n")
+        return True
+    monkeypatch.setattr(ghidra, "program_drafts", program_drafts)
+    monkeypatch.setattr(ghidra_c, "_LOADED", {})
+    assert ghidra_c.program_c(fp, "_func_00401000") is None
+    assert ghidra_c.program_c(fp, "_func_00401000") is None
+    go.set()
+    for _ in range(100):
+        if ghidra_c._LOADED.get(root):
+            break
+        threading.Event().wait(0.05)
+    assert len(runs) == 1 and runs[0] == [0x401000]
+    assert ghidra_c.program_c(fp, "_func_00401000").startswith("void __cdecl func_00401000(void)")

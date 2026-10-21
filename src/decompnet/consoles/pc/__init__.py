@@ -67,6 +67,11 @@ class WindowsPC(Console):
 
         return program_draft(fp, symbol, log=log)
 
+    def machine_draft_text(self, fp, symbol: str) -> str | None:
+        from .ghidra_c import program_c
+
+        return program_c(fp, symbol)
+
     def file_flags(self, fp, source: str) -> tuple[str, list[str]] | None:
         from . import scratch
 
