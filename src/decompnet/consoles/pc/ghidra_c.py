@@ -25,6 +25,7 @@ _UNPLACED = re.compile(r"\b(in_|unaff_|extraout_|in_stack_)\w+|\bhalt_baddata\b|
                        r"\bLOCK\(\)|\bUNLOCK\(\)|\bfunc_0x[0-9a-f]+")
 _HEAD = re.compile(r"(?P<ret>[^\n(]*?)\s*\b(?P<conv>__cdecl|__stdcall|__fastcall|__thiscall|__vectorcall)?\s*"
                    r"(?P<name>[A-Za-z_][\w:]*)\((?P<params>[^)]*)\)\s*$", re.M)
+MAX_POPS = 1024  # bytes of arguments a function pops: a decorated name saying more is Ghidra's "don't know"
 _GHIDRA_NAME = re.compile(r"\b(?:FUN|DAT|PTR|LAB|thunk_FUN)_[0-9a-fA-F]{8}\b")
 
 GHIDRA_TYPES = r"""
@@ -218,7 +219,9 @@ def draft(row: dict, project: dict) -> tuple[str, str] | None:
             return None
         if conv == "__stdcall" and pops is not None:  # the bytes the original pops: unused arguments Ghidra left out
             have = sum(_size(p) for p in params)
-            if have > pops:
+            # (a name holding Ghidra's "don't know", _f@2147483647, made a list of 500 million parameters here: an
+            # 8 GB server ran out of memory and locked up)
+            if have > pops or pops > MAX_POPS:
                 return None
             params += [f"undefined4 unused_{i}" for i in range((pops - have) // 4)]
         head = f"{ret} {conv} {me}({', '.join(params) or 'void'})"
