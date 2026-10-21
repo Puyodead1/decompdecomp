@@ -296,10 +296,13 @@ def project_names(functions_json: dict) -> dict:
 
 def _make(root: Path, exe: Path, addresses: list[int], cache: Path, done: threading.Event, log) -> None:
     from ...forks import ghidra
+    from ...forks.project import ForkError
 
     try:
         log(f"Ghidra decompiles {exe.name} for machine drafts, once (a big game takes ten minutes or more)")
         ghidra.program_drafts(exe, addresses, cache)
+    except ForkError as e:  # (a Ghidra that didn't run says why: no drafts this time, and it's tried again)
+        log(f"No machine drafts: {e}")
     finally:
         with _LOCK:
             _RUNNING.pop(root, None)

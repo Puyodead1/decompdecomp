@@ -146,9 +146,10 @@ def installed(tid: str, linux: bool | None = None) -> dict | None:
 
 def outdated(tid: str, linux: bool | None = None) -> bool:
     """Whether an installed toolchain lacks a part pinned since it was installed (Visual C++ 8.0 SP1 joined the msvc
-    pack later): it still works as it is, and installing it again brings what's new."""
+    pack later): it still works as it is, and installing it again brings what's new. A manifest that records no parts
+    (written by hand, or by a copy older than parts) can't tell, and isn't taken for outdated."""
     m = installed(tid, linux)
-    if m is None:
+    if m is None or "parts" not in m:
         return False
     tc = get(tid)
     linux = tc.via_wsl if linux is None else linux
