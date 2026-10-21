@@ -68,6 +68,8 @@ def _run_script(binary: Path, script: str, timeout: float, *, analyse: bool = Tr
         shutil.copyfile(binary, target)
         argv = [str(_headless()), tmp, "decompwtf", "-import", str(target), "-scriptPath", str(scripts),
                 "-postScript", script, str(out), *args, "-deleteProject", *([] if analyse else ["-noanalysis"])]
+        if os.name != "nt" and shutil.which("nice"):  # its analysis takes every core for minutes: after everything else
+            argv = ["nice", "-n", "15", *argv]
         try:
             with _ONE_AT_A_TIME:
                 res = subprocess.run(capped(argv), capture_output=True, text=True, timeout=timeout, env=_env(),
