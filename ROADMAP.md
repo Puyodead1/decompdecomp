@@ -18,7 +18,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | fork by address |
 | Judge | link · compare | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff |
 | Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | by architecture |
-| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | — |
 | Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | ✓ | — | — | — | — |
 | C++ methods drafted as `Class::method` | ✓ | ✓ | ✓ | — | — | — | — |
 | Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -46,8 +46,9 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 Where to start on a gap:
 - **PowerPC (GameCube, Wii) and x86 (PC)**: class recovery and the compiler map work on a project's objects in fork
   mode, not on a ROM; the readers are the part to write (CodeWarrior's vtable pointer is often not at offset 0).
-- **Windows PC**: autopilot needs drafts that compile (Ghidra's output doesn't, as it is); the export needs a linker
-  story (the project is delinked COFF objects).
+- **Windows PC**: autopilot's Ghidra drafts (`consoles/pc/ghidra_c.py`) match most functions of a few instructions
+  and few bigger ones: calls to methods and to `__fastcall` functions, and code Ghidra can't place, get no draft yet.
+  The export needs a linker story (the project is delinked COFF objects).
 - **Function-end reports** cut MIPS functions (`engine._cut`).
 - **Struct layouts** read MIPS loads and stores (`arch/mips_fields.py`); another processor adds its reader as its
   `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's fifth to eighth arguments
