@@ -34,6 +34,7 @@ args = parser.parse_args()
 
 VERSION = args.version
 CONFIG = Path("config") / VERSION / "functions.json"
+FLAGS = Path("config") / VERSION / "flags.json"  # flags some source files build with, after CL_FLAGS: {"src/..": [..]}
 BUILD = Path("build") / VERSION
 MSVC = Path(args.msvc) / MSVC_VERSION
 CL = next((p for p in (MSVC / b / e for b in ("Bin", "bin") for e in ("CL.EXE", "cl.exe")) if p.exists()),
@@ -80,6 +81,7 @@ def source_of(unit: str) -> str:
 
 def main() -> None:
     units = json.loads(CONFIG.read_text(encoding="utf-8"))["units"]
+    file_flags = json.loads(FLAGS.read_text(encoding="utf-8")) if FLAGS.exists() else {}
     headers = [str(p) for p in files("include", (".h", ".hpp"))]
     f = io.StringIO()
     n = ninja_syntax.Writer(f)
@@ -98,11 +100,14 @@ def main() -> None:
     objs = []
     for src in files("src", (".c", ".cpp")):
         obj = BUILD / src.with_suffix(".obj")
-        n.build(str(obj), "cl", str(src), implicit=[*headers, str(CONFIG), "tools/compile.py", "tools/names.py"])
+        extra = file_flags.get(src.as_posix())  # (Visual C++ takes the last of a kind: /O1 here beats /O2)
+        n.build(str(obj), "cl", str(src), implicit=[*headers, str(CONFIG), "tools/compile.py", "tools/names.py"],
+                variables={"cflags": q(extra)} if extra else None)
         objs.append(str(obj))
     n.build("all_source", "phony", objs)
     n.build("prepare", "phony", [*targets, *objs])
-    n.build("build.ninja", "configure", ["tools/configure.py", str(CONFIG), *folders("src", "include")])
+    n.build("build.ninja", "configure", ["tools/configure.py", str(CONFIG), *folders("src", "include"), str(CONFIG.parent),
+                                         *([str(FLAGS)] if FLAGS.exists() else [])])
     n.default(["prepare"])
 
     objdiff = {
