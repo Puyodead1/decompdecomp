@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -330,7 +331,8 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         if rest and not rest.strip(b"\x90\xcc\x00") == b"":
             # code nobody calls directly (callbacks, vtables) that Ghidra didn't make a function: one of its own
             missed = limit - len(rest)
-            rows[missed] = {"entry": missed, "end": missed + len(rest.rstrip(b"\x90\xcc\x00")), "name": "",
+            rough = missed + len(rest.rstrip(b"\x90\xcc\x00"))
+            rows[missed] = {"entry": missed, "end": _whole(md, pe, missed, rough, limit), "name": "",
                             "source": "DEFAULT", "purge": 0, "convention": "__cdecl"}
             starts.insert(i + 1, missed)
             limit = missed
@@ -351,37 +353,56 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
     for start in starts:
         code_end, end, entries = extents[start]
         fn = Function(start, end - start, names[start])
-
-        def symbol(addr: int) -> tuple[str | None, int]:
-            if start <= addr < end:  # noqa: B023  called within this pass of the loop
-                return None, addr - start  # noqa: B023  called within this pass of the loop
-            if addr in names:
-                return names[addr], 0
-            if addr in pe.imports:
-                return f"__imp__{pe.imports[addr]}", 0
-            return f"_D_{addr:08X}", 0
-
-        for ins in _disasm(md, pe.read(start, code_end - start), start):
-            at = ins.address - start
-            if ins.size >= 5 and (x86.X86_GRP_JUMP in ins.groups or x86.X86_GRP_CALL in ins.groups) \
-                    and ins.operands and ins.operands[0].type == x86.X86_OP_IMM:  # rel32, not a short jump
-                target = ins.operands[0].imm & 0xFFFFFFFF
-                if not start <= target < end:  # calls, and jumps to other functions (tail calls)
-                    name, _ = symbol(target)
-                    fn.relocs.append((at + ins.size - 4, REL32, name, 0))
-                continue
-            for op in ins.operands:
-                if op.type == x86.X86_OP_MEM and ins.disp_size == 4 and pe.contains(op.mem.disp & 0xFFFFFFFF):
-                    name, addend = symbol(op.mem.disp & 0xFFFFFFFF)
-                    fn.relocs.append((at + ins.disp_offset, DIR32, name, addend))
-                elif op.type == x86.X86_OP_IMM and ins.imm_size == 4 and pe.contains(op.imm & 0xFFFFFFFF):
-                    name, addend = symbol(op.imm & 0xFFFFFFFF)
-                    fn.relocs.append((at + ins.imm_offset, DIR32, name, addend))
-        for off in entries:
-            fn.relocs.append((off, DIR32, None, struct.unpack("<I", pe.read(start + off, 4))[0] - start))
-        fn.relocs.sort()
+        fn.relocs = _relocs(md, pe, start, code_end, end, entries, names)
         out.append(fn)
     return out
+
+
+def _whole(md, pe: PE, start: int, rough: int, limit: int) -> int:
+    """Where code from `start` really ends: `rough` is where its bytes stop being padding (0x90, 0xCC, zeros), which
+    cut an instruction ending in zeros short (`jmp` e9 2b 21 00 00 came out 3 bytes long, `ret 8` c2 08 00 two, and
+    objdiff could never match them); the end of the last whole instruction that starts before it, within `limit`."""
+    end = rough
+    for ins in _disasm(md, pe.read(start, limit - start), start):
+        if ins.address >= rough:
+            break
+        end = ins.address + ins.size
+    return min(max(end, rough), limit)
+
+
+def _relocs(md, pe: PE, start: int, code_end: int, end: int, entries: list[int],
+            names: dict[int, str]) -> list[tuple]:
+    """A function's relocations: what its instructions call, jump to and point at outside it (by the project's
+    names: functions, imports, data as _D_<address>), and its jump tables' entries."""
+    def symbol(addr: int) -> tuple[str | None, int]:
+        if start <= addr < end:
+            return None, addr - start
+        if addr in names:
+            return names[addr], 0
+        if addr in pe.imports:
+            return f"__imp__{pe.imports[addr]}", 0
+        return f"_D_{addr:08X}", 0
+
+    out = []
+    for ins in _disasm(md, pe.read(start, code_end - start), start):
+        at = ins.address - start
+        if ins.size >= 5 and (x86.X86_GRP_JUMP in ins.groups or x86.X86_GRP_CALL in ins.groups) \
+                and ins.operands and ins.operands[0].type == x86.X86_OP_IMM:  # rel32, not a short jump
+            target = ins.operands[0].imm & 0xFFFFFFFF
+            if not start <= target < end:  # calls, and jumps to other functions (tail calls)
+                name, _ = symbol(target)
+                out.append((at + ins.size - 4, REL32, name, 0))
+            continue
+        for op in ins.operands:
+            if op.type == x86.X86_OP_MEM and ins.disp_size == 4 and pe.contains(op.mem.disp & 0xFFFFFFFF):
+                name, addend = symbol(op.mem.disp & 0xFFFFFFFF)
+                out.append((at + ins.disp_offset, DIR32, name, addend))
+            elif op.type == x86.X86_OP_IMM and ins.imm_size == 4 and pe.contains(op.imm & 0xFFFFFFFF):
+                name, addend = symbol(op.imm & 0xFFFFFFFF)
+                out.append((at + ins.imm_offset, DIR32, name, addend))
+    for off in entries:
+        out.append((off, DIR32, None, struct.unpack("<I", pe.read(start + off, 4))[0] - start))
+    return sorted(out)
 
 
 def units(functions: list[Function]) -> dict[str, list[Function]]:
@@ -671,3 +692,37 @@ def set_file_flags(fp, source: str, flags: list[str]) -> str:
     path = _flags_file(fp)
     path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return path.relative_to(fp.root).as_posix()
+
+
+def fix_short_ends(root: Path, version: str) -> list[str]:
+    """Projects made before _whole: functions whose last instruction ended in zeros were cut short (objdiff saw
+    "(bad)" and capped them below 100% whatever the C). Each one ends at its last whole instruction now, never past
+    the next function, with its relocations read again; functions with jump tables are left as they are. Returns
+    the names of the functions it lengthened (config/<version>/functions.json is written when there are any)."""
+    config = root / "config" / version / "functions.json"
+    info = json.loads(config.read_text(encoding="utf-8"))
+    pe = read_pe((root / info["exe"]).read_bytes())
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    fns = sorted((f for u in info["units"].values() for f in u), key=lambda f: f["addr"])
+    names = {f["addr"]: f["name"] for f in fns}
+    fixed = []
+    for i, f in enumerate(fns):
+        if any(r[2] is None for r in f["relocs"]):  # (a jump table: its extent is its own business)
+            continue
+        start, end = f["addr"], f["addr"] + f["size"]
+        if pe.read(end, 1) != b"\x00":  # what was cut off was zeros: the byte after the end is one (and quick to check)
+            continue
+        sec = pe.section_at(start)
+        limit = min(fns[i + 1]["addr"] if i + 1 < len(fns) else sec.va + sec.size, sec.va + sec.size)
+        whole = _whole(md, pe, start, end, limit)
+        if whole <= end:
+            continue
+        f["size"] = whole - start
+        f["relocs"] = [list(r) for r in _relocs(md, pe, start, whole, whole, [], names)]
+        fixed.append(f["name"])
+    if fixed:
+        tmp = config.with_name(config.name + ".tmp")
+        tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
+        os.replace(tmp, config)
+    return fixed
