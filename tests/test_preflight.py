@@ -37,6 +37,23 @@ def test_build_problem_finds_programs_build_ninja_runs_that_arent_here(tmp_path)
     assert "objdiff.json" in fp.build_problem()
 
 
+
+def test_a_build_set_up_on_windows_is_found_out_on_linux(tmp_path, monkeypatch):
+    """A PC project's Decomp folder copied from Windows to a Linux server: its build.ninja ran the Windows install's
+    pythonw.exe, on a line ninja_syntax wrapped ("command = $" and the program on the next line), and the check
+    passed it as fine."""
+    from decompnet.forks import project as project_mod
+
+    root = _project(tmp_path, fixes=True)
+    win = r"C:\Users\someone\AppData\Local\Programs\decompdecomp\python\pythonw.exe"
+    (root / "build.ninja").write_text(f"rule cl\n  command = $\n      {win} $\n      tools/compile.py --output $out\n")
+    monkeypatch.setattr(project_mod.os, "name", "posix")
+    why = ForkProject(root).build_problem()
+    assert why is not None and win in why
+    wrapped = f"rule cc\n  command = $\n      {GONE} $\n      tools/x.py\n"  # (wrapped, on Linux too)
+    (root / "build.ninja").write_text(wrapped)
+    assert GONE in ForkProject(root).build_problem()
+
 def test_preflight_runs_the_setup_again_and_keeps_what_it_couldnt_fix(tmp_path):
     for fixes in (True, False):
         net = RomNetwork(tmp_path / f"d{fixes}.db", tmp_path / "ws")
