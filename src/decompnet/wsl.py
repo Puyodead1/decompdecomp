@@ -2,7 +2,7 @@
 
 KMC GCC (N64) and EE-GCC (PS2) exist only as Linux programs. On Windows they're
 installed like any toolchain (downloaded and checked on the Windows side, under the user's toolchain folder) and run
-inside WSL 2, which reads that folder through /mnt/<drive>. WSL 1 can't run them: their compilers are 32-bit.
+inside WSL 2, from cached copies on its Linux filesystem. WSL 1 can't run them: their compilers are 32-bit.
 
 Commands go to WSL as a small shell script in the compile's own folder, so nothing in them depends on how wsl.exe
 splits a Windows command line.
@@ -10,6 +10,8 @@ splits a Windows command line.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import os
 import posixpath
 import secrets
@@ -26,6 +28,24 @@ INSTALL = "In PowerShell as administrator: wsl --install (then restart Windows a
 _lock = threading.Lock()
 _status: tuple[bool, str, float] | None = None
 _mount: str | None = None
+_tools_lock = threading.Lock()
+_prepared_tools: set[str] = set()
+
+
+@functools.cache
+def _cache_directory() -> str:
+    code, home = _run(["-e", "printenv", "HOME"], 30)
+    home = home.strip()
+    if code or not home.startswith("/") or "\n" in home:
+        # Some WSL distributions don't export HOME to commands started with `wsl -e`. The default user's passwd
+        # entry still gives us a persistent place for the compiler cache.
+        code, entry = _run(["-e", "sh", "-c", 'getent passwd "$(id -u)"'], 30)
+        fields = entry.strip().split(":") if not code else []
+        home = fields[5] if len(fields) > 5 else ""
+    if not home.startswith("/") or "\n" in home:
+        raise OSError("WSL couldn't find its home directory for the compiler cache")
+    # WSL may stop between compiles. /tmp can be cleared at its next start while this Windows process lives on.
+    return home.rstrip("/") + "/.cache/decompnet/toolchains"
 
 
 def wanted() -> bool:
@@ -116,8 +136,39 @@ def stage_dir() -> str:
     return f"/tmp/decompnet-{secrets.token_hex(8)}"
 
 
+def prepare_tools(directories: tuple[Path, ...]) -> tuple[str, ...]:
+    """Keep a Linux-side copy of the pinned compiler and its dependencies, keyed by their install manifests.
+
+    EE-GCC's 32-bit access() cannot find its compiler passes on a Windows drive, even when the source is staged
+    in Linux. Copying the toolchain too fixes that. The complete tree is published by rename, so parallel starts
+    never see half a compiler; a fresh install gets a fresh cache without modifying another app's copy.
+    """
+    digest = hashlib.sha256(b"tool-cache-v1")
+    for directory in directories:
+        digest.update(str(directory.resolve()).encode("utf-8"))
+        digest.update((directory / ".decompnet-toolchain.json").read_bytes())
+    cache = f"{_cache_directory()}/{digest.hexdigest()[:24]}"
+    result = tuple(f"{cache}/{directory.name}" for directory in directories)
+    q = shlex.quote
+    with _tools_lock:
+        if cache in _prepared_tools:
+            return result
+        lines = [f"mkdir -p {q(_cache_directory())} || exit 1", f"if [ ! -f {q(cache + '/.ready')} ]; then",
+                 f"  stage=$(mktemp -d {q(cache + '.XXXXXX')}) || exit 1",
+                 "  trap 'rm -rf \"$stage\"' EXIT"]
+        lines += [f'  cp -R {q(path(directory))} "$stage"/{q(directory.name)} || exit 1' for directory in directories]
+        lines += ['  touch "$stage/.ready" || exit 1',
+                  f'  mv -T "$stage" {q(cache)} 2>/dev/null || [ -f {q(cache + "/.ready")} ] || exit 1', "fi"]
+        with tempfile.TemporaryDirectory(prefix="decomp-wsl-tools-") as work:
+            copied = run(["sh", "-c", "\n".join(lines)], Path(work), 120)
+        if copied.returncode:
+            raise OSError(f"WSL couldn't copy the compiler to its Linux filesystem: {copied.stderr[-400:]}")
+        _prepared_tools.add(cache)
+    return result
+
+
 def run(argv: list[str], cwd: Path, timeout: float, *, outputs: list[str] | None = None,
-        inputs: list[str] | None = None, stage: str | None = None) -> subprocess.CompletedProcess:
+        inputs: list[str] | None = None, stage: str | None = None, check_cancel=None) -> subprocess.CompletedProcess:
     """Run `argv` (WSL paths) inside WSL in `cwd` (a Windows folder). The command travels as a small script in the
     temp folder, so nothing depends on how wsl.exe splits a Windows command line.
 
@@ -143,11 +194,49 @@ def run(argv: list[str], cwd: Path, timeout: float, *, outputs: list[str] | None
         with os.fdopen(fd, "wb") as f:
             f.write(body.encode())  # LF line ends, whatever the platform
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        res = subprocess.run([exe() or "wsl", "-e", "sh", path(script)], capture_output=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL, creationflags=flags)
+        if check_cancel is None:
+            res = subprocess.run([exe() or "wsl", "-e", "sh", path(script)], capture_output=True, timeout=timeout,
+                                 stdin=subprocess.DEVNULL, creationflags=flags)
+        else:
+            res = _cancellable_script(script, timeout, flags, check_cancel)
     finally:
         os.unlink(script)
     return subprocess.CompletedProcess(res.args, res.returncode, _text(res.stdout), _text(res.stderr))
+
+
+def _cancellable_script(script: str, timeout: float, flags: int, check) -> subprocess.CompletedProcess:
+    """Stop the Linux process group too: killing wsl.exe alone can leave its compiler running."""
+    from .hostenv import stop_process_tree
+
+    marker = Path(script + ".cancel")
+    # The watcher lives outside the command's session, so cancellation kills its children as well.
+    wrapper = (f"setsid sh {shlex.quote(path(script))} &\nchild=$!\n"
+               f"(while kill -0 \"$child\" 2>/dev/null; do\n"
+               f"  if [ -e {shlex.quote(path(marker))} ]; then /bin/kill -KILL -- -\"$child\" 2>/dev/null && exit; fi\n"
+               "  sleep 0.1\ndone) &\nwatcher=$!\n"
+               "wait \"$child\"\nrc=$?\nkill \"$watcher\" 2>/dev/null\nwait \"$watcher\" 2>/dev/null\nexit \"$rc\"\n")
+    check()
+    proc = subprocess.Popen([exe() or "wsl", "-e", "sh", "-c", wrapper], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, creationflags=flags)
+    started = time.monotonic()
+    try:
+        while True:
+            check()
+            try:
+                stdout, stderr = proc.communicate(timeout=0.1)
+                return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started >= timeout:
+                    raise subprocess.TimeoutExpired(proc.args, timeout)
+    except BaseException:
+        marker.touch()
+        try:
+            proc.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            stop_process_tree(proc)
+        raise
+    finally:
+        marker.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ 32-bit programs without a 32-bit system

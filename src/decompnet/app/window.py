@@ -11,10 +11,12 @@ No browser is involved: the page is served only to a window whose user agent car
 from __future__ import annotations
 
 import functools
+import importlib.util
 import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -24,9 +26,12 @@ from . import edition
 log = logging.getLogger("decompdecomp")
 SYSTEM_PYTHON = "/usr/bin/python3"
 WINDOW_PROGRAM = Path(__file__).with_name("gtkwindow.py")
+WIN_WINDOW_PROGRAM = Path(__file__).with_name("winwindow.py")
 TOKEN_AGENT = "decompdecomp-window/"  # gtkwindow.py puts this, then the secret, in its user agent
 CHECK_SECONDS = 20
 CLOSE_SECONDS = 5  # a window told to close that's still there after this long is ended
+IS_WINDOWS = sys.platform == "win32"
+NVIDIA_MODULE = Path("/sys/module/nvidia")  # there while NVIDIA's own driver is loaded
 
 # what the window needs from the system, per family of distributions (/etc/os-release ID and ID_LIKE)
 INSTALL_COMMANDS = {
@@ -56,6 +61,27 @@ def _distro_family() -> str | None:
 @functools.cache
 def missing() -> str | None:
     """Why the window can't open here (what to install, and how), or None when it can."""
+    if IS_WINDOWS:
+        if importlib.util.find_spec("webview") is None:
+            return ("decompdecomp's Windows window needs pywebview and the Microsoft Edge WebView2 Runtime. "
+                    "Install the app's dependencies again, then start decompdecomp.")
+        packages = repr(str(Path(__file__).resolve().parents[2]))
+        probe = (f'import site; site.addsitedir({packages}); '
+                 'import os, clr; from webview.util import interop_dll_path; '
+                 'os.environ["PATH"] += os.pathsep + interop_dll_path("win-x64"); '
+                 'clr.AddReference(interop_dll_path("Microsoft.Web.WebView2.Core.dll")); '
+                 'from Microsoft.Web.WebView2.Core import CoreWebView2Environment; '
+                 'CoreWebView2Environment.GetAvailableBrowserVersionString()')
+        try:
+            ready = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, timeout=CHECK_SECONDS,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ready = False
+        if not ready:
+            return ("decompdecomp needs the Microsoft Edge WebView2 Runtime and .NET Framework 4.8. "
+                    "Install WebView2 from https://developer.microsoft.com/microsoft-edge/webview2/ "
+                    "and any Windows updates, then start decompdecomp again.")
+        return None
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):  # over ssh, or a text console
         return ("decompdecomp opens its own window, and there's no desktop here to show it on. "
                 "Start decompdecomp from a terminal in your desktop session (or from the apps menu).")
@@ -75,6 +101,11 @@ def missing() -> str | None:
 def tell_desktop(title: str, text: str) -> None:
     """A desktop notification: started from the apps menu (an AppImage without WebKitGTK), there's no terminal to
     read what `decomp` printed. gdbus comes with GLib, which every desktop has."""
+    if IS_WINDOWS:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, title, 0x10)  # MB_ICONERROR: shortcuts have no console
+        return
     gdbus = shutil.which("gdbus")
     if not gdbus:
         return
@@ -114,15 +145,25 @@ class Window:
                 return False
             icon = self.internal / "window-icon.svg"
             icon.write_text(edition.icon_svg(), encoding="utf-8")
-            url = self.url
-            if os.environ.get("DECOMP_THEME") in ("light", "dark"):
-                url += ("&" if "?" in url else "?") + "system-theme=" + os.environ["DECOMP_THEME"]
-            argv = [SYSTEM_PYTHON, "-I", str(WINDOW_PROGRAM), "--url", url, "--title", edition.NAME,
-                    "--window-class", edition.WINDOW_CLASS, "--icon", str(icon)] + (["--dev"] if edition.DEV else [])
+            win_icon = Path(__file__).with_name("static") / ("favicon-dev.ico" if edition.DEV else "favicon.ico")
+            if IS_WINDOWS:
+                url = self.url
+                if os.environ.get("DECOMP_THEME") in ("light", "dark"):
+                    url += ("&" if "?" in url else "?") + "system-theme=" + os.environ["DECOMP_THEME"]
+                argv = [sys.executable, "-I", str(WIN_WINDOW_PROGRAM), "--url", url, "--title", edition.NAME,
+                        "--window-class", edition.WINDOW_CLASS, "--icon", str(win_icon)] + (["--dev"] if edition.DEV else [])
+            else:
+                url = self.url
+                if os.environ.get("DECOMP_THEME") in ("light", "dark"):
+                    url += ("&" if "?" in url else "?") + "system-theme=" + os.environ["DECOMP_THEME"]
+                argv = [SYSTEM_PYTHON, "-I", str(WINDOW_PROGRAM), "--url", url, "--title", edition.NAME,
+                        "--window-class", edition.WINDOW_CLASS, "--icon", str(icon)] + (["--dev"] if edition.DEV else [])
             try:
                 self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                              stderr=subprocess.STDOUT, text=True, errors="replace",
-                                             env=dict(os.environ, DECOMP_WINDOW_TOKEN=self.secret))
+                                             encoding="utf-8",
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0,
+                                             env=window_env(self.secret))
             except OSError:
                 log.exception("the window didn't start")
                 return False
@@ -165,6 +206,16 @@ class Window:
             self.on_close()
 
 
+def window_env(secret: str) -> dict[str, str]:
+    """The window program's environment. On NVIDIA's driver WebKitGTK's DMA-BUF renderer kills the window at once
+    under Wayland ("Error 71 (Protocol error) dispatching to Wayland display", the app quits with it), so there it
+    draws the older way; a user's own setting of the variable wins."""
+    env = dict(os.environ, DECOMP_WINDOW_TOKEN=secret)
+    if NVIDIA_MODULE.exists():
+        env.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+    return env
+
+
 WINDOW: Window | None = None  # set by the server (server.build)
 IN_TRAY = False  # set by cli.run when the tray icon shows: then helpers kept working have a way back
 
@@ -187,3 +238,8 @@ def token_of(user_agent: str) -> str:
     commands talking to the running app (cli.py)."""
     _, found, rest = user_agent.partition(TOKEN_AGENT)
     return rest.split(" ", 1)[0] if found else ""
+
+
+def request_token(request) -> str:
+    """The window secret a request's user agent carries; URLs and cookies must not grant access to the app."""
+    return token_of(request.headers.get("user-agent", ""))

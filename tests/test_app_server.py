@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+import threading
 import time
 
 import httpx
@@ -174,6 +175,28 @@ def test_settings_never_echo_the_api_key(app):
                       headers={"X-Decomp": "1"}).json()
     assert "sk-abcdef" not in json.dumps(out) and out["api"]["has_key"]
     assert "sk-abcdef" not in json.dumps(client.get("/api/state").json())
+
+
+def test_windows_installer_route_uses_the_native_installer(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from decompnet.app.routes import setup
+
+    client, _, manager = app
+    calls = []
+    monkeypatch.setattr(kinds.sys, "platform", "win32")
+    monkeypatch.setattr(manager, "refresh_detected", lambda **kwargs: None)
+    proc = SimpleNamespace(stdout=["installed\n"], wait=lambda: 0, returncode=0)
+    monkeypatch.setattr(setup.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or proc)
+    response = client.post("/api/agents/install", json={"kind": "claude"}, headers={"X-Decomp": "1"})
+    assert response.status_code == 200
+    for _ in range(200):
+        job = client.get("/api/job", params={"id": response.json()["job"]}).json()
+        if job["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert job["state"] == "done", job
+    assert calls[0][0] == "powershell.exe" and "claude.ai/install.ps1" in calls[0][-1]
 
 
 def test_the_notice_of_the_removed_bridge_stays_dismissed(app):
@@ -369,6 +392,52 @@ def test_a_job_always_ends_and_says_why(tmp_path):
     assert "reading the ROM" in logged and "KeyError" in logged and "Traceback" in logged
 
 
+def test_a_cancelled_job_stops_at_its_next_checkpoint(tmp_path):
+    from decompnet.app.support import Jobs
+
+    jobs = Jobs()
+    at_step = threading.Event()
+    finish_step = threading.Event()
+
+    def work(log):
+        at_step.set()
+        finish_step.wait(2)
+        log.check_cancel()
+
+    jid = jobs.start("restore", work)
+    assert at_step.wait(1)
+    assert jobs.cancel(jid)
+    finish_step.set()
+    for _ in range(100):
+        if jobs.jobs[jid]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[jid]["state"] == "cancelled"
+
+
+def test_cancellation_accepted_before_a_job_returns_cannot_report_success():
+    from decompnet.app.support import Jobs
+
+    jobs = Jobs()
+    entered, finish = threading.Event(), threading.Event()
+
+    def work(log):
+        entered.set()
+        assert finish.wait(2)
+        return {"slug": "must-not-open"}
+
+    jid = jobs.start("restore", work)
+    assert entered.wait(1)
+    assert jobs.cancel(jid)
+    finish.set()
+    for _ in range(100):
+        if jobs.jobs[jid]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[jid]["state"] == "cancelled"
+    assert jobs.jobs[jid]["result"] is None
+
+
 def test_the_log_can_be_read_from_the_gui(app):
     client, _, _ = app
     res = client.get("/api/log")
@@ -522,14 +591,43 @@ def test_decomp_stop_stops_a_running_1_0_2_and_says_so_only_when_it_has(tmp_path
 def test_paths_are_picked_in_the_systems_own_chooser(app, tmp_path, monkeypatch):
     """"Open a saved project" asked for two typed paths: the window shows files' contents to the page, never where
     they are. The system's chooser (picker.py, run like the window by the system's python3) answers with the path."""
-    from decompnet.app import window
+    import subprocess
 
-    fake = tmp_path / "python3"
-    fake.write_text('#!/bin/sh\n[ "$3" = folder ] && echo /home/you/saves/mario || exit 1\n')  # cancels a file
-    fake.chmod(0o755)
-    monkeypatch.setattr(window, "SYSTEM_PYTHON", str(fake))
+    from decompnet.app import picker, window
+
+    monkeypatch.setattr(window, "IS_WINDOWS", False)
+    monkeypatch.setattr(window, "SYSTEM_PYTHON", str(tmp_path / "python3"))
+    monkeypatch.setattr(picker.subprocess, "run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 0 if argv[3] == "folder" else 1,
+                                                    stdout="/home/you/saves/mario\n", stderr=""))
     client, _, _ = app
     pick = lambda d: client.post("/api/pick", json=d, headers={"X-Decomp": "1"})  # noqa: E731
     assert pick({"kind": "folder", "title": "The save"}).json() == {"path": "/home/you/saves/mario"}
     assert pick({"kind": "file"}).json() == {"path": ""}
     assert pick({"kind": "/etc/passwd"}).status_code == 400
+
+
+def test_windows_path_picker_uses_the_apps_python(app, monkeypatch):
+    """Windows has no /usr/bin/python3: run the native chooser with the app's own Python."""
+    import subprocess
+    import sys
+
+    from decompnet.app import picker, window
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="C:\\Users\\you\\save\n", stderr="")
+
+    monkeypatch.setattr(window, "IS_WINDOWS", True)
+    monkeypatch.setattr(picker, "subprocess", type("Subprocess", (), {
+        "run": staticmethod(run), "TimeoutExpired": subprocess.TimeoutExpired,
+        "CREATE_NO_WINDOW": 0x08000000,
+    }))
+    client, _, _ = app
+    response = client.post("/api/pick", json={"kind": "folder"}, headers={"X-Decomp": "1"})
+
+    assert response.json() == {"path": "C:\\Users\\you\\save"}
+    assert calls[0][0][0] == sys.executable
+    assert calls[0][1]["creationflags"] == 0x08000000

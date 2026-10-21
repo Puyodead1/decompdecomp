@@ -101,16 +101,30 @@ function parseRom(buf) {
 }
 
 /* What the user dropped, from its first bytes (nothing is uploaded until they confirm). */
-const platformName = (p) => (p === "gcwii" ? "GameCube or Wii" : consoleOf(p)?.name || "");
+const platformName = (p) => ({ gcwii: "GameCube or Wii", playstation: "PlayStation 1 or 2" }[p] || consoleOf(p)?.name || "");
 /* What installing a console's proprietary compiler pack (its first pack) means, and how its compiler is picked. */
 const CW_PACK = {
   mwcc: { title: "CodeWarrior", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "Not sure? Keep the default; you can change it later in configure.py if functions don't match." },
   msvc: { title: "Visual C++", text: "Install Visual C++ 6.0, 7.0, 7.1 and 8.0 SP1, the compilers most PC games of 1998-2008 were built with (about 95 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "decompdecomp reads which Visual C++ built the game from the program itself when it can; you can change it later in tools/configure.py. The functions are found by Ghidra (installed once, 540 MB, needs Java 21+)." },
+  mwccarm: { title: "CodeWarrior for DS", text: "Install CodeWarrior for DS, the 24 compiler versions DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
+    note: "Not sure? Keep the default. Games mix versions: a file the game built with another one gets it later, when a helper finds the version its functions match with." },
 };
 const packOf = (p) => CW_PACK[consoleOf(p)?.packs[0]] ? consoleOf(p).packs[0] : "mwcc";
 const MB = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KiB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MiB`);
+
+/* A DS ROM (consoles/nds/scratch.is_nds): the header's own CRC-16 is right and the ARM9 program sits in main RAM. */
+function isNds(head, dv) {
+  if (head.length < 0x200) return false;
+  let crc = 0xffff;
+  for (let i = 0; i < 0x15e; i++) {
+    crc ^= head[i];
+    for (let b = 0; b < 8; b++) crc = crc & 1 ? (crc >>> 1) ^ 0xa001 : crc >>> 1;
+  }
+  const off = dv.getUint32(0x20, true), entry = dv.getUint32(0x24, true), ram = dv.getUint32(0x28, true), size = dv.getUint32(0x2c, true);
+  return crc === dv.getUint16(0x15e, true) && off >= 0x200 && ram >= 0x02000000 && ram < 0x02400000 && entry >= ram && entry < ram + size;
+}
 
 function identifyHead(head, file) {
   const dv = new DataView(head.buffer);
@@ -119,10 +133,13 @@ function identifyHead(head, file) {
   const stem = file.name.replace(/\.[^.]*$/, "");
   const base = { title: stem, size: file.size };
   const pe = text(0, 2) === "MZ" && head.length >= 0x40 ? dv.getUint32(0x3c, true) : 0;
+  if (isNds(head, dv)) return { ...base, platform: "nds", order: "DS ROM", code: ascii(12, 16), title: ascii(0, 12) || stem, entry: dv.getUint32(0x24, true) };
   if (pe && pe + 0x1a <= head.length && text(pe, pe + 4) === "PE\0\0" && dv.getUint16(pe + 4, true) === 0x14c && dv.getUint16(pe + 24, true) === 0x10b)
     return { ...base, platform: "win32", order: "Windows program (.exe)", entry: dv.getUint32(pe + 52, true) + dv.getUint32(pe + 40, true) };
-  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001" || text(0x9311, 0x9316) === "CD001") return { ...base, platform: "ps2", order: "disc image" };
-  if (text(0, 8) === "MComprHD") return { ...base, platform: "ps2", order: "CHD disc image" };
+  if (text(0, 8) === "PS-X EXE") return { ...base, platform: "ps", order: "PS-X EXE program", entry: dv.getUint32(0x10, true) };
+  // which PlayStation a disc is for, its SYSTEM.CNF says (the server reads it)
+  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001" || text(0x9311, 0x9316) === "CD001") return { ...base, platform: "playstation", order: "disc image" };
+  if (text(0, 8) === "MComprHD") return { ...base, platform: "playstation", order: "CHD disc image" };
   if (text(0, 4) === "\x7fELF" && head[5] === 1 && dv.getUint16(18, true) === 8) return { ...base, platform: "ps2", order: "ELF program", entry: dv.getUint32(24, true) };
   if (head.length > 0x60 && dv.getUint32(0x1c) === 0xc2339f3d) return { ...base, platform: "gc", order: "disc image", code: ascii(0, 6), title: ascii(0x20, 0x80) || stem };
   if (head.length > 0x60 && dv.getUint32(0x18) === 0x5d1c9ea3) return { ...base, platform: "wii", order: "disc image", code: ascii(0, 6), title: ascii(0x20, 0x80) || stem };
@@ -147,7 +164,8 @@ function notSupported(head, file) {
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
   const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
   if (text(0, 2) === "MZ") return "That's a 64-bit or non-x86 Windows program (or a DOS one). decompdecomp starts PC games from their 32-bit x86 .exe.";
-  if (text(0, 8) === "PS-X EXE" || ["gba", "nds"].includes(ext)) return "PlayStation 1, Game Boy Advance and DS games aren't supported in this version. For those, continue a public decomp.";
+  if (ext === "nds") return "That doesn't look like a DS ROM: its header's checksum is wrong. Try a clean dump of your cartridge.";
+  if (ext === "gba") return "Game Boy Advance games aren't supported in this version. For those, continue a public decomp.";
   if (text(0, 4) === "XEX2" || ext === "xex") return "That's an Xbox 360 program. Xbox 360 games aren't supported yet.";
   if (["nsp", "xci", "nso", "nro", "nca"].includes(ext) || text(0, 4) === "NSO0" || text(0, 4) === "PFS0") return "That's a Nintendo Switch file. Switch games aren't supported yet.";
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
@@ -228,6 +246,10 @@ $("mwAccept").addEventListener("change", updateAnalyse);
 function fillCompilers(select, current, platform) {
   const own = (consoleOf(platform)?.compilers || []).map((c) => c.id);  // the console's compilers
   const tcs = (S.st?.toolchains || []).filter((t) => t.kind === "compiler" && (!own.length || own.includes(t.id)));
+  if (own.length && !tcs.length) {  // versions of a compiler pack (DS's CodeWarriors), not toolchains of their own
+    select.innerHTML = consoleOf(platform).compilers.map((c) => `<option value="${esc(c.id)}" ${c.id === current ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+    return;
+  }
   select.innerHTML = tcs.map((t) => {
     const note = !t.supported ? " (not available on this computer)" : t.installed ? "" : t.license === "proprietary" ? " (install in Compilers & tools)" : " (will be installed)";
     return `<option value="${esc(t.id)}" ${t.id === current ? "selected" : ""} ${t.supported ? "" : "disabled"}>${esc(t.name)} · ${esc(t.use)}${note}</option>`;
@@ -242,6 +264,7 @@ async function runImport(query, file, title, name = "") {
   $("busyStep").textContent = "starting";
   $("jobLog").textContent = "";
   $("impUp").hidden = !(file instanceof Blob);
+  $("impWork").hidden = file instanceof Blob;
   const t0 = Date.now();
   const tick = setInterval(() => {
     const s = Math.round((Date.now() - t0) / 1000);
@@ -256,6 +279,7 @@ async function runImport(query, file, title, name = "") {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }
     $("impUp").hidden = true;
+    $("impWork").hidden = false;
     const res = await followJob(started.job, $("jobLog"), (log) => {
       const last = log.filter((l) => l.trim()).pop();
       if (last) $("busyStep").textContent = last.trim().replace(/\s+/g, " ").slice(0, 120);
@@ -264,7 +288,7 @@ async function runImport(query, file, title, name = "") {
     location.hash = `#/p/${res.slug}`;
   } catch (e) {
     importFailed(name || title.replace(/^\w+ |…$/g, ""), e, $("jobLog").textContent);
-  } finally { clearInterval(tick); $("busyTime").textContent = ""; }
+  } finally { clearInterval(tick); $("busyTime").textContent = ""; $("impWork").hidden = true; }
 }
 
 /* A failed import stays on screen with what happened, ready to report: a toast is gone before it's read. */
@@ -342,27 +366,114 @@ document.addEventListener("click", async (e) => {
 
 /* Open a saved project (app/saves.py): a save folder, or the git repository it was pushed to, and the user's own copy
    of the game (never in the save). Like an import, it runs in the background and opens the project when it's done. */
+let restoreJob = null, restoreInput = { source: "", path: "", own: false }, restorePolling = false;
+let restoreStarting = false, restoreCancelling = false, restoreError = "";
+const restoreBusy = () => restoreStarting || restoreJob?.state === "running";
+function renderRestore() {
+  if (!$("rsGo")) return;
+  const busy = restoreBusy();
+  $("rsGo").disabled = busy || !restoreInput.own;
+  $("rsGo").textContent = busy ? "Opening…" : "Open it";
+  $("rsCancel").disabled = restoreCancelling;
+  $("rsCancel").textContent = restoreCancelling ? "Cancelling…" : busy ? "Cancel opening" : "Cancel";
+  for (const id of ["rsSource", "rsGame", "rsOwn"]) $(id).disabled = busy;
+  $("dialogBody").querySelectorAll("[data-pick]").forEach((b) => { b.disabled = busy; });
+  showJobError($("rsLog"), restoreError || restoreJob?.error || "");
+  // showJobError clears the log when there is no error. Clear first, then paint the latest poll's lines.
+  $("rsLog").textContent = restoreStarting ? "Starting saved project…" : (restoreJob?.log || []).join("\n");
+  $("rsLog").hidden = !$("rsLog").textContent;
+}
 function openRestore() {
+  const running = restoreBusy();
   const body = dialog("Open a saved project", `<p class="muted">Your progress on a game, saved by decompdecomp (on this computer or another one): the matched C, notes, names and settings. The game itself is never in a save: you add your own copy, and decompdecomp checks it's the same game.</p>
     <label class="field"><span>The save: its folder, or the git address you pushed it to</span><span class="pick-row"><input id="rsSource" class="mono" placeholder="/home/you/saves/my-game, or a git address"><button class="ghost small-btn" type="button" data-pick="folder" data-for="rsSource" data-title="The saved project's folder">Choose…</button></span></label>
     <label class="field"><span>Your copy of the game: its path on this computer</span><span class="pick-row"><input id="rsGame" class="mono" placeholder="/home/you/games/my-game.z64"><button class="ghost small-btn" type="button" data-pick="file" data-for="rsGame" data-title="Your copy of the game">Choose…</button></span></label>
     <label class="check"><input type="checkbox" id="rsOwn"><span>This is my own copy of this game, obtained legally. The results stay with me for my own use.</span></label>
-    <div class="row"><button class="primary" id="rsGo" type="button" disabled>Open it</button><button class="ghost" data-close type="button">Cancel</button></div>
-    <pre class="joblog tall" id="rsLog" hidden></pre>`, "restore");
-  body.querySelector("#rsOwn").onchange = (e) => { $("rsGo").disabled = !e.target.checked; };
+    <div class="row"><button class="primary" id="rsGo" type="button" disabled>${running ? "Opening…" : "Open it"}</button><button class="ghost" id="rsCancel" type="button">${running ? "Cancel opening" : "Cancel"}</button></div>
+    <pre class="joblog tall" id="rsLog"${running ? "" : " hidden"}></pre>`, "restore");
+  $("rsSource").value = restoreInput.source;
+  $("rsGame").value = restoreInput.path;
+  $("rsOwn").checked = restoreInput.own;
+  const remember = () => {
+    restoreInput = { source: $("rsSource").value, path: $("rsGame").value, own: $("rsOwn").checked };
+    renderRestore();
+  };
+  $("rsSource").oninput = remember;
+  $("rsGame").oninput = remember;
+  $("rsOwn").onchange = remember;
+  body.querySelector("#rsCancel").onclick = async () => {
+    if (restoreBusy()) {
+      restoreCancelling = true;
+      renderRestore();
+      // A pending opening request has no ID yet; cancel it as soon as its ID arrives.
+      if (restoreJob?.state === "running") await cancelRestore();
+      return;
+    }
+    restoreInput = { source: "", path: "", own: false };
+    restoreJob = null; restoreError = "";
+    closeDialog();
+  };
   body.querySelector("#rsGo").onclick = async () => {
-    const source = $("rsSource").value.trim(), path = $("rsGame").value.trim();
-    if (!source || !path) return showJobError($("rsLog"), "Say where the save is and where your copy of the game is.");
-    $("rsGo").disabled = true;
-    showJobError($("rsLog"), "");
+    if (restoreBusy() || !restoreInput.own) return;
+    const source = restoreInput.source.trim(), path = restoreInput.path.trim();
+    if (!source || !path) {
+      restoreError = "Say where the save is and where your copy of the game is.";
+      renderRestore(); return;
+    }
+    restoreStarting = true; restoreJob = null; restoreError = "";
+    renderRestore();
     try {
       const { job } = await api("/api/restore", { method: "POST", body: { source, path, confirmed: true } });
-      const r = await followJob(job, $("rsLog"));
-      toast(`${plural(r.matched || 0, "matched function")} back${r.lost && r.lost.length ? `; ${r.lost.length} no longer match` : ""}.`, "match");
-      closeDialog();
-      loadNav();
-      location.hash = `#/p/${r.slug}`;
-    } catch (e) { if ($("rsLog")) { showJobError($("rsLog"), e.message); $("rsGo").disabled = false; } }
+      restoreJob = { id: job, state: "running", log: [] };
+      restoreStarting = false;
+      if (restoreCancelling) await cancelRestore();
+      renderRestore();
+      await watchRestore(job);
+    } catch (e) {
+      restoreStarting = false; restoreCancelling = false; restoreError = e.message;
+      renderRestore();
+    }
   };
+  renderRestore();
+  if (restoreJob?.state === "running") watchRestore(restoreJob.id);
 }
 
+async function cancelRestore() {
+  try {
+    await api("/api/job/cancel", { method: "POST", body: { id: restoreJob.id } });
+    // A failed status request must not leave an accepted cancellation invisible until the drawer is reopened.
+    if (restoreJob?.state === "running") watchRestore(restoreJob.id);
+  } catch (e) {
+    restoreCancelling = false;
+    restoreError = e.message;
+    renderRestore();
+  }
+}
+
+async function watchRestore(id) {
+  if (restorePolling || restoreJob?.id !== id || restoreJob.state !== "running") return;
+  restorePolling = true;
+  try {
+    for (;;) {
+      const job = await api(`/api/job?id=${id}`);
+      restoreJob = job;
+      if (job.state !== "running") {
+        restoreCancelling = false;
+        restoreError = "";
+        renderRestore();
+        if (job.state !== "done") return;
+        restoreInput = { source: "", path: "", own: false };
+        restoreJob = null; restoreError = "";
+        toast(`${plural(job.result.matched || 0, "matched function")} back${job.result.lost && job.result.lost.length ? `; ${job.result.lost.length} no longer match` : ""}.`, "match");
+        if (S.dialogKind === "restore") closeDialog();
+        loadNav(); location.hash = `#/p/${job.result.slug}`;
+        return;
+      }
+      renderRestore();
+      await sleep(JOB_POLL_MS);
+    }
+  } catch (e) {
+    restoreError = e.message;
+    renderRestore();
+  } finally { restorePolling = false; }
+}

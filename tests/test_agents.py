@@ -210,6 +210,28 @@ def test_claude_offers_each_version_as_well_as_the_latest():
     assert agents.helper_name("claude", "opus", set()) == "claude-opus-1"  # the alias keeps its old record
 
 
+def test_every_helper_with_an_effort_offers_medium_to_max(tmp_path):
+    """The launcher offered max for opencode but not xhigh, xhigh for Codex but not max, and neither for the API
+    helper (a local llama.cpp model's template wants xhigh): each one that takes an effort offers all four now."""
+    for kind in kinds.AGENTS:
+        if kind.takes_effort:
+            assert {"medium", "high", "xhigh", "max"} <= set(kind.describe()["efforts"]), kind.id
+    cmd, _ = kinds.get("codex").session_command("codex", tmp_path, URL, "token", "gpt-5.5#max")
+    assert 'model_reasoning_effort="max"' in cmd
+
+
+def test_claude_helpers_think_as_hard_as_the_launcher_says(tmp_path):
+    """The launcher sends an effort with the model's name ("opus#xhigh", as for opencode); Claude Code takes it as
+    --effort, and an effort-less helper gets none (the model's default)."""
+    claude = kinds.get("claude")
+    assert claude.describe()["takes_effort"] and "xhigh" in claude.describe()["efforts"]
+    cmd, _ = claude.session_command("claude", tmp_path, URL, "token", "opus#xhigh")
+    assert cmd[-4:] == ["--model", "opus", "--effort", "xhigh"]
+    cmd, _ = claude.session_command("claude", tmp_path, URL, "token", "opus")
+    assert cmd[-2:] == ["--model", "opus"] and "--effort" not in cmd
+    assert agents.helper_name("claude", "opus#xhigh", set()) == "claude-opus-xhigh-1"  # a record of its own
+
+
 # ---------------------------------------------------------------------------------- helpers as records
 
 URL = "http://127.0.0.1:1/mcp"
@@ -308,6 +330,22 @@ def test_the_prompt_gives_the_compile_budget_the_guide_gives(tmp_path, monkeypat
     assert network.stall_budget_text() in m._prompt(s) and "8 claims" in m._prompt(s)
 
 
+def test_a_project_started_from_scratch_isnt_called_a_public_decomp(tmp_path, monkeypatch):
+    """Told a new DS project was "a public matching-decompilation project", a model spent its first 7 minutes
+    looking for the project's conventions in config/ and build.ninja; on an N64 game one went to fetch
+    the finished public decomp. Every prompt says code from outside the project is out."""
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    s = agents.Session("1", "claude", "claude-1", "game", "claude-1", {})
+    for origin, says in (("scratch", "no upstream project"), (None, "a public matching-decompilation project")):
+        monkeypatch.setattr(net, "overview", lambda slug, o=origin: {"kind": "fork", "origin": o, "title": "Game",
+                                                                     "platform": "nds", "platform_name": "Nintendo DS"})
+        assert says in m._prompt(s) and "Never fetch or copy code from outside this project" in m._prompt(s)
+    monkeypatch.setattr(net, "overview", lambda slug: {"kind": "rom", "title": "Game", "platform": "n64",
+                                                      "compiler": {"toolchain": "gcc-2.7.2-kmc"}})
+    assert "Never fetch or copy code from outside this project" in m._prompt(s)
+
+
 def test_stopping_a_helper_frees_its_function_at_once(tmp_path, quiet):
     """A stopped helper's claim used to wait for its thread to notice (an API helper waits on its model meanwhile):
     removed from the list, it showed up as a "connected agent" without a Stop button."""
@@ -320,6 +358,46 @@ def test_stopping_a_helper_frees_its_function_at_once(tmp_path, quiet):
     m.stop(sid)
     assert net.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
     assert net.store.one("SELECT stopped_by FROM helpers WHERE id=?", sid)["stopped_by"] == agents.BY_YOU
+
+
+def test_removing_a_room_helper_releases_its_function_at_the_host(tmp_path, quiet, monkeypatch):
+    """A helper's local claim is only a mirror in a room: the host must hear when it is removed, too."""
+    monkeypatch.setattr(agents, "detect", lambda quick=False: [])
+    monkeypatch.setattr(agents.Manager, "_strays", lambda self: set())
+    guest_root, host_root = tmp_path / "guest", tmp_path / "host"
+    guest_root.mkdir()
+    host_root.mkdir()
+    net, host = _game(guest_root), _game(host_root)
+    m = agents.Manager(net, tmp_path, URL)
+    (sid,) = m.start("api", "game", 1, {"model": "deepseek-chat", "provider_name": "DeepSeek"})
+    helper, _ = net.local_agent(m.sessions[sid].agent_name)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO claims VALUES((SELECT id FROM functions WHERE name='f0'),?,?,?)", (helper.id, 0, 1e12))
+    host_agent, _ = host.local_agent(f"alex.{helper.name}")
+    host.claim_row(host_agent, "game", "f0")
+
+    class RoomLink:
+        def __init__(self):
+            self.releases = []
+
+        def call(self, route, agent, /, **data):
+            assert route == "/collab/release"
+            self.releases.append((route, agent.name, data["function"]))
+            host.release(host_agent, data["function"], data["notes"], "game")
+
+    room = net.links["game"] = RoomLink()
+    m.remove(sid)
+
+    assert room.releases == [("/collab/release", helper.name, "f0")]
+    claims = net.store.one("SELECT COUNT(*) AS n FROM claims")
+    helpers = net.store.one("SELECT COUNT(*) AS n FROM helpers")
+    assert claims is not None and claims["n"] == 0
+    assert helpers is not None and helpers["n"] == 0
+    host_claims = host.store.one("SELECT COUNT(*) AS n FROM claims")
+    released = host.store.one("SELECT kind FROM events WHERE agent_id=? AND detail='f0' ORDER BY id DESC LIMIT 1",
+                              host_agent.id)
+    assert host_claims is not None and host_claims["n"] == 0
+    assert released is not None and released["kind"] == "release"
 
 
 def test_a_failing_helper_starts_again_then_pauses_with_the_error(tmp_path, monkeypatch):
@@ -417,6 +495,10 @@ def test_quitting_ends_everything_a_helper_started(tmp_path):
     proc.wait(10)
 
     def alive(pid: int) -> bool:  # (a process that ended but nobody collected yet counts as ended)
+        if sys.platform == "win32":
+            from .test_platform import _alive
+
+            return _alive(pid)
         try:
             return open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z"
         except OSError:
@@ -426,6 +508,13 @@ def test_quitting_ends_everything_a_helper_started(tmp_path):
             break
         time.sleep(0.1)
     assert not alive(service) and s.state == "stopped" and s.stopped_by == agents.BY_QUIT
+
+
+def test_startup_without_proc_filesystem(tmp_path, monkeypatch):
+    """Windows has no /proc: starting with no previous helper groups must still work."""
+    monkeypatch.setattr(agents, "PROCFS", tmp_path / "proc")
+    m = agents.Manager(RomNetwork(tmp_path / "app.db", tmp_path), tmp_path, URL)
+    assert m._strays() == set()
 
 
 def test_finding_the_installed_agents_never_holds_up_a_page(tmp_path, monkeypatch):
@@ -505,6 +594,60 @@ def test_the_api_helper_folds_each_finished_function_into_a_line(tmp_path, monke
     assert (row["turns"], row["tool_calls"], row["outcome"]) == (4, 4, "ok")
 
 
+@pytest.mark.parametrize("answer, said", [
+    ({"choices": [{"message": {"role": "assistant", "content": "int f(void) { return 0; }"}}]}, "without calling a tool"),
+    ({"error": "Unexpected endpoint or method"}, "often ends in /v1"),
+])
+def test_an_api_helper_that_never_starts_says_why(tmp_path, monkeypatch, answer, said):
+    """A model fine-tuned to write C (in LM Studio) answered in words: the helper started again and again with an
+    empty error. LM Studio's address without /v1 failed with KeyError: 'choices'."""
+    import httpx
+
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    m.prompt = lambda s: "task"
+    s = m._record("game", "api", "api-m-1", "box #1", {"base_url": "http://mock/v1", "model": "m", "context_tokens": 32768})
+    s.stop = Quick()
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=answer)), **kw))
+    m._run(s)
+    assert said in s.error and said in s.why
+
+
+def test_the_api_helper_sends_a_thinking_models_reasoning_back(tmp_path, monkeypatch):
+    """DeepSeek in thinking mode refuses a request whose tool calls come without the reasoning that made them ("The
+    reasoning_content in the thinking mode must be passed back to the API"): two DeepSeek helpers waited out that
+    error 106 times in a day. It goes back with them; a reply without one gets none."""
+    import httpx
+
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path, functions=1)
+    m = agents.Manager(net, tmp_path, URL)
+    m.prompt = lambda s: "task"
+    s = m._record("game", "api", "api-m-1", "box #1", {"base_url": "http://mock/v1", "model": "m", "per_session": 1,
+                                                       "context_tokens": 32768})
+    s.stop = Quick()
+    monkeypatch.setattr(agents.tools, "call", lambda net, agent, slug, name, args: "## CLAIMED: game/f0")
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content)["messages"])
+        msg = {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{len(sent)}", "type": "function",
+                                                                     "function": {"name": "claim_function", "arguments": "{}"}}]}
+        if len(sent) == 1:
+            msg["reasoning_content"] = "The smallest function first."
+        elif len(sent) == 3:
+            msg = {"role": "assistant", "content": "done"}
+        return httpx.Response(200, json={"choices": [{"message": msg}]})
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    m._run(s)
+    turns = [x for x in sent[2] if x["role"] == "assistant"]
+    assert turns[0]["reasoning_content"] == "The smallest function first." and "reasoning_content" not in turns[1]
+
+
 def test_each_models_cost_per_match_cheapest_first(tmp_path, quiet):
     """The Agents view says what each model cost on a game, to tell which models to run more of: cheapest per match
     first, models that matched nothing last."""
@@ -518,3 +661,38 @@ def test_each_models_cost_per_match_cheapest_first(tmp_path, quiet):
     # a model counted only in tokens isn't the cheapest: it comes after the priced ones
     assert [r["model"] for r in m.costs("game")] == ["deepseek-v4.1-flash", "claude-opus-5.5", "local-qwen", "muse-1.3"]
     assert m.costs("other") == []
+
+
+def test_codex_and_api_helpers_take_an_effort_too(tmp_path, monkeypatch):
+    """Codex gets it as its model_reasoning_effort setting (from the model's name, as Claude Code and opencode);
+    an API helper, whose model is its endpoint's, as the `effort` option, sent as OpenAI's reasoning_effort."""
+    codex = kinds.get("codex")
+    monkeypatch.setattr("decompnet.agents.codex.codex_config", lambda: {})
+    cmd, _ = codex.session_command("codex", tmp_path, URL, "token", "gpt-5#xhigh")
+    assert cmd[-5:] == ["-c", 'model_reasoning_effort="xhigh"', "-m", "gpt-5", "-"]
+    cmd, _ = codex.session_command("codex", tmp_path, URL, "token", 'gpt-5#"high"')  # its own words only
+    assert not any("model_reasoning_effort" in c for c in cmd)
+    api = kinds.get("api")
+    assert api.describe()["takes_effort"] and api.describe()["efforts"] == ["minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+def test_an_api_helper_asks_its_model_for_the_effort_it_was_given(tmp_path, monkeypatch):
+    import httpx
+
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    m.prompt = lambda s: "task"
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    for effort in ("high", None):
+        options = {"base_url": "http://mock/v1", "model": "m", "context_tokens": 32768} | ({"effort": effort} if effort else {})
+        s = m._record("game", "api", f"api-m-{effort}", "box #1", options)
+        s.stop = Quick()
+        m._run(s)
+        assert sent[-1].get("reasoning_effort") == effort  # none at all without one: the model's default

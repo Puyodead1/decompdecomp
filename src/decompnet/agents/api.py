@@ -61,6 +61,10 @@ class Api(Agent):
     docs = "https://api-docs.deepseek.com"
     recommended = True  # decompdecomp runs its whole loop, and no other program's update can break it
     uses_endpoints = True
+    # OpenAI's reasoning_effort, which OpenAI-compatible servers with reasoning models take; which words a model knows
+    # is its own (a llama.cpp model's chat template took xhigh, medium and low, and refused high and max, saying so)
+    takes_effort = True
+    efforts = ("minimal", "low", "medium", "high", "xhigh", "max")
 
     def label(self, name: str, options: dict, used: set[str]) -> str:
         """By its endpoint, numbered: "gpu-box #2" says which machine it runs on."""
@@ -103,8 +107,10 @@ class Api(Agent):
                     return True
                 for _attempt in range(API_TRIM_RETRIES):
                     fit(messages, budget, keep=start)
-                    r = client.post(f"{base}/chat/completions", headers=headers,
-                                    json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
+                    request = {"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"}
+                    if s.options.get("effort"):
+                        request["reasoning_effort"] = s.options["effort"]
+                    r = client.post(f"{base}/chat/completions", headers=headers, json=request)
                     if r.status_code == 200 or not _too_long(r):
                         break
                     budget = int(budget * API_TRIM_FACTOR)  # the server counts differently, or knows better: trim more
@@ -121,8 +127,15 @@ class Api(Agent):
                                    "Studio: Context Length) and set it in Agents & models")
                     s.push("error", s.error)
                     return False
-                reply = r.json()
-                msg = reply["choices"][0]["message"]
+                try:
+                    reply = r.json()
+                    msg = reply["choices"][0]["message"]
+                except (ValueError, KeyError, IndexError, TypeError):  # LM Studio's address without /v1 answers so
+                    s.error = (f"{base}/chat/completions answered with no reply from a model ({r.text[:ERROR_SHOWN]}): "
+                               "the address must be the API's own, which often ends in /v1 (LM Studio: "
+                               "http://127.0.0.1:1234/v1)")
+                    s.push("error", s.error)
+                    return False
                 if isinstance(reply.get("usage"), dict):
                     manager.account(s, api_usage(reply["usage"]))
                 if msg.get("reasoning_content"):
@@ -130,8 +143,17 @@ class Api(Agent):
                 if msg.get("content"):
                     s.push("text", msg["content"])
                 calls = msg.get("tool_calls") or []
-                messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")} | {"role": "assistant"})
+                # its reasoning goes back with the calls it made: DeepSeek's thinking mode refuses the next request
+                # without it ("The reasoning_content in the thinking mode must be passed back to the API": 106 times
+                # in a day, each a 5-10 minute wait); servers that don't send one get none back
+                messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "reasoning_content")}
+                                | {"role": "assistant"})
                 if not calls:
+                    if not used_tool:  # a model that can't call tools answers in words, and never starts
+                        s.error = (f"{model} answered in words without calling a tool: helpers work through tools "
+                                   "(claim_function, compile_and_diff...), so the model must support tool calls "
+                                   "(function calling). A model trained only to write C can't be a helper")
+                        s.push("error", s.error)
                     return used_tool
                 finishing = False
                 for c in calls:

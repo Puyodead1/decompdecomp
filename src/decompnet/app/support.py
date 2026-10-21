@@ -95,26 +95,44 @@ class Jobs:
 
     def __init__(self, log_path: Path | None = None):
         self.jobs: dict[str, dict] = {}
+        self.cancel_events: dict[str, threading.Event] = {}
+        self._lock = threading.Lock()
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decompdecomp")
 
     def start(self, kind: str, fn) -> str:
         jid = uuid.uuid4().hex[:JOB_ID_CHARS]
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None, "t": time.time()}
+        cancel = self.cancel_events[jid] = threading.Event()
         self.jobs[jid] = job
         logger = self.logger
         logger.info("job %s %s started", kind, jid)
 
         def log(line: str) -> None:
+            check_cancel()
             job["log"].append(str(line))
             logger.info("[%s %s] %s", kind, jid[:6], line)
 
+        def check_cancel() -> None:
+            if cancel.is_set():
+                raise RuntimeError("opening the saved project was cancelled")
+
+        log.check_cancel = check_cancel
+
         def run():
             try:
-                job["result"] = fn(log)
-                job["state"] = "done"
+                result = fn(log)
+                with self._lock:
+                    check_cancel()
+                    job["result"] = result
+                    job["state"] = "done"
                 logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
             except BaseException as e:  # noqa: BLE001  a job must end, whatever went wrong
+                if cancel.is_set():
+                    job["error"] = "Opening the saved project was cancelled."
+                    job["state"] = "cancelled"
+                    logger.info("job %s %s cancelled", kind, jid)
+                    return
                 if getattr(e, "details", None):  # what the tool said, in full
                     job["trace"] = str(e.details)[-DETAILS_CHARS:]
                 elif not isinstance(e, (NetworkError, RomError, ValueError)):
@@ -126,6 +144,14 @@ class Jobs:
                     raise
         threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
         return jid
+
+    def cancel(self, jid: str) -> bool:
+        with self._lock:
+            job = self.jobs.get(jid)
+            if not job or job["state"] != "running":
+                return False
+            self.cancel_events[jid].set()
+            return True
 
 
 class Settings:

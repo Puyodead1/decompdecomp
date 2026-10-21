@@ -33,9 +33,12 @@ class ClaudeCode(Agent):
     command = "claude"
     vendor = "Anthropic"
     install = "curl -fsSL https://claude.ai/install.sh | bash"
+    windows_install = "irm https://claude.ai/install.ps1 | iex"
     signin = "Open a terminal, run `claude` and sign in with /login."
     docs = "https://docs.claude.com/en/docs/claude-code"
     family = "claude"
+    takes_effort = True  # `claude --effort`: the launcher sends it with the model's name ("opus#high")
+    efforts = ("low", "medium", "high", "xhigh", "max")
 
     def models(self, path: str | None, run: bool = True) -> list[dict]:
         """Its aliases (always the newest of each kind), then each version on its own."""
@@ -52,7 +55,8 @@ class ClaudeCode(Agent):
                        encoding="utf-8")
         cmd = [exe, "-p", "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
                "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools", DISALLOWED]
-        return cmd + (["--model", model] if model else []), {}
+        model, _, effort = (model or "").partition("#")
+        return cmd + (["--model", model] if model else []) + (["--effort", effort] if effort else []), {}
 
     def parse(self, event: dict, state: dict) -> list[tuple[str, str] | None]:
         t = event.get("type")

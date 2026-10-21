@@ -11,6 +11,13 @@ NODE = shutil.which("node")
 GUI_TIMEOUT_SECONDS = 60
 
 
+def test_saved_project_dialog_preserves_state_and_cancels_pending_requests():
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_restore.js"))], check=True,
+                   capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)
+
+
 @pytest.fixture(scope="module")
 def gui():
     if NODE is None:
@@ -20,6 +27,16 @@ def gui():
     result = json.loads(out.stdout)
     assert result["errors"] == []
     return result
+
+
+def test_a_ds_rom_is_told_by_its_header_as_the_server_tells_it(gui):
+    nds = gui["checks"]["nds"]
+    assert nds["good"] == ["nds", "ADQE", "DEMOQUESTDS"]
+    assert nds["broken"] is None and "checksum" in nds["said"]
+
+
+def test_an_effort_goes_only_to_an_agent_that_offers_it(gui):
+    assert gui["checks"]["efforts"] == ["opus#xhigh", "deepseek/v4", "m"]
 
 
 def test_opening_another_project_shows_nothing_from_before(gui):
@@ -73,6 +90,11 @@ def test_the_theme_button_goes_round_system_light_and_dark(gui):
     """The sidebar's button only flipped light and dark: once pressed, the system's choice was gone for good."""
     assert gui["checks"]["themes"] == ["light", "dark", ""]
     assert gui["checks"]["systemThemes"] == ["", "light", "dark", ""]
+
+
+def test_the_drop_zone_takes_playstation_programs_and_leaves_a_discs_console_to_its_system_cnf(gui):
+    """A PS-X EXE is the PS1's; a disc image could be either PlayStation's until the server reads its SYSTEM.CNF."""
+    assert gui["checks"]["dropped"] == ["ps", "playstation", "PlayStation 1 or 2", None]
 
 
 def test_each_computer_in_a_room_has_one_colour_on_every_screen(gui):

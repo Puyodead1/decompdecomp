@@ -12,33 +12,33 @@ Each feature and the platforms it covers today. A — is a gap: pick one up (the
 start). Keep this table true when a feature ships or reaches another platform. Each column's code is its console's
 folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTING.md, "Consoles").
 
-| Feature | N64 | PS2 | GameCube · Wii | Windows PC | Public decomps |
-| :-- | :-: | :-: | :-: | :-: | :-: |
-| Status | recommended | beta | beta | beta | the project's own |
-| Start from your own copy | ✓ | ✓ | ✓ | ✓ | fork by address |
-| Judge | link · compare | link · compare | objdiff | objdiff | objdiff |
-| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | ✓ Ghidra | by architecture |
-| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ Ghidra | — |
-| Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | — | — | — |
-| C++ methods drafted as `Class::method` | ✓ | ✓ | — | — | — |
-| Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Permuter on near misses | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Hand-written assembly set aside | ✓ | ✓ | ✓ | — | MIPS, PowerPC |
-| Kernel stubs set aside and named | — | ✓ | — | — | — |
-| Function-end reports (`report_boundary`) | ✓ | ✓ | — | — | — |
-| Compiler ranges and suggestions | ✓ | ✓ | the project's build | flags file by file | the project's build |
-| Flag search (`search_flags`) | ✓ | ✓ | the project's build | ✓ file by file | the project's build |
-| Compiler map and the judge's survey | ✓ | ✓ | — | — | — |
-| Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | — | — | — |
-| C++ classes from the code (`get_class`) | ✓ | ✓ | — | — | — |
-| Struct layouts from loads and stores (`guess_struct`) | ✓ | ✓ | — | — | — |
-| The game's own debug symbols: names, types, prototypes | — | ✓ symbol table, STABS | — | — | — |
-| Twins across your games | ✓ | ✓ | — | — | — |
-| Shared knowledge (two models agree) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Polish matched code (still matching) | ✓ | ✓ | — | — | — |
-| Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | the project's git | the project's git | the project's git |
-| Rebuildable export | ✓ | ✓ | the project | — | the project |
-| Rooms: decompile together | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Feature | N64 | PS1 | PS2 | GameCube · Wii | Windows PC | DS | Public decomps |
+| :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| Status | recommended | beta | beta | beta | beta | beta | the project's own |
+| Start from your own copy | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | fork by address |
+| Judge | link · compare | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff |
+| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | by architecture |
+| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | — |
+| Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | ✓ | — | — | — | — |
+| C++ methods drafted as `Class::method` | ✓ | ✓ | ✓ | — | — | — | — |
+| Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Permuter on near misses | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hand-written assembly set aside | ✓ | ✓ | ✓ | ✓ | — | BIOS call stubs | MIPS, PowerPC, ARM's BIOS stubs |
+| Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | — | — | — | — |
+| Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | — | — | — | — |
+| Compiler ranges and suggestions | ✓ | ✓ | ✓ | the project's build | flags file by file | per source file (`try_compiler`, Settings) | the project's build |
+| Flag search (`search_flags`) | ✓ | ✓ | ✓ | the project's build | ✓ file by file | the project's build | the project's build |
+| Compiler map and the judge's survey | ✓ | ✓ | ✓ | — | — | — | — |
+| Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | — | — | — |
+| C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | — | — | — |
+| Struct layouts from loads and stores (`guess_struct`) | ✓ | ✓ | ✓ | — | — | — | — |
+| The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS | — | — | — | — |
+| Twins across your games | ✓ | ✓ | ✓ | — | — | — | — |
+| Shared knowledge (two models agree) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Polish matched code (still matching) | ✓ | ✓ | ✓ | — | — | — | — |
+| Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | the project's git | the project's git | the project's git | the project's git |
+| Rebuildable export | ✓ | ✓ | ✓ | the project | — | the project | the project |
+| Rooms: decompile together | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Where to start on a gap:
 - **PowerPC (GameCube, Wii) and x86 (PC)**: class recovery and the compiler map work on a project's objects in fork
@@ -54,6 +54,47 @@ Where to start on a gap:
   A project-mode console's work is its git repository; polishing there needs objdiff to judge a rewrite.
 
 ## Recently done
+
+- **PlayStation (PS1) games from your own copy** (beta): a disc image (BIN, ISO or CHD; SYSTEM.CNF says which
+  program it boots) or its PS-X EXE, with the disc's overlays. Functions are built as PSY-Q games were: GCC 2.6.3,
+  2.7.2 or 2.8.1, then maspsx, which does what Sony's assembler ASPSX did, then GNU as; the import tries the three on
+  the game's code. BIOS call stubs and GTE code are set aside as assembly. The demo game matches function by function
+  and rebuilds byte for byte; no real game is tested from start to end yet. A disc whose boot program is a loader
+  gives the program it loads (`exe.loaded_program`), and where splat's guess at the code misses the entry point (a
+  loader that is mostly a picture: 1 function found), .text is where the code's returns and frames are (137).
+  Overlays inside an archive file (a game's areas, each with its code, one after another) are found too
+  (`overlays.embedded`): on one PS1 game, 77 overlays in a 68 MB file, 26,483 functions besides the program's 2,398.
+- **Nintendo DS games from your own copy again** (beta, #23): a ds-decomp project for the ROM, as in 1.0.2, now with
+  all 24 CodeWarrior for DS versions and a version per source file (`config/<version>/arm9/file_compilers.json`, as
+  DS decomps keep it). `try_compiler` switches a function's file to another version, or tries them `"all"`, and
+  keeps the one it matches with when the file's other matches still hold: a game whose code mixes 1.2 and 2.0
+  (1.2's `ldmia {..., lr}; bx lr` epilogue) no longer sticks at 80-95%. Machine drafts are the gap: a ds-decomp
+  project keeps no assembly for m2c to read.
+- **DS functions only pointers reach.** dsd's analysis follows calls, so callbacks, state tables and everything they
+  call stayed outside any function (77% of one game's main program), and functions calling across those gaps never
+  reached 100%. `consoles/nds/recover.py` finds them by their starts, adds their calls and pointers, and drops what
+  dsd refuses to delink: 1,784 more functions in that game, every match kept. Projects made before it get them once
+  when the app starts (`ForkEngine.reanalyse`): kept only when the rebuilt ROM is unchanged, and the project's
+  activity says so. dsd also ended `.text` at the last function it found, and the 45 KB of code after it was
+  `.rodata` to it, its 19 calls from `.text` unrelocated: `.text` now ends where that code does
+  (`recover.extend_text`), with 207 more functions and 13 source files of their own. 2,987 functions in all.
+- **A DS game rebuilt byte for byte.** The link stripped what nothing points at, and nothing points at an overlay
+  holding only data (the game loads it by number): those came out empty, every overlay after them moved, and the
+  rebuild differed in 209 overlays and every pointer to them. It links everything now (`-nodead`), and the header
+  gets the copy's secure area checksum (of the area encrypted, which a dump no longer is; dsd left it 0). The game
+  that differed rebuilds identical, its 1,784 recovered functions included. Projects made before get their build
+  fixed at start (`scratch.write_tools`, kept unless an identical rebuild stops being one).
+- **The permuter's real rewrites in forks.** decomp-permuter got no header in a fork, so it refused every
+  function ("Syntax error in base.c": `u16` was no type it knew) and only the six simple rewrites ran, in every
+  fork and on DS. It now reads what the function's file includes and declares.
+- **Model routing.** Each model's share of its claims that matched, in the project, tells the models at work
+  apart (on an N64 game free models matched 14-25% of what they claimed, stronger ones 42-77%). A model well behind
+  the strongest one at work leaves functions given up on three times to it, and the strongest takes those first;
+  near misses already go to the permuter. Nothing changes until two models have 20 claims each.
+- **Helpers' effort.** The launcher's Effort, opencode's until now, is every helper's: Claude Code's (`--effort`,
+  Low to Max with Extra high), Codex's (`model_reasoning_effort`, Minimal to Extra high) and the API helper's
+  (OpenAI's `reasoning_effort`, Minimal to High, for servers whose models reason). A model at another effort is a
+  helper of its own (`claude-opus-xhigh-1`), so its matches and spend are counted apart.
 
 - **Rooms that say what's happening** (1.0.4-alpha). A guest waiting for the host sees "Waiting for the host to let
   you in" over the project, not an empty one and a red "Room offline"; then "Getting the host's work", counting down.
@@ -89,9 +130,14 @@ Where to start on a gap:
   carries only the declarations the function uses.
 - **PS2 kernel calls named**: the stubs (`addiu v1, N; syscall; jr ra`) get the kernel call's name: 154 in GTA San
   Andreas, 129 in Ridge Racer V.
-- **Consoles as packages**: one folder per console (`consoles/<id>/`), a template and a conformance test. PS1, GBA
-  and DS are public decomps only now; the git history keeps their code.
+- **Consoles as packages**: one folder per console (`consoles/<id>/`), a template and a conformance test. PS1 and
+  GBA are public decomps only now; the git history keeps their code.
 - **Linux packages**: a `.deb`, an `.rpm` and an AppImage with their own Python, built for each release.
+- **Windows native app**: a WebView2 window, Start menu and desktop shortcuts, and a native tray icon.
+  A custom native caption follows the app's theme, with Windows resizing, snapping and drag-to-restore. Scrollbars
+  follow the page's theme too. Closing asks whether to keep helpers working. Kernel jobs end helper children after
+  a session or an app crash. Tools have pinned Windows builds; Linux-only compilers use WSL 2 with Linux-side tool
+  and build caches. Windows CI checks the native and portable code beside the existing Linux checks.
 - **Struct layouts from loads and stores** (MIPS: PlayStation 2, N64). Every load and store through a function's
   pointer arguments, the pointers loaded from them and globals, made into types along the call graph: the brief
   names each pointer argument's likely fields (offset, width, how many functions agree), `guess_struct` writes the
@@ -120,6 +166,21 @@ Where to start on a gap:
   the time against 62% for the rest, because agents guessed the layouts.
 
 ## Next
+
+### Windows distribution
+
+The Windows release MSI bundles Python and the app, creates Start and desktop shortcuts, and updates
+through the app. Next: sign the installer and check for WebView2 and WSL during setup.
+
+### Better splits reach existing ROM projects
+
+A ROM project (N64, PS2) is split once, when it's made: a better split (code splat misses, function ends, compiler
+ranges) only reaches games added after it. DS projects get theirs at start (`NDS.ANALYSIS`,
+`ForkEngine.reanalyse`): versioned, kept only when the rebuild is unchanged, and the project's activity says so.
+ROM mode needs the same, with more to carry: a split version in each project, and on start a new split whose
+functions take over the old ones' work (matches, attempts, notes, claims) by address, kept only when every matched
+function still matches and the export still rebuilds the game byte for byte. Functions the new split cuts or joins
+go back to the queue with their old attempts as notes. Each improvement to the split bumps the version.
 
 ### How much usage each agent has left
 
@@ -158,8 +219,6 @@ An image with % matched, functions and platform, for READMEs and posts. No game 
 
 ## Later
 
-- **Model routing with early escalation.** Easy functions to cheap models. After about three failed attempts, hand a
-  function to a stronger model or to the permuter. Most matches come at the first attempt.
 - **Better look-alikes.** A second measure (edit distance over opcodes) next to today's, and shared runs of
   instructions, which find inlined helpers and macros. Needs PowerPC and x86 opcode readers.
 - **Decoders for data formats.** Tools that decode N64 display lists, PS2 GS/VIF packets and GameCube GX command

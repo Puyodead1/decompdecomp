@@ -23,9 +23,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import queue
 import random
-import select
 import subprocess
 import threading
 import time
@@ -34,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import consoles, scoring, seeds, toolchains
+from ..hostenv import NO_WINDOW
 from ..network import NetworkError
 from ..permuter import mutate
 from ..project import compiler_for
@@ -55,6 +55,7 @@ MAX_INSNS = 400  # bigger near misses are left to agents: one variant takes too 
 IDLE_SECONDS = 180  # with no near misses, how long until the permuter looks again
 IDLE_LOOKS = 20  # looks in a row with nothing to do (an hour) and it's done until agents start again
 HOLD_SPARE_SECONDS = 120  # a turn's hold on a function lasts this much longer than the turn, in case it runs over
+_EOF = object()
 # decomp-permuter's weights per compiler (its default_weights.toml), by the start of a toolchain's id
 FAMILIES = (("ido", "ido"), ("gcc", "gcc"), ("ee-gcc", "gcc"), ("mwc", "mwcc"))
 
@@ -83,8 +84,18 @@ class Generator:
 
     def __init__(self, argv: list[str] | None = None):
         self.proc = subprocess.Popen(argv or generator_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL)
-        self._pending = b""
+                                     stderr=subprocess.DEVNULL,
+                                     creationflags=NO_WINDOW | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+        # Windows select() accepts sockets only. A reader thread also gives pipe reads a deadline there.
+        self._lines = queue.Queue()
+        threading.Thread(target=self._read, daemon=True, name="permuter-output").start()
+
+    def _read(self) -> None:
+        try:
+            for line in self.proc.stdout:
+                self._lines.put(line)
+        finally:
+            self._lines.put(_EOF)
 
     def batch(self, job: dict) -> list[str] | None:
         """Variants of a function's C (the job's fields: permuter_gen.py), or None when the generator can't read
@@ -96,7 +107,17 @@ class Generator:
             return None
         deadline = time.monotonic() + GENERATOR_SECONDS
         variants: list[str] | None = []
-        while (line := self._line(deadline)) is not None:
+        while True:
+            line = self._line(deadline)
+            if line is None or line is _EOF:
+                if line is _EOF:
+                    try:
+                        self.proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        pass
+                log.info("permuter: the generator stopped or hung on %s", job["function"])
+                self.close()
+                return None
             try:
                 out = json.loads(line)
             except ValueError:
@@ -110,22 +131,12 @@ class Generator:
                 variants = None
             elif variants is not None and isinstance(out.get("variant"), str):
                 variants.append(out["variant"])
-        log.info("permuter: the generator stopped or hung on %s", job["function"])
-        self.close()
-        return None
-
-    def _line(self, deadline: float) -> bytes | None:
+    def _line(self, deadline: float):
         """The generator's next line, or None when it has stopped or hasn't answered by `deadline`."""
-        while b"\n" not in self._pending:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not select.select([self.proc.stdout], [], [], remaining)[0]:
-                return None
-            chunk = os.read(self.proc.stdout.fileno(), READ_BYTES)
-            if not chunk:
-                return None
-            self._pending += chunk
-        line, self._pending = self._pending.split(b"\n", 1)
-        return line
+        try:
+            return self._lines.get(timeout=max(0, deadline - time.monotonic()))
+        except queue.Empty:
+            return None
 
     def close(self) -> None:
         if self.proc.poll() is None:
@@ -243,7 +254,8 @@ class Permuter:
         try:
             if available():
                 # (as m2c reads it: what's only for C++ made pycparser refuse GTA San Andreas's whole header)
-                header = "" if fork else seeds.c_only(self.net._context(proj["id"], fn["unit"])["header"])
+                header = seeds.c_only(self.net.forks.permuter_header(fork, fn["name"]) if fork else
+                                      self.net._context(proj["id"], fn["unit"])["header"])
                 family = weight_family(self.net.cfg(proj), fn["vram"], bool(fork))
                 try:
                     gen = Generator()

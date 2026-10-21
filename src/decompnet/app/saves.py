@@ -21,7 +21,8 @@ import threading
 import time
 from pathlib import Path
 
-from .. import consoles, toolchains
+from .. import compiler, consoles, toolchains
+from ..hostenv import stop_process_tree
 from ..network import NetworkError
 from ..rom.symbols import AUTO_NAME
 
@@ -137,8 +138,25 @@ def fetch(source: str, into: Path, log=print) -> Path:
     if not git:
         raise NetworkError("restoring from a git repository needs git: install it, or clone it yourself and pick the folder")
     log(f"cloning {source}")
-    res = subprocess.run([git, "clone", "--depth", "1", source, str(into)], capture_output=True, text=True,
-                         timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL)
+    started = time.monotonic()
+    proc = subprocess.Popen([git, "clone", "--depth", "1", source, str(into)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+    check_cancel = getattr(log, "check_cancel", lambda: None)
+    try:
+        while True:
+            check_cancel()
+            try:
+                stdout, stderr = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started > GIT_TIMEOUT:
+                    proc.kill()
+                    proc.communicate()
+                    raise NetworkError("git clone took too long; check the repository address and try again")
+    except BaseException:
+        stop_process_tree(proc)
+        raise
+    res = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     if res.returncode != 0:
         raise NetworkError(f"git couldn't clone it: {(res.stderr or res.stdout).strip()[-300:]}")
     return into
@@ -148,6 +166,7 @@ def restore(net, source: str, game: Path, log=print) -> dict:
     """Rebuild a project from a save (a folder or a git repository) and the user's own copy of the game: import it
     (or find it already imported), check it's the same game, then put back the layout, names, headers, settings and
     notes, and judge every saved function again. Returns the project and what came back."""
+    log("checking the saved project and your game copy")
     with tempfile.TemporaryDirectory(prefix="decomp-restore-") as tmp:
         folder = fetch(source, Path(tmp) / "save", log)
         try:
@@ -157,14 +176,19 @@ def restore(net, source: str, game: Path, log=print) -> dict:
         if manifest.get("format") != FORMAT:
             raise NetworkError("this save was written by another version of decompdecomp: update it, then try again")
         data = Path(game).expanduser()
+        getattr(log, "check_cancel", lambda: None)()
         if consoles.identify(data).read_game(data, data.name).info["sha1"] != manifest["game"]["sha1"]:
             raise NetworkError(f"that's not the same game: this save is for {manifest['title']} "
                                f"({manifest['game'].get('file') or 'its original file'}); pick your copy of that one")
-        slug = net.import_rom(data, confirmed=True, name=data.name, log=log)
-        return _apply(net, slug, folder, manifest, log) | {"slug": slug}
+        log("importing and splitting your game copy")
+        with compiler.cancellable(getattr(log, "check_cancel", lambda: None)):
+            slug = net.import_rom(data, confirmed=True, name=data.name, log=log)
+            getattr(log, "check_cancel", lambda: None)()
+            return _apply(net, slug, folder, manifest, log) | {"slug": slug}
 
 
 def _apply(net, slug: str, folder: Path, manifest: dict, log) -> dict:
+    check_cancel = getattr(log, "check_cancel", lambda: None)
     proj = net._project(slug)
     pid = proj["id"]
     log("putting back the function splits and names")
@@ -180,16 +204,19 @@ def _apply(net, slug: str, folder: Path, manifest: dict, log) -> dict:
     restorer, _ = net.local_agent("restored")
     with net.store.tx() as db:
         for unit, file in (manifest.get("headers") or {}).items():
+            check_cancel()
             header = (folder / "include" / file).read_text(encoding="utf-8") if (folder / "include" / file).exists() else None
             if header is not None and header != net._context(pid, unit)["header"]:
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                            "VALUES(?,?,?,?,?,?,?)", (pid, net._next_version(db, pid), header, restorer.id,
                                                      "restored from a save", time.time(), unit))
         for text in manifest.get("knowledge") or []:
+            check_cancel()
             if not db.execute("SELECT 1 FROM knowledge WHERE project_id=? AND text=?", (pid, text)).fetchone():
                 db.execute("INSERT INTO knowledge(project_id, text, status, created_at, decided_at) VALUES(?,?,?,?,?)",
                            (pid, text, "accepted", time.time(), time.time()))
     for note in manifest.get("notes") or []:
+        check_cancel()
         try:
             net.add_note(net.local_agent(note["by"] or "restored")[0], slug, note["text"], note["function"])
         except NetworkError:
@@ -199,6 +226,8 @@ def _apply(net, slug: str, folder: Path, manifest: dict, log) -> dict:
     matched, lost, best = 0, [], 0
     log(f"judging {len(saved)} saved functions again")
     for old_name, info in saved.items():
+        getattr(log, "check_cancel", lambda: None)()
+        log(f"checking {old_name}")
         kind = "src" if "matched_by" in info else "best"
         path = folder / kind / f"{old_name}.c"
         name = by_vram.get(info["vram"])

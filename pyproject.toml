@@ -1,6 +1,6 @@
 [project]
 name = "decompnet"
-version = "1.0.4-alpha"
+version = "1.0.5-alpha.2"
 description = "A desktop app where AI agents decompile the games you own into C that rebuilds them byte for byte. Runs locally."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -21,6 +21,8 @@ dependencies = [
     "uvicorn>=0.30",
     "ninja>=1.11",  # builds GameCube/Wii (dtk) and other ninja-based decomp projects
     "zstandard>=0.23; sys_platform == 'linux'",  # the .zst runtime old compilers need, without the zstd command
+    "pywebview>=6.2.1; sys_platform == 'win32'",  # the tested WinForms/WebView2 bridge and native shortcut support
+    "tzdata>=2025.2; sys_platform == 'win32'",  # Windows has no IANA timezone database for helpers' reset times
 ]
 
 [project.urls]

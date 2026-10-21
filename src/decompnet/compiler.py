@@ -6,14 +6,19 @@ every match is produced here, on the coordinator, with the project's pinned tool
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from decompnet.hostenv import NO_WINDOW, stop_process_tree
 
 from . import wsl
 
@@ -22,6 +27,17 @@ MAX_SOURCE_BYTES = 64 * 1024
 # concurrency cap, so a hostile submission can't take the host down with it.
 LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
 _SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
+_CANCEL_CHECK = contextvars.ContextVar("compiler_cancel_check", default=None)
+
+
+@contextmanager
+def cancellable(check):
+    """Make compiler subprocesses stop promptly when their owning background job is cancelled."""
+    token = _CANCEL_CHECK.set(check)
+    try:
+        yield
+    finally:
+        _CANCEL_CHECK.reset(token)
 
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 _FORBIDDEN = [
@@ -116,11 +132,31 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
 def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None, **stage):
     """`stage`: in WSL, run on a copy in WSL's own file system (wsl.run's outputs, inputs and stage)."""
     if _sandbox_mode(cfg) == "wsl":
-        return wsl.run(argv, cwd or work, timeout, **stage)
+        check = _CANCEL_CHECK.get()
+        return wsl.run(argv, cwd or work, timeout, **stage, **({"check_cancel": check} if check else {}))
     # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
     # current directory is / ("Bad file descriptor"), as it can be for a program its launcher starts
-    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=timeout)
+    check = _CANCEL_CHECK.get()
+    if check is None:
+        return subprocess.run(_wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
+    proc = subprocess.Popen(_wrap(cfg, work, argv), cwd=cwd or work, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    started = time.monotonic()
+    try:
+        while True:
+            check()
+            try:
+                stdout, stderr = proc.communicate(timeout=0.1)
+                return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started > timeout:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr)
+    except BaseException:
+        stop_process_tree(proc)
+        raise
 
 
 def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300, *,
@@ -148,6 +184,11 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         inc.mkdir()
         for d in cfg.include_dirs:
             shutil.copytree(d, inc, dirs_exist_ok=True)
+        for header in inc.rglob("*"):
+            if header.is_file() and header.suffix.lower() in (".h", ".hpp", ".hxx", ".inc", ".inl"):
+                data = header.read_bytes()
+                if b"\r\n" in data:  # old GCCs don't continue a macro before CRLF, even in copied headers
+                    header.write_bytes(data.replace(b"\r\n", b"\n"))
         # LF on every platform: to the old GCCs a backslash before CRLF doesn't continue a line ("stray '\' in program")
         (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
         root = _root(cfg, work)
@@ -173,9 +214,18 @@ def _compile_as(cfg: CompilerConfig, work: Path, root: str, source: str, ext: st
     argv = [a.replace("{include}", subst["{include}"]) for a in argv]
     (work / "func.o").unlink(missing_ok=True)
     try:
-        with _SLOTS:
+        # A restore must also be cancellable while other jobs occupy every compiler slot.
+        check = _CANCEL_CHECK.get()
+        while not _SLOTS.acquire(timeout=0.1):
+            if check:
+                check()
+        try:
+            if check:
+                check()
             proc = _exec(cfg, work, argv, cfg.timeout,
                          **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {}))
+        finally:
+            _SLOTS.release()
     except subprocess.TimeoutExpired:
         return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
     log = (proc.stdout + proc.stderr).replace(root + "/", "")

@@ -83,6 +83,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def consoles_start() -> None:  # what each console does for its projects at start (Console.on_start)
         for row in net.store.all("SELECT slug, config FROM projects"):
             try:
+                if net.is_rom(row):
+                    net.rangechecks.reopen(row["slug"])
                 net.console(row).on_start(net, row["slug"], log=jobs.logger.info)
             except Exception:  # never stands between the user and the app
                 jobs.logger.exception("%s's console work at start failed", row["slug"])
@@ -130,7 +132,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     def viewer(request: Request) -> str | None:
         """Who asks: "window" (the app's own window, or `decomp` itself), "browser" (a paired one), or None."""
-        if secrets.compare_digest(window.token_of(request.headers.get("user-agent", "")), secret):
+        if secrets.compare_digest(window.request_token(request), secret):
             return "window"
         if paired.session(request.cookies.get(browsers.COOKIE)):
             return "browser"

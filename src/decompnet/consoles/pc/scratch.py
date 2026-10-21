@@ -35,6 +35,8 @@ from pathlib import Path
 import capstone
 from capstone import x86
 
+from decompnet.hostenv import NO_WINDOW
+
 from ... import toolchains
 from ...forks.project import ForkError, ForkProject
 
@@ -118,7 +120,6 @@ MIN_STRING_CHARS = 3
 PRINTABLE = range(32, 127)
 TOOL_SECONDS = 3600  # Ghidra on a big game, the project's build
 ERROR_TAIL = 1500  # how much of a tool's output an error shows
-JAVA_NEEDED = 21  # what the pinned Ghidra needs
 
 
 def _pe_header(head: bytes) -> int | None:
@@ -497,11 +498,12 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
         raise ForkError(f"Visual C++ {compiler} isn't in the installed compiler pack: update Visual C++ in Compilers & "
                         "tools, then try again")
     if not ghidra.available():
-        if toolchains.java_version() < JAVA_NEEDED:
-            raise ForkError("PC games are analysed with Ghidra, which needs Java 21 or newer: install it from "
-                            "https://adoptium.net, then try again")
-        log("installing Ghidra (540 MB, once): it finds the functions in PC programs")
-        toolchains.ensure("ghidra", log=log)
+        if ghidra.java_home() is not None and toolchains.installed("jdk") is None:
+            log("installing a Java development kit for Ghidra (200 MB, once): this computer has none of its own")
+            toolchains.ensure("jdk", log=log)
+        if toolchains.installed("ghidra") is None:
+            log("installing Ghidra (540 MB, once): it finds the functions in PC programs")
+            toolchains.ensure("ghidra", log=log)
     data = game.read_bytes()
     pe = read_pe(data)
     newer = newer_tools(rich_builds(data))
@@ -575,7 +577,7 @@ function's address, size, symbol and relocations.
         for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
                     ["git", "-c", "user.name=decompdecomp", "-c", "user.email=noreply@decompdecomp.invalid", "commit", "-q", "-m",
                      f"Start the {info['title']} decompilation (decompdecomp, Ghidra)"]):
-            subprocess.run(cmd, cwd=root, capture_output=True)
+            subprocess.run(cmd, cwd=root, capture_output=True, creationflags=NO_WINDOW)
     return {"platform": "pc", "id": version, "title": info["title"], "compiler": f"MSVC/{compiler}",
             "sources": len(groups), "sha1": info["sha1"]}
 
@@ -634,10 +636,12 @@ def build_file_with(fp, unit, text: str, flags: list[str], log=print) -> tuple[P
     out = src.with_suffix(".obj")
     src.write_text(text, encoding="utf-8")
     out.unlink(missing_ok=True)
-    rel = lambda p: p.relative_to(fp.root).as_posix()  # noqa: E731
-    cmd = (rule.group(1).replace("$cflags", shlex.join(flags)).replace("$out", shlex.quote(rel(out)))
-           .replace("$in", shlex.quote(rel(src))))
-    ok, output = ForkProject(Path(fp.root)).run(["/bin/sh", "-c", cmd], log=lambda *_: None, timeout=300)
+    quote = subprocess.list2cmdline if sys.platform == "win32" else shlex.join  # (as configure.py's q())
+    values = {"$": "$", "cflags": quote(flags), "out": quote([out.relative_to(fp.root).as_posix()]),
+              "in": quote([src.relative_to(fp.root).as_posix()])}
+    cmd = re.sub(r"\$(\$|cflags\b|out\b|in\b)", lambda m: values[m.group(1)], rule.group(1))  # ninja's variables
+    shell = ["cmd", "/c", cmd] if sys.platform == "win32" else ["/bin/sh", "-c", cmd]
+    ok, output = ForkProject(Path(fp.root)).run(shell, log=lambda *_: None, timeout=300)
     return (out if ok and out.exists() else None), output
 
 
