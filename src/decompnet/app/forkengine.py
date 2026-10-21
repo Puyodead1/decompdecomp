@@ -517,6 +517,7 @@ class ForkEngine:
         self._register(slug, facts["title"], f"{consoles.name(facts['platform'])} game {facts['id']}, from scratch",
                        dest, cfg, f"started {facts['id']} from scratch")
         self.check(slug, log=log)
+        console.on_start(self.net, slug, log=log)  # (what the console does for its projects, from the start)
         return slug
 
     def needs(self, slug: str) -> dict:

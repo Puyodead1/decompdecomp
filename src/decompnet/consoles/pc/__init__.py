@@ -58,8 +58,10 @@ class WindowsPC(Console):
         return scratch.create(root, game, compiler=compiler, log=log)
 
     def on_start(self, net, slug: str, log=print) -> None:
-        """A project made before the fix of functions cut short (scratch.fix_short_ends) gets it, committed. (Seconds
-        of disassembly, in the background: a project fixed already has nothing to change.)"""
+        """A project made before the fix of functions cut short (scratch.fix_short_ends) gets it, committed; and its
+        open functions whose code no compiler makes (arch/x86.py asm_reason: /LTCG's register conventions, exception
+        funclets and stubs, address tables) are set aside, out of agents' way. (Seconds, in the background: a
+        project done already has nothing to change.)"""
         from . import scratch
 
         if not net.fork_slug(slug):
@@ -77,6 +79,8 @@ class WindowsPC(Console):
                               "instruction\n\nWritten by decompdecomp: their sizes stopped at trailing zero bytes "
                               "(a jmp or ret N), and objdiff could never match them.")
             log(f"{slug}: {len(fixed)} functions that were cut short end at their last whole instruction now")
+        if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
+            log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
 
     def draft_types(self, header: str) -> str | None:
         from .ghidra_c import add_types
