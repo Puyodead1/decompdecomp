@@ -2581,6 +2581,138 @@ class ForkEngine:
         return (f"No compiler matches {fn['name']}; {unit.source} stays with {own}.\n" + "\n".join(tried)
                 + (f"\nNot tried yet (time ran out): {', '.join(left)}. Try them by name." if left else ""))
 
+    # ------------------------------------------------------------------ flags, file by file (PC projects)
+
+    FLAG_RESULTS_SHOWN = 6
+
+    def _flag_subject(self, slug: str, function: str, source: str):
+        """(project, fp, console, unit, symbol, the file's text with the function's C in it, its compiler and flags)."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform") or "")
+        fn = self._fn(slug, function)
+        unit = fp.unit(fn["unit"])
+        current = console.file_flags(fp, unit.source) if unit.source else None
+        if current is None:
+            raise NetworkError("this project's build doesn't take flags file by file (PC projects started from "
+                               "scratch do): suggest the change in words")
+        meta = self._meta(fn)
+        names = self._names(meta, fn)
+        try:
+            text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+        except OSError:
+            text = ""
+        _, have = self._find(text, names)
+        if source.strip():
+            _, span = self._find(source, names)
+            if span is None:
+                raise NetworkError(f"send the complete definition of {names[0]} (with its body)")
+            code = source[span[0]:span[1]]
+            text = text[:have[0]] + code + text[have[1]:] if have else text.rstrip("\n") + "\n\n" + code + "\n"
+        elif have is None:
+            raise NetworkError(f"{fn['name']} isn't written in {unit.source} yet: pass its C as source")
+        return proj, fp, console, unit, meta.get("symbol") or fn["name"], text, current
+
+    def _flag_score(self, fp: ForkProject, console, unit, symbol: str, text: str, flags: list[str]) -> float | None:
+        obj, _ = console.build_file_with(fp, unit, text, flags)
+        if obj is None:
+            return None
+        try:
+            return objdiff.diff(unit.target, obj, symbol, cwd=fp.root, options=fp.diff_options(unit)).match_percent
+        except (ObjdiffError, ForkError):
+            return None
+
+    def search_flags(self, slug: str, function: str, source: str = "") -> str:
+        """A function's C (`source`, else what its file has) built with each variant of its file's flags (the
+        compiler family's, engine/compilers.py), each judged by objdiff; nothing in the project changes."""
+        proj, fp, console, unit, symbol, text, (tc, base) = self._flag_subject(slug, function, source)
+        results = []
+        for flags in self.net.flag_variants(tc, base):
+            pct = self._flag_score(fp, console, unit, symbol, text, flags)
+            if pct is not None:
+                results.append((pct, flags))
+        if not results:
+            return f"{unit.source}: the C doesn't compile with any of the flag variants"
+        results.sort(key=lambda r: -r[0])
+        lines = [f"- {pct:5.1f}%  {' '.join(flags)}" + ("   ← how the file builds now" if flags == base else "")
+                 for pct, flags in results[:self.FLAG_RESULTS_SHOWN]]
+        best_pct, best = results[0]
+        hint = ""
+        if best_pct >= 100 and best != base:
+            hint = (f"\nThose flags match: if the file's other functions agree, suggest them: suggest(text=<why>, "
+                    f"flags=\"{' '.join(best)}\", function=\"{function}\", source=<this C>)")
+        return f"{unit.source} with {tc}, its flags varied:\n" + "\n".join(lines) + hint
+
+    def suggest_flags(self, agent: Agent, slug: str, text: str, flags: list[str], function: str = "",
+                      source: str = "") -> str:
+        """Other flags for one source file, checked first: the function's C must match with them."""
+        if not function:
+            raise NetworkError("say which function's C matches with these flags (function=...): they're for its file")
+        proj, fp, console, unit, symbol, file_text, (tc, base) = self._flag_subject(slug, function, source)
+        if flags == base:
+            raise NetworkError("that's how the file builds already")
+        pct = self._flag_score(fp, console, unit, symbol, file_text, flags)
+        if pct is None or pct < 100:
+            raise NetworkError(f"not suggested: with those flags {function}'s C "
+                               + ("doesn't compile" if pct is None else f"is {pct:.1f}% like the original")
+                               + "; search_flags tries the variants")
+        check = f"checked: {function}'s C matches the game with them"
+        found: list[dict] = []
+
+        def change(cfg):
+            items = cfg.setdefault("suggestions", [])
+            same = next((x for x in items if x["status"] == "open" and x.get("file") == unit.source
+                         and x["flags"] == flags), None)
+            if same is None:
+                same = {"id": max((x["id"] for x in items), default=0) + 1, "text": text, "toolchain": None,
+                        "flags": flags, "ranges": [], "file": unit.source, "agents": [], "check": check,
+                        "status": "open", "t": time.time()}
+                items.append(same)
+            same["agents"] = sorted({*same["agents"], agent.name})
+            found.append(same)
+        self.net._update_cfg(slug, change)
+        if self.net.auto_adjusts(proj):
+            try:
+                self.net.resolve_suggestion(slug, found[0]["id"], apply=True, guard=True)
+                return f"Applied (the user lets proven compiler changes apply themselves): {unit.source} builds with " \
+                       f"{' '.join(flags)} from now on ({check})."
+            except NetworkError as e:
+                return f"Suggested, not applied by itself: {e} ({check})"
+        return f"Suggested: the user sees it on the project page and can apply it ({check})."
+
+    def set_file_flags(self, slug: str, source: str, flags: list[str]) -> None:
+        """A source file builds with `flags` from now on, if every function of it that matched still matches."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform") or "")
+        units = fp.units_for(source)
+        flags_path = fp.root / "config" / str(cfg.get("version")) / "flags.json"
+        before = flags_path.read_text(encoding="utf-8") if flags_path.exists() else None
+        with self._tree(proj).exclusive():
+            rel = console.set_file_flags(fp, source, flags)
+            text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
+            lost, measured = [], []
+            for unit in units:
+                self._scores.pop((proj["id"], unit.name), None)  # (same text, other flags: measure it again)
+                matched = {r["name"]: self._meta(r).get("symbol") or r["name"] for r in self.net.store.all(
+                    "SELECT name, meta FROM functions WHERE project_id=? AND unit=? AND status='matched'",
+                    proj["id"], unit.name)}
+                scores, _ = self._baseline(proj, fp, unit, text)
+                lost += [n for n, sym in matched.items() if ((scores or {}).get(sym) or 0) < 100]
+                measured.append((unit, scores))
+            if lost:
+                if before is None:
+                    flags_path.unlink(missing_ok=True)
+                else:
+                    flags_path.write_text(before, encoding="utf-8")
+                for unit, _ in measured:
+                    self._scores.pop((proj["id"], unit.name), None)
+                    self._build_unit(proj, fp, unit)
+                raise NetworkError(f"with those flags {', '.join(sorted(lost)[:5])} wouldn't match any more")
+            for unit, scores in measured:
+                if scores is not None:
+                    self._apply_scores(proj, unit.name, scores, text=text)
+        self._commit(proj, fp, rel, f"Build {source} with {' '.join(flags)}\n\nApplied by decompdecomp (a checked "
+                     "suggestion).")
+
     # ------------------------------------------------------------------ autopilot
 
     def autopilot_prepare(self, slug: str) -> list[int]:

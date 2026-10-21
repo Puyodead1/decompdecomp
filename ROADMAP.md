@@ -32,8 +32,8 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | — | — | — | — |
 | Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | — | — | — | — |
-| Compiler ranges and suggestions | ✓ | ✓ | ✓ | the project's build | the project's build | per source file (`try_compiler`, Settings) | the project's build |
-| Flag search (`search_flags`) | ✓ | ✓ | ✓ | the project's build | the project's build | the project's build | the project's build |
+| Compiler ranges and suggestions | ✓ | ✓ | ✓ | the project's build | flags file by file | per source file (`try_compiler`, Settings) | the project's build |
+| Flag search (`search_flags`) | ✓ | ✓ | ✓ | the project's build | ✓ file by file | the project's build | the project's build |
 | Compiler map and the judge's survey | ✓ | ✓ | ✓ | — | — | — | — |
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | — | — | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | — | — | — |
