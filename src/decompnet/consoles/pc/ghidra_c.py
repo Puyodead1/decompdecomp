@@ -270,8 +270,12 @@ def draft(row: dict, project: dict) -> tuple[str, str] | None:
     return f"{head}\n{body}\n", "\n".join(dict.fromkeys(outer))
 
 
-_LOCK = threading.Lock()  # one Ghidra run at a time: autopilot's workers wait for the first one's
-_LOADED: dict[Path, tuple[dict[int, dict], dict] | None] = {}  # project root -> (Ghidra's lines by address, names)
+_LOCK = threading.Lock()  # (the run itself is one at a time app-wide: forks/ghidra.py)
+# project root -> (the cache file, where each function's line starts and ends in it, the project's names); None: no
+# drafts (Ghidra couldn't run; tried again when the app starts again). Lines are read when asked for: a big game's
+# drafts are tens of megabytes, which the app shouldn't hold for as long as it runs.
+_LOADED: dict[Path, tuple[Path, dict[int, tuple[int, int]], dict] | None] = {}
+_RUNNING: dict[Path, threading.Event] = {}  # projects whose drafts Ghidra is making: set when it's done
 
 
 def project_names(functions_json: dict) -> dict:
@@ -287,45 +291,106 @@ def project_names(functions_json: dict) -> dict:
     return {"names": names, "imports": imports}
 
 
-def program_draft(fp, symbol: str, log=print) -> tuple[str, str] | None:
-    """The draft of a project's function (its symbol: _func_00401000@4), from Ghidra's C of the whole program. The
-    first call decompiles every function of the program, once (minutes; kept in .decomp-wtf/ghidra, by the
-    program's checksum), smallest first."""
+def _make(root: Path, exe: Path, addresses: list[int], cache: Path, done: threading.Event, log) -> None:
     from ...forks import ghidra
+
+    try:
+        log(f"Ghidra decompiles {exe.name} for machine drafts, once (a big game takes ten minutes or more)")
+        ghidra.program_drafts(exe, addresses, cache)
+    finally:
+        with _LOCK:
+            _RUNNING.pop(root, None)
+        done.set()
+
+
+def _load(fp, log=print, wait: bool = True) -> tuple[Path, dict[int, tuple[int, int]], dict] | None:
+    """The project's drafts: Ghidra decompiles every function of the program once (minutes; kept in
+    .decomp-wtf/ghidra, by the program's checksum), smallest first. `wait`: for that run, if they aren't made yet
+    (autopilot, in the background); else it starts in the background and there are none yet (an agent's
+    get_function must not wait minutes, nor start a Ghidra of its own: eight agents' runs ran a server out of
+    memory)."""
     from ...forks.project import STATE
 
-    m = re.search(r"func_([0-9A-Fa-f]{8})", symbol)
-    if not m:
-        return None
     root = Path(fp.root)
     with _LOCK:
-        if root not in _LOADED:
-            manifest = fp.manifest or {}
-            exe = root / ((manifest.get("game") or {}).get("path") or "")
-            config = root / "config" / str(manifest.get("version")) / "functions.json"
-            try:
-                info = json.loads(config.read_text(encoding="utf-8"))
-                key = hashlib.sha1(exe.read_bytes()).hexdigest()[:16]
-            except (OSError, ValueError):
+        if root in _LOADED:
+            return _LOADED[root]
+        manifest = fp.manifest or {}
+        exe = root / ((manifest.get("game") or {}).get("path") or "")
+        config = root / "config" / str(manifest.get("version")) / "functions.json"
+        try:
+            info = json.loads(config.read_text(encoding="utf-8"))
+            key = hashlib.sha1(exe.read_bytes()).hexdigest()[:16]
+        except (OSError, ValueError):
+            return None
+        cache = root / STATE / "ghidra" / f"program-{key}.jsonl"
+        done, mine = None, False
+        if not cache.exists():
+            done = _RUNNING.get(root)
+            if done is None:
+                done, mine = threading.Event(), True
+                _RUNNING[root] = done
+    if done is not None:
+        if mine:
+            fns = sorted((f for u in info["units"].values() for f in u), key=lambda f: (f["size"], f["addr"]))
+            args = (root, exe, [f["addr"] for f in fns], cache, done, log)
+            if not wait:
+                threading.Thread(target=_make, args=args, daemon=True, name="ghidra-drafts").start()
                 return None
-            cache = root / STATE / "ghidra" / f"program-{key}.jsonl"
-            if not cache.exists():
-                fns = sorted((f for u in info["units"].values() for f in u), key=lambda f: (f["size"], f["addr"]))
-                log(f"Ghidra decompiles {exe.name} for autopilot's drafts, once (a big game takes ten minutes or more)")
-                if not ghidra.program_drafts(exe, [f["addr"] for f in fns], cache):
-                    _LOADED[root] = None  # (tried again when the app starts again)
-                    return None
-            rows = {}
-            for line in cache.read_text(encoding="utf-8").splitlines():
-                try:
-                    row = json.loads(line)
-                    rows[int(row["entry"])] = row
-                except (ValueError, KeyError):
-                    continue
-            _LOADED[root] = (rows, project_names(info))
-        loaded = _LOADED[root]
+            _make(*args)
+        elif not wait:
+            return None
+        done.wait()
+        if not cache.exists():
+            with _LOCK:
+                _LOADED[root] = None  # (Ghidra couldn't make them: tried again when the app starts again)
+            return None
+    at: dict[int, tuple[int, int]] = {}
+    with open(cache, "rb") as f:
+        pos = 0
+        for line in f:
+            m = re.match(rb'\{"entry": (\d+)', line)
+            if m:
+                at[int(m.group(1))] = (pos, len(line))
+            pos += len(line)
+    with _LOCK:
+        _LOADED[root] = (cache, at, project_names(info))
+        return _LOADED[root]
+
+
+def _row(fp, symbol: str, log=print, wait: bool = True) -> tuple[dict, dict] | None:
+    """(Ghidra's line for the function `symbol`, the project's names), or None."""
+    m = re.search(r"func_([0-9A-Fa-f]{8})", symbol)
+    loaded = _load(fp, log, wait) if m else None
     if loaded is None:
         return None
-    rows, project = loaded
-    row = rows.get(int(m.group(1), 16))
-    return draft(row, project) if row else None
+    cache, at, project = loaded
+    where = at.get(int(m.group(1), 16))
+    if where is None:
+        return None
+    try:
+        with open(cache, "rb") as f:
+            f.seek(where[0])
+            return json.loads(f.read(where[1])), project
+    except (OSError, ValueError):
+        return None
+
+
+def program_draft(fp, symbol: str, log=print) -> tuple[str, str] | None:
+    """The draft of a project's function (its symbol: _func_00401000@4) that compiles as it is, for autopilot: waits
+    for Ghidra's run the first time."""
+    found = _row(fp, symbol, log)
+    return draft(*found) if found else None
+
+
+def program_c(fp, symbol: str) -> str | None:
+    """Ghidra's C of a function for an agent to read: the compilable draft when there is one (the project's names),
+    else Ghidra's own. None when Ghidra hasn't decompiled the program yet: that starts now, in the background."""
+    found = _row(fp, symbol, wait=False)
+    if found is None:
+        return None
+    row, project = found
+    made = draft(row, project)
+    if made:
+        return (made[1] + "\n" if made[1] else "") + made[0]
+    return (row.get("c") or "").strip() or None
