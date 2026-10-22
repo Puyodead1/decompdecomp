@@ -267,8 +267,6 @@ function renderAutopilot(ov) {
   };
 }
 
-const cwName = (c) => (c.startsWith("DS/") ? `CodeWarrior for DS ${c.slice(3)}` : `CodeWarrior ${c}`);
-
 /* ------------------------------------------------------------------ export: the base for ports and mods
    The header's Export button opens it in the side panel (it was a Source tab). */
 function openExport() {

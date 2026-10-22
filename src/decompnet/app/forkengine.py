@@ -3247,7 +3247,10 @@ class ForkEngine:
             "slug": slug, "title": proj["name"], "description": proj["description"], "kind": "fork",
             **consoles.get(cfg.get("platform")).project_facts(),
             "repo_url": cfg.get("repo_url"), "fork_kind": cfg.get("fork_kind"), "version": cfg.get("version"),
-            "origin": cfg.get("origin"), "compiler_name": cfg.get("compiler"),
+            "origin": cfg.get("origin"),
+            # what the header shows: its console's name for it ("Visual C++ 8.0 SP1"; the page put "CodeWarrior" before
+            # every id that wasn't a DS one, "CodeWarrior MSVC/8.0-sp1" on a PC project)
+            "compiler_name": consoles.compiler_name(cfg["compiler"]) if cfg.get("compiler") else None,
             "versions": fp.versions(), "ready": bool(cfg.get("ready")), "needs": need,
             "rom": {"game_code": cfg.get("version") or "", "region": consoles.name(cfg.get("platform")),
                     "title": proj["name"]},
