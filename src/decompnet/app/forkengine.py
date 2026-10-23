@@ -1533,8 +1533,18 @@ class ForkEngine:
         files = sorted(p for d in ("src", "include") if (fp.root / d).is_dir() for p in (fp.root / d).rglob("*")
                        if p.is_file() and p.suffix in self.SOURCE_SUFFIXES)
         texts = {p: p.read_text(errors="replace", encoding="utf-8") for p in files}
-        if any(taken.search(t) for t in texts.values()):
-            raise NetworkError(f"{new} is used in the project already: pick another name")
+        if (used := next((p for p, t in texts.items() if taken.search(t)), None)) is not None:
+            # helpers asked for renames made hours before (often their own): on a PC game, 30 in a day, each told
+            # only "pick another name"
+            if self.net.store.one("SELECT 1 FROM events WHERE project_id=? AND kind='rename' AND detail=?",
+                                  proj["id"], f"{old} → {new}"):
+                return f"✅ {old} is {new} already (it was renamed before): call it {new}."
+            holder = next((r["name"] for r in self.net.store.all(
+                "SELECT name, meta FROM functions WHERE project_id=? AND name LIKE ?", proj["id"], f"%{new}%")
+                if console.source_name(self._meta(r).get("symbol") or r["name"]) == new), None)
+            raise NetworkError(f"{new} is used in the project already ("
+                               + (f"it's the name of the function {holder}" if holder else
+                                  f"in {used.relative_to(fp.root).as_posix()}") + "): pick another name")
         matched = {self._meta(r).get("symbol") or r["name"] for r in self.net.store.all(
             "SELECT name, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
         checks = consoles.REBUILD_CHECK in console.features

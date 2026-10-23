@@ -227,6 +227,13 @@ class Core(Network):
             "OR json_extract(meta,'$.symbol')=? OR substr(json_extract(meta,'$.demangled'),1,?)=? "
             "OR json_extract(meta,'$.demangled') LIKE ? ESCAPE '\\') ORDER BY name",
             proj["id"], sym, len(sym) + 1, sym + "@", sym, len(sym) + 1, sym + "(", f"% {like}(%")
+        if not rows and len(sym) >= 3:
+            # the name C gives it, where the function list shows a decorated symbol (PC: IsReady for _IsReady@4):
+            # after a rename agents look a function up by its new name, and got "no function" over and over
+            console = self.console(proj)
+            rows = [r for r in self.store.all("SELECT * FROM functions WHERE project_id=? AND name LIKE ? ESCAPE '\\' "
+                                              "ORDER BY name", proj["id"], f"%{like}%")
+                    if console.source_name(json.loads(r["meta"] or "{}").get("symbol") or r["name"]) == sym]
         if not rows and "::" not in sym and len(sym) >= 4:  # a method by its own name: Class::sym
             rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND json_extract(meta,'$.demangled') "
                                   "LIKE ? ESCAPE '\\' ORDER BY name", proj["id"], f"%::{like}(%")
