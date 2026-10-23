@@ -73,11 +73,12 @@ Where to start on a gap:
 - **Saved guides keep your notes.** Saving creates a basic README only when one is missing. Later saves update
   counts and visuals inside hidden comment pairs, preserving the rest of the guide. A local SVG progress card
   shows completion, platform and a function map in ROM and project mode; it contains no game code.
-- **Real names on Windows PC.** A PC project names functions and data by address (`func_0041B470`, `D_0066DDA4`),
-  and `tools/names.py` pairs them with the original's symbols by that address, so rename_symbol refused them. A real
-  name is kept by address in `config/<version>/functions.json` ("names"), and names.py takes it as that address in C
-  and C++ (a method's too): the function and its callers still match. The report keeps the original's symbol, so the
-  function's row does too, and agents find and call it by its real name.
+- **Real names on Windows PC.** rename_symbol names a PC game's function or data: `config/<version>/names.json`
+  holds each real name by address, `tools/names.py` pairs what C++ compiles it to (mangled, a method) with the
+  original's symbol, whose decoration it keeps (`_func_0041B470@8` becomes `_Town_Update@8`), and `tools/delink.py`
+  names the original's objects the same. Only the files that use the name compile again: a rename on a PC game of
+  15,000 functions takes seconds. Ghidra's drafts and read_data know the new names; projects made earlier get the
+  new tools at start.
 - **The compiler of each object file, from a PS2 game's symbols.** Games linked by CodeWarrior's linker are often
   GCC's code with CodeWarrior's C library: the three with symbols had GCC's mark on 91-93% of their object files.
   The one that built most of the code is the game's, and SN's GCC is told from Sony's by its own code; the others'
@@ -108,7 +109,7 @@ Where to start on a gap:
 - **Names in project mode.** rename_symbol renames a function or a global in a project too: in the game's symbols
   (DS: ds-decomp's symbols.txt; GameCube, Wii: dtk's) and in every source and header file, kept only when the game
   still rebuilds byte for byte and every match holds. Polishing's names were local only before (func_0205d0f4,
-  data_0222f194 stayed). Windows PC's names come from addresses (`names.py`): it says it can't rename yet.
+  data_0222f194 stayed).
 - **Polishing on every console.** Helpers that make matched code readable (real names, types, a comment) worked on
   ROM projects only: a DS game at 57% had nothing to choose. In project mode a rewrite goes through the project's
   own file and is judged like any compile of a matched function: committed when it and the file's other matches

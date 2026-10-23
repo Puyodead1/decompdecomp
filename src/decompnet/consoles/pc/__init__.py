@@ -59,11 +59,10 @@ class WindowsPC(Console):
 
     def on_start(self, net, slug: str, log=print) -> None:
         """A project made with older tools (scratch.refresh_tools: a delinker that left functions called from their
-        own file unmatchable) or before the fix of functions cut short (scratch.fix_short_ends) gets the fix,
-        committed, and is measured again; and its
-        open functions whose code no compiler makes (arch/x86.py asm_reason: /LTCG's register conventions, exception
-        funclets and stubs, address tables) are set aside, out of agents' way. (Seconds, in the background: a
-        project done already has nothing to change.)"""
+        own file unmatchable, no real names) or before the fix of functions cut short (scratch.fix_short_ends) gets
+        the fix, committed, and is measured again; and its open functions whose code no compiler makes (arch/x86.py
+        asm_reason: /LTCG's register conventions, exception funclets and stubs, address tables) are set aside, out of
+        agents' way. (Seconds, in the background: a project done already has nothing to change.)"""
         from . import scratch
 
         if not net.fork_slug(slug):
@@ -76,10 +75,10 @@ class WindowsPC(Console):
         if not (fp.root / rel).exists():
             return
         cut_again = False
-        for tool in scratch.refresh_tools(fp.root):
-            net.forks._commit(proj, fp, tool, f"Update {tool} from decompdecomp\n\nWritten by decompdecomp: "
-                              "the project's copy was an older one's, unchanged.")
-            log(f"{slug}: {tool} updated: measuring the project again")
+        if (tools := scratch.refresh_tools(fp.root)):
+            net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
+                                    "decompdecomp: the project's copies were an older one's, unchanged.")
+            log(f"{slug}: {', '.join(tools)} updated: measuring the project again")
             cut_again = True
         fixed = scratch.fix_short_ends(fp.root, str(manifest.get("version")))
         if fixed:
@@ -103,6 +102,18 @@ class WindowsPC(Console):
             net.forks.sync(slug, log=log)
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
+
+    def rename_symbol(self, fp, version: str, old: str, new: str) -> dict:
+        """config/<version>/names.json: tools/names.py pairs the real name with the original's symbol, and
+        tools/delink.py gives the original's objects the same name."""
+        from . import scratch
+
+        return scratch.rename(fp.root, version, old, new)
+
+    def source_name(self, symbol: str) -> str:
+        from . import scratch
+
+        return scratch.c_name(symbol)
 
     def draft_types(self, header: str) -> str | None:
         from .ghidra_c import add_types
@@ -154,58 +165,6 @@ class WindowsPC(Console):
         from . import scratch
 
         return scratch.data_bytes(fp.root, fp.manifest or {}, addr, length)
-
-    # The game's names are its addresses (func_0041B470, D_0066DDA4): objdiff pairs a function with the original's by
-    # the symbol tools/names.py gives it, and the report keeps that symbol. A real name is kept by address in
-    # functions.json's "names", which names.py reads too, so a renamed function still pairs (and so do its callers).
-    renames_in_report = False
-
-    def rename_symbol(self, fp, version: str, old: str, new: str) -> dict:
-        """functions.json's "names": `old`'s address (func_0041B470, _func_0041B470@8, D_0066DDA4, or a real name
-        given before) gets the name `new`."""
-        import json
-
-        from ...forks.project import ForkError
-
-        path = fp.root / "config" / version / "functions.json"
-        text = path.read_text(encoding="utf-8")
-        info = json.loads(text)
-        names = dict(info.get("names") or {})
-        key = _address_key(old) or next((k for k, v in names.items() if v == old), None)
-        functions = {f"func_{fn['addr']:08X}" for fns in info["units"].values() for fn in fns}
-        if key is None or (key.startswith("func_") and key not in functions):
-            raise ForkError(f"{old} isn't one of the game's functions or data (func_<address>, D_<address>)")
-        if new in names.values() or _address_key(new):
-            raise ForkError(f"{new} names another of the game's symbols already: pick another name")
-        names[key] = new
-        path.write_text(json.dumps({**info, "names": dict(sorted(names.items()))}, indent=1), encoding="utf-8")
-        return {path: text}
-
-    def real_names(self, fp, version: str) -> dict[str, str]:
-        """(a function's report name is its entry's in functions.json: the target objects are cut out with it)"""
-        import json
-
-        try:
-            info = json.loads((fp.root / "config" / version / "functions.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        names = info.get("names") or {}
-        return {fn["name"]: names[key] for fns in info["units"].values() for fn in fns
-                if (key := f"func_{fn['addr']:08X}") in names}
-
-    def rename_pattern(self, old: str) -> str:
-        """func_0041B470 however a source spells it (a report's _func_0041B470@8 is func_0041B470 there, a method's
-        Town::func_0041B470 too); a real name given before as itself."""
-        key = _address_key(old)
-        return rf"\b_*{key}\b" if key else super().rename_pattern(old)
-
-
-def _address_key(name: str) -> str | None:
-    """func_XXXXXXXX / D_XXXXXXXX (upper case address) in a name, as tools/names.py keys them; None without one."""
-    import re
-
-    m = re.search(r"\b_*(func|D)_([0-9A-Fa-f]{8})(?![0-9A-Fa-f])", name)
-    return f"{m.group(1)}_{m.group(2).upper()}" if m else None
 
 
 PC = WindowsPC()
