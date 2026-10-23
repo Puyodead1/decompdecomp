@@ -236,6 +236,11 @@ def test_matched_functions_and_data_get_real_names(pc):
     assert net.rename_symbol(agent, slug, row["name"], "clamp_value").startswith("✅ func_")
     # looked up by the name the C gives it, not only the function list's decorated symbol
     assert net._function("clamp_value", slug)["id"] == row["id"]
+    # and by the name it had when a helper was handed it, renamed since (twice: its newest name)
+    assert net.rename_symbol(agent, slug, "clamp_value", "clamp_to_range").startswith("✅")
+    found = net._function(row["name"], slug)
+    assert found["id"] == row["id"] and "clamp_to_range" in found["name"]
+    assert net._function("clamp_value", slug)["id"] == row["id"]
 
 
 def test_a_program_built_with_a_newer_visual_cpp_is_told_apart():

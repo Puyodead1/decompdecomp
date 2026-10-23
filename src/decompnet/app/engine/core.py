@@ -179,6 +179,11 @@ class Core(Network):
             return super()._function(name, project)
         except NetworkError as e:
             rows = self._loose_functions(name, project) if name else []
+            if not rows and name and (now := self._renamed_to(name, project)):
+                try:
+                    return super()._function(now, project)
+                except NetworkError:
+                    rows = self._loose_functions(now, project)
             if len(rows) == 1:
                 return rows[0]
             if rows:
@@ -187,6 +192,29 @@ class Core(Network):
             if near:
                 raise NetworkError(f"{e}. Did you mean: {', '.join(near)}?") from None
             raise
+
+    def _renamed_to(self, name: str, project: str | None) -> str | None:
+        """The name a function renamed since has now, from the project's renames (old → new). A polishing helper
+        handed _func_00560510 renamed it, then sent its code under the name it was handed: "no function", a dozen
+        times an hour on a PC game."""
+        try:
+            proj = self._project(project)
+        except NetworkError:
+            return None
+        console = self.console(proj)
+        old = console.source_name(name.strip().strip("`'\"").split("(", 1)[0].strip())
+        now, seen = None, {old}
+        while True:  # (renamed again since: its newest name)
+            like = old.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            row = self.store.one("SELECT detail FROM events WHERE project_id=? AND kind='rename' AND detail LIKE ? "
+                                 "ESCAPE '\\' ORDER BY id DESC LIMIT 1", proj["id"], f"{like} → %")
+            if row is None:
+                return now
+            old = row["detail"].split(" → ", 1)[1]
+            if old in seen:  # (renamed back and forth)
+                return now
+            now = old
+            seen.add(old)
 
     def _near_names(self, name: str, project: str | None, n: int = 5) -> list[str]:
         """Function names close to one that doesn't exist (a typo, another spelling of the symbol)."""
