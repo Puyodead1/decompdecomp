@@ -598,3 +598,19 @@ def test_a_starred_function_on_a_fork_is_handed_out_first(tmp_path):
     net.set_priority("game", "big", True)
     agent, _ = net.local_agent("a0")
     assert net.claim_row(agent, "game", None, "easiest")["name"] == "big"
+
+
+def test_a_function_is_found_by_the_name_it_had_before(tmp_path):
+    """A polishing helper handed _func_00560510 renamed it, then sent its code under the name it was handed: "no
+    function", a dozen times an hour on a PC game. The project's renames lead to its name now (renamed twice: the
+    newest)."""
+    net = RomNetwork(tmp_path / "d.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("g", "G", "", "mips", 1, str(tmp_path), json.dumps({"kind": "rom"}))).lastrowid
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,status) VALUES(?,?,?,?,?)",
+                   (pid, "clamp_to_range", 16, 4, "open"))
+        for detail in ("func_800007D0 → clamp_s32", "clamp_s32 → clamp_to_range"):
+            net._event(db, pid, None, "rename", detail)
+    assert net._function("func_800007D0", "g")["name"] == "clamp_to_range"
+    assert net._function("clamp_s32", "g")["name"] == "clamp_to_range"
