@@ -741,6 +741,30 @@ def set_file_flags(fp, source: str, flags: list[str]) -> str:
     return path.relative_to(fp.root).as_posix()
 
 
+# The template's tools as projects were made with them, by SHA-1 (line endings as LF): a project's copy that's one of
+# these, untouched, gets the template's own; one changed by hand is left alone.
+OLD_TOOLS = {
+    # gave a function called from its own file a second, undefined symbol: objdiff never matched it, and every
+    # agent's match of it was reopened by the next measurement of its file
+    "tools/delink.py": {"a1c22859444bd4a8561b86dc458a52f6e3932910"},
+}
+
+
+def refresh_tools(root: Path) -> list[str]:
+    """The project's tools that are an older template's, untouched, replaced by the template's. Returns them."""
+    done = []
+    for rel, old in OLD_TOOLS.items():
+        path = root / rel
+        try:
+            have = path.read_bytes().replace(b"\r\n", b"\n")
+        except OSError:
+            continue
+        if hashlib.sha1(have).hexdigest() in old:
+            path.write_bytes((TEMPLATE / rel).read_bytes())
+            done.append(rel)
+    return done
+
+
 def fix_short_ends(root: Path, version: str) -> list[str]:
     """Projects made before _whole: functions whose last instruction ended in zeros were cut short (objdiff saw
     "(bad)" and capped them below 100% whatever the C). Each one ends at its last whole instruction now, never past

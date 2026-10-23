@@ -566,3 +566,56 @@ def test_two_functions_ghidra_took_for_one_are_split(tmp_path, monkeypatch):
     assert [(f["name"], f["addr"], f["size"]) for f in unit] == [("_func_00401000", 0x401000, 3),
                                                                 ("_func_00401010", 0x401010, 3)]
     assert scratch_pe.split_merged(root, "v") == []
+
+
+def _coff_symbols(data: bytes) -> list[tuple[str, int]]:
+    """(name, section) of each symbol of a COFF object, auxiliary records skipped."""
+    sym_at, count = struct.unpack_from("<II", data, 8)
+    strings_at, out, i = sym_at + 18 * count, [], 0
+    while i < count:
+        raw = data[sym_at + 18 * i:sym_at + 18 * i + 8]
+        if raw[:4] == b"\0\0\0\0":
+            off = strings_at + struct.unpack_from("<I", raw, 4)[0]
+            raw = data[off:data.index(b"\0", off)]
+        _, section, _, _, aux = struct.unpack_from("<IhHBB", data, sym_at + 18 * i + 8)
+        out.append((raw.rstrip(b"\0").decode(), section))
+        i += 1 + aux
+    return out
+
+
+def test_a_function_called_from_its_own_file_is_one_symbol_in_the_original_object(tmp_path):
+    """A PC game's function called by another of its file had a second, undefined symbol of its name in the object
+    cut from the program: objdiff paired it with that one, said it wasn't in the object, and reopened every agent's
+    match of it (2,000 times in six hours, 78 functions). The call refers to the function, as MSVC's does."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("delink", scratch_pe.TEMPLATE / "tools" / "delink.py")
+    delink = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(delink)
+    exe = bytes.fromhex("c3cccccc") + bytes.fromhex("e800000000c3")  # ret; call (the one before) ; ret
+    functions = [{"name": "_func_00401000", "offset": 0, "size": 1, "relocs": []},
+                 {"name": "_func_00401004", "offset": 4, "size": 6,
+                  "relocs": [[1, delink.REL32, "_func_00401000", -4], [1, delink.REL32, "_func_00402000", -4]]}]
+    data = delink.coff(functions, exe)
+    syms = _coff_symbols(data)
+    assert [n for n, _ in syms].count("_func_00401000") == 1
+    assert ("_func_00401000", 1) in syms and ("_func_00402000", 0) in syms  # (another file's: undefined)
+    reloc_at = struct.unpack_from("<I", data, 20 + 40 + 24)[0]  # the second section's relocations
+    assert struct.unpack_from("<IIH", data, reloc_at)[1] == 0  # the call: the first symbol, the function itself
+
+
+def test_a_projects_untouched_old_delinker_is_updated_and_a_changed_one_kept(tmp_path, monkeypatch):
+    """A project keeps the tools it was made with: one still as an older template left it (line endings aside) gets
+    the template's, which cuts its original objects again; one changed by hand stays as it is."""
+    import hashlib
+
+    root = tmp_path / "game"
+    (root / "tools").mkdir(parents=True)
+    assert scratch_pe.refresh_tools(root) == []  # (no such tool: nothing to do)
+    monkeypatch.setitem(scratch_pe.OLD_TOOLS, "tools/delink.py", {hashlib.sha1(b"old delinker\n").hexdigest()})
+    (root / "tools" / "delink.py").write_bytes(b"old delinker\r\n")  # (a project made on Windows)
+    assert scratch_pe.refresh_tools(root) == ["tools/delink.py"]
+    assert (root / "tools" / "delink.py").read_bytes() == (scratch_pe.TEMPLATE / "tools" / "delink.py").read_bytes()
+    (root / "tools" / "delink.py").write_text("my own delinker\n", encoding="utf-8")
+    assert scratch_pe.refresh_tools(root) == []
+    assert (root / "tools" / "delink.py").read_text(encoding="utf-8") == "my own delinker\n"
