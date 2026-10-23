@@ -96,7 +96,11 @@ def main() -> None:
     n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
 
     targets = [str(BUILD / "target" / f"{u}.obj") for u in units]
-    n.build(targets, "delink", [str(CONFIG), "tools/delink.py"])
+    # names.json (real names, rename_symbol's) cuts the original's objects again; a source file compiles again when it
+    # changes, and a rename changes every file that uses the name, so its compiles don't wait on it: on a big game,
+    # 9,000 compiles (minutes of every core) for each name
+    names = CONFIG.with_name("names.json")
+    n.build(targets, "delink", [str(CONFIG), "tools/delink.py", "tools/names.py", *([str(names)] if names.exists() else [])])
     objs = []
     for src in files("src", (".c", ".cpp")):
         obj = BUILD / src.with_suffix(".obj")

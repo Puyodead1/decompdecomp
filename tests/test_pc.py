@@ -20,6 +20,7 @@ from decompnet import toolchains
 from decompnet.consoles.pc import scratch as scratch_pe
 from decompnet.forks import csource, ghidra
 from decompnet.forks.project import ForkError, ForkProject
+from decompnet.network import NetworkError
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "projects" / "demo-pc"
@@ -192,6 +193,42 @@ def test_agents_match_functions(pc):
     net.release(agent, other, "", slug)
     root = Path(net.project_row(slug)["root"])
     assert "Match " in subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
+
+
+@needs_tools
+def test_matched_functions_and_data_get_real_names(pc):
+    """rename_symbol on a PC project (it said it couldn't: names came from addresses): the function keeps its
+    decoration, its row and its match; data too; the C, the original's objects and read_data have the new names."""
+    from decompnet import consoles
+
+    net, slug = pc
+    syms = _map()
+    agent, _ = net.local_agent("pc-agent")
+    pid = net.project_row(slug)["id"]
+    root = Path(net.project_row(slug)["root"])
+    clamp = f"func_{syms['_clamp_s32']:08X}"
+    row = net.store.one("SELECT id, name, status FROM functions WHERE project_id=? AND name LIKE ?", pid, f"%{clamp}%")
+    assert row["status"] == "matched"
+    said = net.rename_symbol(agent, slug, row["name"], "clamp_value", "it clamps")  # (as the function list has it)
+    assert said.startswith("✅"), said
+    after = net.store.one("SELECT name, status, meta FROM functions WHERE id=?", row["id"])
+    assert after["name"] == row["name"].replace(clamp, "clamp_value") and after["status"] == "matched"
+    assert json.loads(after["meta"])["symbol"] == after["name"]
+    sources = "".join(p.read_text() for p in (root / "src").rglob("*.cpp"))
+    assert "clamp_value" in sources and clamp not in sources
+    settings = f"D_{syms['_g_settings']:08X}"
+    at = next(a for s, a in syms.items() if re.sub(r"^[_@]|@\d+$", "", s) == "settings_get")
+    getter = net.store.one("SELECT name FROM functions WHERE project_id=? AND name LIKE ?", pid, f"%func_{at:08X}%")["name"]
+    assert net.store.one("SELECT status FROM functions WHERE name=?", getter)["status"] == "matched"
+    said = net.rename_symbol(agent, slug, settings, "g_settings")
+    assert said.startswith("✅"), said
+    assert net.store.one("SELECT status FROM functions WHERE name=?", getter)["status"] == "matched"
+    assert json.loads((root / "config" / "demoquest" / "names.json").read_text()) == {
+        clamp: "clamp_value", settings: "g_settings"}
+    fp = ForkProject(root)
+    assert consoles.get("pc").read_data(fp, "g_settings", 16).startswith(settings)
+    with pytest.raises(NetworkError, match="used in the project already"):
+        net.rename_symbol(agent, slug, "clamp_value", "g_settings")
 
 
 def test_a_program_built_with_a_newer_visual_cpp_is_told_apart():
@@ -604,18 +641,112 @@ def test_a_function_called_from_its_own_file_is_one_symbol_in_the_original_objec
     assert struct.unpack_from("<IIH", data, reloc_at)[1] == 0  # the call: the first symbol, the function itself
 
 
-def test_a_projects_untouched_old_delinker_is_updated_and_a_changed_one_kept(tmp_path, monkeypatch):
+def test_a_projects_untouched_old_tools_are_updated_and_changed_ones_kept(tmp_path, monkeypatch):
     """A project keeps the tools it was made with: one still as an older template left it (line endings aside) gets
-    the template's, which cuts its original objects again; one changed by hand stays as it is."""
+    the template's, which cuts its original objects again, and the template's tools it lacks come with it;
+    configure.py keeps its compiler; names.py keeps its time (every compile depends on it: on a big game, minutes of
+    every core for the same objects); one changed by hand stays as it is."""
     import hashlib
+    import os
 
     root = tmp_path / "game"
     (root / "tools").mkdir(parents=True)
     assert scratch_pe.refresh_tools(root) == []  # (no such tool: nothing to do)
+    template = (scratch_pe.TEMPLATE / "tools" / "configure.py").read_text(encoding="utf-8")
+    old_configure = scratch_pe.settings(template + "# an older one\n", "8.0-sp1")
     monkeypatch.setitem(scratch_pe.OLD_TOOLS, "tools/delink.py", {hashlib.sha1(b"old delinker\n").hexdigest()})
+    monkeypatch.setitem(scratch_pe.OLD_TOOLS, "tools/names.py", {hashlib.sha1(b"old names\n").hexdigest()})
+    monkeypatch.setitem(scratch_pe.OLD_TOOLS, "tools/configure.py",
+                        {hashlib.sha1((template + "# an older one\n").encode()).hexdigest()})
     (root / "tools" / "delink.py").write_bytes(b"old delinker\r\n")  # (a project made on Windows)
-    assert scratch_pe.refresh_tools(root) == ["tools/delink.py"]
-    assert (root / "tools" / "delink.py").read_bytes() == (scratch_pe.TEMPLATE / "tools" / "delink.py").read_bytes()
+    (root / "tools" / "names.py").write_bytes(b"old names\n")
+    os.utime(root / "tools" / "names.py", ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+    (root / "tools" / "configure.py").write_text(old_configure, encoding="utf-8")
+    done = scratch_pe.refresh_tools(root)
+    assert done[:3] == ["tools/delink.py", "tools/names.py", "tools/configure.py"]
+    assert "tools/compile.py" in done and (root / "tools" / "compile.py").exists()
+    for f in ("delink.py", "names.py"):
+        assert (root / "tools" / f).read_bytes() == (scratch_pe.TEMPLATE / "tools" / f).read_bytes()
+    assert (root / "tools" / "configure.py").read_text(encoding="utf-8") == scratch_pe.settings(template, "8.0-sp1")
+    assert (root / "tools" / "names.py").stat().st_mtime_ns == 1_600_000_000_000_000_000
     (root / "tools" / "delink.py").write_text("my own delinker\n", encoding="utf-8")
     assert scratch_pe.refresh_tools(root) == []
     assert (root / "tools" / "delink.py").read_text(encoding="utf-8") == "my own delinker\n"
+
+
+def test_every_tool_a_pc_project_was_made_with_is_known():
+    """The template's tools as they are now aren't old (nothing to update); this server's PC project, made with
+    earlier ones, had every one of them in OLD_TOOLS."""
+    import hashlib
+
+    for rel, old in scratch_pe.OLD_TOOLS.items():
+        now = scratch_pe._as_template(rel, (scratch_pe.TEMPLATE / rel).read_text(encoding="utf-8"))
+        assert hashlib.sha1(now.encode()).hexdigest() not in old, rel
+
+
+def _tools_module(name: str):
+    import importlib.util
+
+    sys.path.insert(0, str(scratch_pe.TEMPLATE / "tools"))
+    try:
+        spec = importlib.util.spec_from_file_location(name, scratch_pe.TEMPLATE / "tools" / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+def test_a_real_name_pairs_with_the_original_and_names_its_objects(tmp_path):
+    """names.json (rename_symbol's) gives a function and data real names: the original's objects carry them with
+    their decoration, and what C++ compiles them to (mangled, a method, the old name by address) pairs with them."""
+    names, delink = _tools_module("names"), _tools_module("delink")
+    config = tmp_path / "functions.json"
+    info = {"units": {"text_00401000": [
+        {"name": "_func_00401000@8", "addr": 0x401000, "offset": 0, "size": 1, "relocs": []},
+        {"name": "@func_00401010@8", "addr": 0x401010, "offset": 4, "size": 6,
+         "relocs": [[1, delink.REL32, "_func_00401000@8", -4], [1, delink.DIR32, "_D_00403000", 0]]}]}}
+    assert names.real_names(info, config) == {}
+    (tmp_path / "names.json").write_text('{"func_00401000": "Town_Update", "D_00403000": "gPlayer"}')
+    real = names.real_names(info, config)
+    assert real == {"_func_00401000@8": "_Town_Update@8", "_D_00403000": "_gPlayer"}
+    want = names.wanted(info, config)
+    assert want[b"Town_Update"] == want[b"func_00401000"] == b"_Town_Update@8"
+    assert want[b"gPlayer"] == want[b"D_00403000"] == b"_gPlayer"
+    assert want[b"func_00401010"] == b"@func_00401010@8"
+    for compiled, original in (("?Town_Update@@YGXHH@Z", "_Town_Update@8"), ("?Update@Town@@QAEXH@Z", None),
+                               ("?gPlayer@@3HA", "_gPlayer"), ("?func_00401000@Town@@QAEXH@Z", "_Town_Update@8"),
+                               ("_helper", None), ("??_C@_03ABC@abc?$AA@", None), ("__real@3f800000", None)):
+        obj = delink.coff([{"name": compiled, "offset": 0, "size": 1, "relocs": []}], b"\xc3")
+        assert _coff_symbols(names.rename(obj, want))[0][0] == (original or compiled), compiled
+    obj = delink.coff(info["units"]["text_00401000"], bytes.fromhex("c3cccccc" + "e800000000c3"), real)
+    syms = [n for n, _ in _coff_symbols(obj)]
+    assert "_Town_Update@8" in syms and "_gPlayer" in syms and not [n for n in syms if "00401000" in n]
+
+
+def test_rename_symbol_on_a_pc_project_keeps_names_json(tmp_path):
+    root = tmp_path / "game"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"units": {"text_00401000": [
+        {"name": "_func_00401000@8", "addr": 0x401000, "offset": 0, "size": 1, "relocs": [[1, 6, "_D_00403000", 0]]},
+        {"name": "_WinMain@16", "addr": 0x401010, "offset": 4, "size": 1, "relocs": []}]}}))
+    names = root / "config" / "v" / "names.json"
+    saved = scratch_pe.rename(root, "v", "_func_00401000@8", "Town_Update")  # (as the function list shows it)
+    assert saved == {names: "{}\n"} and json.loads(names.read_text()) == {"func_00401000": "Town_Update"}
+    scratch_pe.rename(root, "v", "D_00403000", "gPlayer")
+    scratch_pe.rename(root, "v", "Town_Update", "Town_Tick")  # a real name renamed again
+    scratch_pe.rename(root, "v", "WinMain", "GameMain")  # a name Ghidra knew, by its address
+    assert json.loads(names.read_text()) == {"D_00403000": "gPlayer", "func_00401000": "Town_Tick",
+                                             "func_00401010": "GameMain"}
+    assert scratch_pe.address_of(root, "v", "gPlayer") == 0x403000
+    assert scratch_pe.address_of(root, "v", "_Town_Tick@8") == 0x401000
+    assert scratch_pe.address_of(root, "v", "D_00403004") == 0x403004
+    for old, new, why in (("func_00401000", "X", "is called Town_Tick now"), ("nope", "X", "isn't one of the game's"),
+                          ("Town_Tick", "gPlayer", "is a symbol of the game already"),
+                          ("Town_Tick", "func_00409000_tick", "holds an address")):
+        with pytest.raises(ForkError, match=why):
+            scratch_pe.rename(root, "v", old, new)
+    from decompnet import consoles
+
+    assert consoles.get("pc").source_name("@func_00401000@8") == "func_00401000"
+    assert consoles.get("gc").source_name("fn_80003100") == "fn_80003100"

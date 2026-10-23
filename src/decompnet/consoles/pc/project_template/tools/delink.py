@@ -7,7 +7,8 @@ writes them), for objdiff to compare with what src/ compiles to.
 functions.json (written by decompdecomp from Ghidra's analysis) says where each function is in the .exe and where its
 code refers to addresses: calls, jumps and data addresses become relocations, as in a compiled object, so a function
 matches whatever names your C uses for them. Each function gets a section of its own, as MSVC's /Gy makes them.
-Standard library only. Made by decompdecomp.
+Symbols given a real name in config/<version>/names.json have it here too (tools/names.py). Standard library only.
+Made by decompdecomp.
 """
 
 import hashlib
@@ -20,11 +21,12 @@ DIR32, REL32 = 0x06, 0x14
 CODE = 0x60500020  # code, readable, executable, 16-byte aligned
 
 
-def coff(functions: list[dict], exe: bytes) -> bytes:
+def coff(functions: list[dict], exe: bytes, real: dict[str, str] | None = None) -> bytes:
+    real = real or {}
     symbols: list[tuple[str, int, int, int, int]] = []  # (name, value, section, type, storage class)
     sections = []
     for i, fn in enumerate(functions):
-        symbols.append((fn["name"], 0, i + 1, 0x20, 2))
+        symbols.append((real.get(fn["name"], fn["name"]), 0, i + 1, 0x20, 2))
     # A call to a function of this file refers to it, as MSVC's object does: a second, undefined symbol of the same
     # name made objdiff pair the function with that one, and a function called from its own file never matched.
     externs: dict[str, int] = {fn["name"]: i for i, fn in enumerate(functions)}
@@ -41,7 +43,7 @@ def coff(functions: list[dict], exe: bytes) -> bytes:
             else:
                 if name not in externs:
                     externs[name] = len(symbols)
-                    symbols.append((name, 0, 0, 0x20 if rtype == REL32 else 0, 2))
+                    symbols.append((real.get(name, name), 0, 0, 0x20 if rtype == REL32 else 0, 2))
                 index, inline = externs[name], addend
             struct.pack_into("<i", code, off, inline)
             relocs += struct.pack("<IIH", off, index, rtype)
@@ -70,14 +72,17 @@ def coff(functions: list[dict], exe: bytes) -> bytes:
 
 
 def main() -> None:
+    from names import real_names  # (tools/names.py, beside this file)
+
     config, out = Path(sys.argv[1]), Path(sys.argv[2])
     info = json.loads(config.read_text(encoding="utf-8"))
     exe = Path(info["exe"]).read_bytes()
     if hashlib.sha1(exe).hexdigest() != info["sha1"]:
         sys.exit(f"{info['exe']} isn't the copy this project was made from (its SHA-1 should be {info['sha1']})")
     out.mkdir(parents=True, exist_ok=True)
+    real = real_names(info, config)
     for unit, functions in info["units"].items():
-        data = coff(functions, exe)
+        data = coff(functions, exe, real)
         path = out / f"{unit}.obj"
         if not path.exists() or path.read_bytes() != data:  # unchanged objects keep their time: nothing rebuilds
             path.write_bytes(data)

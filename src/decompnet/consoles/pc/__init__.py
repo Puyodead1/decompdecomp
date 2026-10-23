@@ -59,11 +59,10 @@ class WindowsPC(Console):
 
     def on_start(self, net, slug: str, log=print) -> None:
         """A project made with older tools (scratch.refresh_tools: a delinker that left functions called from their
-        own file unmatchable) or before the fix of functions cut short (scratch.fix_short_ends) gets the fix,
-        committed, and is measured again; and its
-        open functions whose code no compiler makes (arch/x86.py asm_reason: /LTCG's register conventions, exception
-        funclets and stubs, address tables) are set aside, out of agents' way. (Seconds, in the background: a
-        project done already has nothing to change.)"""
+        own file unmatchable, no real names) or before the fix of functions cut short (scratch.fix_short_ends) gets
+        the fix, committed, and is measured again; and its open functions whose code no compiler makes (arch/x86.py
+        asm_reason: /LTCG's register conventions, exception funclets and stubs, address tables) are set aside, out of
+        agents' way. (Seconds, in the background: a project done already has nothing to change.)"""
         from . import scratch
 
         if not net.fork_slug(slug):
@@ -76,10 +75,10 @@ class WindowsPC(Console):
         if not (fp.root / rel).exists():
             return
         cut_again = False
-        for tool in scratch.refresh_tools(fp.root):
-            net.forks._commit(proj, fp, tool, f"Update {tool} from decompdecomp\n\nWritten by decompdecomp: "
-                              "the project's copy was an older one's, unchanged.")
-            log(f"{slug}: {tool} updated: measuring the project again")
+        if (tools := scratch.refresh_tools(fp.root)):
+            net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
+                                    "decompdecomp: the project's copies were an older one's, unchanged.")
+            log(f"{slug}: {', '.join(tools)} updated: measuring the project again")
             cut_again = True
         fixed = scratch.fix_short_ends(fp.root, str(manifest.get("version")))
         if fixed:
@@ -103,6 +102,18 @@ class WindowsPC(Console):
             net.forks.sync(slug, log=log)
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
+
+    def rename_symbol(self, fp, version: str, old: str, new: str) -> dict:
+        """config/<version>/names.json: tools/names.py pairs the real name with the original's symbol, and
+        tools/delink.py gives the original's objects the same name."""
+        from . import scratch
+
+        return scratch.rename(fp.root, version, old, new)
+
+    def source_name(self, symbol: str) -> str:
+        from . import scratch
+
+        return scratch.c_name(symbol)
 
     def draft_types(self, header: str) -> str | None:
         from .ghidra_c import add_types
