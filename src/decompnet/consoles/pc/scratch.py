@@ -518,9 +518,10 @@ def read_data(root: Path, manifest: dict, name: str, length: int = READ_DEFAULT_
     """What read_data shows on a PC project: the bytes at a D_<address> (or any address) in the user's copy, the
     addresses its words point to, and a string or floats when it reads as one."""
     m = re.fullmatch(r"_?D_([0-9A-Fa-f]{8})|(?:0x)?([0-9A-Fa-f]{6,8})", name)
-    if m is None:
-        raise ForkError(f"`{name}` isn't data by address: PC data is named D_<address> (D_00402034)")
-    addr = int(m.group(1) or m.group(2), 16)
+    addr = int(m.group(1) or m.group(2), 16) if m else address_of(root, str(manifest.get("version")), name)
+    if addr is None:
+        raise ForkError(f"`{name}` isn't data by address or by a real name: PC data is named D_<address> "
+                        "(D_00402034) until it's renamed")
     pe = read_pe((root / manifest["game"]["path"]).read_bytes())
     sec = pe.section_at(addr)
     if sec is None:
@@ -741,28 +742,130 @@ def set_file_flags(fp, source: str, flags: list[str]) -> str:
     return path.relative_to(fp.root).as_posix()
 
 
-# The template's tools as projects were made with them, by SHA-1 (line endings as LF): a project's copy that's one of
-# these, untouched, gets the template's own; one changed by hand is left alone.
+# The template's tools as projects were made with them, by SHA-1 (line endings as LF; configure.py with the template's
+# compiler settings, as settings() changes them): a project's copy that's one of these, untouched, gets the template's
+# own, and the template's tools it lacks; one changed by hand is left alone.
 OLD_TOOLS = {
-    # gave a function called from its own file a second, undefined symbol: objdiff never matched it, and every
-    # agent's match of it was reopened by the next measurement of its file
-    "tools/delink.py": {"a1c22859444bd4a8561b86dc458a52f6e3932910"},
+    "tools/delink.py": {
+        # gave a function called from its own file a second, undefined symbol: objdiff never matched it, and every
+        # agent's match of it was reopened by the next measurement of its file
+        "a1c22859444bd4a8561b86dc458a52f6e3932910",
+        "7257482c33378a366314cdddb230b371cbd2b888",  # (no real names: names.json)
+    },
+    "tools/names.py": {"a45a37d27351b4ba6b8b85418bd5cbbd012921f5"},  # (pairs symbols by address only)
+    "tools/configure.py": {  # (the original's objects weren't cut again for names.json)
+        "e46755ca61186348a3f788220f670216fc7e7b65", "8c77712f7c23fc00d48dad6c71da63322d1868e8",
+        "05048e5987c3a4a60e474b8dcf48111692a2b5d9", "8dc9b34a22cbefd4ce49ccf2c36b2328daea0ca3",
+        "c6c63b6d15639d9b32be40bb43624bd7b6b5c314", "8ffd5d102f39e8daaa3dbbf76b41dce3015bf008",
+        "9f5b229043a31299373a810c0a2ebe16829235cc", "8f712511ba1d775a7f9835cf30eeedb882fb4425",
+        "ca3c8e6b677ddea5a642cd023f872b2c2b555a54", "644ccf643b5b87f25d533098ec48e714648cc8e8",
+    },
 }
+_MSVC_SETTING = re.compile(r'^MSVC_VERSION = "([^"]*)"', re.M)
+
+
+def _as_template(rel: str, text: str) -> str:
+    """A project's tool as the template has it: configure.py without its compiler settings (settings())."""
+    if rel != "tools/configure.py":
+        return text
+    text = _MSVC_SETTING.sub(f'MSVC_VERSION = "{MSVC_DEFAULT}"', text)
+    return text.replace('"/EHsc"]  # /EHsc: C++ exceptions', '"/GX"]  # /GX: C++ exceptions')
 
 
 def refresh_tools(root: Path) -> list[str]:
-    """The project's tools that are an older template's, untouched, replaced by the template's. Returns them."""
+    """The project's tools that are an older template's, untouched, replaced by the template's (configure.py keeps
+    its compiler); and, when there were any, the template's tools it didn't have. Returns what changed."""
     done = []
     for rel, old in OLD_TOOLS.items():
         path = root / rel
         try:
-            have = path.read_bytes().replace(b"\r\n", b"\n")
-        except OSError:
+            have = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        except (OSError, UnicodeDecodeError):
             continue
-        if hashlib.sha1(have).hexdigest() in old:
-            path.write_bytes((TEMPLATE / rel).read_bytes())
-            done.append(rel)
+        if hashlib.sha1(_as_template(rel, have).encode()).hexdigest() not in old:
+            continue
+        new = (TEMPLATE / rel).read_text(encoding="utf-8")
+        if rel == "tools/configure.py" and (m := _MSVC_SETTING.search(have)):
+            new = settings(new, m.group(1))
+        was = path.stat()
+        path.write_text(new, encoding="utf-8")
+        if rel == "tools/names.py":  # every compile depends on it, and what's built has the names it gives already
+            os.utime(path, ns=(was.st_atime_ns, was.st_mtime_ns))  # (on a big game, minutes of every core)
+        done.append(rel)
+    if done:
+        for tool in sorted((TEMPLATE / "tools").glob("*.py")):
+            if not (root / "tools" / tool.name).exists():
+                shutil.copy(tool, root / "tools" / tool.name)
+                done.append(f"tools/{tool.name}")
     return done
+
+
+# A symbol's C name: _f, _f@8 (__stdcall), @f@8 (__fastcall) -> f (as tools/names.py reads them)
+_C_SYMBOL = re.compile(r"[_@]?([A-Za-z_]\w*?)(@\d+)?")
+_ADDRESS_NAME = re.compile(r"(?:func|D)_[0-9A-Fa-f]{8}")
+
+
+def c_name(symbol: str) -> str:
+    m = _C_SYMBOL.fullmatch(symbol)
+    return m.group(1) if m else symbol
+
+
+def real_names(root: Path, version: str) -> dict[str, str]:
+    """config/<version>/names.json: the game's symbols given a real name, by their name by address (func_0041B470,
+    D_0066DDA4 -> Town_Update). tools/names.py and tools/delink.py read it."""
+    try:
+        names = json.loads((root / "config" / version / "names.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return names if isinstance(names, dict) else {}
+
+
+def rename(root: Path, version: str, old: str, new: str) -> dict[Path, str]:
+    """rename_symbol on a PC project: names.json gives the function or data `old` (its C name, or its symbol as
+    the function list shows it) the real name `new`. Returns names.json, with what it held before."""
+    old = c_name(old)
+    if _ADDRESS_NAME.search(new):
+        raise ForkError(f"{new} holds an address (func_/D_ and 8 digits): tools/names.py would pair it by that "
+                        "address, with whatever's there: pick a name without one")
+    info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    names = real_names(root, version)
+    key: dict[str, str] = {}  # every symbol of the game, by C name -> its name by address
+    for fns in info["units"].values():
+        for f in fns:
+            here = f"func_{f['addr']:08X}"
+            key[here] = key[c_name(f["name"])] = here
+            for r in f["relocs"]:
+                if r[2] and (m := re.fullmatch(r"_(D_[0-9A-F]{8})", r[2])):
+                    key[m.group(1)] = m.group(1)
+    for was, real in names.items():
+        key[real] = was
+    if re.fullmatch(r"D_[0-9A-F]{8}", old):  # data only the source names (no code of the game refers to it)
+        key.setdefault(old, old)
+    at = key.get(old)
+    if at is None:
+        raise ForkError(f"{old} isn't one of the game's functions or data")
+    if at in names and old != names[at]:
+        raise ForkError(f"{old} is called {names[at]} now: rename {names[at]}")
+    if new in key:
+        raise ForkError(f"{new} is a symbol of the game already")
+    path = root / "config" / version / "names.json"
+    before = path.read_text(encoding="utf-8") if path.exists() else "{}\n"
+    names[at] = new
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(dict(sorted(names.items())), indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return {path: before}
+
+
+def address_of(root: Path, version: str, name: str) -> int | None:
+    """The address of a function or data named by address (func_0041B470, _D_0066DDA4) or by a real name."""
+    name = c_name(name)
+    for was, real in real_names(root, version).items():
+        if real == name:
+            name = was
+            break
+    m = re.fullmatch(r"(?:func|D)_([0-9A-Fa-f]{8})", name)
+    return int(m.group(1), 16) if m else None
 
 
 def fix_short_ends(root: Path, version: str) -> list[str]:

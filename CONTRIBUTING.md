@@ -179,7 +179,8 @@ A console works in one of two modes:
 
    | Part | What needs it |
    | :-- | :-- |
-   | `rename_symbol(fp, version, old, new)` | Polishing and `rename_symbol`: real names in the project's symbol list (dtk's and ds-decomp's `symbols.txt`). Without it, polished code keeps addresses for names. |
+   | `rename_symbol(fp, version, old, new)` | Polishing and `rename_symbol`: real names in the project's symbol list (dtk's and ds-decomp's `symbols.txt`, a PC project's `names.json`). Without it, polished code keeps addresses for names. |
+   | `source_name(symbol)` | `rename_symbol`, when C spells a symbol otherwise than the function list (PC: `_func_00401000@8` is `func_00401000`). |
    | `split_source(fp, version, source, at, new)`, `splits_sources` | `split_file`: a source file divided where a new one starts (a library's code, a second compiler). |
    | `join_functions(fp, first, last, keep)` | `join_functions`: a function the analysis cut in pieces made whole, once agents agree. |
    | `file_compiler`, `set_file_compiler` | `try_compiler`, when its build lets each source file have its own compiler. |

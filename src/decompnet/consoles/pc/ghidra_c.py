@@ -20,6 +20,8 @@ import re
 import threading
 from pathlib import Path
 
+from . import scratch
+
 # What a draft can't be compiled with: values in registers Ghidra couldn't place, and code it couldn't read
 _UNPLACED = re.compile(r"\b(in_|unaff_|extraout_|in_stack_)\w+|\bhalt_baddata\b|\bswi\(|Bad instruction|"
                        r"\bLOCK\(\)|\bUNLOCK\(\)|\bfunc_0x[0-9a-f]+")
@@ -364,14 +366,19 @@ def _load(fp, log=print, wait: bool = True) -> tuple[Path, dict[int, tuple[int, 
         return _LOADED[root]
 
 
+def _version(fp) -> str:
+    return str((fp.manifest or {}).get("version"))
+
+
 def _row(fp, symbol: str, log=print, wait: bool = True) -> tuple[dict, dict] | None:
-    """(Ghidra's line for the function `symbol`, the project's names), or None."""
+    """(Ghidra's line for the function `symbol`, by address or by its real name, the project's names), or None."""
     m = re.search(r"func_([0-9A-Fa-f]{8})", symbol)
-    loaded = _load(fp, log, wait) if m else None
+    addr = int(m.group(1), 16) if m else scratch.address_of(Path(fp.root), _version(fp), symbol)
+    loaded = _load(fp, log, wait) if addr is not None else None
     if loaded is None:
         return None
     cache, at, project = loaded
-    where = at.get(int(m.group(1), 16))
+    where = at.get(addr)
     if where is None:
         return None
     try:
@@ -382,11 +389,18 @@ def _row(fp, symbol: str, log=print, wait: bool = True) -> tuple[dict, dict] | N
         return None
 
 
+def _real_names(fp, text: str) -> str:
+    """A draft with the names rename_symbol gave (it names everything by address, as Ghidra's run left it)."""
+    names = scratch.real_names(Path(fp.root), _version(fp))
+    return re.sub(r"\b(?:func|D)_[0-9A-F]{8}\b", lambda m: names.get(m.group(0), m.group(0)), text) if names else text
+
+
 def program_draft(fp, symbol: str, log=print) -> tuple[str, str] | None:
     """The draft of a project's function (its symbol: _func_00401000@4) that compiles as it is, for autopilot: waits
     for Ghidra's run the first time."""
     found = _row(fp, symbol, log)
-    return draft(*found) if found else None
+    made = draft(*found) if found else None
+    return (_real_names(fp, made[0]), _real_names(fp, made[1])) if made else None
 
 
 def program_c(fp, symbol: str) -> str | None:
@@ -398,5 +412,5 @@ def program_c(fp, symbol: str) -> str | None:
     row, project = found
     made = draft(row, project)
     if made:
-        return (made[1] + "\n" if made[1] else "") + made[0]
+        return _real_names(fp, (made[1] + "\n" if made[1] else "") + made[0])
     return (row.get("c") or "").strip() or None

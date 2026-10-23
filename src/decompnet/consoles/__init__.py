@@ -214,6 +214,11 @@ class Console:
         with what it held before."""
         raise RomError(f"{self.name} projects can't rename the game's symbols yet: name things in comments meanwhile")
 
+    def source_name(self, symbol: str) -> str:
+        """The name C source gives one of the game's symbols, as the function list shows it (PC: _func_00401000@8 is
+        func_00401000): what rename_symbol replaces in the source files."""
+        return symbol
+
     def split_source(self, fp, version: str, source: str, at: str, new: str) -> dict:
         """Divide `source` (relative to the project) at function `at` (its symbol) in the project's config: its code
         from there on becomes `new`'s, which builds with the compiler `source` has. Returns each config file changed,
