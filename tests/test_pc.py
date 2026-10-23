@@ -326,8 +326,15 @@ def test_matched_functions_and_data_get_real_names(pc):
         clamp: "clamp_value", settings: "g_settings"}
     fp = ForkProject(root)
     assert consoles.get("pc").read_data(fp, "g_settings", 16).startswith(settings)
-    with pytest.raises(NetworkError, match="used in the project already"):
+    with pytest.raises(NetworkError, match=r"used in the project already \(in (src|include)/"):  # (data: a file uses it)
         net.rename_symbol(agent, slug, "clamp_value", "g_settings")
+    getter_c = re.sub(r"^[_@]|@\d+$", "", getter)
+    with pytest.raises(NetworkError, match=f"it's the name of the function {re.escape(getter)}"):
+        net.rename_symbol(agent, slug, "clamp_value", getter_c)
+    # asked again, hours later (helpers did, often their own): done already, not an error
+    assert net.rename_symbol(agent, slug, row["name"], "clamp_value").startswith("✅ func_")
+    # looked up by the name the C gives it, not only the function list's decorated symbol
+    assert net._function("clamp_value", slug)["id"] == row["id"]
 
 
 def test_a_program_built_with_a_newer_visual_cpp_is_told_apart():
