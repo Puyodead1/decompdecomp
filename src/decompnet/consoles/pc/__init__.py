@@ -58,7 +58,9 @@ class WindowsPC(Console):
         return scratch.create(root, game, compiler=compiler, log=log)
 
     def on_start(self, net, slug: str, log=print) -> None:
-        """A project made before the fix of functions cut short (scratch.fix_short_ends) gets it, committed; and its
+        """A project made with older tools (scratch.refresh_tools: a delinker that left functions called from their
+        own file unmatchable) or before the fix of functions cut short (scratch.fix_short_ends) gets the fix,
+        committed, and is measured again; and its
         open functions whose code no compiler makes (arch/x86.py asm_reason: /LTCG's register conventions, exception
         funclets and stubs, address tables) are set aside, out of agents' way. (Seconds, in the background: a
         project done already has nothing to change.)"""
@@ -73,6 +75,12 @@ class WindowsPC(Console):
         rel = f"config/{manifest.get('version')}/functions.json"
         if not (fp.root / rel).exists():
             return
+        cut_again = False
+        for tool in scratch.refresh_tools(fp.root):
+            net.forks._commit(proj, fp, tool, f"Update {tool} from decompdecomp\n\nWritten by decompdecomp: "
+                              "the project's copy was an older one's, unchanged.")
+            log(f"{slug}: {tool} updated: measuring the project again")
+            cut_again = True
         fixed = scratch.fix_short_ends(fp.root, str(manifest.get("version")))
         if fixed:
             net.forks._commit(proj, fp, rel, f"Lengthen {len(fixed)} functions cut short in the middle of their last "
@@ -86,6 +94,8 @@ class WindowsPC(Console):
                               "taken for one, which objdiff could never match.")
             log(f"{slug}: {len(made)} functions Ghidra had merged into others are functions of their own now: "
                 "measuring the project again")
+            cut_again = True
+        if cut_again:
             from ...forks.project import _tool
             target = next((u.target for u in fp.units() if u.target is not None), None)
             if target is not None:  # the original's objects, cut again (one step makes them all), then measured
