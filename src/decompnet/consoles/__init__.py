@@ -273,6 +273,11 @@ class Console:
         reg = toolchains.registry()
         return [c.id for c in self.compilers if c.id in reg and reg[c.id].supported]
 
+    def function_asm(self, root: Path, unit: str, symbol: str) -> str | None:
+        """PROJECT mode, a project that keeps no assembly files (its objects are cut from the program at build time):
+        a function's assembly as m2c reads it, for its draft; None when there's none."""
+        return None
+
     def draft_types(self, header: str) -> str | None:
         """PROJECT mode, games started from scratch: the common header with what machine_draft's drafts use (their
         decompiler's types), or None when it has it already or needs none."""

@@ -20,8 +20,8 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Status | recommended | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ disc image, or the disc's files | fork by address |
 | Judge | link · compare | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | objdiff |
-| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | Ghidra | by architecture |
-| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | — | — |
+| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | ✓ | by architecture |
+| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | ✓ | ✓ Ghidra | — | ✓ | — |
 | Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | ✓ | — | — | — | — | — |
 | C++ methods drafted as `Class::method` | ✓ | ✓ | ✓ | — | — | — | — | — |
 | Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -59,9 +59,7 @@ Where to start on a gap:
 - **Struct layouts** read MIPS loads and stores (`arch/mips_fields.py`); another processor adds its reader as its
   `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's fifth to eighth arguments
   (t0-t3), and a pointer into the middle of a struct handed to a callee (`&this->pos`).
-- **V.Flash**: drafts come from Ghidra decompiling a function's cut object; m2c reads assembly, which a V.Flash
-  project doesn't keep (its objects are cut from the programs at build time): writing the cut functions' assembly
-  (binutils 2.14's objdump, in the toolchain) would bring m2c's drafts and autopilot. The export needs a linker
+- **V.Flash**: the export needs a linker
   story (FA and each module relinked at their addresses), and the import takes every module of the game: choosing
   which (a game's modules repeat their engine code) is still to do. On Windows its compiler (a Linux program) would
   run through WSL, as PS2's do; a V.Flash project builds on Linux only for now.

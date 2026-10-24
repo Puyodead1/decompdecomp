@@ -60,8 +60,9 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
     source_text = src.read_text(errors="replace", encoding="utf-8") if src and src.exists() else None
     asm = find_asm(root, unit_name, symbol, source_text)
     lang = "c++" if source_path and Path(source_path).suffix.lower() in (".cpp", ".cc", ".cxx", ".cp") else "c"
-    if asm is None:
-        return None
+    if asm is None:  # (a project with no assembly files: its console makes the function's, V.Flash)
+        text = consoles.get(platform).function_asm(root, unit_name, symbol)
+        return text and seeds.run_m2c(text, symbol, f"{target}-{lang}", timeout=timeout, valid=valid)
     text = asm.read_text(errors="replace", encoding="utf-8")
     if len(text) > MAX_ASM or ".fn " in text:
         text = _block(text, symbol)
