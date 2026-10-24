@@ -191,6 +191,17 @@ def register(app: App) -> None:
             return net.overview(slug)
         return {"job": jobs.start("analysis", work)}
 
+    def p_parts(slug, request, data):
+        """Analyse programs of the game the project's import left out (Console.add_parts: V.Flash's game modules), a
+        job: Ghidra reads them, then the project is set up and measured again."""
+        if not net.fork_slug(slug):
+            raise ValueError("only projects started from scratch choose the parts of their game")
+        names = [str(n) for n in (data.get("names") or []) if str(n).strip()]
+
+        def work(log):
+            return net.forks.add_parts(slug, names, log=log)
+        return {"job": jobs.start("analysis", work)}
+
     def p_note(slug, request, data):
         """A note from you on a function (or the whole project): agents read notes when they claim it."""
         agent, _ = net.local_agent("you")
@@ -244,7 +255,7 @@ def register(app: App) -> None:
         "/api/recheck": (p_recheck, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
-        "/api/unanalysed": (p_unanalysed, ["POST"]),
+        "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/parts": (p_parts, ["POST"]),
         "/api/suggestion": (p_suggestion, ["POST"]), "/api/boundary": (p_boundary, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/compilermap": (p_compilermap, ["GET", "POST"]),

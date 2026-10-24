@@ -1006,3 +1006,7 @@ details.more[open] > summary::before { content: "− "; }
 
 /* the app has quit (pages.js, showStopped): nothing on the page answers any more */
 .stopped { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--ink); text-align: center; }
+
+/* A list of things to tick (a V.Flash game's modules): as many columns as fit, scrolling when long */
+.checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 4px 12px; margin: 8px 0;
+  max-height: 240px; overflow: auto; }
