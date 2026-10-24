@@ -31,6 +31,7 @@ const cases = [
   ["steering", '$("forkMeasure").onclick = async () => {', '\n    };', "sourceCheckLog", "forkMeasure"],
   ["steering", 'async function exportNow() {', '\n}\n', "expLog", "srcExport"],
   ["steering", '$("setTcSave").onclick = async () => {', '\n};', "setTcLog", "setTcSave"],
+  ["steering", '$("partsGo").onclick = async () => {', '\n};', "partsLog", "partsGo"],
   ["agents", 'if (inst) inst.onclick = async () => {', '\n  };', "log", "inst"],
   ["pages", 'b.onclick = async () => {', '\n    };', "log", "b"],
 ];
@@ -41,6 +42,7 @@ function setup(file, marker, end, logId, buttonId, ranges = "") {
   get("agList").querySelector = () => log; const input = element();
   const box = { querySelector: (selector) => selector === "[data-log]" ? log : get(selector.replace(/^#/, "")), querySelectorAll: () => [input] };
   get("srcState").querySelectorAll = () => [button];
+  get("partsList").querySelectorAll = () => [Object.assign(element(), { dataset: { part: "A01" } })];
   get("setRanges").value = ranges;
   get("rLink").value = "https://room.test"; get("jPath").value = "game";
   const start = deferred(), poll = deferred();

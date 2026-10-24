@@ -23,7 +23,7 @@ def main() -> None:
     version = sys.argv[1]
     info = json.loads((ROOT / "config" / version / "functions.json").read_text(encoding="utf-8"))
     folder = ROOT / "orig" / version
-    wanted = info["programs"]
+    wanted = {**info["programs"], **info.get("unanalysed", {})}  # (the modules not analysed yet: for adding later)
     have = {p: (ROOT / w["elf"]) for p, w in wanted.items()}
     if all(f.exists() and hashlib.sha1(f.read_bytes()).hexdigest() == wanted[p]["sha1"] for p, f in have.items()):
         return  # (made already)

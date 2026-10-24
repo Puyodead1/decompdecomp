@@ -478,19 +478,39 @@ function askPath(why = "") {
   // the game isn't known yet: the scope question shows when any platform's import recognises library code
   const asks = (S.st?.consoles || []).some((c) => c.sets_aside);
   const body = dialog("Use a file or folder on this computer", `${why ? `<p>${esc(why)}</p>` : ""}<p class="muted">For big disc images, and for a Windows game with DLLs of its own: decompdecomp reads the game where it is instead of copying it through the browser. A Windows game's folder, or its .exe, brings the game's own DLLs along (the import says which it found, and which it left out).</p>
-    <label class="field"><span>Path to the game file, or a Windows game's folder</span><span class="pick-row"><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"><button class="ghost small-btn" type="button" data-pick="file" data-for="ppPath" data-title="Your copy of the game">File…</button><button class="ghost small-btn" type="button" data-pick="folder" data-for="ppPath" data-title="The game's folder">Folder…</button></span></label>
+    <label class="field"><span>Path to the game file, or a Windows game's folder (or a V.Flash disc's)</span><span class="pick-row"><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"><button class="ghost small-btn" type="button" data-pick="file" data-for="ppPath" data-title="Your copy of the game">File…</button><button class="ghost small-btn" type="button" data-pick="folder" data-for="ppPath" data-title="The game's folder">Folder…</button></span></label>
+    <div id="ppParts" hidden><p class="muted small" id="ppPartsWhat"></p><div class="checklist" id="ppPartsList"></div></div>
     ${asks ? `<label class="field"><span>What should this project cover? (where decompdecomp recognises library code)</span><select id="ppScope">
       <option value="game" selected>The game's own code: library and middleware code it recognises is left out of agents' work and progress</option>
       <option value="program">The whole program: every function is decompiled and counted</option></select></label>` : ""}
     <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of this game, obtained legally. The results stay with me for my own use.</span></label>
     <div class="row"><button class="primary" id="ppGo" type="button" disabled>Start decompiling</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   body.querySelector("#ppOwn").onchange = () => { $("ppGo").disabled = !$("ppOwn").checked; };
+  // a game of several programs (V.Flash: its firmware and game modules): which modules the import analyses
+  let looked = "", lookTimer = 0, choosing = false;
+  body.querySelector("#ppPath").addEventListener("input", () => {
+    clearTimeout(lookTimer);
+    lookTimer = setTimeout(async () => {
+      const path = $("ppPath")?.value.trim() || "";
+      if (!path || path === looked) return;
+      looked = path;
+      let info = { parts: [] };
+      try { info = await api("/api/inspect", { method: "POST", body: { path } }); } catch (e) { /* (a typed path, half done) */ }
+      if (!$("ppParts") || looked !== path) return;
+      choosing = !!info.parts?.length;
+      $("ppParts").hidden = !choosing;
+      if (!choosing) return;
+      $("ppPartsWhat").textContent = `A ${info.name} game: its firmware is always analysed. Choose its modules (Ghidra reads each, a minute or two; modules repeat much of the engine's code). The others can be analysed later, from the project's Settings.`;
+      $("ppPartsList").innerHTML = info.parts.map((p) => `<label class="check inline"><input type="checkbox" data-part="${esc(p.name)}" checked><span>${esc(p.name)} <span class="muted">${MB(p.bytes)}</span></span></label>`).join("");
+    }, 400);
+  });
   body.querySelector("#ppGo").onclick = () => {
     const path = $("ppPath").value.trim();
     if (!path) return;
     const scope = asks ? $("ppScope").value : "";
+    const parts = choosing ? [...$("ppPartsList").querySelectorAll("input[data-part]:checked")].map((x) => x.dataset.part) : null;
     closeDialog();
-    runImport(`confirmed=1&path=${encodeURIComponent(path)}${scope ? `&scope=${scope}` : ""}`, undefined, "Analysing your game…");
+    runImport(`confirmed=1&path=${encodeURIComponent(path)}${scope ? `&scope=${scope}` : ""}${parts ? `&parts=${encodeURIComponent(parts.join(","))}` : ""}`, undefined, "Analysing your game…");
   };
 }
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");
