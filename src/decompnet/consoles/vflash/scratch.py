@@ -404,8 +404,20 @@ def real_names(root: Path, version: str) -> dict[str, str]:
     return names if isinstance(names, dict) else {}
 
 
+_INFO: dict[str, tuple[int, dict]] = {}  # functions.json by path: (its time, its contents)
+
+
 def _info(root: Path, version: str) -> dict:
-    return json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    """config/<version>/functions.json, read again only when it changed (a whole game's is tens of MB, and every
+    draft and read_data asks)."""
+    path = root / "config" / version / "functions.json"
+    when = path.stat().st_mtime_ns
+    have = _INFO.get(str(path))
+    if have is None or have[0] != when:
+        if len(_INFO) > 8:
+            _INFO.clear()
+        have = _INFO[str(path)] = (when, json.loads(path.read_text(encoding="utf-8")))
+    return have[1]
 
 
 def rename(root: Path, version: str, old: str, new: str) -> dict[Path, str]:
@@ -454,6 +466,24 @@ def address_of(root: Path, version: str, name: str) -> tuple[str, int] | None:
             break
     m = _NAME.fullmatch(name.strip())
     return (m.group(2) or "FA", int(m.group(3), 16)) if m else None
+
+
+def function_asm(root: Path, unit: str, symbol: str) -> str | None:
+    """A function's assembly, as m2c reads it (asm.py), from the program the project cut it from."""
+    from . import asm
+
+    try:
+        manifest = json.loads((root / ".decomp.wtf.json").read_text(encoding="utf-8"))
+        info = _info(root, str(manifest.get("version")))
+        fn = next((f for f in info["units"].get(unit, []) if f["name"] == symbol), None)
+        if fn is None:
+            return None
+        with open(root / info["programs"][unit.split("/", 1)[0]]["elf"], "rb") as f:
+            f.seek(fn["offset"])
+            code = f.read(fn["size"])
+    except (OSError, ValueError, KeyError):
+        return None
+    return asm.function_asm(symbol, code, fn["addr"], fn["relocs"])
 
 
 _IMAGES: dict[tuple[str, int], tuple[list[tuple[int, int, int]], bytes, int, int]] = {}
