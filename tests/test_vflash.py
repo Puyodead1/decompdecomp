@@ -358,7 +358,7 @@ def test_a_function_reads_as_assembly_m2c_takes():
     a, _, d, *_ = fns
     text_a = asm.function_asm(a.name, code[:a.size], a.addr, a.relocs)
     assert "glabel func_10000000" in text_a and "    bl func_10000058" in text_a
-    assert "    blx r12" in text_a and "    ldr r0, .L10000018" in text_a and ".L10000018:\n    .word D_10000100" in text_a
+    assert "    blx r12" in text_a and "    ldr r0, =D_10000100" in text_a  # (a label there read as a variable)
     text_d = asm.function_asm(d.name, code[d.addr - BASE:d.addr - BASE + d.size], d.addr, d.relocs)
     assert "    .word .L1000003C\n    .word .L10000044" in text_d and "    b func_10000050" in text_d
     assert "    bls .L" not in text_d and ".L10000048:" in text_d
@@ -475,3 +475,49 @@ def test_a_modules_function_with_another_programs_code_is_a_copy():
                       "A02/text_10400000": [fn("A02", 0x10400000, 0, 0x10A00104), fn("A02", 0x1040000C, 12, 0x10400300)]}}
     found = scratch.copies(info, lambda program, off, size: programs[program][off:off + size], {})
     assert found == {"func_A01_10400000": "func_10A00000", "func_A02_1040000C": "func_A01_1040000C"}
+
+
+def test_a_draft_declares_what_another_functions_draft_declared_inside_itself():
+    """A draft's declarations go inside its own body: one the file has inside another function's doesn't reach it,
+    so it declares its own (autopilot's drafts on a V.Flash game failed by the thousand, "used prior to
+    declaration"); one the file has at file scope stands."""
+    from decompnet.forks import drafts
+
+    draft = "extern M2C_UNK D_10BDD31C;\nextern s32 g_score;\n\nM2C_UNK *func_B(void) {\n    return &D_10BDD31C;\n}\n"
+    span = (draft.index("M2C_UNK *func_B"), len(draft))
+    file_text = ("extern s32 g_score;\n\nM2C_UNK *func_A(void) {\n    extern M2C_UNK D_10BDD31C;\n"
+                 "    return &D_10BDD31C;\n}\n")
+    out = drafts.self_contained(draft, span, file_text)
+    assert "extern M2C_UNK D_10BDD31C;" in out and "g_score" not in out
+
+
+def test_a_header_with_m2cs_macros_gets_the_ones_drafts_use_since(tmp_path):
+    """A project's common.h got m2c's macros once; ARM drafts use SECOND_REG too, which it lacked ("undeclared"):
+    it's added to a header that has the rest, once."""
+    from decompnet import seeds
+    from decompnet.forks import drafts
+
+    header = tmp_path / "common.h"
+    header.write_text("#ifndef COMMON_H\n#define COMMON_H\n" + seeds.M2C_MACROS + "#endif\n")
+    assert drafts.add_m2c_macros(header) and "#define SECOND_REG(x)" in header.read_text()
+    assert not drafts.add_m2c_macros(header)
+    fresh = tmp_path / "fresh.h"
+    fresh.write_text("#ifndef COMMON_H\n#define COMMON_H\n#endif\n")
+    assert drafts.add_m2c_macros(fresh) and "M2C_DEFINES" in fresh.read_text() and "SECOND_REG" in fresh.read_text()
+
+
+def test_a_projects_untouched_old_tools_are_updated(tmp_path):
+    """A project made with an older template's configure.py (C++ without -fpermissive, where m2c's drafts failed by
+    the hundred) gets the template's; one changed by hand is left alone."""
+    import subprocess
+
+    old = subprocess.run(["git", "show", "v1.0.6-alpha.3+puyo.7:src/decompnet/consoles/vflash/project_template/tools/"
+                          "configure.py"], cwd=ROOT, capture_output=True, text=True)
+    if old.returncode:
+        pytest.skip("needs the repository's history")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "configure.py").write_text(old.stdout)
+    assert scratch.refresh_tools(tmp_path) == ["tools/configure.py"]
+    assert '"-fpermissive"' in (tmp_path / "tools" / "configure.py").read_text()
+    (tmp_path / "tools" / "configure.py").write_text(old.stdout + "# mine\n")
+    assert scratch.refresh_tools(tmp_path) == []

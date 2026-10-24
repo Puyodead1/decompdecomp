@@ -2906,16 +2906,21 @@ class ForkEngine:
                 code, prelude = found
                 code = f"/* machine draft ({console.machine_drafts}), tried by autopilot */\n" + code
             else:
+                try:
+                    current = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+                except OSError:
+                    current = ""
+                if (fp.root / "include" / "common.h").is_file() and not re.search(r'#\s*include\s+"common\.h"',
+                                                                                   current):
+                    # a file without the project's header (a library's own source, V.Flash's): a draft's types
+                    # (s32, M2C_UNK) don't exist there, and every draft failed on them
+                    return "skip"
                 hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
                 text = drafts.draft(fp.root, cfg.get("platform") or "", unit.name, meta.get("symbol") or fn["name"],
                                     unit.source, compiler_hint=hint, valid=True)
                 _, span = self._find(text, self._names(meta, fn)) if text else (None, None)
                 if span is None:
                     return "fail"
-                try:
-                    current = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
-                except OSError:
-                    current = ""
                 code = "/* machine draft (m2c), tried by autopilot */\n" + drafts.self_contained(text, span, current)
             res = self.attempt(agent, proj["slug"], fn["name"], code, keep=False, prelude=prelude)
             if res["matched"]:
