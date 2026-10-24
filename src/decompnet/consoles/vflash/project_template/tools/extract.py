@@ -37,6 +37,7 @@ def main() -> None:
         except (OSError, ValueError):
             continue
         game.fa = game.fa or part.fa
+        game.boot_head = game.boot_head or part.boot_head
         game.modules += [m for m in part.modules if m.name not in {x.name for x in game.modules}]
     found = {"FA": game.fa} if game.fa else {}
     found.update({m.name: m for m in game.modules})
@@ -49,6 +50,9 @@ def main() -> None:
             continue
         have[program].parent.mkdir(parents=True, exist_ok=True)
         have[program].write_bytes(data)
+    head = folder / "BOOT.HEAD"
+    if game.boot_head and not head.exists():  # (BOOT.BIN's loader, for a rebuilt BOOT.BIN)
+        head.write_bytes(game.boot_head)
     if missing:
         sys.exit(f"orig/{version}/ doesn't hold {', '.join(missing)} as this project has them: put your copy of the "
                  "game there (its disc image, or the disc's files)")
