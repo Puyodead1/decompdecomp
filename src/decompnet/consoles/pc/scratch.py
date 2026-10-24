@@ -325,7 +325,8 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         sec = pe.section_at(start)
         limit = min(starts[i + 1] if i + 1 < len(starts) else sec.va + sec.size, sec.va + sec.size)
         code_end = max(start + 1, min(rows[start].get("end", limit), limit))
-        if (split := _split_point(md, pe, start, code_end)):  # two functions Ghidra took for one
+        if (split := _split_point(md, pe, start, code_end) or _reached_end(md, pe, start, code_end)):
+            # two functions Ghidra took for one
             code_end = split
         code_end, end, entries = _tables(md, pe, start, code_end, limit)
         gap = pe.read(end, limit - end)
@@ -380,6 +381,46 @@ def _split_point(md, pe: PE, start: int, end: int) -> int | None:
             if after < k < end and k % 16 == 0:
                 return after
     return None
+
+
+def _reached_end(md, pe: PE, start: int, end: int) -> int | None:
+    """Where a function Ghidra made of two really ends, or None, when nothing pads between them: the end of the code
+    its entry reaches (every branch followed, to a ret or a jump out), below `end` with code after it. A PC game
+    built with Visual C++ 8.0 packs its functions back to back: `call; test; jne; or [ecx+4],0x20; ret` and a second
+    function right after the ret were one 34-byte function no C could match. Left as they are: a function with a
+    switch (an indirect jmp), and one with an exception frame (fs:), whose catch funclets follow its code and are
+    reached through the frame's tables only; and one a path of runs into int3 (a switch's table of addresses, cut out
+    as a function, decodes as code until its padding)."""
+    code = pe.read(start, end - start)
+    todo, seen, reached = [start], set(), start
+    while todo:
+        at = todo.pop()
+        while start <= at < end and at not in seen:
+            ins = next(_disasm(md, code[at - start:], at), None)
+            if ins is None:
+                return None  # (bytes that aren't code: not a split to make)
+            seen.add(at)
+            reached = max(reached, ins.address + ins.size)
+            if "fs:" in ins.op_str:
+                return None
+            target = ins.operands[0].imm if ins.operands and ins.operands[0].type == x86.X86_OP_IMM else None
+            if ins.mnemonic == "jmp":
+                if target is None:
+                    return None
+                at = target
+                continue
+            if ins.mnemonic.startswith("j") or ins.mnemonic in ("loop", "loope", "loopne", "jecxz"):
+                if target is not None:
+                    todo.append(target)
+            elif ins.mnemonic == "call" and target is not None and start < target < end:
+                todo.append(target)  # (a call into its own code)
+            elif ins.mnemonic == "ret":
+                break
+            elif ins.mnemonic in ("int3", "hlt", "ud2"):
+                return None  # (a path that doesn't end as compiled code does: data, a jump table, taken for code)
+            at = ins.address + ins.size
+    rest = pe.read(reached, end - reached) if reached < end else b""
+    return reached if rest.strip(b"\xcc\x90\x00") else None  # (code after it, not only padding)
 
 
 def _whole(md, pe: PE, start: int, rough: int, limit: int) -> int:
@@ -936,17 +977,21 @@ def set_aside(net, proj, fp, version: str, reason) -> int:
     return n
 
 
-def split_merged(root: Path, version: str) -> list[str]:
-    """Projects made before _split_point: a function Ghidra made of two (one, int3 padding, the next) ends where the
-    first does, and the next becomes a function of its own (_func_<address>) in the same source file; both get their
-    relocations read again. Functions with jump tables are left as they are. Returns the new functions' names
-    (config/<version>/functions.json is written when there are any)."""
+def split_merged(root: Path, version: str, keep: set[str] = frozenset()) -> list[str]:
+    """Projects made before _split_point and _reached_end: a function Ghidra made of two (one, int3 padding or none,
+    the next) ends where the first does, and the next becomes a function of its own (_func_<address>) in the same
+    source file; both get their relocations read again. Functions with jump tables, and those in `keep` (matched
+    ones), are left as they are. Returns the new functions' names (config/<version>/functions.json is written when
+    there are any)."""
     config = root / "config" / version / "functions.json"
     info = json.loads(config.read_text(encoding="utf-8"))
     pe = read_pe((root / info["exe"]).read_bytes())
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
     names = {f["addr"]: f["name"] for u in info["units"].values() for f in u}
+    by_c = {c_name(name): at for at, name in names.items()}
+    was = {real: key for key, real in real_names(root, version).items()}  # (renamed: by its name by address)
+    kept = {by_c.get(was.get(c_name(k), c_name(k))) for k in keep}
     made: list[str] = []
     for fns in info["units"].values():
         i = 0
@@ -956,11 +1001,13 @@ def split_merged(root: Path, version: str) -> list[str]:
             if any(r[2] is None for r in f["relocs"]):  # (a jump table)
                 continue
             start, end = f["addr"], f["addr"] + f["size"]
-            first_end = _split_point(md, pe, start, end)
+            if f["addr"] in kept:  # (it matches: its extent is right)
+                continue
+            first_end = _split_point(md, pe, start, end) or _reached_end(md, pe, start, end)
             if first_end is None:
                 continue
             k = first_end
-            while pe.read(k, 1) == b"\xcc":
+            while pe.read(k, 1) in (b"\xcc", b"\x90"):
                 k += 1
             name = f"_func_{k:08X}"
             names[k] = name

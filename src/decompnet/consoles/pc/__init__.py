@@ -15,6 +15,7 @@ Its demo game is projects/demo-pc (the Demo Quest game built with Visual C++ 6.0
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .. import BETA, PROJECT, Compiler, Console
@@ -74,7 +75,7 @@ class WindowsPC(Console):
         rel = f"config/{manifest.get('version')}/functions.json"
         if not (fp.root / rel).exists():
             return
-        cut_again = False
+        cut_again, was = False, (fp.root / rel).stat()
         if (tools := scratch.refresh_tools(fp.root)):
             net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
                                     "decompdecomp: the project's copies were an older one's, unchanged.")
@@ -86,11 +87,14 @@ class WindowsPC(Console):
                               "instruction\n\nWritten by decompdecomp: their sizes stopped at trailing zero bytes "
                               "(a jmp or ret N), and objdiff could never match them.")
             log(f"{slug}: {len(fixed)} functions that were cut short end at their last whole instruction now")
-        made = scratch.split_merged(fp.root, str(manifest.get("version")))
+            cut_again = True
+        keep = {r["name"] for r in net.store.all(  # (a match proves its extent; set-aside code isn't worked on)
+            "SELECT name FROM functions WHERE project_id=? AND status IN ('matched', 'asm')", proj["id"])}
+        made = scratch.split_merged(fp.root, str(manifest.get("version")), keep=keep)
         if made:
             net.forks._commit(proj, fp, rel, f"Split {len(made)} functions off the ones Ghidra had merged them into"
-                              "\n\nWritten by decompdecomp: one function, int3 padding to a 16-byte boundary, the next, "
-                              "taken for one, which objdiff could never match.")
+                              "\n\nWritten by decompdecomp: one function, then the next (after int3 padding, or right "
+                              "after its last instruction), taken for one, which objdiff could never match.")
             log(f"{slug}: {len(made)} functions Ghidra had merged into others are functions of their own now: "
                 "measuring the project again")
             cut_again = True
@@ -99,6 +103,10 @@ class WindowsPC(Console):
             target = next((u.target for u in fp.units() if u.target is not None), None)
             if target is not None:  # the original's objects, cut again (one step makes them all), then measured
                 fp.run([_tool("ninja") or "ninja", str(target.relative_to(fp.root))], log=lambda *_: None)
+                # every compile depends on functions.json (tools/names.py reads it), but what's built is what it
+                # was: new functions have no code yet, and a length isn't a name. Its time as before, or the next
+                # full build (a rename's) recompiled 9,600 files holding the project, on a big game
+                os.utime(fp.root / rel, ns=(was.st_atime_ns, was.st_mtime_ns))
             net.forks.sync(slug, log=log)
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
