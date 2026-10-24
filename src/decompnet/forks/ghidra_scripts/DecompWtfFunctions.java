@@ -2,7 +2,8 @@
 // {"entry": 4198400, "end": 4198420, "name": "FUN_00401000", "source": "DEFAULT", "purge": 8,
 //  "convention": "__stdcall", "params": 2, "thunk": false}
 // end is one past the highest address of the function's body. Run by analyzeHeadless as a post-script; the output
-// path is its argument.
+// path is its argument. Each program analysed adds its functions to the file, with its name ("program": the file's
+// name), so one run can analyse several (a V.Flash game's firmware and modules).
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
@@ -26,7 +27,7 @@ public class DecompWtfFunctions extends GhidraScript {
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
-        try (PrintWriter w = new PrintWriter(new OutputStreamWriter(new FileOutputStream(args[0]), StandardCharsets.UTF_8))) {
+        try (PrintWriter w = new PrintWriter(new OutputStreamWriter(new FileOutputStream(args[0], true), StandardCharsets.UTF_8))) {
             FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
             while (it.hasNext() && !monitor.isCancelled()) {
                 Function f = it.next();
@@ -38,7 +39,8 @@ public class DecompWtfFunctions extends GhidraScript {
                         + ", \"purge\": " + f.getStackPurgeSize()
                         + ", \"convention\": " + quote(String.valueOf(f.getCallingConventionName()))
                         + ", \"params\": " + f.getParameterCount()
-                        + ", \"thunk\": " + f.isThunk() + "}");
+                        + ", \"thunk\": " + f.isThunk()
+                        + ", \"program\": " + quote(currentProgram.getName()) + "}");
             }
         }
     }

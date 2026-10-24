@@ -71,7 +71,7 @@ works on which platform: every — in it is a gap to fill.
 ### Every console gets every feature
 
 decompdecomp is one pipeline for every console: whatever helps agents on one console should work on all of them,
-in ROM mode (N64, PS1, PS2, PS3, PSP, GBA) and project mode (GameCube, Wii, PC, Xbox, DS, public decomps) alike. When
+in ROM mode (N64, PS1, PS2, PS3, PSP, GBA) and project mode (GameCube, Wii, PC, Xbox, DS, V.Flash, public decomps) alike. When
 you add a feature:
 
 1. Build the shared part where every console uses it: `app/` and `network.py` for the engine, `rom/` and `forks/`
@@ -98,6 +98,7 @@ through one file: the connector, `consoles/__init__.py`.
 | `consoles/pc/` | Windows PC | PROJECT | `scratch.py` Ghidra finds the functions, decompdecomp cuts them out of the .exe · `project_template/` · `guides/` |
 | `consoles/xbox/` | Xbox | PROJECT | `scratch.py` the XBE (or disc) made a Windows program, then the PC path · kernel import names · `guides/` |
 | `consoles/nds/` | Nintendo DS | PROJECT | `scratch.py` a ds-decomp project for the ROM, a CodeWarrior version per source file · `project_template/` · `guides/` |
+| `consoles/vflash/` | V.Flash | PROJECT | `disc.py` the firmware (FA) and game modules from a disc or its files · `analysis.py` each function's extent and relocations · `scratch.py` Ghidra finds where functions start, decompdecomp cuts them out of each program · `project_template/` · `guides/` |
 
 Each folder's `__init__.py` makes its console: the facts and the parts the app calls. Start there. Its docstring
 lists its files.
