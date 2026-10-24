@@ -532,6 +532,28 @@ sha256 = "eeaffe5a4a9c011432ef8aa42ad93633dfabcc99d861095abda1c0daab7b50bf"
 subdir = "gcc-3.2.3-arm-elf"
 platforms = ["linux-x86_64", "wsl-x86_64"]  # static i386 programs: no runtime-i386 needed
 
+["vflash-libraries"]
+name = "V.Flash's libraries, as source (zlib 1.2.3, Tremor, newlib 1.12.0)"
+kind = "tool"
+license = "Zlib, BSD-3-Clause, newlib's (BSD-style and SunPro)"
+source = "zlib.net fossils, sourceware.org newlib, gitlab.xiph.org Tremor (lowmem branch, 851cd60, 2006)"
+description = "The libraries V.Flash games' firmware was built from, unchanged: a V.Flash import compiles them with the game's GCC and gives the functions they match their source, before any agent starts."
+[["vflash-libraries".parts]]
+url = "https://zlib.net/fossils/zlib-1.2.3.tar.gz"
+sha256 = "1795c7d067a43174113fdf03447532f373e1c6c57c08d61d9e4e9be5e244b05e"
+subdir = "zlib-1.2.3"
+into = "zlib"
+[["vflash-libraries".parts]]
+url = "https://sourceware.org/pub/newlib/newlib-1.12.0.tar.gz"
+sha256 = "93ed7c1df0f04656b119745671b08b43befdc0a420b5752ea99ff0057f0238ea"
+subdir = "newlib-1.12.0/newlib"
+into = "newlib"
+[["vflash-libraries".parts]]
+url = "https://gitlab.xiph.org/xiph/tremor/-/archive/851cd60ce00641d8dd00d19ea722b632e00629c0/tremor-851cd60ce00641d8dd00d19ea722b632e00629c0.tar.gz"
+sha256 = "861267acbafbfbf1961484963cc498d1155b385d4568a45acbb1ab7cc6f26b2f"
+subdir = "tremor-851cd60ce00641d8dd00d19ea722b632e00629c0"
+into = "tremor"
+
 [dsd]
 name = "ds-decomp (dsd)"
 kind = "tool"

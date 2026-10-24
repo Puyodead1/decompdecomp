@@ -373,3 +373,30 @@ def test_m2c_drafts_a_v_flash_function(tmp_path):
     a = fns[0]
     out = seeds.run_m2c(asm.function_asm(a.name, code[:a.size], a.addr, a.relocs), a.name, "arm-gcc-c", strict=True)
     assert "func_10000000(" in out and "func_10000058()" in out
+
+
+def test_a_library_function_is_the_games_but_for_what_the_link_decides():
+    from decompnet.consoles.vflash import libraries
+
+    code = struct.pack("<3I", _b(0, 0x40, link=True), 0xE8BD8010, 0)
+    game = struct.pack("<3I", _b(0, 0x1234, link=True), 0xE8BD8010, BASE + 0x100)
+    relocs = [(0, libraries.R_ARM_PC24), (8, libraries.R_ARM_ABS32)]
+    assert libraries._same(code, game, relocs)
+    assert not libraries._same(code, game.replace(struct.pack("<I", 0xE8BD8010), struct.pack("<I", 0xE8BD8030)), relocs)
+    assert not libraries._same(code, game[:8], relocs)
+
+
+def test_a_library_files_functions_are_one_source_file_named_by_their_place(tmp_path):
+    """The game's functions from the first a library file matched to its last are that file's unit; when there are
+    as many as the file has between the two, the one the game's makers changed is named by its place too."""
+    from decompnet.consoles.vflash import libraries
+
+    lib = libraries.LIBRARIES[0]
+    c = libraries.Compiled(lib, tmp_path / "inflate.c", {"inflateReset": (b"", []), "inflateInit2_": (b"", []),
+                                                         "inflate": (b"", [])})
+    fns = [analysis.Function(BASE + 4 * i, 4, f"func_{BASE + 4 * i:08X}") for i in range(5)]
+    found = {BASE + 4: (c, "inflateReset"), BASE + 12: (c, "inflate")}
+    units, rest, names = libraries.units("FA", fns, found)
+    assert list(units) == ["FA/lib/zlib/inflate"] and [f.addr for f in units["FA/lib/zlib/inflate"][1]] == [BASE + 4, BASE + 8, BASE + 12]
+    assert names == {BASE + 4: "inflateReset", BASE + 8: "inflateInit2_", BASE + 12: "inflate"}
+    assert [f.addr for f in rest] == [BASE, BASE + 16]
