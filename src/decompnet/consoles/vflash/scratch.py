@@ -308,6 +308,54 @@ def _lay_out(root: Path, version: str, images: list[disc.Image], programs: dict[
     return groups, real, flags
 
 
+_MODULE_NAME = re.compile(r"(?:func|D)_[A-Za-z0-9]+_[0-9A-F]{8}")
+
+
+def copies(info: dict, read, names: dict[str, str]) -> dict[str, str]:
+    """{symbol: the symbol it's a copy of}: a module's function with the same code as one of FA's or of a module
+    before it (by name), but for its own addresses (a module's names: its copy calls its own copies) and with the
+    same calls into FA. A game's modules each link its engine again (on a game of 16 modules, 34,000 of 45,000
+    functions). `read(program, offset, size)`: a function's bytes in its program's ELF; `names`: names.json's (the
+    symbols are what objdiff reports, a real name where there's one)."""
+    first: dict[bytes, tuple[str, str]] = {}
+    out = {}
+    order = sorted({u.split("/", 1)[0] for u in info["units"]}, key=lambda p: (p != "FA", p))
+    for program in order:
+        for u, fns in sorted(info["units"].items()):
+            if u.split("/", 1)[0] != program:
+                continue
+            for f in fns:
+                code = bytearray(read(program, f["offset"], f["size"]))
+                refs = []
+                for off, kind, sym, value in f["relocs"]:
+                    word = struct.unpack_from("<I", code, off)[0]
+                    struct.pack_into("<I", code, off, word & (0xFF000000 if kind == analysis.R_ARM_PC24 else 0))
+                    refs.append((off, kind, None if sym and _MODULE_NAME.fullmatch(sym) else sym,
+                                 value if sym is None else 0))
+                key = hashlib.sha1(bytes(code) + repr(refs).encode()).digest()
+                have = first.get(key)
+                if have is None:
+                    first[key] = (program, names.get(f["name"], f["name"]))
+                elif have[0] != program:
+                    out[names.get(f["name"], f["name"])] = have[1]
+    return out
+
+
+def write_copies(root: Path, version: str) -> int:
+    """config/<version>/copies.json for the project's programs as they are; how many copies."""
+    conf = root / "config" / version
+    info = json.loads((conf / "functions.json").read_text(encoding="utf-8"))
+    handles = {}
+
+    def read(program: str, offset: int, size: int) -> bytes:
+        if program not in handles:
+            handles[program] = (root / info["programs"][program]["elf"]).read_bytes()
+        return handles[program][offset:offset + size]
+    found = copies(info, read, real_names(root, version))
+    (conf / "copies.json").write_text(json.dumps(dict(sorted(found.items())), indent=0) + "\n", encoding="utf-8")
+    return len(found)
+
+
 def _described(version: str, img: disc.Image, data: bytes) -> dict:
     return {"elf": f"orig/{version}/{img.name}.elf", "sha1": hashlib.sha1(data).hexdigest(), "build": img.build,
             "source": img.source}
@@ -358,6 +406,9 @@ def create(root: Path, game_path: Path, *, compiler: str | None = None, parts: l
     if flags:
         (conf / "flags.json").write_text(json.dumps(flags, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     log(f"{len(groups)} source files for agents to write into")
+    if (n := write_copies(root, version)):
+        log(f"{n} functions are copies of others (the game's modules repeat its engine): each is counted once, and "
+            "matches when its original does")
 
     for cmd in ([sys.executable, "tools/configure.py", version, *args], ["ninja", "prepare"]):
         _run(cmd, root, "the first build", log)
@@ -456,6 +507,7 @@ def add_modules(root: Path, version: str, names: list[str], log=print) -> str | 
     if new_flags:
         flags_path.write_text(json.dumps({**flags, **new_flags}, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     n = sum(len(fns) for fns in programs.values())
+    write_copies(root, version)
     return f"the game modules {', '.join(wanted)}: {n} functions in {len(groups)} new source files"
 
 
