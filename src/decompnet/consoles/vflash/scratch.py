@@ -36,7 +36,7 @@ from decompnet.hostenv import NO_WINDOW
 
 from ... import toolchains
 from ...forks.project import ForkError, ForkProject
-from . import analysis, disc
+from . import analysis, disc, libraries
 
 TOOLCHAIN = "gcc-3.2.3-arm-elf"
 TEMPLATE = Path(__file__).with_name("project_template")
@@ -231,6 +231,25 @@ def _ghidra(game: disc.Game, log) -> dict[str, list[dict]]:
         return ghidra.functions_of(paths)
 
 
+def _libraries(game: disc.Game, programs: dict[str, list[analysis.Function]], log) -> dict:
+    """The library source files each program has (libraries.py): {program: (units, the rest, names)}."""
+    try:
+        toolchains.ensure(libraries.PACK, log=log)
+    except (toolchains.ToolchainError, OSError) as e:  # (offline: agents get the library code to match themselves)
+        log(f"the libraries' sources couldn't be fetched ({e}): their functions are left for agents")
+        return {}
+    compiled = libraries.compile_all(toolchains.path(TOOLCHAIN), log=log)
+    out = {}
+    for img in game.images():
+        found = libraries.find(compiled, programs[img.name], img.read)
+        if found:
+            out[img.name] = libraries.units(img.name, programs[img.name], found)
+            kinds = sorted({c.library.name for c, _ in found.values()})
+            log(f"{img.name}: {len(found)} functions are the libraries' own ({', '.join(kinds)}): their source is in "
+                f"src/{img.name}/lib/")
+    return out
+
+
 def create(root: Path, game_path: Path, *, compiler: str | None = None, log=print) -> dict:
     """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
     info = game_info(game_path)
@@ -244,28 +263,42 @@ def create(root: Path, game_path: Path, *, compiler: str | None = None, log=prin
     found = _ghidra(game, log)
     programs = analyse(game, found)
     log(", ".join(f"{p} {len(fns)}" for p, fns in programs.items()) + " functions")
+    seeded = _libraries(game, programs, log)
 
     shutil.copytree(TEMPLATE, root, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(Path(disc.__file__), root / "tools" / "vflash.py")
     orig = root / "orig" / version
     orig.mkdir(parents=True)
-    described, groups = {}, {}
+    described, groups, real, flags, used = {}, {}, {}, {}, set()
     for img in game.images():
         data = img.to_elf()
         (orig / f"{img.name}.elf").write_bytes(data)
         described[img.name] = {"elf": f"orig/{version}/{img.name}.elf", "sha1": hashlib.sha1(data).hexdigest(),
                                "build": img.build, "source": img.source}
         spans = elf_offsets(img)
-        for u, fns in units(img.name, programs[img.name]).items():
+        lib_units, rest, names = seeded.get(img.name, ({}, programs[img.name], {}))
+        for addr, name in sorted(names.items()):  # (a name the game has already, another module's copy: by address)
+            if name not in used:
+                used.add(name)
+                real[analysis.address_name(img.name, addr)] = name
+        if lib_units:
+            flags.update(libraries.write_sources(root, img.name, [c for c, _ in lib_units.values()]))
+        for u, fns in [*((u, fns) for u, (_, fns) in lib_units.items()), *units(img.name, rest).items()]:
             groups[u] = [{"name": f.name, "addr": f.addr, "offset": file_offset(spans, f.addr), "size": f.size,
                           "relocs": [list(r) for r in f.relocs]} for f in fns]
-    (root / "include").mkdir()
+    (root / "include").mkdir(exist_ok=True)  # (include/newlib/ may be there: libraries.write_sources)
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     conf = root / "config" / version
     conf.mkdir(parents=True)
     (conf / "functions.json").write_text(json.dumps({"sha1": info["sha1"], "programs": described, "units": groups},
                                                     indent=1), encoding="utf-8")
+    if real:
+        (conf / "names.json").write_text(json.dumps(dict(sorted(real.items())), indent=1) + "\n", encoding="utf-8")
+    if flags:
+        (conf / "flags.json").write_text(json.dumps(flags, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     for u, fns in groups.items():
+        if "/lib/" in u:  # (a library's own source file, written already)
+            continue
         src = root / "src" / f"{u}.cpp"
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text(f"/* {len(fns)} function{'s' if len(fns) != 1 else ''} of {u.split('/')[0]} from "
