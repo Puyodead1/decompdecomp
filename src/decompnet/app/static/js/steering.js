@@ -377,7 +377,41 @@ async function renderProjectSettings() {
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
   renderScope(ov);
+  renderParts(ov);
 }
+
+/* The programs of the game a project analyses and the ones it could (Console.game_parts: V.Flash's game modules):
+   the import may have left some out, and analysing them here brings them in, every match kept. */
+function renderParts(ov) {
+  const parts = ov.game_parts, panel = $("partsPanel");
+  panel.hidden = !(parts && parts.length);
+  if (panel.hidden) return;
+  const left = parts.filter((p) => !p.analysed);
+  $("partsWhat").textContent = left.length
+    ? `${plural(parts.length - left.length, "module")} of ${parts.length} ${parts.length - left.length === 1 ? "is" : "are"} analysed. Choose others to analyse: Ghidra reads each (a minute or two), then its functions get source files of their own. Modules repeat much of the game engine's code: what matches in one matches in the others too.`
+    : `Every one of the game's ${plural(parts.length, "module")} is analysed.`;
+  $("partsList").innerHTML = parts.map((p) => `<label class="check inline"><input type="checkbox" data-part="${esc(p.name)}" ${p.analysed ? "checked disabled" : ""}><span>${esc(p.name)} <span class="muted">${p.analysed ? `${p.functions.toLocaleString()} functions` : `${bytes(p.bytes)}, not analysed`}</span></span></label>`).join("");
+  $("partsGo").hidden = !left.length;
+  $("partsGo").disabled = true;
+}
+$("partsList").addEventListener("change", () => {
+  $("partsGo").disabled = !$("partsList").querySelector("input[data-part]:not(:disabled):checked");
+});
+$("partsGo").onclick = async () => {
+  const names = [...$("partsList").querySelectorAll("input[data-part]:not(:disabled):checked")].map((x) => x.dataset.part);
+  if (!names.length || !S.ov) return;
+  const log = $("partsLog"), list = [...$("partsList").querySelectorAll("input")];
+  log.hidden = false;
+  const finish = beginWork(log, `Analysing ${names.join(", ")}`, [$("partsGo"), ...list], "The modules are analysed.");
+  showJobError(log, "");
+  try {
+    const { job } = await api("/api/parts", { method: "POST", body: { slug: S.slug, names } });
+    S.ov = await followJob(job, log);
+    renderStats(S.ov);
+    renderProjectSettings();
+    toast(`Analysed ${names.join(", ")}: ${names.length === 1 ? "its" : "their"} functions are in the project now.`);
+  } catch (err) { showJobError(log, err.message); } finally { finish(); }
+};
 
 /* What the project covers (forks/project.py SCOPES): the game's own code, with the library and middleware code its
    import recognised left out of agents' work and progress, or the whole program. Shown where there's such code. */

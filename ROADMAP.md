@@ -60,8 +60,8 @@ Where to start on a gap:
   `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's fifth to eighth arguments
   (t0-t3), and a pointer into the middle of a struct handed to a callee (`&this->pos`).
 - **V.Flash**: the export needs a linker
-  story (FA and each module relinked at their addresses), and the import takes every module of the game: choosing
-  which (a game's modules repeat their engine code) is still to do. On Windows its compiler (a Linux program) would
+  story (FA and each module relinked at their addresses). A game's modules repeat their engine's code: twins match
+  each copy once one is, but progress counts every copy; counting the shared code once is still to do. On Windows its compiler (a Linux program) would
   run through WSL, as PS2's do; a V.Flash project builds on Linux only for now.
 - **Twins across games** and **restoring a save** work on ROM projects (`app/twins.py`, `app/saves.py`). In project
   mode a project's matched C is its git repository; what's missing there is matching identical code across your
@@ -80,6 +80,8 @@ Where to start on a gap:
   source) are recognised at import: each library file the game has becomes a source file holding its own source,
   its functions named (141 match from the first build on a real firmware). m2c drafts each function from its
   assembly (made when it's asked for), so autopilot matches too (163 of a firmware's 300 smallest).
+  An import analyses the modules chosen (the path dialog lists them), and the project's Settings analyses the
+  others later from their programs, kept in `orig/`: no disc needed.
 - **Real names on Windows PC.** rename_symbol names a PC game's function or data: `config/<version>/names.json`
   holds each real name by address, `tools/names.py` pairs what C++ compiles it to (mangled, a method) with the
   original's symbol, whose decoration it keeps (`_func_0041B470@8` becomes `_Town_Update@8`), and `tools/delink.py`

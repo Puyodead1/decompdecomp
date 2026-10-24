@@ -40,6 +40,7 @@ class VFlash(Console):
     ram = (0x10000000, 0x11000000)  # the console's 16 MB of RAM, where FA and the modules are loaded
     demo = "demo-vflash"
     demo_tools = (TOOLCHAIN, "objdiff-cli", "ghidra", "java")
+    chooses_parts = True  # (its game modules: a game's repeat their engine's code, and each takes Ghidra a minute)
 
     def sniff(self, head: bytes, file) -> bool:
         from . import disc
@@ -65,10 +66,33 @@ class VFlash(Console):
     def default_compiler(self, info: dict, splat_guess: str) -> str:
         return TOOLCHAIN
 
-    def create_project(self, root: Path, game: Path, *, compiler: str | None = None, log=print) -> dict:
+    def create_project(self, root: Path, game: Path, *, compiler: str | None = None, parts: list[str] | None = None,
+                       log=print) -> dict:
         from . import scratch
 
-        return scratch.create(root, game, compiler=compiler, log=log)
+        return scratch.create(root, game, compiler=compiler, parts=parts, log=log)
+
+    def parts_of(self, file: Path) -> list[dict]:
+        from . import scratch
+
+        return scratch.parts_of(Path(file))
+
+    def game_parts(self, fp) -> list[dict]:
+        from . import scratch
+
+        try:
+            return scratch.game_parts(Path(fp.root), str((fp.manifest or {}).get("version")))
+        except (OSError, ValueError, KeyError):
+            return []
+
+    def add_parts(self, net, slug: str, names: list[str], log=print) -> str | None:
+        """The modules' functions, library code and source files join the project's (forkengine.reanalyse: set up,
+        committed and measured again)."""
+        from . import scratch
+
+        version = str((net.forks.get(slug)[1].manifest or {}).get("version"))
+        return net.forks.reanalyse(slug, lambda fp: scratch.add_modules(Path(fp.root), version, names, log=log),
+                                   paths=("config", "src", "include"), log=log)
 
     def game_info(self, game: Path) -> dict:
         from . import scratch

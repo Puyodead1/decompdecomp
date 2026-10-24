@@ -15,8 +15,9 @@ from starlette.responses import JSONResponse, Response
 
 from ... import __version__, consoles, hostenv, toolchains
 from ...agents.api import API_PRESETS
-from ...forks.project import SCOPES
+from ...forks.project import SCOPES, ForkError
 from ...network import NetworkError
+from ...rom import RomError
 from .. import cleanup, edition, picker, saves, updates
 from ..engine import COMPILERS, TOOLS
 from ..support import MAX_DISC, job_error, static_file
@@ -129,6 +130,29 @@ def register(app: App) -> None:
         after = q.get("after", "")
         return JSONResponse(await call(net.events_after, int(after) if after.isdigit() else None))
 
+    @mcp.custom_route("/api/inspect", methods=["POST"])
+    async def api_inspect(request: Request) -> Response:
+        """What a file on this computer is, before it's imported: its console, and the parts of the game an import
+        can choose among (Console.parts_of: V.Flash's game modules). Read only."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        path = hostenv.local_path(str(data.get("path") or ""))
+        if not str(data.get("path") or "").strip() or not (path.is_file() or path.is_dir()):
+            return JSONResponse({"platform": None, "parts": []})
+
+        def look() -> dict:
+            try:
+                console = consoles.identify(path)
+            except (RomError, OSError, ValueError):
+                return {"platform": None, "parts": []}
+            try:
+                parts = console.parts_of(path) if console.chooses_parts else []
+            except (RomError, ForkError, OSError, ValueError) as e:
+                return {"platform": console.id, "name": console.name, "parts": [], "problem": str(e)}
+            return {"platform": console.id, "name": console.name, "parts": parts}
+        return JSONResponse(await call(look))
+
     @mcp.custom_route("/api/import", methods=["POST"])
     async def api_import(request: Request) -> Response:
         """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path."""
@@ -137,6 +161,8 @@ def register(app: App) -> None:
         q = request.query_params
         toolchain = q.get("toolchain") or None
         scope = q.get("scope") or None  # what the project covers, where its console sets library code aside
+        # the programs of the game to analyse, where its console lets the import choose (V.Flash's modules)
+        parts = [p for p in q.get("parts", "").split(",") if p] if "parts" in q else None
         # every compiler of the game's console first (the proprietary ones with `accept`), so its test tries them all
         all_compilers, accept = q.get("all_compilers") == "1", q.get("accept") == "1"
         if scope not in (None, *SCOPES):
@@ -175,7 +201,8 @@ def register(app: App) -> None:
 
         def work(log):
             try:
-                slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log, scope=scope)
+                slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log, scope=scope,
+                                      parts=parts)
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
