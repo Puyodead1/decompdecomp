@@ -2650,7 +2650,7 @@ class ForkEngine:
         unit = fp.unit(fn["unit"])
         current = console.file_flags(fp, unit.source) if unit.source else None
         if current is None:
-            raise NetworkError("this project's build doesn't take flags file by file (PC projects started from "
+            raise NetworkError("this project's build doesn't take flags file by file (games started from "
                                "scratch do): suggest the change in words")
         meta = self._meta(fn)
         names = self._names(meta, fn)
@@ -2698,6 +2698,14 @@ class ForkEngine:
             hint = (f"\nThose flags match: if the file's other functions agree, suggest them: suggest(text=<why>, "
                     f"flags=\"{' '.join(best)}\", function=\"{function}\", source=<this C>)")
         return f"{unit.source} with {tc}, its flags varied:\n" + "\n".join(lines) + hint
+
+    def takes_file_flags(self, slug: str) -> bool:
+        """Whether this project's build gives a source file flags of its own (games started from scratch)."""
+        try:
+            _, fp, cfg = self.get(slug)
+        except (ForkError, NetworkError):
+            return False
+        return consoles.get(cfg.get("platform") or "").file_flags(fp, "x.c") is not None
 
     def suggest_flags(self, agent: Agent, slug: str, text: str, flags: list[str], function: str = "",
                       source: str = "") -> str:

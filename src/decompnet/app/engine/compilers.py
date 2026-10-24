@@ -19,7 +19,7 @@ from .common import parse_ranges
 # Flag search (search_flags): the flags of each compiler family worth trying, at most MAX_FLAG_VARIANTS compiles
 FLAG_FAMILIES = (("ido", "ido"), ("mwcps2", "mwcps2"), ("ee-gcc", "ee"), ("gcc-3.2.3-arm", "armgcc"), ("gcc", "gcc"),
                  ("MSVC/", "msvc"))
-FLAG_LEVELS = {"gcc": ("-O1", "-O2", "-O3", "-Os"), "ee": ("-O1", "-O2", "-O3", "-Os"), "armgcc": ("-O3", "-O2", "-O1", "-Os"),
+FLAG_LEVELS = {"gcc": ("-O1", "-O2", "-O3", "-Os"), "ee": ("-O1", "-O2", "-O3", "-Os"), "armgcc": ("-O3", "-O2", "-O1", "-Os", "-O0"),
                "ido": ("-O1", "-O2", "-O3", "-g"), "mwcps2": ("-O1", "-O2", "-O3", "-O4"),
                "msvc": ("/O2", "/O1", "/Ox", "/Od")}
 # Visual C++ (PC): the frame pointer kept, less inlining, 8.0's buffer checks off, and its floating point options
@@ -293,8 +293,14 @@ class CompilerMixin:
         proj = self._project(slug)
         cfg = self.cfg(proj)
         tc, flag_list, check = None, [], None
-        if (fork := self.fork_slug(slug)) and flags.strip() and not compiler:  # one file's flags (PC projects)
+        if (fork := self.fork_slug(slug)) and flags.strip() and not compiler:  # one file's flags (from scratch)
             return self.forks.suggest_flags(agent, fork, text, flags.split(), function, source)
+        if fork and not compiler and self.forks.takes_file_flags(fork):
+            # words alone gave the user nothing to press: "build this file at -O0", "per-file /O1" sat in Waiting for
+            # you with only Dismiss, since nothing said the flags matched or which file they were for
+            raise NetworkError("this project builds each file with its own flags: find the ones its C matches with "
+                               "search_flags(function), then suggest(text, flags=..., function=...), checked at once "
+                               "and given to the user as a button. Something every agent should know: share_knowledge")
         if compiler:
             if fork:
                 raise NetworkError("a fork builds with its project's own compilers: suggest the change in words only "
