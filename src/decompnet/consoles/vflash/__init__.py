@@ -112,8 +112,9 @@ class VFlash(Console):
         return scratch.tool_args()
 
     def on_start(self, net, slug: str, log=print) -> None:
-        """Its open functions whose code no compiler makes (arch/arm.py asm_reason: the CPU's mode or coprocessor 15,
-        a piece cut out of another function) are set aside, out of agents' way: once each, in seconds."""
+        """Its tools, when they're an older template's untouched (scratch.refresh_tools); and its open functions whose
+        code no compiler makes (arch/arm.py asm_reason: the CPU's mode or coprocessor 15) are set aside, out of
+        agents' way: once each, in seconds."""
         from . import scratch
 
         if not net.fork_slug(slug):
@@ -122,6 +123,10 @@ class VFlash(Console):
         manifest = fp.manifest or {}
         if manifest.get("created") != "from scratch":
             return
+        if (tools := scratch.refresh_tools(Path(fp.root))):  # (the same code either way: nothing to measure again)
+            net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
+                                    "decompdecomp: the project's copies were an older one's, unchanged.")
+            log(f"{slug}: {', '.join(tools)} updated from decompdecomp")
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
 
