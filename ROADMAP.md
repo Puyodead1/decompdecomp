@@ -62,8 +62,8 @@ Where to start on a gap:
 - **V.Flash**: a project rebuilds its programs in place (`tools/rebuild.py`: every function at its address, matched
   code linked by name) and checks them against the user's copy; a full relink, where changed code may grow and the
   rest move, needs the game's data delinked too (its pointers found), and a rebuilt disc image (the files are VFFs and
-  BOOT.BIN for now).  On Windows its compiler (a Linux program) would
-  run through WSL, as PS2's do; a V.Flash project builds on Linux only for now.
+  BOOT.BIN for now). On Windows its compiler (a Linux program) would run through WSL, as PS2's do; a V.Flash project
+  builds on Linux only for now.
 - **Twins across games** and **restoring a save** work on ROM projects (`app/twins.py`, `app/saves.py`). In project
   mode a project's matched C is its git repository; what's missing there is matching identical code across your
   games (their objects, not a ROM, hold it) and opening a save's best attempts in a new copy of the project.
