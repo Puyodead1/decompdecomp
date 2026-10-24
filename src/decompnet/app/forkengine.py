@@ -630,7 +630,7 @@ class ForkEngine:
             self.net._event(db, pid, None, "fork", event)
 
     def create_scratch(self, game: Path, console: consoles.Console, *, compiler: str | None = None, log=print,
-                       scope: str | None = None) -> str:
+                       scope: str | None = None, parts: list[str] | None = None) -> str:
         """A game of a PROJECT-mode console (GameCube, Wii, PC, DS), from scratch: the console generates the
         community's kind of project for it (Console.create_project: dtk-template; for PC, decompdecomp's own from
         Ghidra's analysis; for DS, ds-decomp's), opened like a fork. `scope`: what the project covers (SCOPES), for
@@ -638,6 +638,8 @@ class ForkEngine:
         if scope is not None and scope not in SCOPES:
             raise NetworkError(f"a project covers the game's own code ({GAME!r}) or the whole program, not {scope!r}")
         scoped = {"scope": scope or GAME} if console.sets_aside else {}
+        if parts is not None and console.chooses_parts:  # (the programs of the game it analyses: V.Flash's modules)
+            scoped["parts"] = parts
         info = console.game_info(game)
         sha1 = info["sha1"]
         for p in self.net.store.all("SELECT slug, config FROM projects"):
@@ -648,8 +650,8 @@ class ForkEngine:
         dest = self.net.workspace / slug
         try:
             facts = console.create_project(dest, game, compiler=compiler, log=log, **scoped)
-            if scoped:  # (before the first measuring, which reads it)
-                ForkProject(dest).update_manifest(**scoped)
+            if "scope" in scoped:  # (before the first measuring, which reads it)
+                ForkProject(dest).update_manifest(scope=scoped["scope"])
         except BaseException:
             shutil.rmtree(dest, ignore_errors=True)
             raise
@@ -754,6 +756,17 @@ class ForkEngine:
             return consoles.get(cfg.get("platform")).unanalysed(fp) if fp.manifest else None
         except Exception:  # noqa: BLE001  Settings shows without it rather than failing
             return None
+
+    def add_parts(self, slug: str, names: list[str], log=print) -> dict:
+        """Analyse programs of the game the project's import left out (Console.add_parts); returns the overview."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        if not console.chooses_parts:
+            raise NetworkError(f"{console.name} projects analyse their whole game at import")
+        if not names:
+            raise NetworkError("choose the modules to analyse")
+        console.add_parts(self.net, slug, names, log=log)
+        return self.overview(slug)
 
     def analyse_unanalysed(self, slug: str, log=print) -> str | None:
         """Bring in what the project's import left unanalysed (Console.analyse_unanalysed: a new analysis of that code
@@ -3359,6 +3372,9 @@ class ForkEngine:
             "measures": m, "uncovered": self.uncovered(slug) if cfg.get("ready") and fp.linkable() else None,
             "rebuild": (fp.manifest or {}).get("rebuild") if cfg.get("origin") == "scratch" else None,
             **self._scope_facts(proj, fp, cfg),
+            # the programs of the game it analyses and the ones it could (Console.game_parts: V.Flash's modules)
+            "game_parts": (consoles.get(cfg.get("platform")).game_parts(fp)
+                           if cfg.get("origin") == "scratch" and consoles.get(cfg.get("platform")).chooses_parts else None),
             # why it doesn't build on this computer (preflight; checked once a run when its page first opens)
             "build_problem": cfg.get("build_problem") if cfg.get("ready") else None,
         }
