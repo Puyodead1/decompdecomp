@@ -196,6 +196,7 @@ the game.
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 (24 versions), one per source file | ✓ ds-decomp | ✓ |
 | **Game Boy Advance** | Beta | ✓ ROM (.gba) | agbcc | ✓ luvdis export | ✓ |
 | **Xbox** | Beta | ✓ default.xbe, .xiso or Redump .iso (as a Windows program; Ghidra finds the functions) | Visual C++ 7.0 · 7.1 (the XDK's); your own XDK's for early games, and to set its library code aside | ✓ (`ninja rebuild` writes your default.xbe back) | |
+| **V.Flash** | Beta (Linux) | ✓ disc (ISO, BIN/CUE) or the disc's files, as a path on the computer | GCC 3.2.3 for ARM, flags file by file | — | — |
 | **3DS · Switch · Xbox 360** | Public decomps only | | | | ✓ |
 
 [ROADMAP.md](../ROADMAP.md) has a table of which feature works on which platform.
