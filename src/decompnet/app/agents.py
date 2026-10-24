@@ -1157,6 +1157,8 @@ class Manager:
             for line in proc.stderr:
                 if (text := k.clean_stderr(line)) and (not errors or errors[-1] != text):
                     errors.append(text)
+                    if k.limit_hangs and LIMIT.search(text):  # (it would retry the limit for hours: see Agent)
+                        _terminate(proc)
         threading.Thread(target=feed_prompt, daemon=True).start()
         threading.Thread(target=drain_err, daemon=True).start()
         saw_tool = False
