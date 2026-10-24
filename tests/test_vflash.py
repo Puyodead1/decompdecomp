@@ -347,3 +347,29 @@ def test_only_what_no_compiler_emits_is_set_aside():
     vflash = consoles.get("vflash")
     assert vflash.asm_reason(code[d.addr - BASE:d.addr - BASE + d.size]) is None
     assert "mrs" in vflash.asm_reason(struct.pack("<2I", 0xE10F0000, 0xE1A0F00E))
+
+
+def test_a_function_reads_as_assembly_m2c_takes():
+    """Calls and tail calls by name, branches and pool loads to labels, the pool's address by the data's name, a
+    switch's table as labels of its cases, and a call through a pointer as blx (ARMv4 writes it mov lr, pc first)."""
+    from decompnet.consoles.vflash import asm
+
+    fns, code = _analysed()
+    a, _, d, *_ = fns
+    text_a = asm.function_asm(a.name, code[:a.size], a.addr, a.relocs)
+    assert "glabel func_10000000" in text_a and "    bl func_10000058" in text_a
+    assert "    blx r12" in text_a and "    ldr r0, .L10000018" in text_a and ".L10000018:\n    .word D_10000100" in text_a
+    text_d = asm.function_asm(d.name, code[d.addr - BASE:d.addr - BASE + d.size], d.addr, d.relocs)
+    assert "    .word .L1000003C\n    .word .L10000044" in text_d and "    b func_10000050" in text_d
+    assert "    bls .L" not in text_d and ".L10000048:" in text_d
+
+
+@pytest.mark.skipif(toolchains.installed("m2c") is None, reason="needs m2c")
+def test_m2c_drafts_a_v_flash_function(tmp_path):
+    from decompnet import seeds
+    from decompnet.consoles.vflash import asm
+
+    fns, code = _analysed()
+    a = fns[0]
+    out = seeds.run_m2c(asm.function_asm(a.name, code[:a.size], a.addr, a.relocs), a.name, "arm-gcc-c", strict=True)
+    assert "func_10000000(" in out and "func_10000058()" in out
