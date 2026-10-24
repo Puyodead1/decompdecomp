@@ -62,8 +62,7 @@ Where to start on a gap:
 - **V.Flash**: a project rebuilds its programs in place (`tools/rebuild.py`: every function at its address, matched
   code linked by name) and checks them against the user's copy; a full relink, where changed code may grow and the
   rest move, needs the game's data delinked too (its pointers found), and a rebuilt disc image (the files are VFFs and
-  BOOT.BIN for now). A game's modules repeat their engine's code: twins match
-  each copy once one is, but progress counts every copy; counting the shared code once is still to do. On Windows its compiler (a Linux program) would
+  BOOT.BIN for now).  On Windows its compiler (a Linux program) would
   run through WSL, as PS2's do; a V.Flash project builds on Linux only for now.
 - **Twins across games** and **restoring a save** work on ROM projects (`app/twins.py`, `app/saves.py`). In project
   mode a project's matched C is its git repository; what's missing there is matching identical code across your
@@ -84,6 +83,9 @@ Where to start on a gap:
   assembly (made when it's asked for), so autopilot matches too (163 of a firmware's 300 smallest).
   An import analyses the modules chosen (the path dialog lists them), and the project's Settings analyses the
   others later from their programs, kept in `orig/`: no disc needed.
+  A module's function with the same code as FA's or an earlier module's is a copy (`config/<version>/copies.json`):
+  counted once, never handed to agents, and matched by twins when its original is (on a game of 16 modules, 34,407
+  of 44,822 functions: 10,415 left to decompile).
 - **Real names on Windows PC.** rename_symbol names a PC game's function or data: `config/<version>/names.json`
   holds each real name by address, `tools/names.py` pairs what C++ compiles it to (mangled, a method) with the
   original's symbol, whose decoration it keeps (`_func_0041B470@8` becomes `_Town_Update@8`), and `tools/delink.py`
