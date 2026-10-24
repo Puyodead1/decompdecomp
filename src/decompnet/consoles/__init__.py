@@ -105,6 +105,9 @@ class Console:
     # PROJECT mode: choices the import asks about besides the compiler and scope, as (id, question, ((value, text), ...))
     # with the first value the default; create_project takes each as a keyword (Xbox: ltcg)
     import_options: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = ()
+    # PROJECT mode: a game of it is several programs (V.Flash's firmware and game modules), of which its import can
+    # take some and the project the rest later (parts_of, create_project's `parts`, game_parts, add_parts)
+    chooses_parts = False
     # ROM mode's export: the assembler's flags for its processor, the rebuilt image's extension, and what every
     # assembly file of the export starts with
     as_flags: tuple[str, ...] = ()
@@ -148,10 +151,12 @@ class Console:
         return False
 
     def import_game(self, net, file: bytes | Path, *, toolchain: str | None = None, flags: list[str] | None = None,
-                    name: str = "", log=print, scope: str | None = None, options: dict | None = None) -> str:
+                    name: str = "", log=print, scope: str | None = None, options: dict | None = None,
+                    parts: list[str] | None = None) -> str:
         """Start a project from the user's own copy of the game; returns its slug. The mode's way by default.
         `scope`: what the project covers, where the console sets library code aside (`sets_aside`); else ignored.
-        `options`: answers to `import_options` (others are ignored)."""
+        `options`: answers to `import_options` (others are ignored).
+        `parts`: the programs of the game the project analyses (`chooses_parts`; None: all of them)."""
         if self.mode == ROM:
             return net.import_split(self, self.read_game(file, name), toolchain=toolchain, flags=flags, log=log)
         if self.mode == PROJECT:
@@ -159,7 +164,8 @@ class Console:
             known = toolchain if toolchain in {c.id for c in self.compilers} else None  # (a ROM console's id: not ours)
             chosen = {k: v for k, v in (options or {}).items() if k in {o[0] for o in self.import_options}}
             return net.forks.create_scratch(path, self, compiler=known, log=log,
-                                            scope=scope if self.sets_aside else None, options=chosen)
+                                            scope=scope if self.sets_aside else None, options=chosen,
+                                            parts=parts if self.chooses_parts else None)
         raise RomError(f"{self.name or 'these'} games can't be started from scratch in this version: continue a public "
                        "decomp of the game instead")
 
@@ -343,6 +349,19 @@ class Console:
         A console that `sets_aside` takes `scope=` too, though an import should analyse the same code whatever it is:
         the scope only decides, when the project is measured, whether what it sets aside is worked on and counted."""
         raise RomError(f"{self.name} projects can't be made from scratch")
+
+    def parts_of(self, file: Path) -> list[dict]:
+        """The programs of the user's copy an import can choose among (`chooses_parts`): [{"name", "bytes"}]."""
+        return []
+
+    def game_parts(self, fp) -> list[dict]:
+        """A project's programs, analysed or not (`chooses_parts`): [{"name", "analysed", "functions", "bytes"}]."""
+        return []
+
+    def add_parts(self, net, slug: str, names: list[str], log=print) -> str | None:
+        """Analyse programs the project's import left out (game_parts' not analysed), every match, note and name kept;
+        returns what changed, as a sentence (None: nothing)."""
+        raise RomError(f"{self.name} projects analyse their whole game at import")
 
     def game_info(self, game: Path) -> dict:
         """What the game file is: {"platform", "id", "title", "sha1"}, the sha1 of what decides which game it is."""

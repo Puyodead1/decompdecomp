@@ -400,3 +400,30 @@ def test_a_library_files_functions_are_one_source_file_named_by_their_place(tmp_
     assert list(units) == ["FA/lib/zlib/inflate"] and [f.addr for f in units["FA/lib/zlib/inflate"][1]] == [BASE + 4, BASE + 8, BASE + 12]
     assert names == {BASE + 4: "inflateReset", BASE + 8: "inflateInit2_", BASE + 12: "inflate"}
     assert [f.addr for f in rest] == [BASE, BASE + 16]
+
+
+@pytest.mark.skipif(toolchains.installed("gcc-3.2.3-arm-elf") is None, reason="needs GCC 3.2.3 for ARM")
+def test_an_import_takes_the_modules_chosen_and_the_rest_later(tmp_path, monkeypatch):
+    """A game's modules repeat its engine's code and each takes Ghidra a minute: the import analyses the ones chosen
+    and keeps the others' programs, so the project analyses them later without the disc."""
+    import subprocess
+
+    built = ROOT / "projects" / "demo-vflash" / "build" / "demoquest.iso"
+    if not built.exists():
+        subprocess.run([sys.executable, str(ROOT / "projects" / "demo-vflash" / "build.py")], check=True)
+    monkeypatch.setattr(scratch, "_ghidra", lambda images, log: {})  # (the entries alone: no Ghidra in the test)
+    monkeypatch.setattr(scratch, "_libraries", lambda images, programs, log: {})
+    assert [p["name"] for p in scratch.parts_of(built)] == ["A01"]
+    root = tmp_path / "proj"
+    scratch.create(root, built, parts=[], log=lambda *_: None)
+    assert scratch.game_parts(root, "99000_000") == [{"name": "A01", "analysed": False, "functions": 0,
+                                                     "bytes": (root / "orig/99000_000/A01.elf").stat().st_size}]
+    assert not list((root / "src").glob("A01/*"))
+    said = scratch.add_modules(root, "99000_000", ["A01"], log=lambda *_: None)
+    assert said.startswith("the game modules A01:")
+    info = json.loads((root / "config/99000_000/functions.json").read_text())
+    assert "A01" in info["programs"] and not info["unanalysed"]
+    a01 = [f for u, fns in info["units"].items() if u.startswith("A01/") for f in fns]
+    assert a01 and any(r[2] == "func_10A0031C" for f in a01 for r in f["relocs"])  # (clamp_s32, FA's, by FA's name)
+    assert list((root / "src").glob("A01/*.cpp"))
+    assert scratch.add_modules(root, "99000_000", ["A01"], log=lambda *_: None) is None
