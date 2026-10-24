@@ -292,6 +292,7 @@ class Game:
     fa: Image | None = None
     modules: list[Image] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # what's missing or doesn't belong
+    boot_head: bytes = b""  # BOOT.BIN's loader, before FA (what a rebuilt BOOT.BIN starts with)
 
     def images(self) -> list[Image]:
         return ([self.fa] if self.fa else []) + self.modules
@@ -342,6 +343,7 @@ def load_fs(fs) -> Game:
         data = fs.read(boot)
         if data[BOOT_FA_OFFSET:BOOT_FA_OFFSET + 4] == FA_MAGIC:
             g.fa = parse_vff(data[BOOT_FA_OFFSET:], FA_NAME, boot)
+            g.boot_head = data[:BOOT_FA_OFFSET]
     if g.fa is None and fa_file:
         g.fa = parse_vff(fs.read(fa_file), FA_NAME, fa_file)
     for path, size in sorted(fs.files()):
@@ -384,6 +386,7 @@ def load(path: Path) -> Game:
     g = Game(label=path.stem)
     if data[:4] == b"BOOT" and data[BOOT_FA_OFFSET:BOOT_FA_OFFSET + 4] == FA_MAGIC:
         g.fa = parse_vff(data[BOOT_FA_OFFSET:], FA_NAME, path.name)
+        g.boot_head = data[:BOOT_FA_OFFSET]
     elif data[:4] == FA_MAGIC:
         g.fa = parse_vff(data, FA_NAME, path.name)
     elif data[:4] == MODULE_MAGIC or is_container(data):
