@@ -455,3 +455,23 @@ def test_a_rebuild_takes_matched_code_and_tells_a_wrong_name(tmp_path, monkeypat
     (tmp_path / "base.o").write_bytes(delink.obj(rows, code))
     rebuilt, originals, _ = rebuild.rebuild("v1")
     assert rebuilt != originals
+
+
+def test_a_modules_function_with_another_programs_code_is_a_copy():
+    """The same code calling FA's same functions is a copy, whatever its own addresses (a module's calls to its own
+    functions: their copies); calling another of FA's functions, it isn't; nor is a function the same as another of
+    its own program's (a constructor's two copies are two functions)."""
+    call = lambda at, to: struct.pack("<3I", 0xE92D4010, _b(at + 4, to, link=True), 0xE8BD8010)  # noqa: E731
+    programs = {"FA": call(0x10A00000, 0x10A00100) * 2, "A01": call(0x10400000, 0x10A00100) + call(0x1040000C, 0x10400200),
+                "A02": call(0x10400000, 0x10A00104) + call(0x1040000C, 0x10400300)}
+
+    def fn(program, addr, offset, target):
+        name = analysis.address_name(program, addr)
+        return {"name": name, "addr": addr, "offset": offset, "size": 12,
+                "relocs": [[4, analysis.R_ARM_PC24, analysis.address_name("FA" if target >= 0x10A00000 else program, target),
+                            analysis.BRANCH_IMM_ANY]]}
+    info = {"units": {"FA/text_10A00000": [fn("FA", 0x10A00000, 0, 0x10A00100), fn("FA", 0x10A0000C, 12, 0x10A00100)],
+                      "A01/text_10400000": [fn("A01", 0x10400000, 0, 0x10A00100), fn("A01", 0x1040000C, 12, 0x10400200)],
+                      "A02/text_10400000": [fn("A02", 0x10400000, 0, 0x10A00104), fn("A02", 0x1040000C, 12, 0x10400300)]}}
+    found = scratch.copies(info, lambda program, off, size: programs[program][off:off + size], {})
+    assert found == {"func_A01_10400000": "func_10A00000", "func_A02_1040000C": "func_A01_1040000C"}

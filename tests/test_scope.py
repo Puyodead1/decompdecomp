@@ -475,3 +475,57 @@ def test_re_measuring_builds_what_changed_first(tmp_path, monkeypatch):
     assert builds == [1] and _sums(net) == (2, 1)
     net.forks.check(slug, log=lambda *_: None, build=True)
     assert builds == [1, 1] and _statuses(net)["game_a"] != "matched"
+
+
+def test_a_copy_of_another_programs_function_is_counted_once_and_no_agent_takes_it(tmp_path, monkeypatch):
+    """A V.Flash game's modules each link its engine again: config/<version>/copies.json names the copies. They stay
+    open (twins match them when their original matches) but progress counts them once, as their original, the claim
+    queue never hands one out, and the whole program counts them again."""
+    report = {"measures": {"total_functions": 4, "matched_functions": 1, "total_code": "64", "matched_code": "16"},
+              "units": [{"name": "game", "functions": [_fn("game_a", 0x1000, 100.0), _fn("game_b", 0x1010, 40.0)]},
+                        {"name": "mod", "functions": [_fn("copy_a", 0x1000), _fn("copy_b", 0x1010)]}]}
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path / "ws")
+    root = tmp_path / "ws" / "p"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "config" / "v" / "copies.json").write_text(json.dumps({"copy_a": "game_a", "copy_b": "game_b"}))
+    (root / ".decomp.wtf.json").write_text(json.dumps({"created": "from scratch", "platform": "vflash", "version": "v"}))
+    (root / "objdiff.json").write_text(json.dumps({"units": []}))
+    net.forks._register("p", "P", "fork", root, {"kind": "fork", "origin": "scratch", "version": "v",
+                                                  "fork_kind": "manifest", "platform": "vflash", "ready": False}, "x")
+    monkeypatch.setattr(ForkProject, "report", lambda self: report)
+    monkeypatch.setattr(ForkProject, "units", lambda self: [Unit("game", None, None, "src/game.c", False, None),
+                                                            Unit("mod", None, None, "src/mod.c", False, None)])
+    m = net.forks.sync("p", log=lambda *_: None)
+    assert _statuses(net) == {"game_a": "matched", "game_b": "open", "copy_a": "open", "copy_b": "open"}
+    assert _sums(net) == (2, 1) and (m["total_functions"], m["matched_functions"]) == (2, 1)
+    assert net.forks.overview("p")["copies"] == 2
+    agent, _ = net.local_agent("copy-test")
+    assert net.claim_row(agent, "p")["name"] == "game_b"  # (the only open function that isn't a copy)
+    with net.store.tx() as db:
+        db.execute("DELETE FROM claims")
+    with pytest.raises(NetworkError, match="copy of game_a"):
+        net.claim_row(agent, "p", "copy_a")
+    why = set_aside(net.store.one("SELECT status, meta FROM functions WHERE name='copy_b'"))["set_aside"]
+    assert why.startswith("a copy of game_b")
+    net.forks.set_scope("p", "program", log=lambda *_: None)
+    assert _sums(net) == (4, 1)
+
+
+def test_a_copy_too_small_to_be_a_twin_still_follows_its_original(tmp_path):
+    """Twins leave out functions of a few bytes (a lone return is everyone's twin, and an easy match), but a copy no
+    agent takes only ever matches as a twin: a group with a copy in it pairs whatever its size."""
+    from decompnet.app.twins import Print
+
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path / "ws")
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug, name, root, config) VALUES('p', 'P', ?, '{}')", (str(tmp_path),))
+    pid = net.project_row("p")["id"]
+    with net.store.tx() as db:
+        for name, status, meta in (("a", "matched", {}), ("b", "open", {"copy_of": "a"}), ("x", "matched", {}),
+                                   ("y", "open", {})):
+            db.execute("INSERT INTO functions(project_id, name, size, n_insns, status, meta) VALUES(?,?,4,1,?,?)",
+                       (pid, name, status, json.dumps(meta)))
+    ids = {r["name"]: r["id"] for r in net.store.all("SELECT id, name FROM functions")}
+    net.twins.prints = lambda proj: {ids["a"]: Print("ret", [], 4), ids["b"]: Print("ret", [], 4),
+                                     ids["x"]: Print("ret2", [], 4), ids["y"]: Print("ret2", [], 4)}
+    assert net.twins.pairs(net.project_row("p")) == [(ids["a"], ids["b"])]
