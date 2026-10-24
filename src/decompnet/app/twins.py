@@ -358,13 +358,16 @@ class Twins:
         """(matched function, unmatched twin) pairs to try, the twins of `only` (newly matched ones) or all."""
         prints = self.prints(proj)
         rows = {r["id"]: r for r in self.net.store.all(
-            "SELECT id, status FROM functions WHERE project_id=?", proj["id"])}
+            "SELECT id, status, json_extract(meta, '$.copy_of') AS copy FROM functions WHERE project_id=?", proj["id"])}
         groups: dict[str, list[int]] = defaultdict(list)
         for fid, p in prints.items():
-            if p.size >= min_size:  # (a lone `blr` is everyone's twin, and its own easy match anyway)
-                groups[p.key].append(fid)
+            groups[p.key].append(fid)
         out = []
         for members in groups.values():
+            # (a lone `blr` is everyone's twin, and its own easy match anyway; but a copy, which no agent takes, only
+            # ever matches as a twin)
+            if prints[members[0]].size < min_size and not any(rows.get(f) and rows[f]["copy"] for f in members):
+                continue
             matched = [f for f in members if rows.get(f) and rows[f]["status"] == "matched"]
             if not matched:
                 continue
