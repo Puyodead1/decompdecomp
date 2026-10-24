@@ -35,6 +35,9 @@ typedef s32 M2C_UNK32;
 #define M2C_OVERFLOW(a) (0)
 #endif
 """
+# Macros m2c's drafts use that headers made before them lack (add_m2c_macros adds them on their own): ARM's
+# SECOND_REG, the second register of what a call returned (r1), which a draft read and no header defined
+M2C_LATER = {"SECOND_REG": "#define SECOND_REG(x) ((void)(x), 0)"}
 _BRANCH = re.compile(r"^(b|beq|bne|beqz|bnez|bgtz|blez|bltz|bgez|bltzal|bgezal|beql|bnel|beqzl|bnezl|bgtzl|blezl|"
                      r"bltzl|bgezl|bc1t|bc1f|bc1tl|bc1fl|j)$")
 
