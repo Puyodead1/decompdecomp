@@ -42,6 +42,9 @@ class Opencode(Agent):
     docs = "https://opencode.ai"
     models_args = ("models",)
     takes_effort = True  # opencode 2 picks a model's reasoning effort as a variant of it: provider/model#high
+    # OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence for as long as it let it
+    # (a helper's session hung, then counted as a failure)
+    limit_hangs = True
 
     def read_models(self, lines: list[str]) -> list[dict]:
         """`opencode models`: "<provider>/<model>" per model."""
@@ -86,6 +89,10 @@ class Opencode(Agent):
         else:
             config = {"mcp": {MCP_SERVER: {"type": "remote", "url": mcp_url, "enabled": True, "headers": headers}},
                       "permission": {"edit": never, "bash": never, "webfetch": never}}
+            # its "small model" titles each session: by default OpenCode Zen's (a paid nano model, which a free-only
+            # account saw called by every helper, "Insufficient account funds"); the helper's own model does it here
+            if (own := (model or self.config_model() or "").split("#", 1)[0]):
+                config["small_model"] = own
         (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **config}),
                                                encoding="utf-8")
         # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.

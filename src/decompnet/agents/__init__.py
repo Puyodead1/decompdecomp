@@ -103,6 +103,9 @@ class Agent:
     takes_effort = False  # the launcher offers a reasoning effort: with the model's name ("provider/model#high"), or
     # for an agent whose model is an endpoint's, as the helper's `effort` option
     efforts: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")  # the efforts it offers, when it takes one
+    # it keeps retrying a usage limit instead of exiting (its stderr says the limit): the app ends the session when it
+    # says so, and the helper waits for the limit to reset (app/agents.py LIMIT)
+    limit_hangs = False
 
     def __repr__(self) -> str:
         return f"<agent {self.id}>"
