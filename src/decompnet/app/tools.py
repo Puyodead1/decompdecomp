@@ -540,8 +540,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def search_flags(ctx: Context, function: str, compiler: str = "", source: str = "") -> str:
         """The function's C (its best attempt, or source) built with each of its compiler's flag variants
         (optimisation levels, small data, code-shape options), judged and ranked. For C that looks right but won't
-        match: the flags may be what's wrong. compiler: another one to try instead of the project's. On a PC game
-        started from scratch: the function's file built with Visual C++'s variants (/O1, /Oy-, /GS-...)."""
+        match: the flags may be what's wrong. compiler: another one to try instead of the project's. On a game
+        started from scratch: the function's file built with its compiler's variants (/O1, /Oy-... -O0, -O1...)."""
         return await run(ctx, "search_flags", function=function, compiler=compiler, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -576,8 +576,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         different compiler or flags, when C that is right can't match (the code's style says another compiler built
         it). Test it with try_compiler first: a suggestion whose function doesn't match with it is refused. Say what
         you saw. project_info lists open suggestions: suggesting the same compiler and flags is a vote for it; with
-        the user's permission, a proven or agreed one is applied at once. On a PC game started from scratch: flags
-        alone (no compiler), for the function's file, checked with its C (search_flags finds them).
+        the user's permission, a proven or agreed one is applied at once. On a game started from scratch (PC,
+        V.Flash): flags alone (no compiler) and the function, for its file, checked with its C (search_flags finds
+        them); words alone are refused there, as the user can't act on them.
 
         Args:
             text: what should change and the evidence
