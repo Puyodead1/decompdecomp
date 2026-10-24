@@ -786,3 +786,14 @@ def test_a_cli_that_retries_a_usage_limit_is_stopped_and_the_helper_waits(tmp_pa
     began = time.time()
     m._run_cli(s, "tok", tmp_path)
     assert s.limited and time.time() - began < 30
+
+
+def test_codex_lists_the_models_its_own_picker_offers():
+    """`codex debug models` is its catalog as JSON: the models it shows ("list"), in its order, not the hidden ones
+    (the launcher listed none, only Codex's default and typing a name)."""
+    catalog = {"models": [{"slug": "gpt-6-sol", "display_name": "GPT-6-Sol", "visibility": "list", "priority": 4},
+                          {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide", "priority": 3},
+                          {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list", "priority": 1}]}
+    rows = kinds.get("codex").read_models(json.dumps(catalog, indent=1).splitlines())
+    assert [(r["id"], r["name"]) for r in rows] == [("gpt-6.1-sol", "GPT-6.1-Sol"), ("gpt-6-sol", "GPT-6-Sol")]
+    assert kinds.get("codex").read_models(["not json"]) == []
