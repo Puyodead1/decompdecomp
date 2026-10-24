@@ -45,10 +45,14 @@ STALL_LOOKBACK = 16  # compiles stall_note reads back: more than the biggest bud
 # The game's own code (an SQL condition on `functions`): not what the project sets aside as library code, middleware
 # or the C runtime (config/<version>/set_aside.json, objdiff.game_measures; while its scope is the game's own code)
 GAME_CODE = "json_extract(meta, '$.set_aside') IS NULL"
-# Set aside, for either reason (an SQL condition on `functions`): no C makes it (status asm: hand-written assembly, a
-# piece of a function, agents' verdict) or it isn't the game's own (GAME_CODE). Every count takes it off the total
-# and off what matched, so a matched library function doesn't count either.
-SET_ASIDE = f"(status = 'asm' OR NOT ({GAME_CODE}))"
+# A copy of another function of the game (an SQL condition on `functions`): the same code in another of its programs
+# (a V.Flash game's modules each link its engine again: config/<version>/copies.json). It's counted once, as its
+# original, and no agent takes it: twins match it when its original matches.
+COPY = "json_extract(meta, '$.copy_of') IS NOT NULL"
+# Set aside, for any reason (an SQL condition on `functions`): no C makes it (status asm: hand-written assembly, a
+# piece of a function, agents' verdict), it isn't the game's own (GAME_CODE), or it's a copy (COPY). Every count
+# takes it off the total and off what matched, so a matched library function doesn't count either.
+SET_ASIDE = f"(status = 'asm' OR NOT ({GAME_CODE}) OR {COPY})"
 # The counts a project's page and the project list show (functions, matched, bytes, set aside), as SQL columns
 PROGRESS_COLUMNS = (
     "COUNT(*) AS total, SUM(status='matched' AND NOT {a}) AS matched, SUM(size) AS bytes, "
@@ -309,6 +313,9 @@ def set_aside(fn) -> dict:
     """Why a set-aside function is (SET_ASIDE: no C makes it, or it isn't the game's own code), for its page:
     {"set_aside": the reason, "not_c": whether agents agreed no C makes it}, or nothing."""
     meta = json.loads(fn["meta"] or "{}")
+    if meta.get("copy_of") and fn["status"] != "asm":
+        return {"set_aside": f"a copy of {meta['copy_of']}, the same code in another of the game's programs: counted "
+                             "once, there, and it matches when that one does", "not_c": False}
     if fn["status"] != "asm" and not meta.get("set_aside"):
         return {}
     why = meta.get("asm_code") or (f"the same code as {meta['asm_twin']}, a matched assembly function"
@@ -615,8 +622,8 @@ class Network:
         long), ones it set aside itself (which it can still take by name), or really all done. A bare "nothing left"
         sent four helpers away from a project with ten open functions."""
         now = time.time()
-        n_open = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'",
-                                proj["id"])["n"]
+        n_open = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open' "
+                                f"AND NOT {COPY}", proj["id"])["n"]
         if not n_open:
             return f"Nothing left to claim in {proj['slug']}: every function{scope} matches. 🎉"
         held = self.store.all(
@@ -668,6 +675,9 @@ class Network:
                     raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
                 if fn["status"] == "asm":
                     raise NetworkError(f"{fn['name']} is set aside ({set_aside(fn)['set_aside']}): claim another")
+                if (original := json.loads(fn["meta"] or "{}").get("copy_of")):
+                    raise NetworkError(f"{fn['name']} is a copy of {original} (the same code in another of the game's "
+                                       f"programs): claim {original}, and this one matches when it does")
                 other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
                 if other is not None:
                     raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])} "
@@ -687,6 +697,7 @@ class Network:
                 query = (
                     f"""SELECT f.* FROM functions f LEFT JOIN {_REGION} r ON r.region = f.vram / {REGION_BYTES}
                         WHERE f.project_id=:pid AND f.status='open' AND (:weak = 0 OR f.abandons < :escalate)
+                        AND json_extract(f.meta, '$.copy_of') IS NULL
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                            AND kind='release' AND created_at > :mine)

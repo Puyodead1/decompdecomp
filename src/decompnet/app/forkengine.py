@@ -32,6 +32,7 @@ from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, GAME, PROGRAM, SCOPES, STATE, ForkError, ForkProject
 from ..hostenv import NO_WINDOW
 from ..network import (
+    COPY,
     GAME_CODE,
     IN_BUILD,
     NOT_C_AGENTS,
@@ -221,6 +222,17 @@ def _set_aside(fp: ForkProject) -> dict[str, str]:
     except (OSError, ValueError, AttributeError):
         return {}
     return objdiff.expand_set_aside(data, info)
+
+
+def _copies(fp: ForkProject) -> dict[str, str]:
+    """Symbol -> the symbol it's a copy of, for functions the same as another in another of the game's programs (a
+    V.Flash game's modules each link its engine again): config/<version>/copies.json. Counted once (network.COPY)."""
+    version = (fp.manifest or {}).get("version")
+    try:
+        data = json.loads((fp.root / "config" / str(version) / "copies.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str]]:
@@ -881,6 +893,7 @@ class ForkEngine:
         aside = listed if fp.scope == GAME else {}  # the whole program: set-aside code is worked on and counted
         # real names a report doesn't give (a PC game's stay _func_0041B470@8): how the source spells them
         reals = consoles.get(cfg.get("platform")).real_names(fp, (fp.manifest or {}).get("version") or cfg.get("version"))
+        copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
             counts[f["name"]] += 1
@@ -936,6 +949,8 @@ class ForkEngine:
                 if sym in aside:  # code the project says isn't the game's own (library code, middleware)
                     meta["asm_code"] = aside[sym]
                     meta["set_aside"] = True  # and progress takes it off, as no C code is (network.SET_ASIDE)
+                if sym in copies:  # the same code as another program's: counted once, matched by twins
+                    meta["copy_of"] = copies[sym]
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
                 if status == "open" and any(meta.get(k) for k in _ASM_KEYS):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
@@ -985,7 +1000,7 @@ class ForkEngine:
                         for table in ("claims", "notes"):
                             db.execute(f"DELETE FROM {table} WHERE function_id=?", (fid,))
                         db.execute("DELETE FROM functions WHERE id=?", (fid,))
-            m = objdiff.game_measures(rep, set(aside))  # % of the game's own code: set-aside code doesn't count
+            m = objdiff.game_measures(rep, set(aside) | set(copies))  # % of the game's own code, each copy once
             self.net._event(db, proj["id"], None, "sync", f"{float(m.get('matched_code_percent', 0)):.2f}% of code matches")
         log(f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
             f"{float(m.get('matched_code_percent', 0)):.2f}% of code")
@@ -995,6 +1010,8 @@ class ForkEngine:
         mine = [uname for uname, f in rows if f["name"] in listed]
         cfg["set_aside"] = {"functions": len(mine), "without_source": sum(
             1 for uname in mine if not (units.get(uname) and units[uname].source))} if mine else None
+        every_copy = _copies(fp)  # (whatever its scope: Settings says how many)
+        cfg["copies"] = sum(1 for _, f in rows if f["name"] in every_copy) or None
         self._save_cfg(proj, cfg)
         if cfg.get("ready"):
             self.start_indexing(slug)
@@ -2860,8 +2877,8 @@ class ForkEngine:
                              "Written by decompdecomp's autopilot.")
         else:
             raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
-        rows = self.net.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' ORDER BY n_insns, id",
-                                  proj["id"])
+        rows = self.net.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' AND NOT "
+                                  f"{COPY} ORDER BY n_insns, id", proj["id"])  # (a copy: twins match it)
         return [r["id"] for r in rows]
 
     def autopilot_one(self, agent: Agent, proj, fid: int) -> str:
@@ -3392,6 +3409,7 @@ class ForkEngine:
         left = self.net.store.one(f"SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND NOT ({GAME_CODE})",
                                   proj["id"])["n"]
         return {"scope": fp.scope if manifest else None, "left_out": left or 0, "scope_list": cfg.get("set_aside"),
+                "copies": cfg.get("copies"),
                 "unanalysed": self._unanalysed(fp, cfg) if cfg.get("origin") == "scratch" else None}
 
     def _file_parts(self, fp: ForkProject, cfg: dict) -> tuple[str, list[dict]] | None:

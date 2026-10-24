@@ -417,7 +417,7 @@ $("partsGo").onclick = async () => {
    import recognised left out of agents' work and progress, or the whole program. Shown where there's such code. */
 function renderScope(ov) {
   const aside = ov.scope_list, panel = $("scopePanel");
-  panel.hidden = !(ov.kind === "fork" && ov.scope && (aside || ov.unanalysed || ov.scope === "program"));
+  panel.hidden = !(ov.kind === "fork" && ov.scope && (aside || ov.unanalysed || ov.copies || ov.scope === "program"));
   if (panel.hidden) return;
   // code the project's import left unanalysed (an older import's): a new analysis brings it in, once
   $("unanalysedRow").hidden = !ov.unanalysed;
@@ -431,6 +431,9 @@ function renderScope(ov) {
   const lines = [game
     ? `${plural(n, "function")} of library and middleware code ${n === 1 ? "is" : "are"} left out: agents don't work on ${n === 1 ? "it" : "them"} and progress doesn't count ${n === 1 ? "it" : "them"}. Choosing the whole program opens ${n === 1 ? "it" : "them"} to agents and counts ${n === 1 ? "it" : "them"}.`
     : `Every function is open to agents and counted${n ? `, the ${plural(n, "function")} of library and middleware code included` : ""}. Choosing the game's own code leaves ${n === 1 ? "it" : "them"} out again.`];
+  if (ov.copies) lines.push(game
+    ? `${plural(ov.copies, "function")} ${ov.copies === 1 ? "is a copy" : "are copies"} of others, the same code in another of the game's programs (its modules repeat its engine): counted once, never handed to agents, and matched when the original is.`
+    : `The ${ov.copies.toLocaleString()} ${ov.copies === 1 ? "copy" : "copies"} of functions in the game's other programs count too; they still match when their original does.`);
   if (aside?.without_source) lines.push(`${plural(aside.without_source, "of these function")} ${aside.without_source === 1 ? "has" : "have"} no source file in this project, so agents can't work on ${aside.without_source === 1 ? "it" : "them"} either way: the whole program only counts ${aside.without_source === 1 ? "it" : "them"}.`);
   if (ov.unanalysed) lines.push(`This project's import didn't analyse ${ov.unanalysed}. Analysing that code now gives its functions source files of their own (${game ? "left out like the rest of the library code" : "open to agents and counted"}) and keeps every match, note and name; choosing the whole program analyses it too.`);
   lines.push("Hand-written assembly stays assembly either way.");
