@@ -151,7 +151,7 @@ def register(app: App) -> None:
                 return fail(ValueError("confirm that this is your own legally obtained copy of the game"))
             if q.get("path"):
                 game = hostenv.local_path(q["path"])
-                if not game.is_file():
+                if not game.is_file() and not game.is_dir():  # (a folder: a disc's files, for V.Flash)
                     return fail(ValueError(f"no file at {game}"))
                 name = game.name
             else:
