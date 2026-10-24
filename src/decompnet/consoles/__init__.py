@@ -1,5 +1,5 @@
 """The connector: how decompdecomp talks to a console. Every console is a package in this folder (consoles/n64/,
-consoles/ps1/, consoles/ps2/, consoles/gc_wii/, consoles/pc/, consoles/nds/) whose `__init__.py` makes a `Console`
+consoles/ps1/, consoles/ps2/, consoles/gc_wii/, consoles/pc/, consoles/nds/, consoles/vflash/) whose `__init__.py` makes a `Console`
 below and fills in its parts; the list at the end of this file registers them. The rest of the app (the engine, briefs, twins, the agents' tools
 and prompts, the export, the GUI's API) asks the console of a project, `consoles.get(platform)`, and never compares
 console names. A person or an agent working on PS2 support reads consoles/ps2/ and this file, nothing else.
@@ -10,7 +10,8 @@ A console works in one of two modes:
   compilers and flags, and may add code splat's own look misses (`add_code`). N64, PS1 and PS2.
 - PROJECT: decompdecomp generates the community's kind of project for the game (a git tree with an objdiff.json),
   and objdiff judges each function in the project's own build (forks/, app/forkengine.py). The console makes the
-  project (`create_project`) and points its build at the pinned tools (`tool_args`). GameCube, Wii, PC and DS.
+  project (`create_project`) and points its build at the pinned tools (`tool_args`). GameCube, Wii, PC, DS and
+  V.Flash.
 
 What's the processor's and not the console's (relocations, disassembly, hand-written assembly, the readers for the
 compiler map and C++ classes) is in arch/. Adding a console: copy consoles/template/, fill in its parts, add a demo
@@ -340,10 +341,11 @@ def _registry() -> list[Console]:
     from .ps1 import PS1
     from .ps2 import PS2
     from .public import PUBLIC_ONLY
+    from .vflash import VFLASH
 
-    # the order sniff is asked in: a file is the first console's that says it's its own (the PS1 before the PS2,
-    # whose sniff takes any ISO 9660 disc)
-    return [N64, PS1, PS2, GAMECUBE, WII, PC, NDS, *PUBLIC_ONLY]
+    # the order sniff is asked in: a file is the first console's that says it's its own (V.Flash's discs and the PS1's
+    # before the PS2, whose sniff takes any ISO 9660 disc)
+    return [N64, VFLASH, PS1, PS2, GAMECUBE, WII, PC, NDS, *PUBLIC_ONLY]
 
 
 CONSOLES: list[Console] = _registry()
@@ -371,8 +373,11 @@ def startable() -> list[Console]:
 
 
 def identify(file: bytes | Path) -> Console:
-    """The console of the file the user picked (bytes, or a file on disk read in place: discs are gigabytes)."""
-    if isinstance(file, (str, Path)):
+    """The console of the file the user picked (bytes, or a file on disk read in place: discs are gigabytes; or a
+    folder of a disc's files, which only a console that takes one says is its own)."""
+    if isinstance(file, (str, Path)) and Path(file).is_dir():
+        head, file = b"", Path(file)
+    elif isinstance(file, (str, Path)):
         with open(file, "rb") as f:
             head = f.read(HEAD_BYTES)
         file = Path(file)
