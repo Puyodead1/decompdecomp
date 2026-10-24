@@ -130,6 +130,7 @@ picking them, and **Open folder** tells you where the project is.
 | Xbox | Beta | `default.xbe`, `.xiso` or Redump `.iso` |
 | Nintendo DS | Beta | ROM (`.nds`) |
 | Game Boy Advance | Beta | ROM (`.gba`) |
+| V.Flash | Beta (Linux) | Disc |
 | 3DS, Switch, Xbox 360 | Public decomps only | Community decomp fork |
 
 Read [ROADMAP.md](ROADMAP.md#what-works-where) for each feature and console. Proprietary compilers (IDO, CodeWarrior, SN Systems, Visual C++) install only after

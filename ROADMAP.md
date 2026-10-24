@@ -112,6 +112,11 @@ Where to start on a gap:
   x86: an element of a global array reached as `[index + address]` (every address the code names is a global of its
   own, `D_<address>`, so the array's fields past the first aren't the element's type), edx's __fastcall argument,
   and the sign of a field the code only or's and tests.
+- **V.Flash**: a project rebuilds its programs in place (`tools/rebuild.py`: every function at its address, matched
+  code linked by name) and checks them against the user's copy; a full relink, where changed code may grow and the
+  rest move, needs the game's data delinked too (its pointers found), and a rebuilt disc image (the files are VFFs and
+  BOOT.BIN for now). On Windows its compiler (a Linux program) would run through WSL, as PS2's do; a V.Flash project
+  builds on Linux only for now.
 - **Twins across games** and **restoring a save** work on ROM projects (`app/twins.py`, `app/saves.py`). In project
   mode a project's matched C is its git repository; twins across games pair two projects' target objects
   (`Twins._across_projects`), the same path for every project-mode console (PC proved it; GameCube, Wii and DS use
@@ -411,6 +416,14 @@ Where to start on a gap:
 - **Saved guides keep your notes.** Saving creates a basic README only when one is missing. Later saves update
   counts and visuals inside hidden comment pairs, preserving the rest of the guide. A local SVG progress card
   shows completion, platform and a function map in ROM and project mode; it contains no game code.
+- **V.Flash.** A V.Flash game starts from the user's own copy: its disc image (.iso, .bin/.cue) or the disc's files,
+  as a path on the computer (a disc is hundreds of MB). The firmware (FA) and every game module become programs of one
+  project, each module's names saying which (`func_GZ1A_1047B800`): Ghidra says where functions start (one run for
+  the whole game), decompdecomp follows each function's code for its extent, literal pool and switch tables, finds
+  the ones nothing calls, and cuts them into ELF objects as GCC 3.2.3 and binutils 2.14 write them, one section per
+  function; GCC 3.2.3 for ARM (pinned on the fork, free) builds `src/`, with flags file by file. On a real game's
+  firmware, zlib 1.2.3's 42 functions and 8 C++ constructors and destructors built from their sources match
+  byte for byte.
 - **Real names on Windows PC.** A PC project names functions and data by address (`func_0041B470`, `D_0066DDA4`),
   and `tools/names.py` pairs them with the original's symbols by that address, so rename_symbol refused them. A real
   name is kept by address in `config/<version>/functions.json` ("names"), and names.py takes it as that address in C

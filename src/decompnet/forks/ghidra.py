@@ -55,20 +55,23 @@ def _headless() -> Path:
     return base / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
 
 
-def _run_script(binary: Path, script: str, timeout: float, *, analyse: bool = True,
+def _run_script(binary: Path | list[Path], script: str, timeout: float, *, analyse: bool = True,
                 said: list[str] | None = None) -> list[dict]:
-    """Import `binary` into a throwaway Ghidra project, run one of our post-scripts on it and return the JSON objects
-    it wrote, one per line ([] when it took longer than `timeout`). A Ghidra that didn't get to run the script says
-    why (ForkError): that was "found no functions" before, which sent the user after packers and DRM. `said`, when
-    given, gets what Ghidra printed, a line each."""
+    """Import `binary` (or several, analysed one after the other in the same Ghidra) into a throwaway Ghidra project,
+    run one of our post-scripts on it and return the JSON objects it wrote, one per line ([] when it took longer than
+    `timeout`). A Ghidra that didn't get to run the script says why (ForkError): that was "found no functions"
+    before, which sent the user after packers and DRM. `said`, when given, gets what Ghidra printed, a line each."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-ghidra-") as tmp:
         scripts = Path(tmp) / "scripts"
         scripts.mkdir()
         src = resources.files("decompnet.forks").joinpath("ghidra_scripts", script)
         (scripts / script).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         out = Path(tmp) / "out.jsonl"
-        target = Path(tmp) / binary.name
-        shutil.copyfile(binary, target)
+        imports = Path(tmp) / "programs"
+        imports.mkdir()
+        for b in ([binary] if isinstance(binary, Path) else binary):
+            shutil.copyfile(b, imports / b.name)
+        target = imports / binary.name if isinstance(binary, Path) else imports
         argv = [str(_headless()), tmp, "decompwtf", "-import", str(target), "-scriptPath", str(scripts),
                 "-postScript", script, str(out), "-deleteProject", *([] if analyse else ["-noanalysis"])]
         if os.name != "nt" and shutil.which("nice"):  # its analysis takes every core for minutes: after everything else
@@ -158,3 +161,12 @@ def functions(program: Path, timeout: float = 3600) -> list[dict]:
                         f"({toolchains.path('ghidra')}) and import the game again: decompdecomp installs Ghidra again "
                         "(on a Mac that builds its decompiler, with Xcode Command Line Tools).")
     return rows
+
+
+def functions_of(programs: list[Path], timeout: float = 4 * 3600) -> dict[str, list[dict]]:
+    """functions() of several programs (their file names differ), one Ghidra for all of them: a V.Flash game's
+    firmware and modules took a Java start each. By file name; a program Ghidra found nothing in has no entry."""
+    out: dict[str, list[dict]] = {}
+    for row in _run_script(list(programs), "DecompWtfFunctions.java", timeout):
+        out.setdefault(row.get("program", ""), []).append(row)
+    return out
