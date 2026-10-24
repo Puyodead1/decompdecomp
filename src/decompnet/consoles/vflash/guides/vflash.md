@@ -36,5 +36,7 @@ Hand-written assembly: FA's soft-float and division runtime (fast, not IEEE-exac
 and the start-up code are the vendor's assembly, not compiler output: mark them asm rather than writing C.
 
 Library code matches as it is: zlib 1.2.3, Tremor (the lowmem branch, 2005-2007) and newlib 1.12's libm are the
-upstream sources, built with the flags above (VTech changed a few zlib functions to use static buffers). Name such a
-function by its library name (rename_symbol) and write it as the library has it.
+upstream sources, built with the flags above. The import found them already: `src/<program>/lib/<library>/` holds
+each library source file the game has, its functions named by their library names, and most match from the start.
+The ones that don't are what the game's makers changed (VTech gave a few zlib functions static buffers): edit the
+library's function in place to what the game has, keeping its name.
