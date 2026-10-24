@@ -8,6 +8,7 @@ from __future__ import annotations
 import capstone
 
 RELOC_MASKS = {  # relocation type -> (byte offset from r_offset, length, little-endian bitmask to clear)
+    1: (0, 4, 0x00FFFFFF),  # R_ARM_PC24 (b and bl, as binutils before 2.16 writes them: V.Flash's GCC 3.2.3)
     28: (0, 4, 0x00FFFFFF),  # R_ARM_CALL
     29: (0, 4, 0x00FFFFFF),  # R_ARM_JUMP24
     43: (0, 4, 0x000F0FFF),  # R_ARM_MOVW_ABS_NC
@@ -49,9 +50,12 @@ for _md in _READERS.values():
     _md.detail = True
 
 
-def asm_reason(code: bytes, big_endian: bool = False, thumb: bool | None = None, **_facts) -> str | None:
+def asm_reason(code: bytes, big_endian: bool = False, thumb: bool | None = None, pieces: bool = True,
+               **_facts) -> str | None:
     """Why this ARM or Thumb function can't come from a compiler (a BIOS call stub; in ARM code, the CPU's mode or
-    coprocessor 15), or None. `thumb`: whether it's Thumb code, None when the object doesn't say."""
+    coprocessor 15), or None. `thumb`: whether it's Thumb code, None when the object doesn't say. `pieces`: whether
+    the analysis that cut it may have cut pieces of functions (ds-decomp's; not decompdecomp's own, which follows each
+    function's code to its end: there piece()'s reading of GCC's switches and veneers set whole functions aside)."""
     if big_endian:
         return None
     if thumb is False:
@@ -59,7 +63,7 @@ def asm_reason(code: bytes, big_endian: bool = False, thumb: bool | None = None,
             w = int.from_bytes(code[at:at + 4], "little")
             if w >> 28 != 0xF and (what := next((x for m, v, x in SYSTEM if w & m == v), None)):
                 return f"uses {what}, the CPU's mode or its cache: no compiler emits it, so it's hand-written assembly"
-    if thumb is not None and (why := piece(code, thumb)):
+    if thumb is not None and pieces and (why := piece(code, thumb)):
         return why
     if len(code) > STUB_BYTES:
         return None
