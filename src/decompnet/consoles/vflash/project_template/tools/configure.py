@@ -72,6 +72,8 @@ def main() -> None:
     compile_ = [sys.executable, "tools/compile.py", "--gcc", args.gcc, "--config", str(CONFIG)]
     n.rule("cc", shlex.join(compile_).replace("$", "$$") + " --output $out --source $in -- $cflags")
     n.rule("configure", f"{PY} tools/configure.py " + shlex.join(sys.argv[1:]).replace("$", "$$"), generator=True)
+    # `ninja rebuild`: the game's programs rebuilt in place from what's matched, and compared with your copy
+    n.rule("rebuild", f"{PY} tools/rebuild.py {VERSION} --check")
 
     targets = [str(BUILD / "target" / f"{u}.o") for u in units]
     # names.json (real names, rename_symbol's) cuts the original's objects again; a source file compiles again when
@@ -89,6 +91,7 @@ def main() -> None:
     n.build("prepare", "phony", [*targets, *objs])
     n.build("build.ninja", "configure", ["tools/configure.py", str(CONFIG), *folders("src", "include"), str(CONFIG.parent),
                                          *([str(FLAGS)] if FLAGS.exists() else [])])
+    n.build("rebuild", "rebuild", implicit=["prepare", "tools/rebuild.py"])
     n.default(["prepare"])
 
     objdiff = {

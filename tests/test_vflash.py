@@ -427,3 +427,31 @@ def test_an_import_takes_the_modules_chosen_and_the_rest_later(tmp_path, monkeyp
     assert a01 and any(r[2] == "func_10A0031C" for f in a01 for r in f["relocs"])  # (clamp_s32, FA's, by FA's name)
     assert list((root / "src").glob("A01/*.cpp"))
     assert scratch.add_modules(root, "99000_000", ["A01"], log=lambda *_: None) is None
+
+
+def test_a_rebuild_takes_matched_code_and_tells_a_wrong_name(tmp_path, monkeypatch):
+    """tools/rebuild.py puts a matched function's compiled code at its place, its relocations resolved by name: the
+    same names make the same program; a call naming another function (which objdiff doesn't tell) doesn't."""
+    import rebuild
+
+    fns, code = _analysed()
+    prog = disc.Image("FA", "vfF0", 0, BASE, BASE + 0x100, 0, 0, 0, [(BASE, code + bytes(0x100 - len(code)))])
+    (tmp_path / "orig").mkdir()
+    (tmp_path / "orig" / "FA.elf").write_bytes(prog.to_elf())
+    spans = scratch.elf_offsets(prog)
+    rows = [{"name": f.name, "addr": f.addr, "offset": scratch.file_offset(spans, f.addr), "size": f.size,
+             "relocs": [list(r) for r in f.relocs]} for f in fns]
+    (tmp_path / "config" / "v1").mkdir(parents=True)
+    (tmp_path / "config" / "v1" / "functions.json").write_text(json.dumps(
+        {"programs": {"FA": {"elf": "orig/FA.elf"}}, "units": {"FA/text_10000000": rows}}))
+    (tmp_path / "objdiff.json").write_text(json.dumps({"units": [{"name": "FA/text_10000000", "base_path": "base.o"}]}))
+    monkeypatch.setattr(rebuild, "ROOT", tmp_path)
+    for row in rows:  # (the compiled object: as the original's, its words at the relocations as GCC leaves them)
+        row["offset"] = row["addr"] - BASE
+    (tmp_path / "base.o").write_bytes(delink.obj(rows, code))
+    rebuilt, originals, taken = rebuild.rebuild("v1")
+    assert rebuilt == originals and "func_10000000" in taken
+    rows[0]["relocs"][0][2] = "func_10000050"  # (A's call names E, not B)
+    (tmp_path / "base.o").write_bytes(delink.obj(rows, code))
+    rebuilt, originals, _ = rebuild.rebuild("v1")
+    assert rebuilt != originals
