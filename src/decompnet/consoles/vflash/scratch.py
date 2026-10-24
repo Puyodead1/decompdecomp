@@ -676,12 +676,17 @@ def function_asm(root: Path, unit: str, symbol: str) -> str | None:
         fn = next((f for f in info["units"].get(unit, []) if f["name"] == symbol), None)
         if fn is None:
             return None
-        with open(root / info["programs"][unit.split("/", 1)[0]]["elf"], "rb") as f:
+        program = unit.split("/", 1)[0]
+        with open(root / info["programs"][program]["elf"], "rb") as f:
             f.seek(fn["offset"])
             code = f.read(fn["size"])
     except (OSError, ValueError, KeyError):
         return None
-    return asm.function_asm(symbol, code, fn["addr"], fn["relocs"])
+
+    def read(addr: int) -> int | None:  # (a word past the function: a pool it shares)
+        found = _read(root, info, program, addr, 4)
+        return struct.unpack("<I", found[0])[0] if found and len(found[0]) == 4 else None
+    return asm.function_asm(symbol, code, fn["addr"], fn["relocs"], read)
 
 
 _IMAGES: dict[tuple[str, int], tuple[list[tuple[int, int, int]], bytes, int, int]] = {}
@@ -765,6 +770,29 @@ def data_bytes(root: Path, manifest: dict, addr: int, length: int) -> bytes | No
     except (OSError, ValueError, KeyError):
         return None
     return found[0] if found and len(found[0]) == length else None
+
+
+# The template's tools as projects were made with them, by SHA-1 (line endings as LF): a project's copy that's one of
+# these, untouched, gets the template's own; one changed by hand is left alone.
+OLD_TOOLS = {
+    "tools/configure.py": {"f43a74807189bcfa236141d1b6a8116ae8237991"},  # (C++ without -fpermissive: m2c's drafts
+    # of module code failed by the hundred on C's ways, "pointer of type `void *' used in arithmetic")
+}
+
+
+def refresh_tools(root: Path) -> list[str]:
+    """The project's tools that are an older template's, untouched, replaced by the template's. Returns what changed."""
+    done = []
+    for rel, old in OLD_TOOLS.items():
+        path = root / rel
+        try:
+            have = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if hashlib.sha1(have.encode()).hexdigest() in old:
+            path.write_text((TEMPLATE / rel).read_text(encoding="utf-8"), encoding="utf-8")
+            done.append(rel)
+    return done
 
 
 ASM_CHECK = 1  # set_aside's version, in each function it checked: a better check (a bigger number) looks again

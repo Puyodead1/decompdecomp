@@ -22,7 +22,9 @@ import ninja_syntax
 # Settings (decompdecomp wrote these from what the game's code is known to be built with; flags for one file go in
 # config/VERSION/flags.json, after these: GCC takes the last of a kind)
 GCC_FLAGS = ["-O3", "-mcpu=arm9tdmi", "-fomit-frame-pointer", "-mno-apcs-frame", "-msoft-float"]
-CXX_FLAGS = ["-fno-rtti"]  # C++ (.cpp): the game's has no run-time type information
+# C++ (.cpp): the game's has no run-time type information; -fpermissive takes C's ways (arithmetic on a void *, a
+# void * to another pointer) as warnings, which machine drafts are full of, and makes the same code either way
+CXX_FLAGS = ["-fno-rtti", "-fpermissive"]
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)

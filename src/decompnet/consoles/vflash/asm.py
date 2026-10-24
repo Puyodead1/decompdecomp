@@ -18,6 +18,8 @@ _PC_ADD = re.compile(r"^(\w+), pc, #(0x[0-9a-f]+|\d+)$")
 _TARGET = re.compile(r"^#(0x[0-9a-f]+|\d+)$")
 # capstone's names for r9-r12, as GNU as and m2c spell them
 _REGISTERS = {"sb": "r9", "sl": "r10", "fp": "r11", "ip": "r12"}
+# what an ldr's mnemonic has after "ldr" when it loads a word (always, or on a condition), not a byte or halfword
+_CONDITIONS = {"", "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al"}
 
 
 def _regs(text: str) -> str:
@@ -28,9 +30,10 @@ def label(addr: int) -> str:
     return f".L{addr:08X}"
 
 
-def function_asm(name: str, code: bytes, addr: int, relocs: list) -> str:
+def function_asm(name: str, code: bytes, addr: int, relocs: list, read=None) -> str:
     """`code` (the function's bytes in the program, at `addr`) as m2c's input. `relocs`: its relocations as
-    functions.json has them, (offset, type, symbol or None, value)."""
+    functions.json has them, (offset, type, symbol or None, value). `read(addr)`: a word of the program elsewhere
+    (a pool past the function's end, which its loads read too), or None."""
     by_offset = {r[0]: r for r in relocs}
     words = [struct.unpack_from("<I", code, at)[0] for at in range(0, len(code) - 3, 4)]
     data: set[int] = {r[0] for r in relocs if r[1] == analysis.R_ARM_ABS32}
@@ -91,7 +94,16 @@ def function_asm(name: str, code: bytes, addr: int, relocs: list) -> str:
             target = r[2] if r and r[2] else label(analysis.branch_target(w, addr + off))
             ops = target
         elif (m := _PC_LOAD.match(ops)) and ins.mnemonic.startswith("ldr") and m.group(1) != "pc":
-            ops = f"{m.group(1)}, {label(addr + off + 8 + int(m.group(2) or "0", 0))}"
+            at = off + 8 + int(m.group(2) or "0", 0)
+            pool = by_offset.get(at)
+            word = (struct.unpack_from("<I", code, at)[0] if 0 <= at <= len(code) - 4
+                    else read(addr + at) if read is not None else None)
+            if ins.mnemonic[3:] in _CONDITIONS and word is not None and not (pool and pool[2] is None):
+                # a word of the pool: what it holds, as `ldr rN, =` says it (a label there read as a variable,
+                # `*.L109C845C = 0;`, and the draft didn't build)
+                ops = f"{m.group(1)}, ={pool[2] if pool and pool[2] else f'0x{word:08X}'}"
+            else:
+                ops = f"{m.group(1)}, {label(addr + at)}"
         elif (m := _PC_ADD.match(ops)) and ins.mnemonic == "add":
             ops = f"{m.group(1)}, {label(addr + off + 8 + int(m.group(2) or "0", 0))}"
             out.append(f"    adr {_regs(ops)}")
