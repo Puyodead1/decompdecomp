@@ -3,6 +3,7 @@ and the user's own MCP servers switched off for the run; it prints one JSON even
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -35,6 +36,19 @@ class Codex(Agent):
     docs = "https://github.com/openai/codex"
     family = "gpt"
     takes_effort = True  # Codex's model_reasoning_effort
+    models_args = ("debug", "models")  # its model catalog, as JSON (the launcher listed none: only default and typing one)
+
+    def read_models(self, lines: list[str]) -> list[dict]:
+        """`codex debug models`: {"models": [{"slug", "display_name", "visibility", "priority", ...}]}, the ones its
+        own picker shows ("list"), in its order."""
+        try:
+            data = json.loads("\n".join(lines))
+        except ValueError:
+            return []
+        rows = [m for m in (data.get("models") if isinstance(data, dict) else None) or []
+                if isinstance(m, dict) and m.get("slug") and m.get("visibility", "list") == "list"]
+        rows.sort(key=lambda m: m.get("priority") if isinstance(m.get("priority"), int) else 1 << 30)
+        return [{"id": m["slug"], "name": m.get("display_name") or m["slug"], "note": "OpenAI"} for m in rows]
     efforts = ("minimal", "low", "medium", "high", "xhigh", "max")
 
     def config_model(self) -> str | None:
