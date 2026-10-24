@@ -617,6 +617,62 @@ def test_two_functions_ghidra_took_for_one_are_split(tmp_path, monkeypatch):
     assert scratch_pe.split_merged(root, "v") == []
 
 
+
+def test_two_functions_packed_back_to_back_are_split_by_where_their_code_reaches(tmp_path, monkeypatch):
+    """A PC game built with Visual C++ 8.0 packs functions with no padding: `call; test; jne; or [ecx+4],0x20;
+    ret` and a second function right after the ret were one 34-byte function (an agent matched the first 14 bytes
+    and said so); 26 of the C library's isctype wrappers were one of 547. The code its entry reaches ends at the
+    ret: the rest is another function. A switch's table cut out as a function (it decodes into int3 padding), a
+    function with an exception frame (its catch funclets follow it, reached through the frame) and a matched one
+    stay as they are."""
+    from types import SimpleNamespace
+
+    import capstone
+
+    first = bytes.fromhex("e8f9ffffff" "85c0" "7504" "83490420" "c3")  # call; test; jne +4; or [ecx+4],0x20; ret
+    second = bytes.fromhex("85c0" "7508" "f6410440" "7402" "40" "c3" "33c0" "c3")  # test; jne; test; je; inc; ret...
+    table = bytes.fromhex("a8294a00" "13304a00") + b"\xcc" * 8  # a switch's addresses: decode as code into int3
+    eh = bytes.fromhex("64a100000000" "c3" "33c0c3")  # mov eax, fs:[0]; ret; a catch funclet after it
+    blob = first + second + table + eh
+    base = 0x401000
+
+    class FakePE:
+        imports = {}
+
+        def read(self, at, n):
+            return blob[at - base:at - base + n]
+
+        def offset(self, at):
+            return at - base
+
+        def section_at(self, at):
+            return SimpleNamespace(va=base, size=len(blob), code=True)
+
+        def contains(self, at):
+            return False
+    pe = FakePE()
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    two = len(first) + len(second)
+    assert scratch_pe._reached_end(md, pe, base, base + two) == base + len(first)
+    assert scratch_pe._reached_end(md, pe, base + len(first), base + two) is None  # (one function: nothing to cut)
+    assert scratch_pe._reached_end(md, pe, base + two, base + two + len(table)) is None
+    assert scratch_pe._reached_end(md, pe, base + two + len(table), base + len(blob)) is None
+    root = tmp_path / "game"
+    (root / "config" / "v").mkdir(parents=True)
+    (root / "orig").mkdir()
+    (root / "orig" / "v.exe").write_bytes(b"MZ")
+    merged = {"name": "_func_00401000", "addr": base, "size": two, "relocs": []}
+    (root / "config" / "v" / "functions.json").write_text(json.dumps({"exe": "orig/v.exe", "units": {
+        "text_00401000": [merged]}}))
+    (root / "config" / "v" / "names.json").write_text('{"func_00401000": "Flags_SetDirty"}')
+    monkeypatch.setattr(scratch_pe, "read_pe", lambda data: pe)
+    assert scratch_pe.split_merged(root, "v", keep={"@Flags_SetDirty@8"}) == []  # (it matches, renamed since)
+    assert scratch_pe.split_merged(root, "v") == [f"_func_{base + len(first):08X}"]
+    unit = json.loads((root / "config" / "v" / "functions.json").read_text())["units"]["text_00401000"]
+    assert [(f["addr"], f["size"]) for f in unit] == [(base, len(first)), (base + len(first), len(second))]
+
+
 def _coff_symbols(data: bytes) -> list[tuple[str, int]]:
     """(name, section) of each symbol of a COFF object, auxiliary records skipped."""
     sym_at, count = struct.unpack_from("<II", data, 8)
