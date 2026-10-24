@@ -126,6 +126,10 @@ const CW_PACK = {
   mwccarm: { title: "CodeWarrior for DS", text: "Install CodeWarrior for DS, the 24 compiler versions DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "Not sure? Keep the default. Games mix versions: a file the game built with another one gets it later, when a helper finds the version its functions match with." },
 };
+/* Free compilers a console's games are built with: installed when the import needs them, no licence to accept. */
+const FREE_PACK = {
+  "gcc-3.2.3-arm-elf": "GCC 3.2.3 for ARM (free software, 2 MB) is installed when the import needs it. The functions are found by Ghidra (installed once, 540 MB, needs Java 21+). A disc image is hundreds of MB: use a file on this computer instead of copying it through the browser.",
+};
 // the pack the game's program asks for (a PC game's Visual C++: pcPack), else its console's first
 const packOf = (info) => info?.pack || (CW_PACK[consoleOf(info?.platform)?.packs[0]] ? consoleOf(info.platform).packs[0] : "mwcc");
 
@@ -193,6 +197,22 @@ const isPspCiso = (head, magic = "CISO") => head.length >= 8 && String.fromCharC
 // a PSP's ELF: a PRX module by its type, or a program whose flags name the Allegrex (a PS2's name the R5900)
 const ELF_TYPE_PSP_PRX = 0xffa0, ELF_MACH_BITS = 0x00ff0000, ELF_MACH_ALLEGREX = 0x00a20000;
 
+/* A V.Flash game's file (consoles/vflash/disc.is_vflash): BOOT.BIN (the vboot loader, then FA), a VFF program, or a
+   disc image whose root folder holds 0SYSTEM and 0ID_<product>. */
+function isVflash(head, text) {
+  if (text(0, 4) === "BOOT" && text(0xc014, 0xc018) === "vfF0") return true;
+  if (text(0, 4) === "vfF0" || text(0, 4) === "vfD0") return true;
+  const disc = text(0x8001, 0x8006) === "CD001" || text(0x9311, 0x9316) === "CD001" || text(0x9319, 0x931e) === "CD001";
+  const has = (s) => {  // (bytes, searched in place: 64 KiB is too many arguments for String.fromCharCode)
+    outer: for (let i = 0; i + s.length <= head.length; i++) {
+      for (let j = 0; j < s.length; j++) if (head[i + j] !== s.charCodeAt(j)) continue outer;
+      return true;
+    }
+    return false;
+  };
+  return disc && has("\x070SYSTEM") && has("0ID_");
+}
+
 function identifyHead(head, file) {
   const dv = new DataView(head.buffer);
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
@@ -200,6 +220,7 @@ function identifyHead(head, file) {
   const stem = file.name.replace(/\.[^.]*$/, "");
   const base = { title: stem, size: file.size };
   const pe = text(0, 2) === "MZ" && head.length >= 0x40 ? dv.getUint32(0x3c, true) : 0;
+  if (isVflash(head, text)) return { ...base, platform: "vflash", order: text(0, 4) === "BOOT" ? "BOOT.BIN (firmware)" : text(0, 2) === "vf" ? "game program (VFF)" : "disc image" };
   if (isNds(head, dv)) return { ...base, platform: "nds", order: "DS ROM", code: ascii(12, 16), title: ascii(0, 12) || stem, entry: dv.getUint32(0x24, true) };
   if (pe && pe + 0x1a <= head.length && text(pe, pe + 4) === "PE\0\0" && dv.getUint16(pe + 4, true) === 0x14c && dv.getUint16(pe + 24, true) === 0x10b)
     return { ...base, platform: "win32", order: "Windows program (.exe)", entry: dv.getUint32(pe + 52, true) + dv.getUint32(pe + 40, true), pack: pcPack(head, pe) };
@@ -263,7 +284,7 @@ const TRY_AND_TELL = `This version is new, so <a href="https://github.com/n-deli
 const NOT_A_GAME = "That isn't a game file decompdecomp can start from scratch (yet). For other platforms, continue a public decomp.";
 
 async function pickFile(file, extras = []) {
-  const head = new Uint8Array(await file.slice(0, 0x9400).arrayBuffer());
+  const head = new Uint8Array(await file.slice(0, 0x10000).arrayBuffer());  // (a V.Flash BOOT.BIN's FA is at 0xC014)
   let info = identifyHead(head, file), buf = file;
   if (!info) {
     const why = notSupported(head, file);
@@ -328,6 +349,12 @@ function setupCompilers(info) {
   const shown = p === "gcwii" ? [consoleOf("gc"), consoleOf("wii")].filter(Boolean) : [con];
   select.innerHTML = shown.map((c) => `<optgroup label="${esc(c.name)}">${c.compilers.map((v) => `<option value="${esc(v.id)}" ${v.id === c.default_compiler && (p !== "gcwii" || c.id === "gc") ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</optgroup>`).join("")
     + (con.default_compiler ? "" : `<option value="" selected>Let decompdecomp pick (from the program itself)</option>`);
+  const free = FREE_PACK[con.packs?.[0]];
+  if (free) {  // nothing proprietary to accept
+    note.hidden = false;
+    note.textContent = free;
+    return;
+  }
   const pack = packOf(info);
   note.hidden = false;
   note.textContent = CW_PACK[pack].note;

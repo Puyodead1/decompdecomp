@@ -778,6 +778,20 @@ description = "Every CodeWarrior version DS games were built with (1.2, 2.0, DSi
 url = "https://github.com/decompme/compilers/releases/download/compilers/mwccarm.zip"
 sha256 = "dc386e37b2176e960954a733de928337d9b7e7620b9e94228008c31774339ace"
 
+["gcc-3.2.3-arm-elf"]
+name = "GCC 3.2.3 for ARM (arm-elf) + binutils 2.14"
+kind = "compiler-pack"
+platform = "V.Flash"
+arch = "arm"
+license = "GPL-2.0"
+source = "Puyodead1/decompdecomp release toolchain-gcc-3.2.3-arm-elf-r1 (built from the GNU sources, which the release has)"
+description = "The compiler V.Flash games were built with: GCC 3.2.3 for ARM (C and C++) and binutils 2.14, static 32-bit programs; a 2 MB download."
+[["gcc-3.2.3-arm-elf".parts]]
+url = "https://github.com/Puyodead1/decompdecomp/releases/download/toolchain-gcc-3.2.3-arm-elf-r1/gcc-3.2.3-arm-elf-linux-i386.tar.xz"
+sha256 = "eeaffe5a4a9c011432ef8aa42ad93633dfabcc99d861095abda1c0daab7b50bf"
+subdir = "gcc-3.2.3-arm-elf"
+platforms = ["linux-x86_64", "wsl-x86_64"]  # static i386 programs: no runtime-i386 needed
+
 [dsd]
 name = "ds-decomp (dsd)"
 kind = "tool"
