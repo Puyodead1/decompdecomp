@@ -84,7 +84,10 @@ Where to start on a gap:
   the ones nothing calls, and cuts them into ELF objects as GCC 3.2.3 and binutils 2.14 write them, one section per
   function; GCC 3.2.3 for ARM (pinned on the fork, free) builds `src/`, with flags file by file. On a real game's
   firmware, zlib 1.2.3's 42 functions and 8 C++ constructors and destructors built from their sources match
-  byte for byte.
+  byte for byte. The libraries the firmware was built from (zlib 1.2.3, Tremor, newlib's maths library, pinned as
+  source) are recognised at import: each library file the game has becomes a source file holding its own source,
+  its functions named (141 match from the first build on a real firmware). m2c drafts each function from its
+  assembly (made when it's asked for), so autopilot matches too (163 of a firmware's 300 smallest).
 - **Real names on Windows PC.** rename_symbol names a PC game's function or data: `config/<version>/names.json`
   holds each real name by address, `tools/names.py` pairs what C++ compiles it to (mangled, a method) with the
   original's symbol, whose decoration it keeps (`_func_0041B470@8` becomes `_Town_Update@8`), and `tools/delink.py`
