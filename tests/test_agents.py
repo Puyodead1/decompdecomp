@@ -756,3 +756,33 @@ def test_an_api_helper_asks_its_model_for_the_effort_it_was_given(tmp_path, monk
         s.stop = Quick()
         m._run(s)
         assert sent[-1].get("reasoning_effort") == effort  # none at all without one: the model's default
+
+
+def test_opencode_titles_its_sessions_with_the_helpers_own_model(tmp_path, monkeypatch):
+    """opencode titles each session with its "small model", OpenCode Zen's paid nano one by default: a free-only
+    account saw it called by every helper ("Insufficient account funds"). The helper's own model does it, without
+    its effort."""
+    monkeypatch.setattr(kinds.get("opencode"), "config_model", lambda: None)
+    monkeypatch.setitem(kinds.known_versions, "opencode", (0, "1.19.3"))
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "opencode/deepseek-v4.1-flash-free#high"})
+    work = tmp_path / "oc"
+    work.mkdir()
+    m._command(s, "tok", work)
+    assert json.loads((work / "opencode.json").read_text())["small_model"] == "opencode/deepseek-v4.1-flash-free"
+
+
+def test_a_cli_that_retries_a_usage_limit_is_stopped_and_the_helper_waits(tmp_path, monkeypatch):
+    """OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence (a helper's session
+    hung until it counted as a failure). Its log saying the limit ends the session, as a usage limit."""
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "opencode/x-free"})
+    s.stop = threading.Event()
+    line = ('timestamp=2026-10-24T07:14:11Z level=ERROR message="stream error" error.error="AI_APICallError: Free usage '
+            'limit reached. Subscribe to OpenCode Go to keep going"')
+    script = f"import sys, time\nsys.stdin.read()\nprint({line!r}, file=sys.stderr, flush=True)\ntime.sleep(60)\n"
+    monkeypatch.setattr(m, "_command", lambda s, token, workdir: ([sys.executable, "-c", script], dict(os.environ), ""))
+    monkeypatch.setattr(m, "_save", lambda s: None)
+    began = time.time()
+    m._run_cli(s, "tok", tmp_path)
+    assert s.limited and time.time() - began < 30
