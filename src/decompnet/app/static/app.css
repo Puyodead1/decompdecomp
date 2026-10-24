@@ -1131,3 +1131,8 @@ details.more[open] > summary::before { content: "− "; }
 .account-item span { display: block; color: var(--muted); font-size: 12px; }
 .account-link { background: none; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; cursor: pointer; color: inherit; }
 .account-link:hover b { text-decoration: underline; }
+
+
+/* A list of things to tick (a V.Flash game's modules): as many columns as fit, scrolling when long */
+.checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 4px 12px; margin: 8px 0;
+  max-height: 240px; overflow: auto; }

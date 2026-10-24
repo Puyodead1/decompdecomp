@@ -116,18 +116,30 @@ def constructors(img: disc.Image) -> set[int]:
     return out
 
 
-def analyse(game: disc.Game, found: dict[str, list[dict]]) -> dict[str, list[analysis.Function]]:
-    """Every program's functions, by program name (FA first: the modules' calls name FA's functions)."""
+def analyse(fa: disc.Image, modules: list[disc.Image], found: dict[str, list[dict]],
+            fa_names: dict[int, str] | None = None) -> dict[str, list[analysis.Function]]:
+    """Every program's functions, by program name: FA's first (the modules' calls name FA's functions), unless
+    `fa_names` gives them (FA's functions by address, a project's: modules added to it later)."""
     out: dict[str, list[analysis.Function]] = {}
-    fa = game.fa
-    fa_fns = analysis.analyse("FA", fa.regions, {r["entry"] for r in found.get("FA.elf", [])},
-                              {fa.entry} | constructors(fa), fa.contains)
-    out["FA"] = fa_fns
-    fa_names = {f.addr: f.name for f in fa_fns}
-    for m in game.modules:
+    if fa_names is None:
+        out["FA"] = analysis.analyse("FA", fa.regions, {r["entry"] for r in found.get("FA.elf", [])},
+                                     {fa.entry} | constructors(fa), fa.contains)
+        fa_names = {f.addr: f.name for f in out["FA"]}
+    for m in modules:
         out[m.name] = analysis.analyse(m.name, m.regions, {r["entry"] for r in found.get(f"{m.name}.elf", [])},
                                        {m.entry} | constructors(m), m.contains, fa_names, fa.contains)
     return out
+
+
+def image_of(elf: bytes, name: str) -> disc.Image:
+    """A program as the project keeps it (orig/<version>/<name>.elf) read back: its regions' bytes, one after the
+    other, are the VFF executable it was made from."""
+    count = struct.unpack_from("<H", elf, 44)[0]
+    vff = bytearray()
+    for i in range(count):
+        _, off, _, _, filesz, _, _, _ = struct.unpack_from("<8I", elf, 52 + 32 * i)
+        vff += elf[off:off + filesz]
+    return disc.parse_vff(bytes(vff), name, f"{name}.elf")
 
 
 def units(program: str, functions: list[analysis.Function]) -> dict[str, list[analysis.Function]]:
@@ -211,8 +223,8 @@ def _run(cmd: list[str], root: Path, what: str, log) -> None:
         raise ForkError(f"{what} failed:\n{tail[-ERROR_TAIL:]}")
 
 
-def _ghidra(game: disc.Game, log) -> dict[str, list[dict]]:
-    """Where Ghidra's analysis says functions start, in every program of the game ("FA.elf", "GZ1A.elf")."""
+def _ghidra(images: list[disc.Image], log) -> dict[str, list[dict]]:
+    """Where Ghidra's analysis says functions start, in each of these programs ("FA.elf", "GZ1A.elf")."""
     from ...forks import ghidra
 
     if not ghidra.available():
@@ -224,14 +236,14 @@ def _ghidra(game: disc.Game, log) -> dict[str, list[dict]]:
             toolchains.ensure("ghidra", log=log)
     with tempfile.TemporaryDirectory(prefix="decomp-vflash-") as tmp:
         paths = []
-        for img in game.images():
+        for img in images:
             p = Path(tmp) / f"{img.name}.elf"
             p.write_bytes(img.to_elf())
             paths.append(p)
         return ghidra.functions_of(paths)
 
 
-def _libraries(game: disc.Game, programs: dict[str, list[analysis.Function]], log) -> dict:
+def _libraries(images: list[disc.Image], programs: dict[str, list[analysis.Function]], log) -> dict:
     """The library source files each program has (libraries.py): {program: (units, the rest, names)}."""
     try:
         toolchains.ensure(libraries.PACK, log=log)
@@ -240,7 +252,7 @@ def _libraries(game: disc.Game, programs: dict[str, list[analysis.Function]], lo
         return {}
     compiled = libraries.compile_all(toolchains.path(TOOLCHAIN), log=log)
     out = {}
-    for img in game.images():
+    for img in images:
         found = libraries.find(compiled, programs[img.name], img.read)
         if found:
             out[img.name] = libraries.units(img.name, programs[img.name], found)
@@ -250,31 +262,13 @@ def _libraries(game: disc.Game, programs: dict[str, list[analysis.Function]], lo
     return out
 
 
-def create(root: Path, game_path: Path, *, compiler: str | None = None, log=print) -> dict:
-    """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
-    info = game_info(game_path)
-    game = _load(game_path)
-    version = info["id"]
-    for note in game.notes:
-        log(f"note: {note}")
-    args = tool_args()
-    log(f"analysing FA and {len(game.modules)} game modules with Ghidra (finds where functions start; a whole game "
-        "takes about ten minutes)")
-    found = _ghidra(game, log)
-    programs = analyse(game, found)
-    log(", ".join(f"{p} {len(fns)}" for p, fns in programs.items()) + " functions")
-    seeded = _libraries(game, programs, log)
-
-    shutil.copytree(TEMPLATE, root, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy(Path(disc.__file__), root / "tools" / "vflash.py")
-    orig = root / "orig" / version
-    orig.mkdir(parents=True)
-    described, groups, real, flags, used = {}, {}, {}, {}, set()
-    for img in game.images():
-        data = img.to_elf()
-        (orig / f"{img.name}.elf").write_bytes(data)
-        described[img.name] = {"elf": f"orig/{version}/{img.name}.elf", "sha1": hashlib.sha1(data).hexdigest(),
-                               "build": img.build, "source": img.source}
+def _lay_out(root: Path, version: str, images: list[disc.Image], programs: dict[str, list[analysis.Function]],
+             seeded: dict, used: set[str]) -> tuple[dict, dict, dict]:
+    """These programs' source files ({unit: functions.json's rows}), with the libraries' (written to src/) and their
+    functions' real names ({name by address: name}, none a name in `used`, which gets them) and flags; and a source
+    file for agents to write into for each of the others."""
+    groups, real, flags = {}, {}, {}
+    for img in images:
         spans = elf_offsets(img)
         lib_units, rest, names = seeded.get(img.name, ({}, programs[img.name], {}))
         for addr, name in sorted(names.items()):  # (a name the game has already, another module's copy: by address)
@@ -286,24 +280,63 @@ def create(root: Path, game_path: Path, *, compiler: str | None = None, log=prin
         for u, fns in [*((u, fns) for u, (_, fns) in lib_units.items()), *units(img.name, rest).items()]:
             groups[u] = [{"name": f.name, "addr": f.addr, "offset": file_offset(spans, f.addr), "size": f.size,
                           "relocs": [list(r) for r in f.relocs]} for f in fns]
-    (root / "include").mkdir(exist_ok=True)  # (include/newlib/ may be there: libraries.write_sources)
+            if u in lib_units:  # (a library's own source file, written already)
+                continue
+            src = root / "src" / f"{u}.cpp"
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"/* {len(fns)} function{'s' if len(fns) != 1 else ''} of {img.name} from "
+                           f"0x{fns[0].addr:08X} to 0x{fns[-1].addr + fns[-1].size:08X}. */\n#include \"common.h\"\n",
+                           encoding="utf-8")
+    return groups, real, flags
+
+
+def _described(version: str, img: disc.Image, data: bytes) -> dict:
+    return {"elf": f"orig/{version}/{img.name}.elf", "sha1": hashlib.sha1(data).hexdigest(), "build": img.build,
+            "source": img.source}
+
+
+def create(root: Path, game_path: Path, *, compiler: str | None = None, parts: list[str] | None = None,
+           log=print) -> dict:
+    """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game.
+    `parts`: the game modules to analyse (None: all of them); the others' programs are kept, for add_modules."""
+    info = game_info(game_path)
+    game = _load(game_path)
+    version = info["id"]
+    for note in game.notes:
+        log(f"note: {note}")
+    chosen = [m for m in game.modules if parts is None or m.name in parts]
+    if parts is not None and (unknown := set(parts) - {m.name for m in game.modules}):
+        raise ForkError(f"the game has no module {', '.join(sorted(unknown))}: its modules are "
+                        f"{', '.join(m.name for m in game.modules)}")
+    args = tool_args()
+    log(f"analysing FA and {len(chosen)} of the game's {len(game.modules)} modules with Ghidra (finds where functions "
+        "start; a whole game takes about ten minutes)")
+    images = [game.fa, *chosen]
+    found = _ghidra(images, log)
+    programs = analyse(game.fa, chosen, found)
+    log(", ".join(f"{p} {len(fns)}" for p, fns in programs.items()) + " functions")
+    seeded = _libraries(images, programs, log)
+
+    shutil.copytree(TEMPLATE, root, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy(Path(disc.__file__), root / "tools" / "vflash.py")
+    orig = root / "orig" / version
+    orig.mkdir(parents=True)
+    described, left = {}, {}
+    for img in game.images():  # (every module's program: the ones not analysed yet can be, without the disc)
+        data = img.to_elf()
+        (orig / f"{img.name}.elf").write_bytes(data)
+        (described if img is game.fa or img in chosen else left)[img.name] = _described(version, img, data)
+    (root / "include").mkdir()
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
+    groups, real, flags = _lay_out(root, version, images, programs, seeded, set())
     conf = root / "config" / version
     conf.mkdir(parents=True)
-    (conf / "functions.json").write_text(json.dumps({"sha1": info["sha1"], "programs": described, "units": groups},
-                                                    indent=1), encoding="utf-8")
+    (conf / "functions.json").write_text(json.dumps({"sha1": info["sha1"], "programs": described, "unanalysed": left,
+                                                     "units": groups}, indent=1), encoding="utf-8")
     if real:
         (conf / "names.json").write_text(json.dumps(dict(sorted(real.items())), indent=1) + "\n", encoding="utf-8")
     if flags:
         (conf / "flags.json").write_text(json.dumps(flags, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    for u, fns in groups.items():
-        if "/lib/" in u:  # (a library's own source file, written already)
-            continue
-        src = root / "src" / f"{u}.cpp"
-        src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text(f"/* {len(fns)} function{'s' if len(fns) != 1 else ''} of {u.split('/')[0]} from "
-                       f"0x{fns[0]['addr']:08X} to 0x{fns[-1]['addr'] + fns[-1]['size']:08X}. */\n#include \"common.h\"\n",
-                       encoding="utf-8")
     log(f"{len(groups)} source files for agents to write into")
 
     for cmd in ([sys.executable, "tools/configure.py", version, *args], ["ninja", "prepare"]):
@@ -344,6 +377,63 @@ and relocations.
             subprocess.run(cmd, cwd=root, capture_output=True, creationflags=NO_WINDOW)
     return {"platform": "vflash", "id": version, "title": info["title"], "compiler": TOOLCHAIN, "sources": len(groups),
             "sha1": info["sha1"]}
+
+
+def parts_of(path: Path) -> list[dict]:
+    """The game's modules, for the import to choose among: [{"name", "bytes"}] (FA is always analysed)."""
+    return [{"name": m.name, "bytes": sum(len(d) for _, d in m.regions)} for m in _load(path).modules]
+
+
+def game_parts(root: Path, version: str) -> list[dict]:
+    """The project's modules, analysed or not: [{"name", "analysed", "functions", "bytes"}] (FA isn't one)."""
+    info = _info(root, version)
+    count: dict[str, int] = {}
+    for u, fns in info["units"].items():
+        count[u.split("/", 1)[0]] = count.get(u.split("/", 1)[0], 0) + len(fns)
+    out = []
+    for name, p in [*info["programs"].items(), *info.get("unanalysed", {}).items()]:
+        if name == "FA":
+            continue
+        try:
+            size = (root / p["elf"]).stat().st_size
+        except OSError:
+            size = 0
+        out.append({"name": name, "analysed": name in info["programs"], "functions": count.get(name, 0),
+                    "bytes": size})
+    return sorted(out, key=lambda x: x["name"])
+
+
+def add_modules(root: Path, version: str, names: list[str], log=print) -> str | None:
+    """Analyse game modules the import left out (their programs are in orig/<version>/ already): their functions,
+    library code and source files join the project's, every function it has kept as it was. Returns what changed,
+    as a sentence (None: nothing to add)."""
+    conf = root / "config" / version
+    info = json.loads((conf / "functions.json").read_text(encoding="utf-8"))
+    left = info.get("unanalysed", {})
+    wanted = [n for n in names if n in left]
+    if not wanted:
+        return None
+    fa = image_of((root / info["programs"]["FA"]["elf"]).read_bytes(), "FA")
+    modules = [image_of((root / left[n]["elf"]).read_bytes(), n) for n in wanted]
+    fa_names = {f["addr"]: f["name"] for u, fns in info["units"].items() if u.startswith("FA/") for f in fns}
+    log(f"analysing {', '.join(wanted)} with Ghidra (finds where functions start; a minute or two a module)")
+    found = _ghidra(modules, log)
+    programs = analyse(fa, modules, found, fa_names)
+    seeded = _libraries(modules, programs, log)
+    names_path, flags_path = conf / "names.json", conf / "flags.json"
+    real = json.loads(names_path.read_text(encoding="utf-8")) if names_path.exists() else {}
+    flags = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else {}
+    groups, new_real, new_flags = _lay_out(root, version, modules, programs, seeded, set(real.values()))
+    for n in wanted:
+        info["programs"][n] = left.pop(n)
+    info["units"].update(groups)
+    (conf / "functions.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
+    if new_real:
+        names_path.write_text(json.dumps(dict(sorted({**real, **new_real}.items())), indent=1) + "\n", encoding="utf-8")
+    if new_flags:
+        flags_path.write_text(json.dumps({**flags, **new_flags}, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    n = sum(len(fns) for fns in programs.values())
+    return f"the game modules {', '.join(wanted)}: {n} functions in {len(groups)} new source files"
 
 
 # ---------------------------------------------------------------------------------------------------- flags, file by file
