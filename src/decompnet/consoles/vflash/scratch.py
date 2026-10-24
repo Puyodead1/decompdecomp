@@ -174,6 +174,24 @@ def file_offset(spans: list[tuple[int, int, int]], addr: int) -> int:
 # ---------------------------------------------------------------------------------------------------- the project
 
 
+def check_rebuild(root: Path, version: str, log=print) -> dict:
+    """Build the project and rebuild every program from it in place (tools/rebuild.py --check): {"identical",
+    "detail"}. Decompiling doesn't depend on it: a rebuild that isn't identical yet is reported, not fatal."""
+    fp = ForkProject(root)
+    ok, tail = fp.run(["ninja", "prepare"], log=lambda *_: None, timeout=TOOL_SECONDS)
+    if ok:
+        ok, tail = fp.run([sys.executable, "tools/rebuild.py", version, "--check"], log=lambda *_: None,
+                          timeout=TOOL_SECONDS)
+    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    if ok:
+        log("the rebuilt programs are your copy's, byte for byte")
+        return {"identical": True, "detail": "identical"}
+    detail = "; ".join(ln for ln in lines if "differs" in ln or "failed" in ln) or (lines or ["the build failed"])[-1]
+    log(f"note: the rebuild isn't your copy byte for byte yet ({detail[-300:]}). Decompiling works anyway: every "
+        "function is compared with your copy's own code.")
+    return {"identical": False, "detail": detail[-ERROR_TAIL:]}
+
+
 def tool_args() -> list[str]:
     """configure.py arguments pointing at decompdecomp's pinned GCC (free software: installed when it's needed)."""
     if sys.platform == "win32":  # (its compiler is a Linux program: the build would need WSL's paths throughout)
@@ -326,6 +344,8 @@ def create(root: Path, game_path: Path, *, compiler: str | None = None, parts: l
         data = img.to_elf()
         (orig / f"{img.name}.elf").write_bytes(data)
         (described if img is game.fa or img in chosen else left)[img.name] = _described(version, img, data)
+    if game.boot_head:  # (the loader before FA in BOOT.BIN: what tools/rebuild.py's BOOT.BIN starts with)
+        (orig / "BOOT.HEAD").write_bytes(game.boot_head)
     (root / "include").mkdir()
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     groups, real, flags = _lay_out(root, version, images, programs, seeded, set())
@@ -364,6 +384,9 @@ to, function by function, with objdiff.
 2. `python tools/configure.py {version} --gcc <GCC 3.2.3 for ARM's folder>`, then `ninja`.
 3. Decompiled code goes in `src/` (`src/FA/` for the firmware, `src/<module>/` for each game module); `objdiff.json`
    shows each function's progress in [objdiff](https://github.com/encounter/objdiff).
+4. `ninja rebuild` rebuilds the game's programs from what matches, in place, and compares them with your copy
+   (build/{version}/rebuilt/: FA.VFF, each module's, BOOT.BIN); `python tools/rebuild.py {version} --all` takes every
+   function `src/` compiles (a mod).
 
 Compiler: GCC 3.2.3 for ARM (arm-elf) with binutils 2.14; `GCC_FLAGS` in tools/configure.py are what most of the
 game was built with, and `config/{version}/flags.json` holds the flags of files built otherwise (the maths library

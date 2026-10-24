@@ -7,7 +7,8 @@ share addresses.
   project gets a copy as tools/vflash.py.
 - analysis.py: each function's extent and relocations, from where Ghidra says functions start.
 - scratch.py: the project: Ghidra finds where the functions start, decompdecomp cuts each one out of its program
-  into an ELF object (the target objdiff compares with), and GCC 3.2.3 builds src/.
+  into an ELF object (the target objdiff compares with), and GCC 3.2.3 builds src/; its tools/rebuild.py rebuilds
+  the programs in place from what matches (the rebuild check).
 - project_template/: what that project starts as (tools/configure.py writes its ninja build).
 - guides/vflash.md: what agents read about matching GCC 3.2.3's ARM code.
 
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import BETA, HEAD_BYTES, PROJECT, Compiler, Console
+from .. import BETA, HEAD_BYTES, PROJECT, REBUILD_CHECK, Compiler, Console
 
 TOOLCHAIN = "gcc-3.2.3-arm-elf"
 
@@ -40,6 +41,7 @@ class VFlash(Console):
     ram = (0x10000000, 0x11000000)  # the console's 16 MB of RAM, where FA and the modules are loaded
     demo = "demo-vflash"
     demo_tools = (TOOLCHAIN, "objdiff-cli", "ghidra", "java")
+    own_features = frozenset({REBUILD_CHECK})  # (in place: every function at its address, tools/rebuild.py)
     chooses_parts = True  # (its game modules: a game's repeat their engine's code, and each takes Ghidra a minute)
 
     def sniff(self, head: bytes, file) -> bool:
@@ -122,6 +124,11 @@ class VFlash(Console):
             return
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
+
+    def check_rebuild(self, fp, version: str, log=print) -> dict:
+        from . import scratch
+
+        return scratch.check_rebuild(Path(fp.root), version, log=log)
 
     def asm_reason(self, code: bytes) -> str | None:
         from ...arch import arm
