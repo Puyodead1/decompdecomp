@@ -70,16 +70,19 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
 
 
 def add_m2c_macros(header: Path) -> bool:
-    """The macros compilable drafts use (M2C_FIELD, M2C_UNK...), added to a from-scratch project's common header.
-    False when they're there already."""
+    """The macros compilable drafts use (M2C_FIELD, M2C_UNK...), added to a from-scratch project's common header,
+    with any of seeds.M2C_LATER it lacks. False when it has them all already."""
     try:
         text = header.read_text(encoding="utf-8")
     except OSError:
         return False
-    if "M2C_DEFINES" in text:
+    missing = [d for name, d in seeds.M2C_LATER.items() if not re.search(rf"\b{name}\b", text)]
+    if "M2C_DEFINES" in text and not missing:
         return False
-    block = "\n/* What machine drafts (m2c) use for what they can't tell yet: autopilot tries them as they are. */\n" \
-            + seeds.M2C_MACROS
+    block = "" if "M2C_DEFINES" in text else \
+        "\n/* What machine drafts (m2c) use for what they can't tell yet: autopilot tries them as they are. */\n" \
+        + seeds.M2C_MACROS
+    block += "".join(f"#ifndef {d.split()[1].split('(')[0]}\n{d}\n#endif\n" for d in missing)
     end = text.rstrip().rfind("#endif")
     text = text[:end] + block + "\n" + text[end:] if end >= 0 else text.rstrip("\n") + "\n" + block
     header.write_text(text, encoding="utf-8")
@@ -89,12 +92,28 @@ def add_m2c_macros(header: Path) -> bool:
 _DECL = re.compile(r"^[A-Za-z_][^;{}=]*;\s*(?:/\*.*\*/)?$")  # a declaration: no body, no initializer
 
 
+def file_scope(text: str) -> str:
+    """A source file without what's inside its braces: what it declares for every function (a draft's declarations
+    went inside its own function, where the next draft in the file didn't see them: autopilot's drafts on a V.Flash
+    game failed by the thousand, "`D_10BDD31C' used prior to declaration")."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
 def self_contained(text: str, span: tuple[int, int], file_text: str = "") -> str:
     """One function out of an m2c draft, as a definition that compiles on its own in its file: what m2c declares
     outside it (the globals and functions it uses) goes inside, at the top of its body, where C and C++ allow
     declarations too. Data m2c would define (`static`) is only declared. Names the file declares already (with
     their real types, often) are left to it."""
     code = text[span[0]:span[1]]
+    outside = file_scope(file_text)  # (a declaration in another function's body doesn't reach this one)
     decls = []
     for line in (text[:span[0]] + "\n" + text[span[1]:]).splitlines():
         line = line.strip()
@@ -103,7 +122,7 @@ def self_contained(text: str, span: tuple[int, int], file_text: str = "") -> str
         line = re.sub(r"/\*.*\*/\s*$", "", line).strip()
         line = re.sub(r"^static\s+", "extern ", line)
         name = re.search(r"(\w+)\s*(?:\(|\[|;)", line)
-        if name and file_text and re.search(rf"\b{re.escape(name.group(1))}\b", file_text):
+        if name and outside and re.search(rf"\b{re.escape(name.group(1))}\b", outside):
             continue
         if "(" in line or line.startswith("extern "):
             decls.append(line)
