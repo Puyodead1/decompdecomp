@@ -252,6 +252,7 @@ game's code is its rights holder's: keep it to yourself.
 | Windows PC games | Beta |
 | Nintendo DS | Beta |
 | Game Boy Advance | Beta |
+| V.Flash | Beta (Linux) |
 | 3DS, Switch, Xbox, Xbox 360 | Community decomps only |
 
 1.0.3 rewrote most of the app, so every platform needs testing again, Nintendo 64 too. Try it on a game you own and
