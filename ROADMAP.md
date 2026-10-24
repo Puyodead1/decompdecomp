@@ -45,7 +45,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Real names for the game's symbols (`rename_symbol`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | dtk and ds-decomp projects |
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | — | — | — | — | — |
-| Rebuildable export | ✓ | ✓ | ✓ | the project | — | the project | — | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | the project | — | the project | in place (`ninja rebuild`) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Rooms: decompile together | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
@@ -59,8 +59,10 @@ Where to start on a gap:
 - **Struct layouts** read MIPS loads and stores (`arch/mips_fields.py`); another processor adds its reader as its
   `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's fifth to eighth arguments
   (t0-t3), and a pointer into the middle of a struct handed to a callee (`&this->pos`).
-- **V.Flash**: the export needs a linker
-  story (FA and each module relinked at their addresses). A game's modules repeat their engine's code: twins match
+- **V.Flash**: a project rebuilds its programs in place (`tools/rebuild.py`: every function at its address, matched
+  code linked by name) and checks them against the user's copy; a full relink, where changed code may grow and the
+  rest move, needs the game's data delinked too (its pointers found), and a rebuilt disc image (the files are VFFs and
+  BOOT.BIN for now). A game's modules repeat their engine's code: twins match
   each copy once one is, but progress counts every copy; counting the shared code once is still to do. On Windows its compiler (a Linux program) would
   run through WSL, as PS2's do; a V.Flash project builds on Linux only for now.
 - **Twins across games** and **restoring a save** work on ROM projects (`app/twins.py`, `app/saves.py`). In project
