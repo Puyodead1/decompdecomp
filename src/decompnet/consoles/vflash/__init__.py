@@ -36,8 +36,7 @@ class VFlash(Console):
              ("ghidra", "finds where a V.Flash game's functions start (540 MB, needs Java 21+)"))
     guides = ("arm", "vflash")
     compiler_guide = "vflash"
-    # no m2c: it reads assembly files, and these projects cut the original into objects (drafts come from Ghidra,
-    # forkengine._draft; ROADMAP.md)
+    m2c = "arm-gcc"  # (from each function's assembly, made when it's asked for: function_asm)
     ram = (0x10000000, 0x11000000)  # the console's 16 MB of RAM, where FA and the modules are loaded
     demo = "demo-vflash"
     demo_tools = (TOOLCHAIN, "objdiff-cli", "ghidra", "java")
@@ -111,6 +110,11 @@ class VFlash(Console):
         from . import scratch
 
         return scratch.rename(fp.root, version, old, new)
+
+    def function_asm(self, root: Path, unit: str, symbol: str) -> str | None:
+        from . import scratch
+
+        return scratch.function_asm(Path(root), unit, symbol)
 
     def file_flags(self, fp, source: str) -> tuple[str, list[str]] | None:
         from . import scratch
