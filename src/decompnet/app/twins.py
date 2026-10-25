@@ -91,7 +91,9 @@ def coff_prints(data: bytes) -> dict[str, Print]:
             continue
         code = bytearray(raw)
         _mask(code, [(off, kind) for off, kind, *_ in relocs], "x86", "little")
-        refs = [f"$L+{value:X}" if section else coffobj.c_name(name) for _, _, name, section, value in relocs]
+        # (a label, $L<address>, by its place; a function of the same file, which a call names as it is, by its name)
+        refs = [f"$L+{value:X}" if section and name.startswith("$L") else coffobj.c_name(name)
+                for _, _, name, section, value in relocs]
         out[owner] = Print(_key(bytes(code), [(off, kind) for off, kind, *_ in relocs]), refs, len(raw),
                            name=coffobj.c_name(owner))
     return out
