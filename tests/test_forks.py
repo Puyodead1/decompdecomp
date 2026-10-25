@@ -639,6 +639,12 @@ def test_arms_pc_bias_isnt_shown_as_an_offset():
     assert objdiff._fmt(row("bl func_02001000-0x4", "R_ARM_THM_CALL", "-4")) == "bl func_02001000"
     assert objdiff._fmt(row("bl func_0203aca8-0x10", "R_ARM_PC24", "-16")) == "bl func_0203aca8-0x10"  # a real one
     assert objdiff._fmt(row("lui at, %hi(x-0x8)", "R_MIPS_HI16", "-8")) == "lui at, %hi(x-0x8)"
+    # a branch to the function's own label, against its section (V.Flash): where it lands, not "$a+0x20"
+    side = {"symbols": [{"name": "[.text.f]", "kind": "SYMBOL_SECTION"}, {"name": "$a"}, {"name": "f", "kind": "SYMBOL_FUNCTION"}]}
+    local = row("bne $a+0x20", "R_ARM_PC24", "32")
+    for target, shown in ((0, "bne ->0x28"), (1, "bne ->0x28"), (2, "bne $a+0x20")):
+        local["instruction"]["relocation"]["target_symbol"] = target
+        assert objdiff._fmt(local, side) == shown
 
 
 @needs_tools

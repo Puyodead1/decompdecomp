@@ -185,7 +185,7 @@ PC_BIAS = {"R_ARM_PC24": -8, "R_ARM_CALL": -8, "R_ARM_JUMP24": -8, "R_ARM_THM_CA
            "R_ARM_THM_JUMP24": -4}
 
 
-def _fmt(row: dict) -> str:
+def _fmt(row: dict, side: dict | None = None) -> str:
     ins = row.get("instruction")
     if not ins:
         return ""
@@ -193,7 +193,25 @@ def _fmt(row: dict) -> str:
     bias = PC_BIAS.get(rel.get("type_name") or "")
     if bias is not None and str(rel.get("addend")) == str(bias):
         text = text.removesuffix(f"-0x{-bias:x}")
+    elif bias is not None and _local(side, rel):
+        # a branch to a label of its own function (one section each, as V.Flash's GCC makes them) is against its
+        # section: "bne $a+0x20", which a model read as a branch out of the function. Where it lands, as objdiff
+        # writes a pool load's ("(->0x30)")
+        try:
+            text = f"{text.split(None, 1)[0]} ->0x{int(str(rel.get('addend')), 0) - bias:x}"
+        except ValueError:
+            pass
     return text
+
+
+def _local(side: dict | None, rel: dict) -> bool:
+    """A relocation against the section itself or one of its mapping symbols ($a, $d), not a function's name."""
+    syms = (side or {}).get("symbols", [])
+    idx = int(rel.get("target_symbol") or 0)
+    if not 0 <= idx < len(syms):
+        return False
+    s = syms[idx]
+    return s.get("kind") == "SYMBOL_SECTION" or (s.get("name") or "") in ("", "$a", "$d")
 
 
 def _option(value) -> str:
@@ -252,7 +270,7 @@ def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, 
         lr = lrows[k] if k < len(lrows) else {}
         rr = rrows[k] if k < len(rrows) else {}
         kind = lr.get("diff_kind") or rr.get("diff_kind")
-        rows.append((KIND_MARK.get(kind, "|"), _fmt(lr), _fmt(rr)))
+        rows.append((KIND_MARK.get(kind, "|"), _fmt(lr, data.get("left")), _fmt(rr, data.get("right"))))
     pct = right.get("match_percent", left.get("match_percent")) if right else None
     if symbol is None:
         right = None
