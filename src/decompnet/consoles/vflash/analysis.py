@@ -71,7 +71,11 @@ class Flow:
     tables: set[int] = field(default_factory=set)  # words of its switches' tables of addresses
     calls: set[int] = field(default_factory=set)  # where its bl go
     out: set[int] = field(default_factory=set)  # where it branches past its limit (tail calls)
-    returns: bool = False  # a path ends in a return or a jump out (as compiled code's paths do)
+    returns: bool = False  # a path ends in a return or a jump out (as compiled code's paths do), or may: a loop
+    # whose only way out is `movgt pc, lr` is a function too (a copy loop, missed and cut at its body's first
+    # instruction, the one after it that ends in `b` back looking like a whole function)
+    spins: bool = False  # it ends in a `b` back into itself: a loop with no way out (a function that never returns,
+    # waiting for a reset: `for (;;)` around a delay)
     bad: bool = False  # it ran into what isn't code: an undefined instruction, or bytes past the program's data
     past: bool = False  # its code runs on past its limit (flow or a conditional branch): the next start is its own
 
@@ -121,6 +125,7 @@ def flow(read, start: int, limit: int, bound: int | None = None) -> Flow:
                 elif start <= target < limit and not (always and target > at and (opens_function(read, target) or
                                                                                   restores_lr(read(at - 4)))):
                     if always:
+                        f.spins |= target <= at
                         at = target
                         continue
                     todo.append(target)
@@ -135,8 +140,8 @@ def flow(read, start: int, limit: int, bound: int | None = None) -> Flow:
                 continue
             called = read(at - 4) == MOV_LR_PC  # (this instruction sets pc to call through a pointer, and returns)
             if (w & 0x0FFFFFF0) == 0x012FFF10:  # bx rm
+                f.returns |= not called
                 if always and not called:
-                    f.returns = True
                     break
                 at = nxt
                 continue
@@ -156,14 +161,15 @@ def flow(read, start: int, limit: int, bound: int | None = None) -> Flow:
                                 break
                             f.tables.add(table + 4 * k)
                             todo.append(entry)
-                    elif always and not called:
-                        f.returns = True  # (ldr pc, [sp], #4: a return; ldr pc, [rn]: a jump through a pointer)
-                        break
+                    else:
+                        f.returns |= not called  # (ldr pc, [sp], #4: a return; ldr pc, [rn]: a jump through a pointer)
+                        if always and not called:
+                            break
                 at = nxt
                 continue
             if kind == 0b100 and (w >> 20) & 1 and w & (1 << PC):  # ldm with pc: a return
+                f.returns = True
                 if always:
-                    f.returns = True
                     break
                 at = nxt
                 continue
@@ -186,9 +192,10 @@ def flow(read, start: int, limit: int, bound: int | None = None) -> Flow:
                                 not e & (1 << 24) and table + 4 * k < limit:
                             todo.append(table + 4 * k)
                             k += 1
-                    elif always and not called:
-                        f.returns = True  # (mov pc, lr: a return; mov pc, rn: a jump through a register)
-                        break
+                    else:
+                        f.returns |= not called  # (mov pc, lr: a return; mov pc, rn: a jump through a register)
+                        if always and not called:
+                            break
             at = nxt
     return f
 
@@ -204,7 +211,10 @@ class Function:
 def plausible(f: Flow) -> bool:
     """Whether code nobody's start reached reads as a compiled function: its first instruction runs always, every path
     is code that ends in a return or a jump out, and it doesn't run on into what follows."""
-    return bool(f.code) and f.returns and not f.bad and not f.past and f.start in f.code
+    if not f.code or f.bad or f.past or f.start not in f.code:
+        return False
+    # (one that never returns only if its code is all of it, start to end: data seldom reads as a closed loop)
+    return f.returns or f.spins and all(a in f.code for a in range(f.start, f.code_end, 4))
 
 
 def extents(read, region_end, starts: set[int], strong: set[int]) -> dict[int, tuple[int, Flow]]:
