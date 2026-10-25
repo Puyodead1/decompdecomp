@@ -2188,3 +2188,39 @@ def test_build_ninja_is_written_again_only_when_files_come_or_go(tmp_path):
     regen = next(line for line in ninja.replace("$\n", "").splitlines() if line.startswith("build build.ninja:"))
     assert " src/auto" in regen and " include" in regen and ".cpp" not in regen
     assert not (root / "build.ninja.tmp").exists()
+
+
+def _coff_symbols(data: bytes) -> list[tuple[str, int]]:
+    """(name, section) of each symbol of a COFF object, auxiliary records skipped."""
+    sym_at, count = struct.unpack_from("<II", data, 8)
+    strings_at, out, i = sym_at + 18 * count, [], 0
+    while i < count:
+        raw = data[sym_at + 18 * i:sym_at + 18 * i + 8]
+        if raw[:4] == b"\0\0\0\0":
+            off = strings_at + struct.unpack_from("<I", raw, 4)[0]
+            raw = data[off:data.index(b"\0", off)]
+        _, section, _, _, aux = struct.unpack_from("<IhHBB", data, sym_at + 18 * i + 8)
+        out.append((raw.rstrip(b"\0").decode(), section))
+        i += 1 + aux
+    return out
+
+
+def test_a_function_called_from_its_own_file_is_one_symbol_in_the_original_object():
+    """A PC game's function called by another of its file had a second, undefined symbol of its name in the object
+    cut from the program: objdiff paired it with that one, said it wasn't in the object, and reopened every agent's
+    match of it (2,000 times in six hours, 78 functions). The call refers to the function, as MSVC's does."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("delink", scratch_pe.TEMPLATE / "tools" / "delink.py")
+    delink = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(delink)
+    exe = bytes.fromhex("c3cccccc") + bytes.fromhex("e800000000c3")  # ret; call (the one before) ; ret
+    functions = [{"name": "_func_00401000", "addr": 0x401000, "offset": 0, "size": 1, "relocs": []},
+                 {"name": "_func_00401004", "addr": 0x401004, "offset": 4, "size": 6,
+                  "relocs": [[1, delink.REL32, "_func_00401000", -4], [1, delink.REL32, "_func_00402000", -4]]}]
+    data = delink.coff(functions, exe)
+    syms = _coff_symbols(data)
+    assert [n for n, _ in syms].count("_func_00401000") == 1
+    assert ("_func_00401000", 1) in syms and ("_func_00402000", 0) in syms  # (another file's: undefined)
+    reloc_at = struct.unpack_from("<I", data, 20 + 40 + 24)[0]  # the second section's relocations
+    assert struct.unpack_from("<IIH", data, reloc_at)[1] == 0  # the call: the first symbol, the function itself
