@@ -79,11 +79,11 @@ def test_helpers_dont_start_a_session_on_a_project_that_doesnt_build(tmp_path):
 
 def test_the_header_names_a_projects_compiler_as_its_console_does(tmp_path):
     """The page put "CodeWarrior" before every compiler id that wasn't a DS one: a PC project's header read
-    "CodeWarrior MSVC/8.0-sp1". The overview gives the console's own name for it."""
+    "CodeWarrior MSVC/8.0SP1". The overview gives the console's own name for it."""
     net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
     root = _project(tmp_path, fixes=True)
     net.forks._register("p", "P", "fork", root, {"kind": "fork", "ready": True, "platform": "pc",
-                                                  "compiler": "MSVC/8.0-sp1"}, "x")
+                                                  "compiler": "MSVC/8.0SP1"}, "x")
     assert net.forks.overview("p")["compiler_name"] == "Visual C++ 8.0 SP1"
     net.forks._register("q", "Q", "fork", root, {"kind": "fork", "ready": True, "platform": "pc"}, "x")
     assert net.forks.overview("q")["compiler_name"] is None  # (a public decomp's build names none)
