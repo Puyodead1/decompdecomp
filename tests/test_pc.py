@@ -2527,3 +2527,14 @@ def test_a_fork_projects_renamed_rows_keep_their_history_under_the_report_s_name
     rows = ["_Set@64", "@undname_heap_get_memory@16", "_ActivateMenuItem", "_func_00401000", "?f@@YAXXZ"]
     assert scratch_pe.fork_row_names(rows, names) == {"_Set@64": "_func_00404450@64",
                                                       "@undname_heap_get_memory@16": "@func_00756D20@16"}
+
+
+def test_a_project_waits_for_its_visual_cpp_before_it_is_brought_up_to_date(tmp_path, monkeypatch):
+    """Each catch-up step builds the project: without its compiler every one was taken back, and not tried again.
+    A fork's 8.0-sp1 is the msvc2005 pack's 8.0SP1."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "configure.py").write_text('MSVC_VERSION = "8.0-sp1"\n')
+    monkeypatch.setattr(toolchains, "installed", lambda tid, linux=None: None)
+    assert "2005" in scratch_pe.compiler_missing(tmp_path)
+    monkeypatch.setattr(toolchains, "installed", lambda tid, linux=None: {"id": tid})
+    assert scratch_pe.compiler_missing(tmp_path) is None

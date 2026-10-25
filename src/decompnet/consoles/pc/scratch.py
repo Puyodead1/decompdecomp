@@ -1723,6 +1723,26 @@ def write_tools(root: Path, version: str) -> list[str]:
 FORK_COMPILERS = {"8.0-sp1": "8.0SP1"}
 
 
+def compiler_missing(root: Path) -> str | None:
+    """Why the project's Visual C++ (tools/configure.py's MSVC_VERSION, a fork's name for it too) can't build here,
+    or None: its pack is installed (or the project names none decompdecomp knows)."""
+    try:
+        m = re.search(r'^MSVC_VERSION = "([^"]*)"', (root / "tools" / "configure.py").read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return None
+    if not m:
+        return None
+    version = FORK_COMPILERS.get(m.group(1), m.group(1))
+    try:
+        pack = compiler_pack(version)
+    except ForkError:
+        return None
+    if toolchains.installed(pack) is not None:
+        return None
+    return (f"its Visual C++ {version} is in the {toolchains.get(pack).name} pack, which isn't installed: install it in "
+            "Setup, and the project is brought up to date at the next start")
+
+
 def adopt_fork_layout(root: Path, version: str) -> tuple[list[str], str | None]:
     """A project made by the fork, in this decompdecomp's layout: its names in functions.json's "names" (the same
     keys, func_<address> and D_<address>), its flags in file_flags.json, its compiler by this one's name, and the
