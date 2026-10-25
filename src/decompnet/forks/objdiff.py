@@ -116,6 +116,10 @@ class FunctionDiff:
                     "Use the same global, literal or callee where the original does (in the source, or in the driver "
                     "and stand-ins).")
         listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
+        if all(hasattr(m, "yours") and isinstance(m.yours, str) for m in self.literals):  # (literals.NameMismatch)
+            return ("NOT A MATCH YET: every instruction matches, but what it refers to differs from the original's:\n"
+                    f"{listing}\nThe original uses them in another order (or another variable/function): swap the "
+                    "statements or the names.")
         return ("NOT A MATCH YET: every instruction matches, but constants it loads differ from the original's:\n"
                 f"{listing}\nWrite the literal with the original's value (float vs double, the exact digits).")
 

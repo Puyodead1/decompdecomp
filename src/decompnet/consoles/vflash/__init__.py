@@ -112,9 +112,9 @@ class VFlash(Console):
         return scratch.tool_args()
 
     def on_start(self, net, slug: str, log=print) -> None:
-        """Its tools, when they're an older template's untouched (scratch.refresh_tools); and its open functions whose
-        code no compiler makes (arch/arm.py asm_reason: the CPU's mode or coprocessor 15) are set aside, out of
-        agents' way: once each, in seconds."""
+        """Its tools, when they're an older template's untouched (scratch.refresh_tools); a project made by an older
+        analysis, analysed again once (reanalyse_functions); and its open functions whose code no compiler makes
+        (arch/arm.py asm_reason: the CPU's mode or coprocessor 15) are set aside, out of agents' way."""
         from . import scratch
 
         if not net.fork_slug(slug):
@@ -127,8 +127,67 @@ class VFlash(Console):
             net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
                                     "decompdecomp: the project's copies were an older one's, unchanged.")
             log(f"{slug}: {', '.join(tools)} updated from decompdecomp")
+        if manifest.get("analysis", 1) < scratch.ANALYSIS:
+            # (matches judged before references were checked: one stored to two variables in the other order)
+            if (n := net.forks.recheck_matches(slug, log=log)):
+                log(f"{slug}: {n} functions that read as matched refer to other symbols than the original's: open again")
+            self.reanalyse_functions(net, slug, log=log)
         if (n := scratch.set_aside(net, proj, fp, str(manifest.get("version")), self.asm_reason)):
             log(f"{slug}: {n} functions no compiler makes are set aside (agents don't get them)")
+
+    def reanalyse_functions(self, net, slug: str, log=print) -> str | None:
+        """The project's functions as today's analysis finds them (scratch.ANALYSIS): Ghidra runs again first, while
+        agents work on, then only what changed is changed (scratch.rearrange: never a matched function), set up and
+        checked by rebuilding the game (forkengine.reanalyse takes it back if the rebuild no longer matches). Each
+        new function that replaces old pieces gets a note: their attempts stay under their names. Once per project,
+        whatever came of it. Returns what changed, as a sentence (None: nothing)."""
+        import json
+
+        from ...network import NetworkError
+        from . import scratch
+
+        proj, fp, _ = net.forks.get(slug)
+        root, version = Path(fp.root), str((fp.manifest or {}).get("version"))
+        try:
+            programs = scratch.analyse_again(root, version, log=log)
+        except Exception as e:  # (Ghidra missing or failing: tried again at the next start)
+            log(f"{slug}: the new analysis couldn't run: {e}")
+            return None
+        changes: list[tuple[list[str], list[str]]] = []
+
+        def step(fp):
+            by_name = {v: k for k, v in scratch.real_names(root, version).items()}  # (a renamed one: by its address)
+            keep = set()
+            for r in net.store.all("SELECT name, meta FROM functions WHERE project_id=? AND status='matched'",
+                                   proj["id"]):
+                sym = json.loads(r["meta"] or "{}").get("symbol") or r["name"]
+                keep.add(by_name.get(sym, sym))
+            changes[:] = scratch.reanalyse(Path(fp.root), version, programs, keep)
+            if not changes:
+                return None
+            cut = sum(1 for old, _ in changes if old)
+            return (f"{cut} functions cut in the wrong place start where they do now, and "
+                    f"{len(changes) - cut} more were found where no function was (loops that return only on a "
+                    "condition, or never)")
+        said = net.forks.reanalyse(slug, step, log=log)
+        if said:
+            agent, _ = net.local_agent("decompdecomp")
+            real = scratch.real_names(root, version)
+            for old, new in changes:
+                if not old:
+                    continue
+                was = ", ".join(real.get(o, o) for o in old)
+                for name in new:
+                    try:
+                        net.add_note(agent, slug, f"decompdecomp's new analysis: this is the whole function. It was "
+                                                  f"cut in the wrong place before, as {was} (attempts and notes on "
+                                                  "that are about a piece, not this function).", name)
+                    except NetworkError:  # (not in the project's records: a copy)
+                        pass
+        now = net.forks.get(slug)[1].manifest or {}  # (with the rebuild reanalyse wrote)
+        (root / ".decomp.wtf.json").write_text(json.dumps({**now, "analysis": scratch.ANALYSIS}, indent=2),
+                                               encoding="utf-8")
+        return said
 
     def check_rebuild(self, fp, version: str, log=print) -> dict:
         from . import scratch
