@@ -10,7 +10,7 @@ relocations, as in a compiled object, so a function matches whatever names your 
 a section of its own (.text.<name>), as GCC's -ffunction-sections makes them, which the build compiles with: a
 branch to a label of the function is then against its own section, whatever comes before it in the file. Symbols
 given a real name in config/<version>/names.json have it here too (tools/names.py). The words of a literal pool or a
-switch's table that hold addresses are marked as data ($d, then $a where code follows: ARM's mapping symbols), as
+switch's table that hold addresses are marked as data ($d, then $a where code follows, and $a where each starts: ARM's mapping symbols), as
 tools/names.py marks what GCC compiles, so objdiff compares them as relocated words, not as instructions. Standard
 library only. Made by decompdecomp.
 """

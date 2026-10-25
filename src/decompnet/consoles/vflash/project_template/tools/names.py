@@ -24,7 +24,7 @@ from pathlib import Path
 REF = re.compile(r"(func|D)_(?:([A-Za-z0-9]+)_)?([0-9A-Fa-f]{8})")
 # Itanium C++ mangling (GCC 3): _Z then a name, or N<names>E for a qualified one, each <length><identifier>
 SOURCE_NAME = re.compile(r"(\d+)([A-Za-z_]\w*)")
-SHT_SYMTAB, SHT_REL = 2, 9
+SHT_PROGBITS, SHT_SYMTAB, SHT_REL = 1, 2, 9
 R_ARM_ABS32 = 2
 
 
@@ -131,8 +131,11 @@ def rename(data: bytes, names: dict[str, str]) -> bytes:
 
 
 def mapping(words: list[int], size: int) -> list[tuple[str, int]]:
-    """ARM's mapping symbols for a section of code whose words at these offsets are data (as tools/delink.py's)."""
+    """ARM's mapping symbols for a section of code whose words at these offsets are data (as tools/delink.py's).
+    It starts with $a: objdiff reads a section with none there as data, and showed every instruction as a .word."""
     out, data = [], sorted(set(words))
+    if size and (not data or data[0] != 0):
+        out.append(("$a", 0))
     for i, off in enumerate(data):
         if i == 0 or data[i - 1] != off - 4:
             out.append(("$d", off))
@@ -142,7 +145,8 @@ def mapping(words: list[int], size: int) -> list[tuple[str, int]]:
 
 
 def mark_data(data: bytes) -> bytes:
-    """The object with mapping symbols where its code sections hold relocated words (none when it has some)."""
+    """The object with mapping symbols: $a where its code sections start, $d where they hold relocated words (none
+    when it has some)."""
     shoff, = struct.unpack_from("<I", data, 32)
     shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 46)
     headers = [list(struct.unpack_from("<10I", data, shoff + i * shentsize)) for i in range(shnum)]
@@ -159,14 +163,14 @@ def mark_data(data: bytes) -> bytes:
     if any(name(struct.unpack_from("<I", s)[0]) in (b"$a", b"$d") for s in symbols):
         return data
     marks = []  # (section, symbol, offset)
-    for h in headers:
-        if h[1] != SHT_REL or not h[5]:
+    rels = {h[7]: h for h in headers if h[1] == SHT_REL and h[5]}
+    for code, h in enumerate(headers):
+        if h[1] != SHT_PROGBITS or not h[2] & 4 or not h[5]:  # (code: SHF_EXECINSTR)
             continue
-        code = h[7]
-        words = [struct.unpack_from("<II", data, a)[0] for a in range(h[4], h[4] + h[5], 8)
-                 if struct.unpack_from("<II", data, a)[1] & 0xFF == R_ARM_ABS32]
-        if words and headers[code][2] & 4:  # (relocated words in code: SHF_EXECINSTR)
-            marks += [(code, sym, at) for sym, at in mapping(words, headers[code][5])]
+        r = rels.get(code)
+        words = [struct.unpack_from("<II", data, a)[0] for a in range(r[4], r[4] + r[5], 8)
+                 if struct.unpack_from("<II", data, a)[1] & 0xFF == R_ARM_ABS32] if r else []
+        marks += [(code, sym, at) for sym, at in mapping(words, h[5])]
     if not marks:
         return data
     out = bytearray(data)
