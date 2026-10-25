@@ -886,6 +886,25 @@ def refresh_tools(root: Path) -> list[str]:
     return done
 
 
+def reopen_pieces(net, proj) -> int:
+    """Functions set aside as pieces of others (arm.piece), which no V.Flash function is (Console.cuts_pieces), open
+    again. Twins judged them so once every function started with $a (puyo.13: arm's rules took that as ARM code of
+    a cut it trusts less): 187 whole functions of a game, out of agents' way. How many."""
+    from ...arch.arm import _PIECE
+
+    rows = net.store.all("SELECT id, meta FROM functions WHERE project_id=? AND status='asm' AND meta LIKE ?",
+                         proj["id"], f"%{_PIECE}%")
+    back = []
+    for r in rows:
+        meta = json.loads(r["meta"] or "{}")
+        if _PIECE in str(meta.get("asm_code", "")) and not meta.get("asm_twin"):
+            back.append((json.dumps({k: v for k, v in meta.items() if k != "asm_code"}), r["id"]))
+    if back:
+        with net.store.tx() as db:
+            db.executemany("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'", back)
+    return len(back)
+
+
 ASM_CHECK = 1  # set_aside's version, in each function it checked: a better check (a bigger number) looks again
 
 
