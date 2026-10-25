@@ -1748,6 +1748,21 @@ def adopt_fork_layout(root: Path, version: str) -> tuple[list[str], str | None]:
     return changed, compiler
 
 
+_DECORATED_NAME = re.compile(r"^([_@]?)([A-Za-z_]\w*?)(@\d+)?$")
+
+
+def fork_row_names(symbols, names: dict[str, str]) -> dict[str, str]:
+    """A fork's project showed a renamed function by its real name, decorated as the original's symbol
+    (`_Set@64`), where this one's report keeps the symbol by address (`_func_00404450@64`): {the row's name: the
+    report's}, for the rows of renamed functions, so their history (attempts, notes, matches) stays theirs."""
+    by_real = {real: key for key, real in names.items() if key.startswith("func_")}
+    out = {}
+    for symbol in symbols:
+        if (m := _DECORATED_NAME.match(symbol)) and m.group(2) in by_real:
+            out[symbol] = m.group(1) + by_real[m.group(2)] + (m.group(3) or "")
+    return out
+
+
 def tool_args() -> list[str]:
     """configure.py arguments pointing at decompdecomp's pinned tools: every installed compiler pack, 6.0-7.1's
     last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0 to 7.1)."""

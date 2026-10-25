@@ -2248,3 +2248,13 @@ def test_a_project_made_by_the_fork_takes_this_layout(tmp_path):
     assert (root / "tools" / "rebuild.py").exists()
     assert {"config/v/names.json", "config/v/flags.json", "config/v/file_flags.json", "tools/configure.py"} <= set(changed)
     assert scratch_pe.adopt_fork_layout(root, "v") == ([], None)  # (once)
+
+
+def test_a_fork_projects_renamed_rows_keep_their_history_under_the_report_s_name():
+    """The fork's report showed a renamed function by its real name (`_Set@64`); this one keeps the symbol by address
+    (`_func_00404450@64`). The rows of 790 matched functions of a PC game were left behind ("nosource") and new ones
+    made: their row is renamed instead, its decoration kept."""
+    names = {"func_00404450": "Set", "func_00756D20": "undname_heap_get_memory", "D_004017DF": "g_build"}
+    rows = ["_Set@64", "@undname_heap_get_memory@16", "_ActivateMenuItem", "_func_00401000", "?f@@YAXXZ"]
+    assert scratch_pe.fork_row_names(rows, names) == {"_Set@64": "_func_00404450@64",
+                                                      "@undname_heap_get_memory@16": "@func_00756D20@16"}
