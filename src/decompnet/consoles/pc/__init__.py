@@ -150,6 +150,9 @@ class WindowsPC(Console):
         if not (fp.root / manifest.get("game", {}).get("path", f"orig/{version}.exe")).is_file() or \
                 scratch.missing(fp.root, version):  # (the game's DLLs too: each step reads every program)
             return
+        if (why := scratch.compiler_missing(fp.root)):  # (each step builds: taken back for want of it, and not tried
+            log(f"{slug}: {why}")                        # again)
+            return
         changed, compiler = scratch.adopt_fork_layout(fp.root, version)
         if changed:  # (first: the steps below build with the tools that read its names)
             proj = net.project_row(slug)
