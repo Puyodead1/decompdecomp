@@ -812,7 +812,8 @@ class ForkEngine:
                 (fp.root / rel).unlink(missing_ok=True)
 
         with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
-            before = (fp.manifest or {}).get("rebuild") or {}
+            # (none recorded: measured now, so a rebuild that already differed isn't taken for the change's doing)
+            before = (fp.manifest or {}).get("rebuild") or (console.check_rebuild(fp, version, log=log) if checks else {})
             there = untracked()
             try:
                 said = step(fp)
@@ -2075,6 +2076,50 @@ class ForkEngine:
             if span and _digest(text[span[0]:span[1]]) == meta.get("held"):
                 out.add(meta.get("symbol"))
         return out
+
+    def recheck_matches(self, slug: str, log=print) -> int:
+        """Matched functions checked again by literals.mismatches, as compile_and_diff checks a new match: one judged
+        before a check existed (ARM's references to other symbols than the original's) is held, with a note on what
+        differs, and goes back to open. Returns how many."""
+        from ..forks import literals
+
+        proj, fp, _ = self.get(slug)
+        rows = self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
+        found = []
+        for r in rows:
+            meta = self._meta(r)
+            try:
+                u = fp.unit(r["unit"])
+            except ForkError:
+                continue
+            if not (u.target and u.base and u.source):
+                continue
+            paths = [p if Path(p).is_absolute() else Path(fp.root) / p for p in (u.target, u.base)]
+            if not all(p.exists() for p in paths):
+                continue
+            wrong = literals.mismatches(*paths, meta.get("symbol") or r["name"], [])
+            if not wrong:
+                continue
+            try:
+                text = (Path(fp.root) / u.source).read_text(errors="replace", encoding="utf-8")
+            except OSError:
+                continue
+            _, span = self._find(text, self._names(meta, r))
+            if span is None:
+                continue
+            self._hold(r, text[span[0]:span[1]])
+            found.append((r, wrong))
+        if found:
+            agent, _ = self.net.local_agent("decompdecomp")
+            for r, wrong in found:
+                listing = "; ".join(m.describe() for m in wrong[:4])
+                try:
+                    self.net.add_note(agent, slug, f"Not a match after all (checked again by decompdecomp): every "
+                                                   f"instruction is the original's, but {listing}.", r["name"])
+                except NetworkError:
+                    pass
+            self.sync(slug, log=log)
+        return len(found)
 
     def _hold(self, fn, code: str | None) -> None:
         """Remember (code) or forget (None) that this text of the function loads constants the original doesn't."""
