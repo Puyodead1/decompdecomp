@@ -86,6 +86,11 @@ class Opencode(Agent):
                       "plugins": [f"./{PLUGIN_DIR}"],
                       "permissions": [{"action": a, "resource": "*", "effect": "deny" if a in deny else never}
                                       for a in ("edit", "shell", "webfetch", "websearch", *sorted(deny))]}
+            # its title agent, as small_model below: left alone, a helper on an OpenCode Go model titled each
+            # session with Zen's paid one (402 and 403 refusals, one per session start)
+            if (own := (model or self.config_model() or "").split("#", 1)[0]) and "/" in own:
+                provider, name = own.split("/", 1)
+                config["agents"] = {"title": {"model": {"providerID": provider, "model": name}}}
         else:
             config = {"mcp": {MCP_SERVER: {"type": "remote", "url": mcp_url, "enabled": True, "headers": headers}},
                       "permission": {"edit": never, "bash": never, "webfetch": never}}
