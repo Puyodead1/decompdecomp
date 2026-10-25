@@ -35,6 +35,7 @@ packs: build.py 10.0SP1). Older projects' configs say "win32" (decomp.dev's id):
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ...network import NetworkError
@@ -152,6 +153,15 @@ class WindowsPC(Console):
         changed, compiler = scratch.adopt_fork_layout(fp.root, version)
         if changed:  # (first: the steps below build with the tools that read its names)
             proj = net.project_row(slug)
+            rows = {r["name"]: r for r in net.store.all("SELECT id, name, meta FROM functions WHERE project_id=?",
+                                                         proj["id"])}
+            renamed = scratch.fork_row_names(rows, _functions_json(fp, version).get("names") or {})
+            with net.store.tx() as db:
+                for old, new in renamed.items():
+                    meta = json.loads(rows[old]["meta"] or "{}")
+                    if meta.get("symbol") == old:
+                        meta["symbol"] = new
+                    db.execute("UPDATE functions SET name=?, meta=? WHERE id=?", (new, json.dumps(meta), rows[old]["id"]))
             if compiler:
                 manifest = fp.update_manifest(compiler=f"MSVC/{compiler}")
                 net._update_cfg(slug, lambda cfg: cfg.update(compiler=f"MSVC/{compiler}"))
