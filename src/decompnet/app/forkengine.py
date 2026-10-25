@@ -3020,6 +3020,15 @@ class ForkEngine:
         return (f"No compiler matches {fn['name']}; {unit.source} stays with {own}.\n" + "\n".join(tried)
                 + (f"\nNot tried yet (time ran out): {', '.join(left)}. Try them by name." if left else ""))
 
+    def takes_file_flags(self, slug: str) -> bool:
+        """Whether this project's build gives a source file flags of its own (Console.file_flags: games started from
+        scratch)."""
+        try:
+            _, fp, cfg = self.get(slug)
+        except (ForkError, NetworkError):
+            return False
+        return consoles.get(cfg.get("platform") or "").file_flags(fp, "x.c") is not None
+
     def search_flags(self, agent: Agent, slug: str, function: str, compiler: str = "", source: str = "") -> str:
         """search_flags where each source file has flags of its own (Console.file_flags: PC's /Oy-): the function's C
         built with each variant of its file's flags (Console.flag_variants), judged as an attempt that isn't kept. A
