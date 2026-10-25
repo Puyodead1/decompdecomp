@@ -416,7 +416,7 @@ def create(root: Path, game_path: Path, *, compiler: str | None = None, parts: l
         raise ForkError("the first build finished without writing objdiff.json")
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
-        "created": "from scratch", "platform": "vflash", "version": version, "compiler": TOOLCHAIN,
+        "created": "from scratch", "platform": "vflash", "version": version, "compiler": TOOLCHAIN, "analysis": ANALYSIS,
         "game": {"what": "your copy of the game (its disc image: .iso, or .bin with its .cue; or the disc's files)",
                  "path": f"orig/{version}/", "sha1": None},
         "setup": [["python", "tools/extract.py", version], ["python", "tools/configure.py", version, *args],
@@ -509,6 +509,93 @@ def add_modules(root: Path, version: str, names: list[str], log=print) -> str | 
     n = sum(len(fns) for fns in programs.values())
     write_copies(root, version)
     return f"the game modules {', '.join(wanted)}: {n} functions in {len(groups)} new source files"
+
+
+# ---------------------------------------------------------------------------------------------------- a new analysis
+
+ANALYSIS = 2  # the analysis's version, in the manifest: 2 found loops that return only on a condition, or never,
+# where 1 cut them late (their first instructions nobody's) or left them out
+
+
+def analyse_again(root: Path, version: str, log=print) -> dict[str, list[analysis.Function]]:
+    """Every analysed program's functions as today's analysis finds them, from the programs in orig/ (Ghidra again: a
+    few minutes; the project isn't touched)."""
+    info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    images = [image_of((root / p["elf"]).read_bytes(), name) for name, p in info["programs"].items()]
+    fa = next(img for img in images if img.name == "FA")
+    log(f"analysing {', '.join(img.name for img in images)} again with Ghidra (a few minutes)")
+    return analyse(fa, [img for img in images if img is not fa], _ghidra(images, log))
+
+
+def _lib(unit: str) -> bool:
+    return "/lib/" in unit
+
+
+def rearrange(info: dict, programs: dict[str, list[analysis.Function]], offsets: dict[str, list],
+              keep: set[str]) -> list[tuple[list[str], list[str]]]:
+    """functions.json's units (`info`) brought to a new analysis (`programs`), in place, where its extents differ:
+    each run of overlapping changes, old functions out and new ones in, unless one of its old functions is in
+    `keep` (matched: its C would no longer be the whole function) or it touches a library's (seeded, matched). New
+    functions join the source file of the first old one they replace, or of a neighbour; a file left with none goes
+    from the list (its text stays). Functions that stay as they were take the new analysis's relocations unless
+    kept. `offsets`: each program's elf_offsets. Returns each change: (old names, new names)."""
+    changes = []
+    for program, new_fns in programs.items():
+        prefix = program + "/"
+        old = [(u, f) for u, fns in info["units"].items() if u.startswith(prefix) for f in fns]
+        old_at = {(f["addr"], f["size"]): (u, f) for u, f in old}
+        new_at = {(g.addr, g.size): g for g in new_fns}
+        for (addr, size), (u, f) in old_at.items():  # the same extent: the same function, its references now
+            g = new_at.get((addr, size))
+            if g is not None and not _lib(u) and f["name"] not in keep and f["name"] == g.name:
+                f["relocs"] = [list(r) for r in g.relocs]
+        spans = sorted([(f["addr"], f["addr"] + f["size"], "old", (u, f)) for u, f in old
+                        if (f["addr"], f["size"]) not in new_at]
+                       + [(g.addr, g.addr + g.size, "new", g) for g in new_fns if (g.addr, g.size) not in old_at],
+                       key=lambda x: (x[0], x[1]))
+        runs, end = [], -1
+        for span in spans:  # overlapping changes are one change
+            if runs and span[0] < end:
+                runs[-1].append(span)
+            else:
+                runs.append([span])
+            end = max(end, span[1]) if len(runs[-1]) > 1 else span[1]
+        libs = [(f["addr"], f["addr"] + f["size"]) for u, f in old if _lib(u)]
+        unit_of = {f["addr"]: u for u, f in old}
+        ends = {f["addr"] + f["size"]: u for u, f in old}
+        for run in runs:
+            olds = [x[3] for x in run if x[2] == "old"]
+            news = [x[3] for x in run if x[2] == "new"]
+            lo, hi = run[0][0], max(x[1] for x in run)
+            if not news or any(f["name"] in keep for _, f in olds) or any(_lib(u) for u, _ in olds) or \
+                    any(a < hi and lo < b for a, b in libs):
+                continue
+            home = olds[0][0] if olds else ends.get(lo) or unit_of.get(hi) or next(
+                (unit_of[a] for a in sorted(unit_of, reverse=True) if a < lo and not _lib(unit_of[a])), None)
+            if home is None:
+                continue
+            for u, f in olds:
+                info["units"][u].remove(f)
+            info["units"][home] += [{"name": g.name, "addr": g.addr, "offset": file_offset(offsets[program], g.addr),
+                                     "size": g.size, "relocs": [list(r) for r in g.relocs]} for g in news]
+            info["units"][home].sort(key=lambda f: f["addr"])
+            changes.append(([f["name"] for _, f in olds], [g.name for g in news]))
+    for u in [u for u, fns in info["units"].items() if not fns]:
+        del info["units"][u]
+    return changes
+
+
+def reanalyse(root: Path, version: str, programs: dict[str, list[analysis.Function]],
+              keep: set[str]) -> list[tuple[list[str], list[str]]]:
+    """rearrange() on the project's functions.json, written back with its copies; returns the changes."""
+    conf = root / "config" / version
+    info = json.loads((conf / "functions.json").read_text(encoding="utf-8"))
+    offsets = {name: elf_offsets(image_of((root / p["elf"]).read_bytes(), name)) for name, p in info["programs"].items()}
+    changes = rearrange(info, programs, offsets, keep)
+    if changes:
+        (conf / "functions.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
+        write_copies(root, version)
+    return changes
 
 
 # ---------------------------------------------------------------------------------------------------- flags, file by file
