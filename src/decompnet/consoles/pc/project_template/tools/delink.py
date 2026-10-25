@@ -42,10 +42,12 @@ def x64(info: dict) -> bool:
 
 def coff(functions: list[dict], exe: bytes, machine: str = "x86") -> bytes:
     symbols: list[tuple[str, int, int, int, int]] = []  # (name, value, section, type, storage class)
-    externs: dict[str, int] = {}
     sections = []
     for i, fn in enumerate(functions):
         symbols.append((fn["name"], 0, i + 1, 0x20, 2))
+    # A call to a function of this file refers to it, as MSVC's object does: a second, undefined symbol of the same
+    # name made objdiff pair the function with that one, and a function called from its own file never matched.
+    externs: dict[str, int] = {fn["name"]: i for i, fn in enumerate(functions)}
     for i, fn in enumerate(functions):
         code = bytearray(exe[fn["offset"]:fn["offset"] + fn["size"]])
         relocs = bytearray()
