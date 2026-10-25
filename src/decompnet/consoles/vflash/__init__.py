@@ -220,20 +220,20 @@ class VFlash(Console):
 
         return scratch.function_asm(Path(root), unit, symbol)
 
-    def file_flags(self, fp, source: str) -> tuple[str, list[str]] | None:
+    def file_flags(self, fp, source: str) -> list[str] | None:
         from . import scratch
 
         return scratch.file_flags(fp, source)
-
-    def build_file_with(self, fp, unit, text: str, flags: list[str], log=print) -> tuple[Path | None, str]:
-        from . import scratch
-
-        return scratch.build_file_with(fp, unit, text, flags, log=log)
 
     def set_file_flags(self, fp, source: str, flags: list[str]) -> str:
         from . import scratch
 
         return scratch.set_file_flags(fp, source, flags)
+
+    def flag_variants(self, flags: list[str]) -> list[list[str]]:
+        from . import scratch
+
+        return scratch.flag_variants(flags)
 
     def read_data(self, fp, name: str, length: int) -> str | None:
         """The game's data isn't in the target objects: it's read from the programs made from the user's copy."""

@@ -24,7 +24,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import struct
 import subprocess
@@ -624,52 +623,46 @@ def _file_extras(fp) -> dict[str, list[str]]:
         return {}
 
 
-def file_flags(fp, source: str) -> tuple[str, list[str]] | None:
-    """(the compiler, the flags `source` builds with: GCC_FLAGS, CXX_FLAGS for C++, and its own)."""
-    settings = _settings(fp)
-    if settings is None:
+def file_flags(fp, source: str) -> list[str] | None:
+    """The flags `source` builds with on top of the project's (GCC_FLAGS, and CXX_FLAGS for C++): its own in
+    flags.json; None when the project's tools/configure.py isn't ours (its build sets them)."""
+    if _settings(fp) is None:
         return None
-    flags, cxx, _ = settings
-    own = cxx if Path(source).suffix.lower() in (".cpp", ".cc", ".cxx") else []
-    return TOOLCHAIN, [*flags, *own, *_file_extras(fp).get(Path(source).as_posix(), [])]
+    return list(_file_extras(fp).get(Path(source).as_posix(), []))
 
 
-def build_file_with(fp, unit, text: str, flags: list[str], log=print) -> tuple[Path | None, str]:
-    """`text` built as `unit`'s source with `flags`, by the project's own command for its files (build.ninja's cc
-    rule), into build/flagsearch/: the project's source and objects stay as they are."""
-    try:
-        ninja = re.sub(r"\$\n\s+", "", (Path(fp.root) / "build.ninja").read_text(encoding="utf-8"))
-    except OSError:
-        return None, "build.ninja is missing: build the project once first"
-    rule = re.search(r"^rule cc\n  command = (.*)$", ninja, re.M)
-    if not rule or "$cflags" not in rule.group(1):
-        return None, "this project's build.ninja has no cc rule decompdecomp knows"
-    work = Path(fp.root) / "build" / "flagsearch"
-    work.mkdir(parents=True, exist_ok=True)
-    src = work / (unit.name.replace("/", "_") + Path(unit.source or "x.cpp").suffix)
-    out = src.with_suffix(".o")
-    src.write_text(text, encoding="utf-8")
-    out.unlink(missing_ok=True)
-    rel = lambda p: p.relative_to(fp.root).as_posix()  # noqa: E731
-    cmd = (rule.group(1).replace("$cflags", shlex.join(flags)).replace("$out", shlex.quote(rel(out)))
-           .replace("$in", shlex.quote(rel(src))))
-    ok, output = ForkProject(Path(fp.root)).run(["/bin/sh", "-c", cmd], log=lambda *_: None, timeout=300)
-    return (out if ok and out.exists() else None), output
+# What search_flags tries on a file, after the project's -O3 (GCC takes the last of a kind): another optimisation
+# level (the maths library was built with -O1, some C++ with -O2), each option V.Flash's C++ often differs by, on or
+# off, and C++'s usual -O2 with -frename-registers
+FLAG_LEVELS = ("-O2", "-O1", "-Os", "-O0")
+FLAG_OPTIONS = ("-frename-registers", "-fno-schedule-insns2", "-mcpu=arm7tdmi")
+
+
+def flag_variants(flags: list[str]) -> list[list[str]]:
+    """A file's own flags (first), and the variants of them search_flags tries."""
+    others = [f for f in flags if not f.startswith("-O")]
+    out = [list(flags)]
+    for new in (others, *([*others, level] for level in FLAG_LEVELS)):  # (others: the project's -O3 again)
+        if new not in out:
+            out.append(new)
+    for option in FLAG_OPTIONS:
+        new = [f for f in flags if f != option] if option in flags else [*flags, option]
+        if new not in out:
+            out.append(new)
+    if (new := [*(f for f in others if f != "-frename-registers"), "-O2", "-frename-registers"]) not in out:
+        out.append(new)
+    return out
 
 
 def set_file_flags(fp, source: str, flags: list[str]) -> str:
-    """Build `source` with `flags` (all of them, as file_flags gives them) from now on: what GCC_FLAGS and CXX_FLAGS
-    don't have goes in flags.json. Returns flags.json's path in the project."""
-    settings = _settings(fp)
-    if settings is None:
+    """Build `source` with `flags` on top of the project's from now on (flags.json; none: no line). Returns
+    flags.json's path in the project."""
+    if _settings(fp) is None:
         raise ForkError("this project's tools/configure.py isn't one decompdecomp made: change its flags there")
-    base, cxx, _ = settings
     data = _file_extras(fp)
-    have = [*base, *(cxx if Path(source).suffix.lower() in (".cpp", ".cc", ".cxx") else [])]
-    extra = [f for f in flags if f not in have]
     key = Path(source).as_posix()
-    if extra:
-        data[key] = extra
+    if flags:
+        data[key] = list(flags)
     else:
         data.pop(key, None)
     path = _flags_file(fp)

@@ -37,3 +37,18 @@ def test_a_project_with_the_wrong_flags_hears_which_ones_match(built, tmp_path):
     assert json.loads(net._project(slug)["config"])["compiler"]["flags"][-1] == "-O1"  # it only says, changes nothing
     with pytest.raises(Exception, match="no attempt yet"):
         net.search_flags(agent, slug, "func_800007D0")
+
+
+def test_where_files_take_flags_of_their_own_a_suggestion_in_words_is_refused(monkeypatch):
+    """"Suggest building this file at -O0" sat in Waiting for you with only Dismiss: where a file can have its own
+    flags (PC, V.Flash), search_flags tries them and keeps the ones that match, so there's nothing to suggest."""
+    net = RomNetwork(":memory:", ".")
+    monkeypatch.setattr(net, "_project", lambda slug: {"slug": slug, "config": "{}"})
+    monkeypatch.setattr(net, "fork_slug", lambda slug: slug)
+    monkeypatch.setattr(net.forks, "takes_file_flags", lambda slug: True)
+    agent, _ = net.local_agent("claude-sonnet-1")
+    with pytest.raises(Exception, match="search_flags"):
+        net.suggest(agent, "game", "these look like -O0 output: build the file at -O0")
+    monkeypatch.setattr(net.forks, "takes_file_flags", lambda slug: False)  # a public decomp's: words are all it has
+    monkeypatch.setattr(net, "_update_cfg", lambda slug, change: change({}))
+    assert net.suggest(agent, "game", "the build's map file is out of date").startswith("Suggested")

@@ -341,7 +341,7 @@ def test_rename_symbol_keeps_real_names_by_the_name_by_address(tmp_path):
 
 def test_a_file_builds_with_flags_of_its_own(tmp_path):
     """The maths library was built with -O1, the rest with -O3: a file's own flags go in flags.json, after the
-    project's (GCC takes the last), and only what the project's don't have."""
+    project's (GCC takes the last); search_flags tries other levels and the options V.Flash's C++ differs by."""
     root = tmp_path / "proj"
     (root / "tools").mkdir(parents=True)
     (root / "config" / "v1").mkdir(parents=True)
@@ -351,12 +351,15 @@ def test_a_file_builds_with_flags_of_its_own(tmp_path):
         manifest = {"version": "v1"}
     fp = Fp()
     fp.root = root
-    tc, flags = scratch.file_flags(fp, "src/FA/text_10A715C4.cpp")
-    assert tc == "gcc-3.2.3-arm-elf" and flags[0] == "-O3" and "-fno-rtti" in flags
-    assert "-fno-rtti" not in scratch.file_flags(fp, "src/FA/text_10A715C4.c")[1]
-    scratch.set_file_flags(fp, "src/FA/text_10A715C4.c", [*scratch.file_flags(fp, "x.c")[1], "-O1"])
-    assert scratch.file_flags(fp, "src/FA/text_10A715C4.c")[1][-1] == "-O1"
+    assert scratch.file_flags(fp, "src/FA/text_10A715C4.c") == []
+    assert scratch.set_file_flags(fp, "src/FA/text_10A715C4.c", ["-O1"]) == "config/v1/flags.json"
+    assert scratch.file_flags(fp, "src/FA/text_10A715C4.c") == ["-O1"]
     assert json.loads((root / "config" / "v1" / "flags.json").read_text()) == {"src/FA/text_10A715C4.c": ["-O1"]}
+    variants = consoles.get("vflash").flag_variants(["-O1"])
+    assert variants[0] == ["-O1"] and [] in variants and ["-O2", "-frename-registers"] in variants
+    assert ["-O1", "-fno-schedule-insns2"] in variants and len(variants) <= 12
+    (root / "tools" / "configure.py").write_text("# the project's own\n")
+    assert scratch.file_flags(fp, "x.c") is None  # (its build sets them)
 
 
 @pytest.mark.skipif(toolchains.installed("gcc-3.2.3-arm-elf") is None, reason="needs GCC 3.2.3 for ARM")
@@ -423,17 +426,6 @@ def test_a_function_that_refers_to_other_symbols_than_the_originals_is_no_match(
     assert [(m.original, m.yours) for m in wrong] == [("D_10B01854", "D_10B0184C"), ("D_10B0184C", "D_10B01854")]
     assert literals.mismatches(orig, tmp_path / "named.o", "func_109D452C", []) == []
     assert literals.mismatches(orig, orig, "func_109D452C", []) == []
-
-
-def test_flag_search_tries_what_v_flash_games_were_built_with(tmp_path):
-    """The maths library's -O1 and the C++'s -O2 with -frename-registers are among the variants of a file's flags."""
-    from decompnet.app.engine import RomNetwork
-
-    net = RomNetwork(tmp_path / "app.db", tmp_path)
-    base = ["-O3", "-mcpu=arm9tdmi", "-fomit-frame-pointer", "-mno-apcs-frame", "-msoft-float", "-fno-rtti"]
-    variants = net.flag_variants("gcc-3.2.3-arm-elf", base)
-    assert variants[0] == base and [*base[:0], "-O1", *base[1:]] in variants
-    assert [*base, "-frename-registers"] in variants and all("-G0" not in v for v in variants)
 
 
 def test_only_what_no_compiler_emits_is_set_aside():
