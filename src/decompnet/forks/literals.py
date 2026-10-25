@@ -9,6 +9,7 @@ Data outside an object (an extern) can't be checked, and isn't.
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from io import BytesIO
@@ -89,6 +90,58 @@ class _Object:
         return size, out
 
 
+_BY_ADDRESS = re.compile(r"^(?:func|data|D|lbl)_(?:[A-Za-z0-9]+_)?[0-9A-Fa-f]{8}$")  # func_10A693A0, D_GZ1A_10B01854
+
+
+@dataclass
+class NameMismatch:
+    """A reference to another symbol than the original's (ARM: a word of the pool, a call): objdiff's rules accept
+    it, but the link puts another address there."""
+    offset: int
+    original: str
+    yours: str
+
+    def describe(self) -> str:
+        return f"+0x{self.offset:X}: the original refers to {self.original} here, yours to {self.yours}"
+
+
+def _named_refs(obj: _Object, name: str) -> dict[int, str] | None:
+    """{offset in the function: the symbol its relocation names}, for references to named symbols (not a section's,
+    not a name a compiler makes up)."""
+    from .objdiff import _GENERATED
+
+    found = _function_symbols(obj.elf).get(name)
+    if found is None:
+        return None
+    shndx, start, size = found
+    out: dict[int, str] = {}
+    for sec in obj.elf.iter_sections():
+        if sec["sh_type"] not in ("SHT_REL", "SHT_RELA") or sec["sh_info"] != shndx:
+            continue
+        symtab = obj.elf.get_section(sec["sh_link"])
+        for r in sec.iter_relocations():
+            off = r["r_offset"] - start
+            if not 0 <= off < size:
+                continue
+            sym = symtab.get_symbol(r["r_info_sym"])
+            if sym.name and sym["st_info"]["type"] != "STT_SECTION" and not _GENERATED.match(sym.name):
+                out[off] = sym.name
+    return out
+
+
+def _arm_names(left: _Object, right: _Object, symbol: str) -> list[NameMismatch]:
+    """ARM (V.Flash, where both objects name what they refer to the same way): the words and calls whose relocation
+    names another symbol than the original's. A function whose pool held D_10B0184C where the original's held
+    D_10B01854 (two stores in the other order) read 100% and broke the game's rebuild."""
+    a, b = _named_refs(left, symbol), _named_refs(right, symbol)
+    if a is None or b is None:
+        return []
+    # (one by its address, the other by its real name, can be the same thing: the library's memset where the
+    # original names func_10A693A0; only two of a kind tell)
+    return [NameMismatch(at, name, b[at]) for at, name in sorted(a.items())
+            if at in b and b[at] != name and bool(_BY_ADDRESS.match(name)) == bool(_BY_ADDRESS.match(b[at]))]
+
+
 def _string(data: bytes, at: int) -> bytes | None:
     end = data.find(b"\0", at, at + 512)
     if end < 0:
@@ -97,15 +150,20 @@ def _string(data: bytes, at: int) -> bytes | None:
     return s if all(32 <= c < 127 or c in (9, 10, 13) for c in s[:-1]) else None
 
 
-def mismatches(target: Path, base: Path, symbol: str, insns: list[tuple[int, str]]) -> list[Mismatch]:
+def mismatches(target: Path, base: Path, symbol: str, insns: list[tuple[int, str]]) -> list:
     """Loaded constants that differ, for a function whose instructions match (`insns`: the original's (offset in
-    the function, mnemonic), in order)."""
+    the function, mnemonic), in order); on ARM, references to other symbols than the original's (NameMismatch)."""
     try:
         left, right = _Object(target), _Object(base)
     except (OSError, ValueError, ELFError):  # COFF objects (PC, Xbox): no verdict
         return []
-    if left.machine != right.machine or left.machine not in ("EM_PPC", "EM_MIPS"):
+    if left.machine != right.machine or left.machine not in ("EM_PPC", "EM_MIPS", "EM_ARM"):
         return []
+    if left.machine == "EM_ARM":
+        try:
+            return _arm_names(left, right, symbol)
+        except Exception:  # an unusual object: no verdict rather than a wrong one
+            return []
     try:
         a, b = left.refs(symbol), right.refs(symbol)
     except Exception:  # an unusual object: no verdict rather than a wrong one

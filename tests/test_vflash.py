@@ -206,6 +206,34 @@ def test_a_loop_whose_only_way_out_is_conditional_and_one_with_none_are_whole_fu
     assert [(f.addr - BASE, f.size) for f in fns] == [(0x00, 4), (0x04, 0x28), (0x2C, 0x14), (0x40, 8)]
 
 
+def test_a_project_made_by_an_older_analysis_changes_only_where_it_was_wrong():
+    """A function cut late becomes the whole one in the file the piece was in; a function found where none was joins
+    its neighbour's file; a matched function, or a library's, keeps its extent and what overlaps it waits; a file left
+    with no function goes from the list; and an unchanged function takes the new relocations unless matched."""
+    F = analysis.Function  # noqa: N806
+    row = lambda name, addr, size, relocs=(): {"name": name, "addr": addr, "offset": addr - BASE, "size": size,  # noqa: E731
+                                               "relocs": [list(r) for r in relocs]}
+    info = {"units": {
+        "FA/text_10000000": [row("func_10000000", BASE, 8, [(0, 1, "old", 0)]), row("func_10000014", BASE + 0x14, 0x18)],
+        "FA/text_10000040": [row("func_10000040", BASE + 0x40, 8)],  # matched: stays, and what overlaps it waits
+        "FA/text_10000050": [row("func_10000050", BASE + 0x50, 8)],
+        "FA/text_10000058": [row("func_10000058", BASE + 0x58, 8)],  # all of it the one before's now: the file goes
+        "FA/lib/libm/s_sin": [row("sin", BASE + 0x80, 8)],
+    }}
+    programs = {"FA": [F(BASE, 8, "func_10000000", [(0, 1, "new", 0)]), F(BASE + 0x08, 0x24, "func_10000008"),
+                       F(BASE + 0x2C, 4, "func_1000002C"), F(BASE + 0x3C, 0x0C, "func_1000003C"),
+                       F(BASE + 0x50, 0x10, "func_10000050"), F(BASE + 0x7C, 0x0C, "func_1000007C")]}
+    changes = scratch.rearrange(info, programs, {"FA": [(BASE, 0x1000, 0)]}, keep={"func_10000040"})
+    assert changes == [(["func_10000014"], ["func_10000008"]), ([], ["func_1000002C"]),
+                       (["func_10000050", "func_10000058"], ["func_10000050"])]
+    assert [(f["name"], f["size"]) for f in info["units"]["FA/text_10000000"]] == [
+        ("func_10000000", 8), ("func_10000008", 0x24), ("func_1000002C", 4)]
+    assert info["units"]["FA/text_10000000"][0]["relocs"] == [[0, 1, "new", 0]]
+    assert [f["name"] for f in info["units"]["FA/text_10000040"]] == ["func_10000040"]
+    assert [(f["name"], f["size"]) for f in info["units"]["FA/text_10000050"]] == [("func_10000050", 0x10)]
+    assert "FA/text_10000058" not in info["units"] and [f["name"] for f in info["units"]["FA/lib/libm/s_sin"]] == ["sin"]
+
+
 def test_references_become_relocations_as_gcc_writes_them():
     """A bl names its function; the pool's address names the data; a switch's table and a branch inside the
     function are against its own section; a tail call names the function it goes to."""
@@ -344,6 +372,33 @@ def test_gcc_3_2_3s_object_pairs_with_the_originals_cut(tmp_path):
     e, syms = _symbols(names.mark_data(obj))
     text = e.get_section_by_name(".text.func_10000000").data()
     assert ("$d", len(text) - 4) in [(s.name, s["st_value"]) for s in syms]  # (D_10000100's address, in the pool)
+
+
+@pytest.mark.skipif(toolchains.installed("gcc-3.2.3-arm-elf") is None, reason="needs GCC 3.2.3 for ARM")
+def test_a_function_that_refers_to_other_symbols_than_the_originals_is_no_match(tmp_path):
+    """Two stores in the other order: the same instructions, the pool's two addresses swapped. objdiff's rules
+    read 100%, and the rebuilt game differed; the references are compared. A library's call to memset where the
+    original names the same function by its address (func_10A693A0) isn't a difference."""
+    import subprocess
+
+    from decompnet.forks import literals
+
+    gcc = toolchains.path("gcc-3.2.3-arm-elf") / "bin"
+    flags = ["-O3", "-mcpu=arm9tdmi", "-fomit-frame-pointer", "-mno-apcs-frame", "-msoft-float"]
+    sources = {"orig": "D_10B01854 = 0; D_10B0184C = 0; func_10A693A0(p, 0, 4);",
+               "swapped": "D_10B0184C = 0; D_10B01854 = 0; func_10A693A0(p, 0, 4);",
+               "named": "D_10B01854 = 0; D_10B0184C = 0; memset(p, 0, 4);"}
+    for name, body in sources.items():
+        (tmp_path / f"{name}.c").write_text("extern int D_10B0184C, D_10B01854; void *func_10A693A0(void *, int, int);\n"
+                                           "void *memset(void *, int, int);\n"
+                                           f"void func_109D452C(void *p) {{ {body} }}\n")
+        subprocess.run([gcc / "arm-elf-gcc", "-c", "-ffunction-sections", *flags, "-o", f"{name}.o", f"{name}.c"],
+                       cwd=tmp_path, check=True)
+    orig = tmp_path / "orig.o"
+    wrong = literals.mismatches(orig, tmp_path / "swapped.o", "func_109D452C", [])
+    assert [(m.original, m.yours) for m in wrong] == [("D_10B01854", "D_10B0184C"), ("D_10B0184C", "D_10B01854")]
+    assert literals.mismatches(orig, tmp_path / "named.o", "func_109D452C", []) == []
+    assert literals.mismatches(orig, orig, "func_109D452C", []) == []
 
 
 def test_flag_search_tries_what_v_flash_games_were_built_with(tmp_path):
