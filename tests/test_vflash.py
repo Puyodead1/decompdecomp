@@ -627,3 +627,34 @@ def test_every_tool_a_vflash_project_was_made_with_is_known():
     for rel, old in scratch.OLD_TOOLS.items():
         now = (scratch.TEMPLATE / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
         assert hashlib.sha1(now.encode()).hexdigest() not in old, rel
+
+
+def test_twins_dont_take_a_whole_function_for_a_piece_of_another():
+    """Once every V.Flash function started with $a, the twins pass read it as ARM code and judged it by the rules
+    for ds-decomp's cuts (arm.piece): 187 whole functions of a game were set aside as "pieces". V.Flash's analysis
+    follows each function to its end (Console.cuts_pieces)."""
+    from decompnet.app.twins import object_prints
+
+    code = struct.pack("<2I", 0xE1A00004, 0xE12FFF1E)  # mov r0, r4; bx lr (r4 never saved: a piece, by those rules)
+    obj = delink.obj([{"name": "func_10000000", "offset": 0, "size": 8, "relocs": []}], code)
+    assert "piece" in object_prints(obj)["func_10000000"].asm
+    assert object_prints(obj, consoles.get("vflash").cuts_pieces)["func_10000000"].asm == ""
+
+
+def test_functions_set_aside_as_pieces_are_open_again(tmp_path):
+    from decompnet.app.engine import RomNetwork
+    from decompnet.arch.arm import _PIECE
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("vf", "VF", "", "arm", 0, str(tmp_path), json.dumps({"kind": "fork"}))).lastrowid
+        for name, meta in (("piece", {"asm_check": 1, "asm_code": f"reads r4 before saving it: the rest of {_PIECE}"}),
+                           ("mode", {"asm_code": "uses mrs, the CPU's mode or its cache"}),
+                           ("twin", {"asm_code": f"never returns: {_PIECE}", "asm_twin": "func_10000000"})):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,meta) VALUES(?,?,?,?,?,?,?)",
+                       (pid, name, 8, 2, "asm", "a", json.dumps(meta)))
+    proj = net.store.one("SELECT * FROM projects WHERE id=?", pid)
+    assert scratch.reopen_pieces(net, proj) == 1
+    rows = {r["name"]: (r["status"], json.loads(r["meta"])) for r in net.store.all("SELECT * FROM functions")}
+    assert rows["piece"] == ("open", {"asm_check": 1}) and rows["mode"][0] == rows["twin"][0] == "asm"

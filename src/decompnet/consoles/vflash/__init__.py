@@ -43,6 +43,7 @@ class VFlash(Console):
     demo_tools = (TOOLCHAIN, "objdiff-cli", "ghidra", "java")
     own_features = frozenset({REBUILD_CHECK})  # (in place: every function at its address, tools/rebuild.py)
     chooses_parts = True  # (its game modules: a game's repeat their engine's code, and each takes Ghidra a minute)
+    cuts_pieces = False  # (analysis.py follows each function's code to its end)
 
     def sniff(self, head: bytes, file) -> bool:
         from . import disc
@@ -133,6 +134,8 @@ class VFlash(Console):
                 if target is not None:  # the original's objects (one step makes them all: all_source doesn't)
                     fp.run([_tool("ninja") or "ninja", str(target.relative_to(fp.root))], log=lambda *_: None)
                 net.forks.check(slug, log=log, build=True)
+        if (n := scratch.reopen_pieces(net, proj)):
+            log(f"{slug}: {n} whole functions set aside as pieces of others are open again")
         if manifest.get("analysis", 1) < scratch.ANALYSIS:
             # (matches judged before references were checked: one stored to two variables in the other order)
             if (n := net.forks.recheck_matches(slug, log=log)):
@@ -203,7 +206,7 @@ class VFlash(Console):
     def asm_reason(self, code: bytes) -> str | None:
         from ...arch import arm
 
-        return arm.asm_reason(code, False, thumb=False, pieces=False)
+        return arm.asm_reason(code, False, thumb=False, pieces=self.cuts_pieces)
 
     def rename_symbol(self, fp, version: str, old: str, new: str) -> dict:
         """config/<version>/names.json: tools/names.py pairs the real name with the original's symbol, and
