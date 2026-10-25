@@ -123,10 +123,16 @@ class VFlash(Console):
         manifest = fp.manifest or {}
         if manifest.get("created") != "from scratch":
             return
-        if (tools := scratch.refresh_tools(Path(fp.root))):  # (the same code either way: nothing to measure again)
+        if (tools := scratch.refresh_tools(Path(fp.root))):
             net.forks._commit_paths(proj, fp, tools, f"Update {', '.join(tools)} from decompdecomp\n\nWritten by "
                                     "decompdecomp: the project's copies were an older one's, unchanged.")
             log(f"{slug}: {', '.join(tools)} updated from decompdecomp")
+            if scratch.MEASURED & set(tools):  # (the same code, read by objdiff as instructions now: built again)
+                from ...forks.project import _tool
+                target = next((u.target for u in fp.units() if u.target is not None), None)
+                if target is not None:  # the original's objects (one step makes them all: all_source doesn't)
+                    fp.run([_tool("ninja") or "ninja", str(target.relative_to(fp.root))], log=lambda *_: None)
+                net.forks.check(slug, log=log, build=True)
         if manifest.get("analysis", 1) < scratch.ANALYSIS:
             # (matches judged before references were checked: one stored to two variables in the other order)
             if (n := net.forks.recheck_matches(slug, log=log)):

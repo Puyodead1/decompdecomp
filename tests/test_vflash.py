@@ -277,6 +277,8 @@ def test_the_originals_object_has_a_section_per_function_and_its_pools_marked_as
     marks = [(s.name, s["st_value"], e.get_section(s["st_shndx"]).name) for s in syms if s.name in ("$a", "$d")]
     assert ("$d", 0x18, ".text.func_10000000") in marks
     assert ("$d", 0x10, ".text.func_10000024") in marks and ("$a", 0x18, ".text.func_10000024") in marks
+    # (each starts with $a: objdiff read a section without one as data, and showed agents only .words)
+    assert all(("$a", 0, f".text.{r['name']}") in marks for r in rows)
     rel = e.get_section_by_name(".rel.text.func_10000000")
     named = [syms[r["r_info_sym"]].name for r in rel.iter_relocations()]
     assert named == ["func_10000058", "D_10000100"]
@@ -299,7 +301,7 @@ def test_what_gcc_compiles_gets_the_originals_names_and_its_pools_marked(monkeyp
     wanted = {**names.wanted(info, Path("/nonexistent/functions.json")), "_ZN8ResourceC1Ev": "_ZN8ResourceC1Ev"}
     e, syms = _symbols(names.mark_data(names.rename(compiled, wanted)))
     assert "func_10000000" in [s.name for s in syms] and ".text.func_10000000" in [s.name for s in e.iter_sections()]
-    assert ("$d", 0x18) in [(s.name, s["st_value"]) for s in syms]
+    assert ("$d", 0x18) in [(s.name, s["st_value"]) for s in syms] and ("$a", 0) in [(s.name, s["st_value"]) for s in syms]
     rel = e.get_section_by_name(".rel.text.func_10000000")
     assert [syms[r["r_info_sym"]].name for r in rel.iter_relocations()] == ["_ZN8ResourceC1Ev", "D_10000100"]
 
@@ -372,6 +374,28 @@ def test_gcc_3_2_3s_object_pairs_with_the_originals_cut(tmp_path):
     e, syms = _symbols(names.mark_data(obj))
     text = e.get_section_by_name(".text.func_10000000").data()
     assert ("$d", len(text) - 4) in [(s.name, s["st_value"]) for s in syms]  # (D_10000100's address, in the pool)
+
+
+@pytest.mark.skipif(toolchains.installed("gcc-3.2.3-arm-elf") is None or toolchains.installed("objdiff-cli") is None,
+                    reason="needs GCC 3.2.3 for ARM and objdiff")
+def test_agents_read_instructions_and_where_a_branch_of_its_own_lands(tmp_path):
+    """objdiff showed a V.Flash function's code as .word 0xe59f101c..., the mapping symbols marking only its pool,
+    and its own branches as "bne $a+0x20" (a model took one for a branch out of the function): instructions, and
+    where in the function a branch lands."""
+    import subprocess
+
+    from decompnet.forks import objdiff
+
+    gcc = toolchains.path("gcc-3.2.3-arm-elf") / "bin"
+    (tmp_path / "f.c").write_text("extern int D_10000100; void g(void);\n"
+                                  "int func_10000000(int *p) { if (p[42]) g(); return D_10000100; }\n")
+    flags = ["-O3", "-mcpu=arm9tdmi", "-fomit-frame-pointer", "-mno-apcs-frame", "-msoft-float"]
+    subprocess.run([gcc / "arm-elf-gcc", "-c", "-ffunction-sections", *flags, "-o", "f.o", "f.c"], cwd=tmp_path, check=True)
+    (tmp_path / "f.o").write_bytes(names.mark_data((tmp_path / "f.o").read_bytes()))
+    d = objdiff.diff(tmp_path / "f.o", tmp_path / "f.o", "func_10000000", tmp_path)
+    lines = d.target_asm().splitlines()
+    assert d.matched and lines[-1] == ".word D_10000100" and not any(t.startswith(".word") for t in lines[:-1])
+    assert any(t.startswith("b") and "->0x" in t for t in lines), lines  # (no "$a+": the offset it lands at)
 
 
 @pytest.mark.skipif(toolchains.installed("gcc-3.2.3-arm-elf") is None, reason="needs GCC 3.2.3 for ARM")
@@ -594,3 +618,12 @@ def test_a_projects_untouched_old_tools_are_updated(tmp_path):
     assert '"-fpermissive"' in (tmp_path / "tools" / "configure.py").read_text()
     (tmp_path / "tools" / "configure.py").write_text(old.stdout + "# mine\n")
     assert scratch.refresh_tools(tmp_path) == []
+
+
+def test_every_tool_a_vflash_project_was_made_with_is_known():
+    """The template's tools as they are now aren't old: a project with them has nothing to update."""
+    import hashlib
+
+    for rel, old in scratch.OLD_TOOLS.items():
+        now = (scratch.TEMPLATE / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        assert hashlib.sha1(now.encode()).hexdigest() not in old, rel
