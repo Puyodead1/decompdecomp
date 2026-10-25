@@ -68,6 +68,9 @@ class Console:
     packs: tuple[tuple[str, str], ...] = ()  # (toolchain, what it's for): more that Setup offers for it
     guides: tuple[str, ...] = ()  # guide topics worth reading first (files in its guides/ folder or app/guide/)
     m2c = ""  # m2c's target for drafts of its code, without the language ("mipsee-gcc"); "" when m2c can't read it
+    # its analysis may cut pieces of functions (ds-decomp's), which its processor's rules then set aside (arm.piece);
+    # not one that follows each function's code to its end, where those rules misread whole functions
+    cuts_pieces = True
     compiler_guide = ""  # the guide on matching what most of its games were built with ("mwcc"): see up_front_guide
     compiler_family = ""  # their family, when a project names no toolchain (a fork): the permuter's weights ("mwcc")
     ram = (0, 0)  # where its programs' code and data live: words in this range read as pointers

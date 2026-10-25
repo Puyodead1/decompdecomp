@@ -34,8 +34,9 @@ from ..project import compiler_for
 log = logging.getLogger("decompdecomp")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
-_CACHE_VERSION = 5  # of twins.json: 2 added why code is hand-written assembly, 3 ARM's BIOS call stubs, 4 ARM's
-# system instructions, 5 COFF objects (PC) and the C names of their symbols
+_CACHE_VERSION = 6  # of twins.json: 2 added why code is hand-written assembly, 3 ARM's BIOS call stubs, 4 ARM's
+# system instructions, 5 COFF objects (PC) and the C names of their symbols, 6 pieces judged only where the console's
+# analysis cuts them (Console.cuts_pieces)
 # A twin's code that didn't match isn't tried again for this long while neither function's code changes (the
 # same source gives the same result): every agent start's pass would otherwise redo hundreds of compiles (Mario
 # Party 6: about 900, 15 minutes beside the agents). After a while it's tried again: a header can have changed.
@@ -96,9 +97,10 @@ def coff_prints(data: bytes) -> dict[str, Print]:
     return out
 
 
-def object_prints(data: bytes) -> dict[str, Print]:
+def object_prints(data: bytes, pieces: bool = True) -> dict[str, Print]:
     """Fingerprints of every function an object file defines, by symbol, with whether its code is hand-written
-    assembly where its processor tells that without its console's facts (PowerPC: arch/)."""
+    assembly where its processor tells that without its console's facts (PowerPC: arch/). `pieces`: the console's
+    analysis may cut pieces of functions (Console.cuts_pieces)."""
     from elftools.elf.elffile import ELFFile
     from elftools.elf.relocation import RelocationSection
 
@@ -149,6 +151,7 @@ def object_prints(data: bytes) -> dict[str, Print]:
             if arch_id == "arm":  # its mode: bit 0, else the mapping symbol it starts under (dsd's objects)
                 at = [t for a, t in section_modes if a <= lo]
                 facts["thumb"] = True if s["st_value"] & 1 else (at[-1] if at else None)
+                facts["pieces"] = pieces
             out[s.name] = Print(_key(bytes(code[lo:lo + s["st_size"]]), [(o, t) for o, t, _ in mine]),
                                 [n for _, _, n in mine], s["st_size"],
                                 asm=(reason(raw[lo:lo + s["st_size"]], order == "big", **facts) or "") if reason else "")
@@ -329,7 +332,7 @@ class Twins:
             entry = cache.get(uname)
             if not entry or entry.get("mtime") != mtime:
                 try:
-                    prints = object_prints(unit.target.read_bytes())
+                    prints = object_prints(unit.target.read_bytes(), self.net.console(proj).cuts_pieces)
                 except Exception:  # an object pyelftools can't read: no twins for it
                     prints = {}
                 entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size, p.asm, p.name] for k, p in prints.items()}}
