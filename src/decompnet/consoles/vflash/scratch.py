@@ -864,7 +864,11 @@ def data_bytes(root: Path, manifest: dict, addr: int, length: int) -> bytes | No
 OLD_TOOLS = {
     "tools/configure.py": {"f43a74807189bcfa236141d1b6a8116ae8237991"},  # (C++ without -fpermissive: m2c's drafts
     # of module code failed by the hundred on C's ways, "pointer of type `void *' used in arithmetic")
+    # (no $a where a function starts: objdiff showed agents every instruction as a .word, MEASURED marks them)
+    "tools/names.py": {"50e845875ba0a3872bab0f4f7137dcf04ad14ceb"},
+    "tools/delink.py": {"05e83b52c4f2df9eaf00ab017b71205490fb0d2a"},
 }
+MEASURED = {"tools/names.py", "tools/delink.py"}  # what makes the objects objdiff reads: changed, all are made again
 
 
 def refresh_tools(root: Path) -> list[str]:
