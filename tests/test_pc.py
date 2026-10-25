@@ -366,6 +366,10 @@ def test_two_renames_at_once_both_reach_every_file(tmp_path, monkeypatch):
     assert source.read_text() == "int Identity(int x) { return x; }\nint Pass(int x) { return Identity(x); }\n"
     names = json.loads((root / "config" / "v" / "functions.json").read_text())["names"]
     assert names == {"func_00401000": "Identity", "func_00401010": "Pass"}
+    # asked again, hours later (helpers did, 30 times a day on a PC game, each told only "pick another name"): done
+    assert net.rename_symbol(agent, "p", "_func_00401000", "Identity").startswith("✅ _func_00401000 is Identity already")
+    with pytest.raises(NetworkError, match="it's the name of the function _func_00401010"):  # another's: says whose
+        net.rename_symbol(agent, "p", "_func_00401000", "Pass")
 
 
 def test_an_agents_constructor_and_destructor_name_the_functions_they_are(tmp_path, monkeypatch):

@@ -55,18 +55,21 @@ def test_every_agent_says_everything_the_app_asks(agent, stand_in, tmp_path):
         assert type(agent).run is not agents.Agent.run, "it says how a session runs"
 
 
-def test_claude_sessions_read_through_decomp_and_cache_for_five_minutes(stand_in, tmp_path, monkeypatch):
+def test_claude_sessions_read_through_decomp_cache_for_five_minutes_and_see_every_tool(stand_in, tmp_path, monkeypatch):
     """A session starts in its own folder, so Claude Code's Read and Grep found nothing (read_file and search_code read
-    the project); its turns come seconds apart, so the five-minute cache does, at less than the hour's price. The
-    user's own cache setting wins."""
+    the project); its turns come seconds apart, so the five-minute cache does, at less than the hour's price; and it
+    gets decompdecomp's tools up front, not deferred behind ToolSearch, where models guessed their arguments. The
+    user's own settings win."""
     from decompnet.agents import claude
 
     monkeypatch.delenv("CLAUDE_CODE_PROMPT_CACHE_TTL", raising=False)
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
     cmd, env = claude.CLAUDE.session_command(str(stand_in), tmp_path, "http://127.0.0.1:1/mcp", TOKEN, "haiku")
     denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
     assert {"Read", "Grep", "Glob", "Bash", "Write"} <= set(denied)
-    assert env == {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
+    assert env == {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m", "ENABLE_TOOL_SEARCH": "false"}
     monkeypatch.setenv("CLAUDE_CODE_PROMPT_CACHE_TTL", "1h")
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "auto")
     assert claude.CLAUDE.session_command(str(stand_in), tmp_path, "http://127.0.0.1:1/mcp", TOKEN, "haiku")[1] == {}
 
 

@@ -26,6 +26,11 @@ DISALLOWED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read,Grep,Glob"
 # is enough. The user's own setting of it wins.
 CACHE_TTL_ENV, CACHE_TTL = "CLAUDE_CODE_PROMPT_CACHE_TTL", "5m"
 LOADS_TOOLS = "ToolSearch"  # Claude Code loading tools it was told about: not worth a line in the feed
+# Claude Code defers MCP tools: the model sees their names, loads their schemas with ToolSearch, and often called
+# them without, guessing the arguments (rename_symbol(old_name=...)): on one PC game 330 calls were rejected so in a
+# day, 167 of them one polishing helper's. decompdecomp's tools are a session's only ones: all of them up front. The
+# user's own setting of it wins.
+TOOL_SEARCH_ENV, TOOL_SEARCH = "ENABLE_TOOL_SEARCH", "false"
 
 
 def version_name(model_id: str) -> str:
@@ -63,7 +68,7 @@ class ClaudeCode(Agent):
         cmd = [exe, "-p", "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
                "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools", DISALLOWED]
         model, _, effort = (model or "").partition("#")
-        env = {} if CACHE_TTL_ENV in os.environ else {CACHE_TTL_ENV: CACHE_TTL}
+        env = {k: v for k, v in ((CACHE_TTL_ENV, CACHE_TTL), (TOOL_SEARCH_ENV, TOOL_SEARCH)) if k not in os.environ}
         return cmd + (["--model", model] if model else []) + (["--effort", effort] if effort else []), env
 
     def parse(self, event: dict, state: dict) -> list[tuple[str, str] | None]:
