@@ -802,6 +802,21 @@ def test_opencode_titles_its_sessions_with_the_helpers_own_model(tmp_path, monke
     assert json.loads((work / "opencode.json").read_text())["small_model"] == "opencode/deepseek-v4.1-flash-free"
 
 
+
+def test_opencode_2_titles_its_sessions_with_the_helpers_own_model(tmp_path, monkeypatch):
+    """The same in opencode 2's own config format (its title agent): without it, helpers on an OpenCode Go model had
+    each session titled by Zen's paid model, refused with 402 and 403."""
+    monkeypatch.setattr(kinds.get("opencode"), "config_model", lambda: None)
+    monkeypatch.setitem(kinds.known_versions, "opencode", (0, "2.1.4"))
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "opencode-go/deepseek-v4.1-flash#low"})
+    work = tmp_path / "oc"
+    work.mkdir()
+    m._command(s, "tok", work)
+    config = json.loads((work / "opencode.json").read_text())
+    assert config["agents"]["title"]["model"] == {"providerID": "opencode-go", "model": "deepseek-v4.1-flash"}
+    assert "small_model" not in config  # (the old format's key)
+
 def test_a_cli_that_retries_a_usage_limit_is_stopped_and_the_helper_waits(tmp_path, monkeypatch):
     """OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence (a helper's session
     hung until it counted as a failure). Its log saying the limit ends the session, as a usage limit."""
