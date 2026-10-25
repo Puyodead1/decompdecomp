@@ -279,7 +279,7 @@ def test_agents_match_functions(pc):
     texts = "".join(p.read_text() for p in (root / "src").rglob("*.c*")) + (root / "include" / "common.h").read_text()
     assert "settings_get(" in texts and rename["settings_get"] not in texts and rename["g_settings"] not in texts
     fn = net._function(getter, slug)
-    assert fn["status"] == "matched" and json.loads(fn["meta"])["real"] == "settings_get"
+    assert fn["status"] == "matched"  # (its row is under its new name: the report gives it, as delink.py names it)
     assert net._function("settings_get", slug)["id"] == fn["id"]
     # a renamed global is read by its new name (a helper that named one could no longer read_data it)
     assert net.forks.read_data(agent, slug, "g_settings", 24).startswith(f"g_settings = {rename['g_settings']} (")
@@ -317,15 +317,16 @@ def test_matched_functions_and_data_get_real_names(pc):
     assert "clamp_value" in sources and clamp not in sources
     settings = f"D_{syms['_g_settings']:08X}"
     at = next(a for s, a in syms.items() if re.sub(r"^[_@]|@\d+$", "", s) == "settings_get")
-    getter = net.store.one("SELECT name FROM functions WHERE project_id=? AND name LIKE ?", pid, f"%func_{at:08X}%")["name"]
+    getter = net.store.one("SELECT name FROM functions WHERE project_id=? AND (name LIKE ? OR name LIKE ?)", pid,
+                           f"%func_{at:08X}%", "%settings_get%")["name"]  # (named already by an earlier test, or not)
     assert net.store.one("SELECT status FROM functions WHERE name=?", getter)["status"] == "matched"
     said = net.rename_symbol(agent, slug, settings, "g_settings")
     assert said.startswith("✅"), said
     assert net.store.one("SELECT status FROM functions WHERE name=?", getter)["status"] == "matched"
-    assert json.loads((root / "config" / "demoquest" / "names.json").read_text()) == {
-        clamp: "clamp_value", settings: "g_settings"}
+    assert json.loads((root / "config" / "demoquest" / "names.json").read_text()).items() >= {
+        clamp: "clamp_value", settings: "g_settings"}.items()
     fp = ForkProject(root)
-    assert consoles.get("pc").read_data(fp, "g_settings", 16).startswith(settings)
+    assert consoles.get("pc").read_data(fp, "g_settings", 16).startswith(f"g_settings = {settings}")
     with pytest.raises(NetworkError, match=r"used in the project already \(in (src|include)/"):  # (data: a file uses it)
         net.rename_symbol(agent, slug, "clamp_value", "g_settings")
     getter_c = re.sub(r"^[_@]|@\d+$", "", getter)
