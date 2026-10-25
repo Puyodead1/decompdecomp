@@ -178,7 +178,9 @@ class VFlash(Console):
             return (f"{cut} functions cut in the wrong place start where they do now, and "
                     f"{len(changes) - cut} more were found where no function was (loops that return only on a "
                     "condition, or never)")
-        said = net.forks.reanalyse(slug, step, log=log)
+        # (a V.Flash game's rebuild differed where a match had been judged wrongly: measured first, not taken for the
+        # new analysis's doing)
+        said = net.forks.reanalyse(slug, step, baseline=True, log=log)
         if said:
             agent, _ = net.local_agent("decompdecomp")
             real = scratch.real_names(root, version)
