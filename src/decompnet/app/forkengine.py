@@ -785,14 +785,16 @@ class ForkEngine:
             return None
         return consoles.get(cfg.get("platform")).analyse_unanalysed(self.net, slug, log=log)
 
-    def reanalyse(self, slug: str, step, paths=("config",), fix=False, log=print) -> str | None:
+    def reanalyse(self, slug: str, step, paths=("config",), fix=False, baseline=False, log=print) -> str | None:
         """A console's improved analysis of its games, applied to a project made before it (Console.on_start): `step`
         changes the project's `paths` (its config, its build tools; its source files keep their ranges, so the work in
         them stays) and may add files (source files for code it found), and says what it found, as a sentence, or None
         when there's nothing to change. The project is set up again and, where the
         console checks its rebuild, the game rebuilt: a rebuild identical before and not after takes the change back,
         and so does one that differs otherwise than before, unless `fix` (a fix to its build, which may mend part).
-        The project's feed says what happened. Returns the sentence (None: nothing changed)."""
+        The project's feed says what happened. Returns the sentence (None: nothing changed). `baseline`: with no
+        rebuild recorded, it's measured first, so one that already differed (a match judged wrongly) isn't taken for
+        the change's doing; without, a step is kept only when the rebuild is identical."""
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         # the manifest's, as check_rom: the config may hold the game's id ("C32P"), and the build's folder is "c32p"
@@ -809,8 +811,8 @@ class ForkEngine:
                 (fp.root / rel).unlink(missing_ok=True)
 
         with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
-            # (none recorded: measured now, so a rebuild that already differed isn't taken for the change's doing)
-            before = (fp.manifest or {}).get("rebuild") or (console.check_rebuild(fp, version, log=log) if checks else {})
+            before = (fp.manifest or {}).get("rebuild") or \
+                (console.check_rebuild(fp, version, log=log) if checks and baseline else {})
             there = untracked()
             try:
                 said = step(fp)
@@ -3722,7 +3724,7 @@ class ForkEngine:
             "repo_url": cfg.get("repo_url"), "fork_kind": cfg.get("fork_kind"), "version": cfg.get("version"),
             "origin": cfg.get("origin"),
             # what the header shows: its console's name for it ("Visual C++ 8.0 SP1"; the page put "CodeWarrior" before
-            # every id that wasn't a DS one, "CodeWarrior MSVC/8.0-sp1" on a PC project)
+            # every id that wasn't a DS one, "CodeWarrior MSVC/8.0SP1" on a PC project)
             "compiler_name": consoles.compiler_name(cfg["compiler"]) if cfg.get("compiler") else None,
             "versions": fp.versions(), "ready": bool(cfg.get("ready")), "needs": need,
             "rom": {"game_code": cfg.get("version") or "", "region": consoles.name(cfg.get("platform")),
