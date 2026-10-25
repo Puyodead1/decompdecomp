@@ -188,6 +188,24 @@ def test_each_function_is_its_code_and_its_pool_and_the_ones_ghidra_missed_are_f
     assert [f.name for f in fns][:2] == ["func_10000000", "func_1000001C"]
 
 
+def test_a_loop_whose_only_way_out_is_conditional_and_one_with_none_are_whole_functions():
+    """Ghidra missed both. A copy loop that returns with `movgt pc, lr` was cut at its body's first instruction (the
+    rest, ending in `b` back, looked like a whole function, and its first two instructions were nobody's); a function
+    that spins for ever, waiting for a reset, was nobody's."""
+    a = lambda off: BASE + off  # noqa: E731
+    words = [
+        0xE1A0F00E,  # A: mov pc, lr
+        0xE3A0C000, 0xE3520000, 0x1790310C, 0x1782310C,  # copy: mov ip, #0; cmp r2, #0; ldrne/strne r3, [rN, ip, lsl #2]
+        0xE791310C, 0xE780310C, 0xE28CC001, 0xE35C0007,  # ldr/str r3, [rN, ip, lsl #2]; add ip, ip, #1; cmp ip, #7
+        0xC1A0F00E, _b(a(0x28), a(0x08)),  # movgt pc, lr; b back to cmp r2, #0
+        0xE3A03000, 0xE2833001, 0xE35300FE, _b(a(0x38), a(0x30), cond=0x9), _b(a(0x3C), a(0x2C)),  # spin
+        0xE92D4010, 0xE8BD8010,  # B
+    ]
+    code = struct.pack(f"<{len(words)}I", *words)
+    fns = analysis.analyse("FA", [(BASE, code)], {BASE, BASE + 0x40}, {BASE}, lambda x: BASE <= x < BASE + 0x48)
+    assert [(f.addr - BASE, f.size) for f in fns] == [(0x00, 4), (0x04, 0x28), (0x2C, 0x14), (0x40, 8)]
+
+
 def test_references_become_relocations_as_gcc_writes_them():
     """A bl names its function; the pool's address names the data; a switch's table and a branch inside the
     function are against its own section; a tail call names the function it goes to."""
