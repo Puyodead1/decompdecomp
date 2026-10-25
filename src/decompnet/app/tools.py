@@ -558,8 +558,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def search_flags(ctx: Context, function: str, compiler: str = "", source: str = "") -> str:
         """The function's C (its best attempt, or source) built with each of its compiler's flag variants
         (optimisation levels, small data, code-shape options), judged and ranked. For C that looks right but won't
-        match: the flags may be what's wrong. compiler: another one to try instead of the project's. PC games: the
-        function's source file's flags (/Oy- keeps the frame pointer, /O1, /Ob1); one that matches stays the file's."""
+        match: the flags may be what's wrong. compiler: another one to try instead of the project's. Games started
+        from scratch (PC, V.Flash): the function's source file's flags (PC: /Oy- keeps the frame pointer, /O1, /Ob1;
+        V.Flash: -O2, -O1, -O0, -frename-registers); one that matches stays the file's."""
         return await run(ctx, "search_flags", function=function, compiler=compiler, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -594,7 +595,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         different compiler or flags, when C that is right can't match (the code's style says another compiler built
         it). Test it with try_compiler first: a suggestion whose function doesn't match with it is refused. Say what
         you saw. project_info lists open suggestions: suggesting the same compiler and flags is a vote for it; with
-        the user's permission, a proven or agreed one is applied at once.
+        the user's permission, a proven or agreed one is applied at once. Where each source file has flags of its
+        own (PC, V.Flash), search_flags tries them and keeps what matches: there's nothing to suggest by hand.
 
         Args:
             text: what should change and the evidence
