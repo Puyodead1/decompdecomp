@@ -2224,3 +2224,27 @@ def test_a_function_called_from_its_own_file_is_one_symbol_in_the_original_objec
     assert ("_func_00401000", 1) in syms and ("_func_00402000", 0) in syms  # (another file's: undefined)
     reloc_at = struct.unpack_from("<I", data, 20 + 40 + 24)[0]  # the second section's relocations
     assert struct.unpack_from("<IIH", data, reloc_at)[1] == 0  # the call: the first symbol, the function itself
+
+
+def test_a_project_made_by_the_fork_takes_this_layout(tmp_path):
+    """A PC project made by Puyodead1's fork keeps its real names in names.json and its files' flags in flags.json,
+    and names Visual C++ 8.0 SP1 8.0-sp1: they move to functions.json's "names", file_flags.json and 8.0SP1, with the
+    template's tools, which read them; the same keys, so every name stays its function's."""
+    root = tmp_path / "game"
+    conf = root / "config" / "v"
+    conf.mkdir(parents=True)
+    (root / "tools").mkdir()
+    (conf / "functions.json").write_text(json.dumps({"exe": "orig/v.exe", "units": {"u": []}}))
+    (conf / "names.json").write_text(json.dumps({"func_00404450": "Set", "D_004017DF": "g_build"}))
+    (conf / "flags.json").write_text(json.dumps({"src/auto/u.cpp": ["/fp:fast"]}))
+    (root / "tools" / "configure.py").write_text('MSVC_VERSION = "8.0-sp1"\nCL_FLAGS = ["/nologo", "/EHsc"]\n')
+    changed, compiler = scratch_pe.adopt_fork_layout(root, "v")
+    assert compiler == "8.0SP1"
+    assert json.loads((conf / "functions.json").read_text())["names"] == {"D_004017DF": "g_build", "func_00404450": "Set"}
+    assert scratch_pe.file_flags(root, "v") == {"src/auto/u.cpp": ["/fp:fast"]}
+    assert not (conf / "names.json").exists() and not (conf / "flags.json").exists()
+    text = (root / "tools" / "configure.py").read_text()
+    assert 'MSVC_VERSION = "8.0SP1"' in text and 'CL_FLAGS = ["/nologo", "/EHsc"]' in text
+    assert (root / "tools" / "rebuild.py").exists()
+    assert {"config/v/names.json", "config/v/flags.json", "config/v/file_flags.json", "tools/configure.py"} <= set(changed)
+    assert scratch_pe.adopt_fork_layout(root, "v") == ([], None)  # (once)

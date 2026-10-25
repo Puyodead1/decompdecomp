@@ -1707,6 +1707,47 @@ def write_tools(root: Path, version: str) -> list[str]:
     return changed
 
 
+# A project made by Puyodead1's fork of decompdecomp before it took this one's PC support: its real names in
+# config/<version>/names.json, its files' own flags in flags.json, Visual C++ 8.0 SP1 named 8.0-sp1 (its own pack),
+# and tools that read those
+FORK_COMPILERS = {"8.0-sp1": "8.0SP1"}
+
+
+def adopt_fork_layout(root: Path, version: str) -> tuple[list[str], str | None]:
+    """A project made by the fork, in this decompdecomp's layout: its names in functions.json's "names" (the same
+    keys, func_<address> and D_<address>), its flags in file_flags.json, its compiler by this one's name, and the
+    template's tools, which read them. (The changed paths, the Visual C++ it builds with now, or None if unchanged);
+    nothing when it isn't one."""
+    conf = root / "config" / version
+    names, flags = conf / "names.json", conf / "flags.json"
+    cfg = root / "tools" / "configure.py"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    m = re.search(r'^MSVC_VERSION = "([^"]*)"', text, re.M)
+    if not names.exists() and not flags.exists() and not (m and m.group(1) in FORK_COMPILERS):
+        return [], None
+    changed: list[str] = []
+    if names.exists():
+        path = conf / "functions.json"
+        info = json.loads(path.read_text(encoding="utf-8"))
+        info["names"] = dict(sorted({**json.loads(names.read_text(encoding="utf-8")), **(info.get("names") or {})}.items()))
+        path.write_text(json.dumps(info, indent=1), encoding="utf-8")
+        names.unlink()
+        changed += [path.relative_to(root).as_posix(), names.relative_to(root).as_posix()]
+    if flags.exists():
+        merged = {**json.loads(flags.read_text(encoding="utf-8")), **file_flags(root, version)}
+        _write_compilers(flags_file(root, version), merged)
+        flags.unlink()
+        changed += [flags_file(root, version).relative_to(root).as_posix(), flags.relative_to(root).as_posix()]
+    compiler = None
+    if m and m.group(1) in FORK_COMPILERS:
+        compiler = FORK_COMPILERS[m.group(1)]
+        cfg.write_text(text.replace(m.group(0), f'MSVC_VERSION = "{compiler}"', 1), encoding="utf-8")
+    changed += [p for p in write_tools(root, version) if p not in changed]
+    if compiler and "tools/configure.py" not in changed:
+        changed.append("tools/configure.py")
+    return changed, compiler
+
+
 def tool_args() -> list[str]:
     """configure.py arguments pointing at decompdecomp's pinned tools: every installed compiler pack, 6.0-7.1's
     last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0 to 7.1)."""

@@ -132,6 +132,24 @@ class WindowsPC(Console):
         if not (fp.root / manifest.get("game", {}).get("path", f"orig/{version}.exe")).is_file() or \
                 scratch.missing(fp.root, version):  # (the game's DLLs too: each step reads every program)
             return
+        changed, compiler = scratch.adopt_fork_layout(fp.root, version)
+        if changed:  # (first: the steps below build with the tools that read its names)
+            proj = net.project_row(slug)
+            if compiler:
+                manifest = fp.update_manifest(compiler=f"MSVC/{compiler}")
+                net._update_cfg(slug, lambda cfg: cfg.update(compiler=f"MSVC/{compiler}"))
+                changed.append(".decomp.wtf.json")
+            manifest = fp.update_manifest(tools=scratch.tools_version())
+            net.forks._commit_paths(proj, fp, sorted(set(changed)), "Take decompdecomp's own layout for PC projects\n\n"
+                                    "Written by decompdecomp: real names in functions.json, each file's flags in "
+                                    "file_flags.json, and its build tools, which read them.")
+            log(f"{slug}: made by a fork of decompdecomp: its names, flags and tools are this one's now")
+            for cmd in fp.setup_commands(version):  # (its build.ninja named the files that are gone: written again)
+                ok, out = fp.run(cmd, log=lambda *_: None, timeout=scratch.TOOL_SECONDS)
+                if not ok:
+                    log(f"{slug}: {' '.join(cmd[:2])} failed after the change: {out[-scratch.ERROR_TAIL:]}")
+                    break
+            net.forks.check(slug, log=log, build=True)
 
         def matched() -> set[str]:  # not into or out of a matched function: its C would no longer be the whole one
             return {r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=? AND "
