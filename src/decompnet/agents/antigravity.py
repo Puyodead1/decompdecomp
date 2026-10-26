@@ -19,6 +19,13 @@ AGY_PRINT_TIMEOUT = "4h"
 REFUSED = "Antigravity refused decompdecomp's tools"  # every session after it would be refused the same way
 ERROR_LINE = "AGY_ERROR:"  # how agy starts a structured error on stderr
 TEXT_STEPS = ("agent_response", "thinking", "planner_response")
+# agy's own tools ask permission (its shell, files outside the folder, the web), and a background run can't: agy
+# then ends the whole session at once, as a success. Gemini Flash helpers reached for `git status` or grep after a
+# compile and paused after five sessions of that ("ended without compiling anything"); the prompt says so up front
+NO_OWN_TOOLS = ("\n\nAntigravity: you have no shell, terminal, file or web tools of your own here. Using one "
+                "(run_command, view_file, grep...) ends your whole session at once, with the work unfinished. Use "
+                "decompdecomp's tools only: read_file, search_code and file_status read the project, compile_and_diff "
+                "builds it.")
 
 
 def agy_settings() -> Path:
@@ -64,8 +71,8 @@ class Antigravity(Agent):
         return cmd + (["--model", model] if model else []), {}
 
     def stdin(self, prompt: str) -> str:
-        """One stream-json user message."""
-        return json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
+        """One stream-json user message, with what a background run of agy can't do (NO_OWN_TOOLS)."""
+        return json.dumps({"event": "user", "message": {"content": prompt + NO_OWN_TOOLS}}) + "\n"
 
     def parse(self, event: dict, state: dict) -> list[tuple[str, str] | None]:
         """step_update events (text arrives in deltas, gathered per step) and a result. Its result counts one turn for
@@ -102,6 +109,10 @@ class Antigravity(Agent):
                 out.append(("error", f"{REFUSED}: a background run can't ask you for permission. Allow them once: add "
                                      f"\"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in {agy_settings()} "
                                      "(only decompdecomp's tools; shell, files and the web keep asking)."))
+            own = sorted({str(d.get("display_name") or d.get("action")) for d in denied if d.get("action") != "mcp"})
+            if own:
+                out.append(("error", f"Antigravity ended the session when the model used its own {', '.join(own)}: a "
+                                     "background run can't allow that (decompdecomp's tools do the same work)"))
             if res.get("status") not in (None, "SUCCESS"):
                 out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:SAID_CHARS]))
             else:
