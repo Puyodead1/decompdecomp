@@ -44,6 +44,9 @@ class VFlash(Console):
     own_features = frozenset({REBUILD_CHECK})  # (in place: every function at its address, tools/rebuild.py)
     chooses_parts = True  # (its game modules: a game's repeat their engine's code, and each takes Ghidra a minute)
     cuts_pieces = False  # (analysis.py follows each function's code to its end)
+    # each file has flags of its own (flags.json): without the tool, agents that saw a file was -O0 code could only
+    # say so in a note, while it built at -O3
+    own_tools = frozenset({"search_flags"})
 
     def sniff(self, head: bytes, file) -> bool:
         from . import disc
