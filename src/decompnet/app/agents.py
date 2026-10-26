@@ -643,6 +643,7 @@ class Manager:
         try:
             self.net.twins.refresh(slug)
             self.net.permuter.start(slug)  # near misses agents leave, on spare CPU
+            self.net.flagsurvey.start(slug)  # each file built with its console's other flags (app/flagsurvey.py)
         except Exception:  # agents work without them
             log.exception("twins or the permuter didn't start for %s", slug)
         with self._lock:

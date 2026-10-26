@@ -2878,7 +2878,7 @@ class ForkEngine:
                 return {"text": remembered(f"❌ REJECTED and undone: your change breaks matched function(s) "
                                            f"{', '.join(broken[:8])}. Check you replaced the right definition "
                                            "(overloads?) and didn't change shared code.", None),
-                        "score": None, "matched": False, "broken": broken}
+                        "score": None, "matched": False, "broken": broken, "alone": bool(d.matched)}
             if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
                 undo()
                 if quiet is None:
@@ -3031,11 +3031,17 @@ class ForkEngine:
             return False
         return consoles.get(cfg.get("platform") or "").file_flags(fp, "x.c") is not None
 
-    def search_flags(self, agent: Agent, slug: str, function: str, compiler: str = "", source: str = "") -> str:
+    def search_flags(self, agent: Agent, slug: str, function: str, compiler: str = "", source: str = "",
+                     divided: bool = False) -> str:
         """search_flags where each source file has flags of its own (Console.file_flags: PC's /Oy-): the function's C
         built with each variant of its file's flags (Console.flag_variants), judged as an attempt that isn't kept. A
         variant it matches with stays the file's, committed, when the file's other matched functions still match (the
-        attempt's own rule); otherwise the file keeps its flags and nothing is recorded."""
+        attempt's own rule); otherwise the file keeps its flags and nothing is recorded.
+
+        A variant it matches with that breaks other matched functions of the file: the file is likely two of the game's
+        (a V.Flash game's held functions matched at -O3, then functions its C matched only at -O1, and agents forced
+        registers for days). The file is divided around the function, between it and those (split_file's checks), and
+        the search runs again on its part (`divided`)."""
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         fn = self._fn(slug, function)
@@ -3054,7 +3060,7 @@ class ForkEngine:
             raise NetworkError(f"{fn['name']} has no attempt yet: pass the C as source")
         shown = lambda flags: " ".join(flags) or "(the project's flags only)"  # noqa: E731
         linked = unit.complete and fp.linkable()
-        results, kept, changed = [], None, False
+        results, kept, changed, apart = [], None, False, None
         held = self._hold_for_try(slug, function, agent)
         try:
             with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
@@ -3074,6 +3080,8 @@ class ForkEngine:
                             self._commit(proj, fp, rel, f"Build {unit.source} with {shown(flags)}\n\n{fn['name']} "
                                                         f"matches with them (found by {agent.name} with decompdecomp).")
                             return f"{shown(flags)}: {res['text']}\n{unit.source} is built with them from now on."
+                        if res.get("broken") and res.get("alone") and apart is None:
+                            apart = (flags, res["broken"])
                         why = "breaks the file's matched functions" if res.get("broken") else \
                             "doesn't build" if res["score"] is None else f"score {res['score']}"
                         results.append((res["score"] if res["score"] is not None and not res.get("broken") else None,
@@ -3087,6 +3095,12 @@ class ForkEngine:
             if held is not None:
                 with self.net.store.tx() as db:
                     db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (held, agent.id))
+        if apart is not None and not divided and console.splits_sources:
+            said = self._divide_for_flags(agent, slug, fn, unit, apart[1])
+            if said.startswith("✅"):
+                return f"{shown(apart[0])} matches {fn['name']} but not {', '.join(apart[1][:4])}: {said}\n" + \
+                    self.search_flags(agent, slug, function, source=source, divided=True)
+            results.append((None, apart[0], "matches, but breaks matched functions; " + said))
         results.sort(key=lambda r: (r[0] is None, r[0] or 0))
         lines = [f"- {why:>8}  {shown(flags)}" + ("   <- the file's flags" if flags == own else "")
                  for _, flags, why in results]
@@ -3095,6 +3109,128 @@ class ForkEngine:
                    "Other flags come closer, but none matches: look at the C again first.")
         return (f"{len(results)} flag variants for {fn['name']} in {unit.source} (lower is better), none matches:\n"
                 + "\n".join(lines) + "\n" + verdict)
+
+    def file_flags_of(self, slug: str, source: str) -> list[str] | None:
+        _, fp, cfg = self.get(slug)
+        return consoles.get(cfg.get("platform")).file_flags(fp, source)
+
+    def survey_file(self, slug: str, source: str, divided: bool = False) -> str | None:
+        """The flag survey of one source file (app/flagsurvey.py): the file as it is, built with each of the variants
+        Console.survey_variants gives of its flags. The variant most of its open functions match with becomes the
+        file's when every function that matched still does (search_flags' rule, with no agent's C needed: one of a
+        V.Flash game's files had four functions that matched at -O1 as they were, while agents forced registers at
+        -O3); when it breaks matched ones, the file is divided around the first of those it makes match
+        (_divide_for_flags), and its part surveyed again. Returns what changed, as a sentence (None: nothing)."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        own = console.file_flags(fp, source)
+        units = fp.units_for(source)
+        if own is None or not units or slug in self.net.links:
+            return None
+        rows = {self._meta(r).get("symbol") or r["name"]: r for u in units for r in self.net.store.all(
+            "SELECT id, name, status, unit, meta FROM functions WHERE project_id=? AND unit=?", proj["id"], u.name)}
+        if not any(r["status"] == "open" for r in rows.values()):
+            return None
+        try:
+            text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
+        except OSError:
+            return None
+        linked = any(u.complete for u in units) and fp.linkable()
+        best: tuple[list[str], list[str], list[str]] | None = None  # (flags, functions it matches, matches it breaks)
+        with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), \
+                self._units_locked(proj, [u.name for u in units]):
+            def measure() -> dict[str, dict]:
+                """{unit: {function: match %}} as the file builds now (not _baseline's: its scores don't know the
+                file's flags changed), only the units that built."""
+                out = {}
+                for u in units:
+                    if self._build_unit(proj, fp, u)[0]:
+                        try:
+                            out[u.name] = fp.diff(u, None).unit_scores
+                        except (ObjdiffError, ForkError):
+                            pass
+                return out
+
+            measured = measure()
+            before = {n: pct for scores in measured.values() for n, pct in scores.items()}
+            if len(measured) < len(units):  # (it doesn't build as it is)
+                return None
+            changed = False
+            try:
+                for flags in console.survey_variants(own)[1:]:
+                    with self._build_locks[proj["id"]]:
+                        console.set_file_flags(fp, source, flags)
+                    changed = True
+                    after = {n: pct for scores in measure().values() for n, pct in scores.items()}
+                    gained = [n for n, r in rows.items() if r["status"] == "open" and (before.get(n) or 0) < 100
+                              and (after.get(n) or 0) >= 100]
+                    lost = [n for n, pct in before.items() if (pct or 0) >= 100 and (after.get(n) or 0) < 100]
+                    if gained and (best is None or (len(gained), -len(lost)) > (len(best[1]), -len(best[2]))):
+                        best = (flags, gained, lost)
+            finally:
+                if changed:
+                    with self._build_locks[proj["id"]]:
+                        console.set_file_flags(fp, source, own)
+                    for u in units:
+                        self._build_unit(proj, fp, u)  # the file's objects are its own flags' again
+            if best is not None and not best[2]:
+                flags, gained, _ = best
+                with self._build_locks[proj["id"]]:
+                    rel = console.set_file_flags(fp, source, flags)
+                after = measure()
+                now = {n: pct for scores in after.values() for n, pct in scores.items()}
+                if len(after) < len(units) or any((pct or 0) >= 100 and (now.get(n) or 0) < 100
+                                                  for n, pct in before.items()):  # (measured otherwise this time)
+                    with self._build_locks[proj["id"]]:
+                        console.set_file_flags(fp, source, own)
+                    for u in units:
+                        self._build_unit(proj, fp, u)
+                    return None
+                shown = " ".join(flags) or "the project's flags only"
+                said = (f"{source} is built with {shown}: {len(gained)} of its functions match with them as they are "
+                        f"({', '.join(rows[n]['name'] for n in gained[:6])}), and every match holds")
+                self._commit(proj, fp, rel, f"Build {source} with {shown}\n\n{said} (decompdecomp's flag survey).")
+                self.net.bump_generation(proj["id"])  # (the file's flags: earlier compiles aren't repeats any more)
+                for u in units:
+                    self._keep_scores(proj, u, text, after[u.name])
+                    self._apply_scores(proj, u.name, after[u.name], text=text, via="flag survey")
+                with self.net.store.tx() as db:
+                    self.net._event(db, proj["id"], None, "analysis", said)
+                return said
+        if best is None or divided or not console.splits_sources:
+            return None
+        first = rows[best[1][0]]
+        said = self._divide_for_flags(None, slug, first, fp.unit(first["unit"]), best[2])
+        if not said.startswith("✅"):
+            return None
+        part = fp.unit(self._fn(slug, first["name"])["unit"]).source
+        return said + (f" Then: {again}" if part and (again := self.survey_file(slug, part, divided=True)) else "")
+
+    def _divide_for_flags(self, agent: Agent | None, slug: str, fn, unit, broken: list[str]) -> str:
+        """Split `fn`'s file so that it and the functions between it and those in `broken` (matched functions other
+        flags break) are a file of their own: after the last of them before it, and at the first after it. Returns
+        what split_file said (✅ when it's done)."""
+        _, fp, _ = self.get(slug)
+        try:
+            order = fp.diff(unit, None).order
+        except (ObjdiffError, ForkError) as e:
+            return f"objdiff couldn't read {unit.source}'s functions: {e}"
+        sym = self._meta(fn).get("symbol") or fn["name"]
+        if sym not in order:
+            return f"{fn['name']} isn't in {unit.source}'s object"
+        at = order.index(sym)
+        before = [order.index(b) for b in broken if b in order and order.index(b) < at]
+        after = [order.index(b) for b in broken if b in order and order.index(b) > at]
+        console = consoles.get(self.get(slug)[2].get("platform"))
+        said = []
+        # (the later cut first: the earlier one then leaves the function's part in the new file)
+        for cut in ([order[min(after)]] if after else []) + ([order[max(before) + 1]] if before else []):
+            try:
+                said.append(self._split_source(agent, slug, console, unit.source, cut, ""))
+            except NetworkError as e:
+                said.append(f"{unit.source} couldn't be divided at {cut}: {e}")
+                break
+        return " ".join(said) if said else "nothing to split around"
 
     # ------------------------------------------------------------------ autopilot
 
