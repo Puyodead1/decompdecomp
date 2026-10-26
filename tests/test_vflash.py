@@ -685,3 +685,19 @@ def test_functions_set_aside_as_pieces_are_open_again(tmp_path):
     assert scratch.reopen_pieces(net, proj) == 1
     rows = {r["name"]: (r["status"], json.loads(r["meta"])) for r in net.store.all("SELECT * FROM functions")}
     assert rows["piece"] == ("open", {"asm_check": 1}) and rows["mode"][0] == rows["twin"][0] == "asm"
+
+
+def test_v_flash_agents_have_search_flags():
+    """An agent found a file was -O0 code built at -O3, and had no tool to change its flags."""
+    from decompnet.app import tools
+    assert "search_flags" in tools.tool_names(True, consoles.get("vflash"))
+
+
+def test_search_flags_keeps_flags_a_function_comes_far_closer_with():
+    """A V.Flash game's file was -O0 code built at -O3: the agent's C scored 282 at -O0 and 4064 at -O3, matching
+    with neither, and the file kept -O3."""
+    from decompnet.app.forkengine import _far_closer
+    results = [(4064, [], "score 4064"), (282, ["-O0"], "score 282"), (2597, ["-O1"], "score 2597")]
+    assert _far_closer(results, [])[1] == ["-O0"]
+    assert _far_closer([(4064, [], ""), (2597, ["-O1"], "")], []) is None  # (closer, not far closer)
+    assert _far_closer([(4064, [], ""), (None, ["-O0"], "breaks the file's matched functions")], []) is None
