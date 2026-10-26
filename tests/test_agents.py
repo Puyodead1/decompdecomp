@@ -51,6 +51,16 @@ def test_antigravity_refusing_decomps_tools_says_how_to_allow_them():
     assert errors and errors[0].startswith("Antigravity refused") and antigravity.AGY_ALLOW in errors[0]
 
 
+def test_antigravity_ending_a_session_over_its_own_shell_says_so():
+    """agy ends a background session the moment the model uses its own shell (headless runs can't ask), and reports
+    success: Gemini Flash helpers paused after five sessions that "ended without compiling anything"."""
+    line = json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "",
+                                                     "denied_actions": [{"action": "command", "display_name": "RunCommand"}]}})
+    errors = [t for k, t in kinds.get("antigravity").parse_line(line, {}) if k == "error"]
+    assert errors and "its own RunCommand" in errors[0]
+    assert "no shell" in kinds.get("antigravity").stdin("work")
+
+
 def test_opencode_errors_say_what_failed():
     """Issue #3: opencode's error event nests the message under data; the feed showed "None"."""
     line = json.dumps({"type": "error", "sessionID": "s", "error": {"name": "ProviderAuthError",
@@ -120,7 +130,8 @@ def test_prompts_go_in_on_stdin_never_the_command_line(tmp_path, monkeypatch):
     s = agents.Session("antigravity-2", "antigravity", "a", "demo", "antigravity-2", {})
     (tmp_path / "agy2").mkdir()
     cmd, _, stdin = m._command(s, "tok", tmp_path / "agy2")
-    assert json.loads(stdin) == {"event": "user", "message": {"content": "line one\nline two with \"quotes\" & <ampersands>"}}
+    assert json.loads(stdin) == {"event": "user", "message": {
+        "content": "line one\nline two with \"quotes\" & <ampersands>" + antigravity.NO_OWN_TOOLS}}
     assert cmd[1:5] == ["--output-format", "stream-json", "--input-format", "stream-json"]
     cfg = json.loads((tmp_path / "agy2" / ".agents" / "mcp_config.json").read_text())
     assert cfg["mcpServers"]["decomp"] == {"serverUrl": "http://127.0.0.1:6464/mcp",
