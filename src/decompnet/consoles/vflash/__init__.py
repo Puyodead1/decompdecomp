@@ -217,6 +217,13 @@ class VFlash(Console):
 
         return scratch.rename(fp.root, version, old, new)
 
+    splits_sources = True  # a source file is a unit of functions.json (scratch.split_unit)
+
+    def split_source(self, fp, version: str, source: str, at: str, new: str) -> dict:
+        from . import scratch
+
+        return scratch.split_unit(Path(fp.root), version, source, at, new)
+
     def function_asm(self, root: Path, unit: str, symbol: str) -> str | None:
         from . import scratch
 
@@ -236,6 +243,11 @@ class VFlash(Console):
         from . import scratch
 
         return scratch.flag_variants(flags)
+
+    def survey_variants(self, flags: list[str]) -> list[list[str]]:
+        from . import scratch
+
+        return scratch.survey_variants(flags)
 
     def read_data(self, fp, name: str, length: int) -> str | None:
         """The game's data isn't in the target objects: it's read from the programs made from the user's copy."""

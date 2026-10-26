@@ -336,6 +336,11 @@ class Console:
         """A source file's flags (first) and the variants of them search_flags tries."""
         return [flags]
 
+    def survey_variants(self, flags: list[str]) -> list[list[str]]:
+        """A source file's flags (first) and the variants the flag survey builds every file of the game with
+        (app/flagsurvey.py): search_flags' by default, fewer where those are many."""
+        return self.flag_variants(flags)
+
     def file_ranges(self, fp) -> dict[str, list[tuple[int, int]]]:
         """Where each source file's code is ({source: [(start, end)]}): the project Settings' address ranges, for a
         project whose files each have a compiler."""
