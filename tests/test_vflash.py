@@ -339,6 +339,38 @@ def test_rename_symbol_keeps_real_names_by_the_name_by_address(tmp_path):
     assert scratch.address_of(root, "v1", "Level_Run") == ("GZ1A", 0x10400000)
 
 
+def test_a_source_file_is_divided_in_the_projects_config(tmp_path):
+    """One of a V.Flash game's files held two of the game's (matched at -O3, then -O1): split_file divides it in
+    functions.json, the new file right after it with its flags."""
+    root = _project(tmp_path)
+    conf = root / "config" / "v1"
+    info = json.loads((conf / "functions.json").read_text())
+    info["units"]["FA/text_10000000"] += [{"name": f"func_{BASE + k * 8:08X}", "addr": BASE + k * 8, "offset": k * 8,
+                                           "size": 8, "relocs": []} for k in (1, 2)]
+    (conf / "functions.json").write_text(json.dumps(info))
+    (conf / "flags.json").write_text(json.dumps({"src/FA/text_10000000.cpp": ["-O1"]}))
+    (conf / "names.json").write_text(json.dumps({"func_10000010": "Level_End"}))
+    saved = scratch.split_unit(root, "v1", "src/FA/text_10000000.cpp", "Level_End", "src/FA/text_10000010.cpp")
+    units = json.loads((conf / "functions.json").read_text())["units"]
+    assert list(units) == ["FA/text_10000000", "FA/text_10000010", "GZ1A/text_10400000"]
+    assert [f["name"] for f in units["FA/text_10000010"]] == ["func_10000010"]
+    assert [f["name"] for f in units["FA/text_10000000"]] == ["func_10000000", "func_10000008"]
+    assert json.loads((conf / "flags.json").read_text())["src/FA/text_10000010.cpp"] == ["-O1"]
+    assert set(saved) == {conf / "functions.json", conf / "flags.json"}
+    with pytest.raises(ForkError, match="after its first"):
+        scratch.split_unit(root, "v1", "src/FA/text_10000000.cpp", "func_10000000", "src/FA/x.cpp")
+    with pytest.raises(ForkError, match="src/FA/"):
+        scratch.split_unit(root, "v1", "src/FA/text_10000000.cpp", "func_10000008", "src/GZ1A/x.cpp")
+    assert consoles.get("vflash").splits_sources
+
+
+def test_the_flag_survey_tries_the_other_optimisation_levels():
+    assert consoles.get("vflash").survey_variants([]) == [[], ["-O2"], ["-O1"], ["-Os"]]
+    assert consoles.get("vflash").survey_variants(["-O1", "-frename-registers"]) == [
+        ["-O1", "-frename-registers"], ["-frename-registers"], ["-frename-registers", "-O2"],
+        ["-frename-registers", "-O1"], ["-frename-registers", "-Os"]]
+
+
 def test_a_file_builds_with_flags_of_its_own(tmp_path):
     """The maths library was built with -O1, the rest with -O3: a file's own flags go in flags.json, after the
     project's (GCC takes the last); search_flags tries other levels and the options V.Flash's C++ differs by."""
