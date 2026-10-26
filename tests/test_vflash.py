@@ -436,6 +436,9 @@ def test_only_what_no_compiler_emits_is_set_aside():
     vflash = consoles.get("vflash")
     assert vflash.asm_reason(code[d.addr - BASE:d.addr - BASE + d.size]) is None
     assert "mrs" in vflash.asm_reason(struct.pack("<2I", 0xE10F0000, 0xE1A0F00E))
+    floats = struct.pack("<4I", 0xB0E8B5F0, 0x3DCDB28D, 0x3AFFFFFE, 0x2D173CF2)  # (Ghidra read them as code)
+    assert "data" in vflash.asm_reason(floats)
+    assert all(vflash.asm_reason(code[f.addr - BASE:f.addr - BASE + f.size]) is None for f in fns)
 
 
 def test_a_function_reads_as_assembly_m2c_takes():
