@@ -31,6 +31,9 @@ THUMB_CAPSTONE = {False: (capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB)}
 STUB_BYTES = 16
 THUMB_SVC, THUMB_BX_LR = 0xDF00, 0x4770  # svc #n (0xDFnn); bx lr
 ARM_SWI, ARM_BX_LR = 0x0F000000, 0xE12FFF1E  # swi #n (cond 1111 nnnn...: bits 24-27 set); bx lr
+# Data read as a function: no compiler starts one with a conditional instruction (the flags are whatever its caller
+# left). On a V.Flash game 40 open "functions" were tables of floats (0x3DCDB28D, 0.1) that Ghidra had taken for code,
+# no matched one starts that way, and agents gave each up as "no C makes this"
 # Instructions no compiler emits, in code known to be ARM (a Thumb function read as ARM words could look like one):
 # the CPU's mode (msr/mrs: a DS program's start-up code switches it) and coprocessor 15, the cache and memory setup
 SYSTEM = ((0x0FB0F000, 0x0320F000, "msr"), (0x0FB0FFF0, 0x0120F000, "msr"), (0x0FBF0FFF, 0x010F0000, "mrs"),
@@ -59,6 +62,9 @@ def asm_reason(code: bytes, big_endian: bool = False, thumb: bool | None = None,
     if big_endian:
         return None
     if thumb is False:
+        if len(code) >= 4 and int.from_bytes(code[:4], "little") >> 28 not in (0xE, 0xF):
+            return ("starts with a conditional instruction, which tests flags its caller left: no compiler starts a "
+                    "function that way, so it's data (a table of numbers) between functions, not code")
         for at in range(0, len(code) - 3, 4):
             w = int.from_bytes(code[at:at + 4], "little")
             if w >> 28 != 0xF and (what := next((x for m, v, x in SYSTEM if w & m == v), None)):

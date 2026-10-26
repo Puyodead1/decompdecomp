@@ -898,7 +898,7 @@ def reopen_pieces(net, proj) -> int:
     return len(back)
 
 
-ASM_CHECK = 1  # set_aside's version, in each function it checked: a better check (a bigger number) looks again
+ASM_CHECK = 2  # set_aside's version, in each function it checked: a better check (a bigger number) looks again (2: data)
 
 
 def set_aside(net, proj, fp, version: str, reason) -> int:
