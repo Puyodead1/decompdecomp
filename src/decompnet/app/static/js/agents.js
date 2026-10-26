@@ -188,10 +188,15 @@ $("removePaused").onclick = async () => {
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
 const LZ = { kind: null, model: "", customModel: false, apiSingleModel: null, apiCustomModel: "", models: [], multiple: false, endpointModels: {}, byKind: {}, count: 1, per: null, effort: "", task: "" };
 const EFFORT_NAMES = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
-const effortField = (a) => (a.takes_effort ? `<label class="field"><span>Effort (how hard the model thinks, for models that offer it)</span><select data-f="effort">${[["", "Model's default"], ...(a.efforts || []).map((e) => [e, EFFORT_NAMES[e] || e])].map(([v, l]) => `<option value="${v}" ${effortOf(a) === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : "");
+const effortField = (a) => (a.takes_effort ? `<label class="field"><span>Effort (how hard the model thinks, for models that offer it)</span><select data-f="effort">${[["", "Model's default"], ...effortsOf(a).map((e) => [e, EFFORT_NAMES[e] || e])].map(([v, l]) => `<option value="${v}" ${effortOf(a) === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : "");
 // an agent that takes an effort (opencode 2, Claude Code) gets it with the model's name: provider/model#high. The
 // launcher keeps the last one picked, which another agent may not offer (Claude Code's xhigh)
-const effortOf = (a) => (a.takes_effort && (a.efforts || []).includes(LZ.effort) ? LZ.effort : "");
+const effortOf = (a) => (a.takes_effort && effortsOf(a).includes(LZ.effort) ? LZ.effort : "");
+// the picked model's own efforts, when the agent knows them (opencode's catalog: DeepSeek V4.1 Flash has no medium)
+const effortsOf = (a) => {
+  const m = !a.uses_endpoints && (a.models || []).find((x) => x.id === LZ.model);
+  return (m && m.efforts) || a.efforts || [];
+};
 const withEffort = (a, model) => (effortOf(a) && model ? `${model.split("#")[0]}#${effortOf(a)}` : model);
 function launcherInit() {
   if (LZ.kind || !S.st) return;
