@@ -817,6 +817,36 @@ def test_opencode_2_titles_its_sessions_with_the_helpers_own_model(tmp_path, mon
     assert config["agents"]["title"]["model"] == {"providerID": "opencode-go", "model": "deepseek-v4.1-flash"}
     assert "small_model" not in config  # (the old format's key)
 
+
+def test_opencode_offers_and_sends_only_the_efforts_a_model_has(tmp_path, monkeypatch):
+    """DeepSeek V4.1 Flash on OpenCode Go has low, high and max: a helper started at medium stopped at once each
+    session ("Variant unavailable"). The launcher gets each model's efforts from opencode's catalog, and a helper's
+    effort the model lacks becomes the nearest it has."""
+    cache = tmp_path / "cache" / "opencode"
+    cache.mkdir(parents=True)
+    (cache / "models.json").write_text(json.dumps({"opencode-go": {"models": {
+        "deepseek-v4.1-flash": {"reasoning": True, "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]},
+        "plain": {"reasoning": False}}}}))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    oc = kinds.get("opencode")
+    rows = oc.read_models(["opencode-go/deepseek-v4.1-flash", "opencode-go/plain", "other/unknown"])
+    assert [r.get("efforts") for r in rows] == [["low", "high", "max"], [], None]
+    assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#medium") == "opencode-go/deepseek-v4.1-flash#low"
+    assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#xhigh") == "opencode-go/deepseek-v4.1-flash#high"
+    assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#max") == "opencode-go/deepseek-v4.1-flash#max"
+    assert oc.offered_effort("opencode-go/plain#high") == "opencode-go/plain"
+    assert oc.offered_effort("other/unknown#medium") == "other/unknown#medium"  # (the catalog doesn't say)
+
+    monkeypatch.setattr(oc, "config_model", lambda: None)
+    monkeypatch.setitem(kinds.known_versions, "opencode", (0, "2.1.4"))
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1",
+                       {"model": "opencode-go/deepseek-v4.1-flash#medium"})
+    work = tmp_path / "oc"
+    work.mkdir()
+    cmd = m._command(s, "tok", work)[0]
+    assert cmd[cmd.index("-m") + 1] == "opencode-go/deepseek-v4.1-flash#low"
+
 def test_a_cli_that_retries_a_usage_limit_is_stopped_and_the_helper_waits(tmp_path, monkeypatch):
     """OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence (a helper's session
     hung until it counted as a failure). Its log saying the limit ends the session, as a usage limit."""
