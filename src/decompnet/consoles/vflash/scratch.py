@@ -654,6 +654,17 @@ def flag_variants(flags: list[str]) -> list[list[str]]:
     return out
 
 
+def survey_variants(flags: list[str]) -> list[list[str]]:
+    """A file's own flags (first), and the variants the flag survey builds every file with: the other optimisation
+    levels only (a game's files are many; -O0 and the options are left to search_flags)."""
+    others = [f for f in flags if not f.startswith("-O")]
+    out = [list(flags)]
+    for new in (others, *([*others, level] for level in FLAG_LEVELS if level != "-O0")):
+        if new not in out:
+            out.append(new)
+    return out
+
+
 def set_file_flags(fp, source: str, flags: list[str]) -> str:
     """Build `source` with `flags` on top of the project's from now on (flags.json; none: no line). Returns
     flags.json's path in the project."""
@@ -668,6 +679,44 @@ def set_file_flags(fp, source: str, flags: list[str]) -> str:
     path = _flags_file(fp)
     path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return path.relative_to(fp.root).as_posix()
+
+
+def split_unit(root: Path, version: str, source: str, at: str, new: str) -> dict[Path, str]:
+    """Divide `source`'s unit in functions.json at function `at` (its symbol, or the real name it has): it and the
+    functions after it go to `new`'s (src/<unit>.cpp or .c, in the same program's folder), right after it, with the
+    file's flags (flags.json). Returns each config file changed, with what it held before. One of a V.Flash game's
+    files held two of the game's: the first half's functions matched at -O3, the second half's only at -O1."""
+    conf = root / "config" / version
+    path = conf / "functions.json"
+    text = path.read_text(encoding="utf-8")
+    info = json.loads(text)
+    stem = lambda rel: re.sub(r"\.(?:cpp|c)$", "", rel.removeprefix("src/"))  # noqa: E731
+    unit = stem(source)
+    if not source.startswith("src/") or unit not in info["units"]:
+        raise ForkError(f"{source} isn't one of the project's source files")
+    m = re.fullmatch(r"src/([A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)\.(?:cpp|c)", new)
+    if m is None or m.group(1).split("/")[0] != unit.split("/")[0]:
+        raise ForkError(f"{new}: this file's functions are {unit.split('/')[0]}'s, in src/{unit.split('/')[0]}/: name "
+                        f"it src/{unit.split('/')[0]}/<name>.cpp (letters, digits, _)")
+    if m.group(1) in info["units"]:
+        raise ForkError(f"{new} exists already: pick another new_name")
+    by_real = {real: was for was, real in real_names(root, version).items()}
+    names = [fn["name"] for fn in info["units"][unit]]
+    if by_real.get(at, at) not in names[1:]:
+        raise ForkError(f"{at} isn't one of {source}'s functions after its first")
+    k = names.index(by_real.get(at, at))
+    units = {}
+    for u, fns in info["units"].items():
+        units[u] = fns[:k] if u == unit else fns
+        if u == unit:
+            units[m.group(1)] = fns[k:]
+    path.write_text(json.dumps({**info, "units": units}, indent=1), encoding="utf-8")
+    saved = {path: text}
+    flags = conf / "flags.json"
+    if flags.exists() and source in (own := json.loads(flags.read_text(encoding="utf-8"))):
+        saved[flags] = flags.read_text(encoding="utf-8")
+        flags.write_text(json.dumps({**own, new: own[source]}, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return saved
 
 
 # ---------------------------------------------------------------------------------------------------- names and data

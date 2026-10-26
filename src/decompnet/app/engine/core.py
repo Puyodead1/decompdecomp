@@ -46,12 +46,14 @@ class Core(Network):
         self._cmaps: dict[int, tuple] = {}  # project id -> (what it was built from, compiler map)
         self._cmap_builds: dict[int, threading.Lock] = {}  # project id -> held while its compiler map builds
         self.surveys: dict[str, dict] = {}  # slug -> the judge's compiler survey, running or last
+        from ..flagsurvey import FlagSurvey
         from ..forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from ..permute import Permuter
         from ..twins import Twins
         self.forks = ForkEngine(self)
         self.twins = Twins(self)
         self.permuter = Permuter(self)
+        self.flagsurvey = FlagSurvey(self)
         from ..rangecheck import RangeChecks
         self.rangechecks = RangeChecks(self)
         from ..filecompilers import FileCompilers

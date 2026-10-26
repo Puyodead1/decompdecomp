@@ -303,6 +303,36 @@ def test_search_flags_finds_the_flags_a_file_was_built_with(demo):
         net.search_flags(agent, slug, fn["name"], source=code)
 
 
+@needs_tools
+def test_the_flag_survey_finds_the_flags_a_file_was_built_with(demo):
+    """The same file built with /Oy- by mistake, its C as it is: the survey (app/flagsurvey.py) builds the file
+    with each variant of its flags, and keeps the one its open function matches with, no agent asking."""
+    net, slug = demo
+    agent, _ = net.local_agent("pc-agent")
+    _, fp, _ = net.forks.get(slug)
+    pc = consoles.get("pc")
+    rename = _addresses()
+    fn = net._function(next(n for n in (r["name"] for r in net.store.all(
+        "SELECT name FROM functions WHERE project_id=?", net.project_row(slug)["id"])) if rename["settings_get"] in n),
+        slug)
+    source = fp.unit(fn["unit"]).source
+    pc.set_file_flags(fp, source, [])
+    if fn["status"] != "matched":
+        code = (f"extern int {rename['g_settings']}[6];\nint __stdcall {rename['settings_get']}(int index, int "
+                f"fallback) {{\n    if (index < 0 || index >= 6) {{\n        return fallback;\n    }}\n    return "
+                f"{rename['g_settings']}[index];\n}}\n")
+        assert net.forks.attempt(agent, slug, fn["name"], code)["matched"]
+    pc.set_file_flags(fp, source, ["/Oy-"])
+    with net.store.tx() as db:  # (what an agent's open function in a file with the wrong flags looks like)
+        db.execute("UPDATE functions SET status='open' WHERE id=?", (fn["id"],))
+    assert source in net.flagsurvey.todo(slug)
+    said = net.forks.survey_file(slug, source)
+    assert said and "match with them" in said and fn["name"] in said, said
+    assert pc.file_flags(fp, source) == []
+    assert net._function(fn["name"], slug)["status"] == "matched"
+    assert net.forks.survey_file(slug, source) is None  # (nothing open in it now)
+
+
 def test_on_start_reads_frames_only_for_files_without_matched_code(tmp_path):
     root = tmp_path
     code = FRAMED * 3 + FRAMED * 3

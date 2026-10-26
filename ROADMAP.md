@@ -41,6 +41,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Your own compiler (Setup: another build of one it has) | ✓ | ✓ | ✓ | ✓ your SDK | — | ✓ | ✓ | — | ✓ your Visual C++, for 32-bit games (64-bit ones build with the pack's 2017) | ✓ your XDK | — | the project's own build |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | — | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | from scratch: per source file (`try_compiler`, Settings); else the project's build | the project's build |
 | Flag search (`search_flags`) | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | — (the project's flags only) | per source file (/Oy- on 32-bit, /O1, /Ob1) | per source file | — (the project's flags only) | the project's build |
+| Flag survey: every file built with the other flags, in the background | — | — | — | — | — | — | — | — | ✓ (/Oy-, /O1, /Ob1) | ✓ (as PC's) | — | — |
 | Compiler map and the judge's survey | ✓ | ✓ | ✓ | — | — | ✓ | — | ✓ from scratch: per source file (its own compilers, nearest first); else the project's build | ✓ per source file, Rich header | the XDK build's compiler (no Rich header: one per game) | ✓ from scratch: per source file (its own compilers, nearest first); else the project's build | — |
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | — | ✓ | — | ✓ from scratch: per source file; else the project's build | ✓ over source files | ✓ | ✓ from scratch: per source file; else the project's build | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | — | ✓ | — | — | ✓ (named by RTTI where the program has it) | ✓ (RTTI where the program has it) | — | — |
@@ -209,6 +210,18 @@ Where to start on a gap:
   installed builds one as soon as they are, and no older configure.py is given an argument it doesn't know. The build
   passes every path as `Z:\...`, and wine's output goes through a file: the services the first wine program starts
   outlive it and, given the build's pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **The flag survey, and `split_file` on V.Flash.** Agents on a V.Flash game left hundreds of notes about register
+  allocation ("tried register asm, c & 0xff, u32...") on functions the permuter had already had its turns on: one
+  source file held two of the game's, the first built with -O3, the second with -O1, and `search_flags` refused -O1
+  because it broke the first half's matches. Now `search_flags` divides such a file around the function
+  (`ForkEngine._divide_for_flags`, `split_file`'s checks) and tries again on its part, and the flag survey
+  (`app/flagsurvey.py`, `ForkEngine.survey_file`) does the same for every file of a project whose files have flags of
+  their own, in the background, with no agent's C needed: on that game, the file's four functions matched at -O1 as
+  they were, in under a minute. V.Flash projects divide source files in functions.json (`scratch.split_unit`).
+- **Data Ghidra took for ARM code is set aside.** No compiler starts a function with a conditional instruction (the
+  flags are its caller's): on a V.Flash game 40 open "functions" did, all tables of numbers, each given up by agents
+  in turn (`arch/arm.py`, `asm_reason`).
+
 - **PSP.** A UMD image (read in place, also as a CSO) or the game's program, with its title and product code from
   PARAM.SFO. A PRX is placed at 0x08804000 the way the PSP loads it, then split by splat like any MIPS program; its
   import stubs are set aside and get the system functions' names (`sceIoOpen`) from the open-source PSP SDK's NID
@@ -747,6 +760,14 @@ functions as C. What's left:
 
 Only agbcc's free tools are needed; the BIOS, Nintendo's SDK and the cartridge logo never are (the demo's logo is
 blank).
+
+### The flag survey for every console
+
+The survey builds each file with its console's other flags, which needs flags a file can have of its own
+(`Console.file_flags`): PC and V.Flash projects have them. ROM projects (N64, PS1, PS2, PSP) build with one compiler
+per range (the compiler map), where the judge's survey already tries compilers; DS projects choose a CodeWarrior
+version per file but not flags, and GameCube/Wii and public decomps build with their project's own build. Each gets
+the survey once its files can have flags of their own (`file_flags`, `set_file_flags`, `survey_variants`).
 
 ### Newer Windows games (Visual C++ 2012, 2013, 2015 and 2019+; 64-bit)
 
