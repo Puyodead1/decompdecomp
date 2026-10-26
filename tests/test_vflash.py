@@ -365,10 +365,10 @@ def test_a_source_file_is_divided_in_the_projects_config(tmp_path):
 
 
 def test_the_flag_survey_tries_the_other_optimisation_levels():
-    assert consoles.get("vflash").survey_variants([]) == [[], ["-O2"], ["-O1"], ["-Os"]]
+    assert consoles.get("vflash").survey_variants([]) == [[], ["-O2"], ["-O1"], ["-Os"], ["-O0"]]
     assert consoles.get("vflash").survey_variants(["-O1", "-frename-registers"]) == [
         ["-O1", "-frename-registers"], ["-frename-registers"], ["-frename-registers", "-O2"],
-        ["-frename-registers", "-O1"], ["-frename-registers", "-Os"]]
+        ["-frename-registers", "-O1"], ["-frename-registers", "-Os"], ["-frename-registers", "-O0"]]
 
 
 def test_a_file_builds_with_flags_of_its_own(tmp_path):
