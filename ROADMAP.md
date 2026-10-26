@@ -34,7 +34,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | — | ✓ (agents agree, the rebuild checks) | — | — | — |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings) | flags file by file | the project's build |
 | Flag search (`search_flags`) | ✓ | ✓ | ✓ | ✓ | the project's build | per source file (/Oy-, /O1, /Ob1) | the project's build | ✓ file by file | the project's build |
-| Flag survey: every file built with the other flags, in the background | — | — | — | — | — | ✓ (/Oy-, /O1, /Ob1) | — | ✓ (-O1, -O2, -Os; a file that was two is divided) | — |
+| Flag survey: every file built with the other flags, in the background | — | — | — | — | — | ✓ (/Oy-, /O1, /Ob1) | — | ✓ (-O0, -O1, -O2, -Os; a file that was two is divided) | — |
 | Compiler map and the judge's survey | ✓ | ✓ | ✓ | ✓ | — | ✓ per source file, Rich header | — | — | — |
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | ✓ | — | ✓ over source files | — | — | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | ✓ | — | ✓ (named by RTTI where the program has it) | — | — | — |
