@@ -441,6 +441,30 @@ def _renamed_note(d) -> str:
             "game links by name: use the original's names (or rename the symbol everywhere) so the code links.")
 
 
+FAR_CLOSER = 3  # times closer a function's C comes with other flags, matching nothing yet, for search_flags to keep them
+def _far_closer(results: list[tuple], own: list[str]) -> tuple | None:
+    """search_flags' (score, flags, why) of the variant a function's C comes FAR_CLOSER with than with its file's own
+    flags, breaking nothing (a score: it built and every match held), or None."""
+    ours = next((r[0] for r in results if r[1] == own), None)
+    near = min((r for r in results if r[0] is not None and r[1] != own), default=None, key=lambda r: r[0])
+    return near if near is not None and ours and near[0] * FAR_CLOSER <= ours else None
+
+
+CLOSER = 10  # match points the open functions of a file come closer by, on average, for the survey to keep flags
+
+
+def _closer(rows: dict, before: dict, after: dict) -> float | None:
+    """How much closer a file's open functions came with other flags, on average (None: not clearly, CLOSER, and
+    most of them). A V.Flash game's file was -O0 code built at -O3: no agent's C matched at -O3, none of it at -O0
+    yet either (C written against -O3), so a survey of matches alone never changed its flags."""
+    opened = [n for n, r in rows.items() if r["status"] == "open" and n in before and n in after]
+    if not opened:
+        return None
+    steps = [(after[n] or 0) - (before[n] or 0) for n in opened]
+    gain = sum(steps) / len(steps)
+    return gain if gain >= CLOSER and sum(d > 0 for d in steps) * 2 > len(steps) else None
+
+
 class ForkEngine:
     def __init__(self, net):
         self.net = net
@@ -3085,6 +3109,20 @@ class ForkEngine:
                             "doesn't build" if res["score"] is None else f"score {res['score']}"
                         results.append((res["score"] if res["score"] is not None and not res.get("broken") else None,
                                         flags, why))
+                    # none matches, but one is far closer than the file's own and breaks nothing: a V.Flash game's
+                    # file was -O0 code built at -O3, the agent's C scored 282 at -O0 and 4064 at -O3, and the file
+                    # kept -O3 because nothing matched yet: agents could only say "needs -O0" in a note
+                    if (near := _far_closer(results, own)) is not None:
+                        ours = next(r[0] for r in results if r[1] == own)
+                        with self._build_locks[proj["id"]]:
+                            rel = console.set_file_flags(fp, unit.source, near[1])
+                        kept = near[1]
+                        self._build_unit(proj, fp, unit)
+                        self.net.bump_generation(proj["id"])
+                        self._commit(proj, fp, rel, f"Build {unit.source} with {shown(kept)}\n\n{fn['name']}'s C "
+                                                    f"comes {ours / max(near[0], 1):.0f} times closer with them (score "
+                                                    f"{near[0]}, {ours} with {shown(own)}; found by {agent.name} with "
+                                                    f"decompdecomp).")
                 finally:
                     if changed and kept is None:
                         with self._build_locks[proj["id"]]:
@@ -3106,6 +3144,10 @@ class ForkEngine:
         best = results[0] if results else None
         verdict = ("The flags aren't the problem: the file's are as good as any." if best and best[1] == own else
                    "Other flags come closer, but none matches: look at the C again first.")
+        if kept is not None:
+            verdict = (f"{unit.source} is built with {shown(kept)} from now on: no match broke, and your C comes far "
+                       f"closer with them. Work on it with these flags (search_flags again puts others back if a "
+                       f"later C says so).")
         return (f"{len(results)} flag variants for {fn['name']} in {unit.source} (lower is better), none matches:\n"
                 + "\n".join(lines) + "\n" + verdict)
 
@@ -3136,6 +3178,7 @@ class ForkEngine:
             return None
         linked = any(u.complete for u in units) and fp.linkable()
         best: tuple[list[str], list[str], list[str]] | None = None  # (flags, functions it matches, matches it breaks)
+        nearer: tuple[list[str], float, dict] | None = None  # (flags, how much closer its open functions came, scores)
         with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), \
                 self._units_locked(proj, [u.name for u in units]):
             def measure() -> dict[str, dict]:
@@ -3166,12 +3209,17 @@ class ForkEngine:
                     lost = [n for n, pct in before.items() if (pct or 0) >= 100 and (after.get(n) or 0) < 100]
                     if gained and (best is None or (len(gained), -len(lost)) > (len(best[1]), -len(best[2]))):
                         best = (flags, gained, lost)
+                    elif not lost and (gain := _closer(rows, before, after)) and (
+                            nearer is None or gain > nearer[1]):
+                        nearer = (flags, gain, after)
             finally:
                 if changed:
                     with self._build_locks[proj["id"]]:
                         console.set_file_flags(fp, source, own)
                     for u in units:
                         self._build_unit(proj, fp, u)  # the file's objects are its own flags' again
+            if (best is None or best[2]) and nearer is not None:  # none matches yet, all of them come closer
+                best = (nearer[0], [], [])
             if best is not None and not best[2]:
                 flags, gained, _ = best
                 with self._build_locks[proj["id"]]:
@@ -3186,8 +3234,12 @@ class ForkEngine:
                         self._build_unit(proj, fp, u)
                     return None
                 shown = " ".join(flags) or "the project's flags only"
-                said = (f"{source} is built with {shown}: {len(gained)} of its functions match with them as they are "
-                        f"({', '.join(rows[n]['name'] for n in gained[:6])}), and every match holds")
+                if gained:
+                    said = (f"{source} is built with {shown}: {len(gained)} of its functions match with them as they "
+                            f"are ({', '.join(rows[n]['name'] for n in gained[:6])}), and every match holds")
+                else:
+                    said = (f"{source} is built with {shown}: its open functions come closer with them (on average "
+                            f"{nearer[1]:.0f} points), and every match holds")
                 self._commit(proj, fp, rel, f"Build {source} with {shown}\n\n{said} (decompdecomp's flag survey).")
                 self.net.bump_generation(proj["id"])  # (the file's flags: earlier compiles aren't repeats any more)
                 for u in units:
@@ -3196,7 +3248,7 @@ class ForkEngine:
                 with self.net.store.tx() as db:
                     self.net._event(db, proj["id"], None, "analysis", said)
                 return said
-        if best is None or divided or not console.splits_sources:
+        if best is None or not best[1] or divided or not console.splits_sources:
             return None
         first = rows[best[1][0]]
         said = self._divide_for_flags(None, slug, first, fp.unit(first["unit"]), best[2])

@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **`search_flags` for V.Flash agents, and flags a function comes far closer with.** The table said V.Flash had
+  `search_flags`, but its agents never got the tool (only PC listed it in `own_tools`): an agent that saw a file was
+  -O0 code built at -O3 could only say so in a note. And a variant was kept only when the C matched with it; now one
+  the function's C comes three times closer with, breaking no match, is kept too (its C scored 282 at -O0, 4064 at
+  -O3), and the flag survey keeps flags a file's open functions come clearly closer with.
 - **The flag survey, and `split_file` on V.Flash.** Agents on a V.Flash game left hundreds of notes about register
   allocation ("tried register asm, c & 0xff, u32...") on functions the permuter had already had its turns on: one
   source file held two of the game's, the first built with -O3, the second with -O1, and `search_flags` refused -O1
