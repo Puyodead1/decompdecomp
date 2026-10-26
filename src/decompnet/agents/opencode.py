@@ -18,6 +18,8 @@ MCP_SERVER = "decompdecomp"  # the app's MCP server, in the config and in the pl
 MCP_WAIT_SECONDS = 10  # how long opencode 2's first prompt waits for that server to connect (#24)
 MCP_SETTLE_MS = 300  # then for the registry's 100 ms debounce to publish its tools
 PLUGIN_DIR = "decompdecomp-wait"  # the plugin's folder in a helper's own folder, next to its opencode.json
+# reasoning efforts from least to most: a model offers some of them (its variants), and one it doesn't stops a session
+EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 _PLUGIN_SOURCE = Path(__file__).with_name("opencode_wait.js")
 
 
@@ -49,7 +51,41 @@ class Opencode(Agent):
     def read_models(self, lines: list[str]) -> list[dict]:
         """`opencode models`: "<provider>/<model>" per model."""
         rows = [r for r in lines if re.fullmatch(r"[\w.-]+/[\w.:/-]+", r)]
-        return [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0]} for r in rows]
+        catalog = self.catalog()
+        return [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0],
+                 **({} if (e := self.model_efforts(r, catalog)) is None else {"efforts": e})} for r in rows]
+
+    def catalog(self) -> dict:
+        """opencode's copy of the models it knows (models.dev's), with the efforts each offers."""
+        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        return read_json(base / "opencode" / "models.json")
+
+    def model_efforts(self, model: str, catalog: dict) -> list[str] | None:
+        """The reasoning efforts a model offers, as opencode's catalog says (DeepSeek V4.1 Flash on OpenCode Go: low,
+        high and max, and "#medium" stopped each of its sessions: "Variant unavailable"); None when it doesn't say."""
+        provider, _, name = model.split("#", 1)[0].partition("/")
+        info = ((catalog.get(provider) or {}).get("models") or {}).get(name)
+        if not isinstance(info, dict):
+            return None
+        if not info.get("reasoning"):
+            return []
+        for o in info.get("reasoning_options") or []:
+            if isinstance(o, dict) and o.get("type") == "effort" and isinstance(o.get("values"), list):
+                return [v for v in o["values"] if isinstance(v, str)]
+        return None
+
+    def offered_effort(self, model: str) -> str:
+        """The model with an effort it offers: the nearest one when it lacks the one asked for (the lower of two as
+        near: a helper started before the launcher knew, or a model whose efforts changed), none for a model that
+        doesn't reason."""
+        name, _, effort = model.partition("#")
+        efforts = self.model_efforts(name, self.catalog()) if effort else None
+        if efforts is None or effort in efforts:
+            return model
+        if effort not in EFFORT_SCALE or not (known := [e for e in efforts if e in EFFORT_SCALE]):
+            return name
+        at = EFFORT_SCALE.index(effort)
+        return f"{name}#{min(known, key=lambda e: (abs(EFFORT_SCALE.index(e) - at), EFFORT_SCALE.index(e)))}"
 
     def config_model(self) -> str | None:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -67,6 +103,8 @@ class Opencode(Agent):
     def session_command(self, exe: str, workdir: Path, mcp_url: str, token: str, model: str) -> tuple[list[str], dict]:
         # "deny" takes the tools out of the request, and OpenCode Zen's free models then refuse it ("can only be
         # used from within OpenCode"). "ask" keeps the usual tools, and `opencode run` rejects every ask itself.
+        if model:
+            model = self.offered_effort(model)
         zen = (model or self.config_model() or ZEN).startswith(ZEN)
         never = "ask" if zen else "deny"
         headers = {"Authorization": f"Bearer {token}"}
