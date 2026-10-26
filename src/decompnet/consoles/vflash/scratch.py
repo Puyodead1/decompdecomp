@@ -656,10 +656,11 @@ def flag_variants(flags: list[str]) -> list[list[str]]:
 
 def survey_variants(flags: list[str]) -> list[list[str]]:
     """A file's own flags (first), and the variants the flag survey builds every file with: the other optimisation
-    levels only (a game's files are many; -O0 and the options are left to search_flags)."""
+    levels only (a game's files are many; the options are left to search_flags). -O0 too: a V.Flash game's file
+    whose functions an agent said "need -O0" had four that matched with it as they were, none with the others."""
     others = [f for f in flags if not f.startswith("-O")]
     out = [list(flags)]
-    for new in (others, *([*others, level] for level in FLAG_LEVELS if level != "-O0")):
+    for new in (others, *([*others, level] for level in FLAG_LEVELS)):
         if new not in out:
             out.append(new)
     return out
