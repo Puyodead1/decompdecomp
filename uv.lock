@@ -291,7 +291,7 @@ wheels = [
 
 [[package]]
 name = "decompnet"
-version = "1.0.7a0+puyo.3"
+version = "1.0.7a0+puyo.4"
 source = { editable = "." }
 dependencies = [
     { name = "capstone" },
