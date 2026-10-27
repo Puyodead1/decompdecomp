@@ -130,6 +130,22 @@ def rename(data: bytes, names: dict[str, str]) -> bytes:
     return bytes(out)
 
 
+def pool_words(code: bytes) -> list[int]:
+    """The offsets of the words an ARM function's code loads from its literal pool (ldr rd, [pc, #n]): numbers as
+    well as addresses. Only the addresses were marked once, so objdiff read a pool of numbers (0x8ec, 0xfffd) as
+    instructions, an illegal one among them, and agents took it for a broken function."""
+    out: set[int] = set()
+    for off in range(0, len(code) - 3, 4):
+        if off in out:
+            continue  # (a pool word that happens to read as a load)
+        word = struct.unpack_from("<I", code, off)[0]
+        if word >> 28 != 0xF and word & 0x0F7F0000 == 0x051F0000:  # ldr, pc-relative, immediate
+            at = off + 8 + (word & 0xFFF if word & 0x800000 else -(word & 0xFFF))
+            if 0 <= at <= len(code) - 4 and at % 4 == 0 and at > off:
+                out.add(at)
+    return sorted(out)
+
+
 def mapping(words: list[int], size: int) -> list[tuple[str, int]]:
     """ARM's mapping symbols for a section of code whose words at these offsets are data (as tools/delink.py's).
     It starts with $a: objdiff reads a section with none there as data, and showed every instruction as a .word."""
@@ -170,6 +186,7 @@ def mark_data(data: bytes) -> bytes:
         r = rels.get(code)
         words = [struct.unpack_from("<II", data, a)[0] for a in range(r[4], r[4] + r[5], 8)
                  if struct.unpack_from("<II", data, a)[1] & 0xFF == R_ARM_ABS32] if r else []
+        words += pool_words(data[h[4]:h[4] + h[5]])
         marks += [(code, sym, at) for sym, at in mapping(words, h[5])]
     if not marks:
         return data
