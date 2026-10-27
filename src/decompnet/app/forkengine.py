@@ -3142,7 +3142,9 @@ class ForkEngine:
         lines = [f"- {why:>8}  {shown(flags)}" + ("   <- the file's flags" if flags == own else "")
                  for _, flags, why in results]
         best = results[0] if results else None
-        verdict = ("The flags aren't the problem: the file's are as good as any." if best and best[1] == own else
+        verdict = ("Your C builds with none of them: make it build first (compile_and_diff says why)."
+                   if all(r[0] is None for r in results) else
+                   "The flags aren't the problem: the file's are as good as any." if best and best[1] == own else
                    "Other flags come closer, but none matches: look at the C again first.")
         if kept is not None:
             verdict = (f"{unit.source} is built with {shown(kept)} from now on: no match broke, and your C comes far "
