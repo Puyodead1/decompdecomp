@@ -21,7 +21,7 @@ import struct
 import sys
 from pathlib import Path
 
-from names import mapping, real_names  # (tools/names.py, beside this file)
+from names import mapping, pool_words, real_names  # (tools/names.py, beside this file)
 
 R_ARM_PC24, R_ARM_ABS32 = 1, 2
 EF_ARM_SOFT_FLOAT = 0x200  # what binutils 2.14 marks GCC's -msoft-float objects with
@@ -36,7 +36,8 @@ def obj(functions: list[dict], image: bytes, real: dict[str, str] | None = None)
     name = lambda n: real.get(n, n)  # noqa: E731
     count = len(functions)
     marks = [(n, sym, at) for n, fn in enumerate(functions)
-             for sym, at in mapping([r[0] for r in fn["relocs"] if r[1] == R_ARM_ABS32], fn["size"])]
+             for sym, at in mapping([r[0] for r in fn["relocs"] if r[1] == R_ARM_ABS32]
+                                    + pool_words(image[fn["offset"]:fn["offset"] + fn["size"]]), fn["size"])]
     symbols: list[tuple[str, int, int, int]] = []  # globals: (name, size, section index or 0, defined: type)
     index: dict[str, int] = {}
     for n, fn in enumerate(functions):  # (a call to a function of this file names its own symbol, as GCC's does)
