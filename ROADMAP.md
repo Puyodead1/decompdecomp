@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **V.Flash literal pools of numbers read as data.** Only pool words holding addresses were marked `$d`, so a
+  pool of plain numbers (0x8ec, 0xfffd) showed in objdiff as instructions, an illegal one among them; now every word
+  a `ldr rd, [pc, #n]` reads is data, in the game's objects and the compiled ones alike (`names.pool_words`; projects'
+  tools refresh when the app starts, a game's 3,118 matches all held).
 - **`search_flags` for V.Flash agents, and flags a function comes far closer with.** The table said V.Flash had
   `search_flags`, but its agents never got the tool (only PC listed it in `own_tools`): an agent that saw a file was
   -O0 code built at -O3 could only say so in a note. And a variant was kept only when the C matched with it; now one

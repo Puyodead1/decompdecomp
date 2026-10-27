@@ -701,3 +701,12 @@ def test_search_flags_keeps_flags_a_function_comes_far_closer_with():
     assert _far_closer(results, [])[1] == ["-O0"]
     assert _far_closer([(4064, [], ""), (2597, ["-O1"], "")], []) is None  # (closer, not far closer)
     assert _far_closer([(4064, [], ""), (None, ["-O0"], "breaks the file's matched functions")], []) is None
+
+
+def test_a_literal_pool_of_numbers_is_data():
+    """A V.Flash function's pool held 0x8ec, 0x968, 0xfffd, no addresses: marked as code, objdiff showed agents an
+    illegal instruction in it."""
+    code = struct.pack("<5I", 0xE59F0004, 0xE59F1004, 0xE12FFF1E, 0x000008EC, 0x0000FFFD)  # ldr r0/r1, [pc]; bx lr
+    assert names.pool_words(code) == [12, 16]
+    assert names.mapping(names.pool_words(code), len(code)) == [("$a", 0), ("$d", 12)]
+    assert names.pool_words(struct.pack("<2I", 0xE51F000C, 0xE12FFF1E)) == []  # (from before it: not its pool)
