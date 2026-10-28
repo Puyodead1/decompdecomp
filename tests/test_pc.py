@@ -1518,6 +1518,9 @@ EH_STUBS = [bytes.fromhex("8d4dec e900000000"),  # lea ecx, [ebp-0x14]; jmp <des
             # an array's: push <destructor>; push 2; push 4; lea eax, [ebp-0x20]; push eax; call <iterator>; ret
             bytes.fromhex("6800104000 6a02 6a04 8d45e0 50 e800000000 c3"),
             bytes.fromhex("b900304000 e900000000")]  # mov ecx, <global>; jmp <destructor>
+# mov edx, [esp+8]; lea eax, [edx+0xc]; mov ecx, [edx-0x48]; xor ecx, eax; call __security_check_cookie;
+# mov eax, <FuncInfo>; jmp __CxxFrameHandler3
+GS_HANDLER = bytes.fromhex("8b542408 8d420c 8b4ab8 33c8 e800000000 b810204000 e900000000")
 
 
 def _tiny_pe(functions: list[bytes]) -> tuple[bytes, list[tuple[int, int]]]:
@@ -1561,6 +1564,10 @@ def test_exception_handling_stubs_are_found_only_where_the_linker_puts_them():
     assert found == {addr for addr, _ in extents[len(main):len(main) + len(stubs)]}
     data, extents = _tiny_pe(main + EH_STUBS + initializers)
     assert scratch_pe.exception_stubs(scratch_pe.read_pe(data), extents) == set()
+    # Visual C++ 2005 on, under /GS: each handler checks the frame's cookie first, and is the run's only handler
+    gs = [EH_STUBS[0], EH_STUBS[2], GS_HANDLER]
+    data, extents = _tiny_pe(main + gs)
+    assert scratch_pe.exception_stubs(scratch_pe.read_pe(data), extents) == {addr for addr, _ in extents[-len(gs):]}
 
 
 def _coff_sections(obj: bytes) -> list[tuple[str, bytes]]:

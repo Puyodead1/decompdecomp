@@ -995,6 +995,8 @@ def eh_stub(md, code: bytes, addr: int) -> str | None:
     if len(ins) >= 2 and ins[0].id == x86.X86_INS_MOV and ins[1].id == x86.X86_INS_JMP \
             and ins[0].operands[1].type == x86.X86_OP_IMM and ins[0].operands[0].reg in (x86.X86_REG_EAX, x86.X86_REG_ECX):
         return "handler" if ins[0].operands[0].reg == x86.X86_REG_EAX else "funclet"
+    if _gs_handler(ins):
+        return "handler"
     for one in ins:
         first = one.operands[0] if one.operands else None
         if one.id in (x86.X86_INS_PUSH, x86.X86_INS_MOV, x86.X86_INS_LEA) and first is not None and first.type == x86.X86_OP_REG \
@@ -1005,6 +1007,19 @@ def eh_stub(md, code: bytes, addr: int) -> str | None:
         if one.id in (x86.X86_INS_CALL, x86.X86_INS_RET, x86.X86_INS_JMP):
             return None
     return None
+
+
+def _gs_handler(ins: list) -> bool:
+    """Whether code starts as the handler Visual C++ 2005 on makes under /GS, which checks the frame's cookie before
+    its `mov eax, <FuncInfo>; jmp __CxxFrameHandler3`: `mov edx, [esp+8]; lea eax, [edx+N]` (then `mov ecx, [edx-M];
+    xor ecx, eax; call __security_check_cookie`). A 2007 PC game had 609 of them, and no plain handler to find its
+    2,256 funclets by."""
+    if len(ins) < 2 or ins[0].id != x86.X86_INS_MOV or ins[1].id != x86.X86_INS_LEA:
+        return False
+    (to, at), (into, of) = ins[0].operands, ins[1].operands
+    return (to.type == x86.X86_OP_REG and to.reg == x86.X86_REG_EDX and at.type == x86.X86_OP_MEM
+            and at.mem.base == x86.X86_REG_ESP and at.mem.disp == 8 and into.reg == x86.X86_REG_EAX
+            and of.type == x86.X86_OP_MEM and of.mem.base == x86.X86_REG_EDX)
 
 
 def exception_stubs(pe: PE, functions: list[tuple[int, int]]) -> set[int]:
