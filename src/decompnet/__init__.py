@@ -2,7 +2,7 @@
 
 import sys
 
-__version__ = "1.0.7-alpha+puyo.7"
+__version__ = "1.0.7-alpha+puyo.8"
 
 
 def utf8_output() -> None:
