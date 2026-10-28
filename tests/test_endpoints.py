@@ -25,6 +25,31 @@ def test_the_one_saved_api_becomes_the_first_endpoint(tmp_path):
     assert Settings(tmp_path / "none.json").endpoints() == []
 
 
+def test_an_endpoint_offers_the_efforts_its_provider_lists_for_its_model(tmp_path, monkeypatch):
+    """DeepSeek's /models says which efforts each model takes; a provider that doesn't say leaves all six."""
+    import httpx
+
+    asked = []
+
+    def models(url, headers, timeout):
+        asked.append((url, headers))
+        return httpx.Response(200, json={"data": [
+            {"id": "deepseek-flash", "effort": {"supported_levels": ["max", "low", "high"], "default_level": "high"}},
+            {"id": "deepseek-chat"}]})
+    monkeypatch.setattr(httpx, "get", models)
+    s = Settings(tmp_path / "settings.json")
+    e = s.save_endpoint({"provider": "deepseek", "model": "deepseek-flash", "api_key": "sk-1"})
+    s.learn_efforts(e["id"])
+    assert s.endpoint(e["id"])["efforts"] == ["low", "high", "max"]
+    assert asked == [("https://api.deepseek.com/v1/models", {"Authorization": "Bearer sk-1"})]
+    s.save_endpoint({"id": e["id"], "model": "deepseek-chat"})  # another model: asked again
+    assert "efforts" not in s.endpoint(e["id"])
+    s.learn_efforts()
+    assert "efforts" not in s.endpoint(e["id"])
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    assert api.model_efforts(s.endpoint(e["id"])) == []
+
+
 def test_endpoints_are_added_changed_and_removed(tmp_path):
     s = Settings(tmp_path / "settings.json")
     a = s.save_endpoint({"provider": "llamacpp", "base_url": "http://192.168.1.20:8080/v1", "model": "qwen",

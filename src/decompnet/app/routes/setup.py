@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 
 import httpx
 from starlette.requests import Request
@@ -247,7 +248,9 @@ def register(app: App) -> None:
             first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
             settings.save_endpoint(data["api"] | {"id": first})
         if isinstance(data.get("endpoint"), dict):
-            settings.save_endpoint(data["endpoint"])
+            saved = settings.save_endpoint(data["endpoint"])
+            threading.Thread(target=settings.learn_efforts, args=(saved["id"],), daemon=True,
+                             name="endpoint-efforts").start()
         if data.get("remove_endpoint"):
             settings.remove_endpoint(str(data["remove_endpoint"]))
             for sid, sess in list(manager.sessions.items()):  # its sessions stop with it

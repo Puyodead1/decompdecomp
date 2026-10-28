@@ -193,7 +193,12 @@ const effortField = (a) => (a.takes_effort ? `<label class="field"><span>Effort 
 // launcher keeps the last one picked, which another agent may not offer (Claude Code's xhigh)
 const effortOf = (a) => (a.takes_effort && effortsOf(a).includes(LZ.effort) ? LZ.effort : "");
 // the picked model's own efforts, when the agent knows them (opencode's catalog: DeepSeek V4.1 Flash has no medium)
+// and an API helper's, those its endpoints' provider lists (DeepSeek: low, high, max), each of those ticked
 const effortsOf = (a) => {
+  if (a.uses_endpoints) {
+    const eps = (S.st.settings.endpoints || []).filter((e) => (LZ.eps || []).includes(e.id) && e.efforts);
+    if (eps.length) return eps.reduce((out, e) => out.filter((x) => e.efforts.includes(x)), a.efforts || []);
+  }
   const m = !a.uses_endpoints && (a.models || []).find((x) => x.id === LZ.model);
   return (m && m.efforts) || a.efforts || [];
 };

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import hostenv, toolchains
 from ..agents import kind_id
-from ..agents.api import API_PRESETS, endpoint_entry
+from ..agents.api import API_PRESETS, endpoint_entry, model_efforts
 from ..network import NetworkError
 from ..rom import RomError
 from .agents import PER_SESSION
@@ -226,7 +226,20 @@ class Settings:
         if data.get("clear_key"):
             current.pop("api_key", None)
         current.update(endpoint_entry(current))
+        current.pop("efforts", None)  # (its model's: learn_efforts asks again)
         return current
+
+    def learn_efforts(self, eid: str = "") -> None:
+        """Each endpoint's model's efforts (api.model_efforts), or one's (`eid`), kept with it for the launcher."""
+        changed = False
+        for e in self.endpoints():
+            if (not eid or e["id"] == eid) and (levels := model_efforts(e)) != e.get("efforts", []):
+                e["efforts"] = levels
+                if not levels:
+                    e.pop("efforts")
+                changed = True
+        if changed:  # (a settings file isn't written for nothing at every start)
+            self.save()
 
     def remove_endpoint(self, eid: str) -> None:
         self.data["endpoints"] = [e for e in self.endpoints() if e["id"] != eid]
