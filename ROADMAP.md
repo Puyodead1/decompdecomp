@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **Visual C++ 2005's exception stubs set aside.** Under /GS each handler checks the frame's cookie before jumping to
+  __CxxFrameHandler3, a shape the stub finder didn't know: with no handler found, a 2007 PC game's 2,860 unwind
+  funclets and handlers were open for agents, who can't write C that makes them. Projects get them set aside at start
+  (analysis 7).
 - **V.Flash literal pools of numbers read as data.** Only pool words holding addresses were marked `$d`, so a
   pool of plain numbers (0x8ec, 0xfffd) showed in objdiff as instructions, an illegal one among them; now every word
   a `ldr rd, [pc, #n]` reads is data, in the game's objects and the compiled ones alike (`names.pool_words`; projects'
