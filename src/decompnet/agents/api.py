@@ -36,7 +36,7 @@ API_CONTEXT_SHARE = 0.7
 API_TRIM_RETRIES = 4
 API_TRIM_FACTOR = 0.6
 API_TIMEOUT, API_CONNECT_TIMEOUT = 300, 15
-PROPS_TIMEOUT = 5  # asking a llama.cpp server its context
+PROPS_TIMEOUT = 5  # asking a llama.cpp server its context, or a provider its models
 MIN_CONTEXT = 2048
 LOCAL_CONTEXT = 16384  # what a local server runs when it doesn't say (they often run small contexts)
 REMOTE_CONTEXT = 128000
@@ -330,6 +330,21 @@ def fit(messages: list[dict], budget: int, keep: int = 2) -> int:
                 m["content"] = text[:TRIM_TO] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
     return total
+
+
+def model_efforts(entry: dict) -> list[str]:
+    """The efforts an endpoint's provider lists for its model in /models, in our order (DeepSeek: `"effort":
+    {"supported_levels": ["low", "high", "max"]}`); [] when it lists none, or can't be asked. DeepSeek takes the
+    others without a word ("minimal", "medium"), so the launcher offering all six said nothing of what it runs."""
+    headers = {"Authorization": f"Bearer {entry['api_key']}"} if entry.get("api_key") else {}
+    try:
+        r = httpx.get(entry["base_url"].rstrip("/") + "/models", headers=headers, timeout=PROPS_TIMEOUT)
+        models = r.json().get("data") if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError, KeyError):
+        return []
+    model = next((m for m in models or [] if isinstance(m, dict) and m.get("id") == entry.get("model")), {})
+    levels = (model.get("effort") or {}).get("supported_levels") if isinstance(model.get("effort"), dict) else None
+    return [e for e in Api.efforts if e in (levels or ())]
 
 
 def context_window(client, base: str, options: dict) -> int:

@@ -116,6 +116,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             now["model"] = str(options["picked_model"])
         return now
     manager.options_now = options_now
+    threading.Thread(target=settings.learn_efforts, daemon=True, name="endpoint-efforts").start()  # (a model's may change)
     manager.resume()  # helpers that were working when the app last stopped carry on (their records say which)
 
     mcp = tools.build_mcp(net, agent_of)
