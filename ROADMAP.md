@@ -230,6 +230,13 @@ Where to start on a gap:
   installed builds one as soon as they are, and no older configure.py is given an argument it doesn't know. The build
   passes every path as `Z:\...`, and wine's output goes through a file: the services the first wine program starts
   outlive it and, given the build's pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **An API endpoint offers the efforts its model takes.** The launcher listed all six of OpenAI's words for every
+  endpoint; DeepSeek takes only low, high and max (its /models says so) and accepts the rest without a word. Each
+  endpoint's levels are read from its provider's /models when it's saved and at start.
+- **Visual C++ 2005's exception stubs set aside.** Under /GS each handler checks the frame's cookie before jumping to
+  __CxxFrameHandler3, a shape the stub finder didn't know: with no handler found, a 2007 PC game's 2,860 unwind
+  funclets and handlers were open for agents, who can't write C that makes them. Projects get them set aside at start
+  (analysis 7).
 - **V.Flash literal pools of numbers read as data.** Only pool words holding addresses were marked `$d`, so a
   pool of plain numbers (0x8ec, 0xfffd) showed in objdiff as instructions, an illegal one among them; now every word
   a `ldr rd, [pc, #n]` reads is data, in the game's objects and the compiled ones alike (`names.pool_words`; projects'
