@@ -102,6 +102,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return None
         return options | (session_options(saved) if saved is not None else {})
     manager.options_now = options_now
+    threading.Thread(target=settings.learn_efforts, daemon=True, name="endpoint-efforts").start()  # (a model's may change)
     manager.resume()  # helpers that were working when the app last stopped carry on (their records say which)
 
     mcp = tools.build_mcp(net, agent_of)

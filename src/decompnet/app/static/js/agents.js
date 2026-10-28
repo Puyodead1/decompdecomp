@@ -135,7 +135,12 @@ const effortField = (a) => (a.takes_effort ? `<label class="field"><span>Effort 
 // launcher keeps the last one picked, which another agent may not offer (Claude Code's xhigh)
 const effortOf = (a) => (a.takes_effort && effortsOf(a).includes(LZ.effort) ? LZ.effort : "");
 // the picked model's own efforts, when the agent knows them (opencode's catalog: DeepSeek V4.1 Flash has no medium)
+// and an API helper's, those its endpoints' provider lists (DeepSeek: low, high, max), each of those ticked
 const effortsOf = (a) => {
+  if (a.uses_endpoints) {
+    const eps = (S.st.settings.endpoints || []).filter((e) => (LZ.eps || []).includes(e.id) && e.efforts);
+    if (eps.length) return eps.reduce((out, e) => out.filter((x) => e.efforts.includes(x)), a.efforts || []);
+  }
   const m = !a.uses_endpoints && (a.models || []).find((x) => x.id === LZ.model);
   return (m && m.efforts) || a.efforts || [];
 };
@@ -267,7 +272,7 @@ function renderLauncher(box, compact = true) {
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(MAX_PER_SESSION, Number(per.value) || S.st.settings.per_session)); };
   wireEndpointFields(box);
-  box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); label(); }; });
+  box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); rerender(); }; });
   const addEp = box.querySelector('[data-act="add-ep"]'), pickEp = box.querySelector('[data-act="pick-ep"]');
   if (addEp) addEp.onclick = () => { LZ.adding = true; rerender(); };
   if (pickEp) pickEp.onclick = () => { LZ.adding = false; rerender(); };
