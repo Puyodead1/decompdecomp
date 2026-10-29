@@ -262,7 +262,7 @@ def _which(cmd: str) -> str | None:
         return found
     home = Path.home()
     directories = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin",
-                   home / ".npm-global" / "bin"]
+                   home / ".npm-global" / "bin", home / ".bun" / "bin"]  # (bun's global installs: ZCode's)
     if os.name == "nt":
         directories.append(Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "npm")
         directories.append(Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "agy" / "bin")
