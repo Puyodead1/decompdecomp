@@ -922,8 +922,9 @@ def merge_pieces(pe: PE, functions: list[Function], keep: set[str] = frozenset()
     """Join the pieces Ghidra cut off functions (arch/x86.piece: a lone epilogue after a call it took for one that
     never returns, a catch block or an `__except` filter after the function's return) to the function before them,
     which they continue: on a PC game 181 such pieces could never match, and neither could the functions they
-    belong to. Not a piece another function calls or holds the address of (a function's start: Ghidra's guess was
-    right), nor the function's own jump table (Ghidra made a function of one), nor into or out of a function of
+    belong to. And the jump table of a switch Ghidra made a function of (`_own_table`): no C makes 23 bytes of
+    pointers, and the function whose table it is couldn't match without it. Not a piece another function calls or
+    holds the address of (a function's start: Ghidra's guess was right), nor into or out of a function of
     `keep` (matched ones: their C would no longer be the whole function; the exception-handling stubs, whose first
     one reads the frame of the function before it). Across two source files
     (`Function.unit`), a piece moves to the earlier one only when its own keeps other functions and
@@ -946,15 +947,25 @@ def merge_pieces(pe: PE, functions: list[Function], keep: set[str] = frozenset()
     while k < len(out):
         owner, part = out[k - 1], out[k]
         before = pe.read(owner.addr, part.addr - owner.addr)
+        table = _reads_from(md, before, owner.addr, part.addr) and _own_table(pe, owner, part)
         # (its own code may call it, a `__finally` block, or hold its address, where a catch block goes on)
         if owner.name in keep or part.name in keep or {now(n) for n in reached.get(part.name, ())} - {owner.name} \
-                or not _ends_at(md, before, owner.size) or _reads_from(md, before, owner.addr, part.addr) or \
-                not x86_arch.piece(before, pe.read(part.addr, part.size)) or \
+                or not _ends_at(md, before, owner.size) or not table and (
+                    _reads_from(md, before, owner.addr, part.addr) or
+                    not x86_arch.piece(before, pe.read(part.addr, part.size))) or \
                 owner.unit != part.unit and (sum(f.unit == part.unit for f in out) < 2 or
                                              (movable is not None and not movable(part))):
             k += 1
             continue
-        out[k - 1:k + 1] = [join(pe, [owner, part], names)]
+        if table and part.size % 4:  # its last entry whole, from the bytes no function has (Ghidra stopped short)
+            whole = part.size + 4 - part.size % 4
+            if k + 1 >= len(out) or part.addr + whole <= out[k + 1].addr:
+                part = Function(part.addr, whole, part.name, part.relocs, part.unit)
+        whole = join(pe, [owner, part], names)
+        if table and not {o for o, *_ in whole.relocs} >= set(range(part.addr - owner.addr, whole.size - 3, 4)):
+            k += 1  # its entries not read as the function's (a table in the middle of it, as Ghidra cut it): no use
+            continue
+        out[k - 1:k + 1] = [whole]
         home[part.name] = owner.name
         joined[owner.name] = [*joined.get(owner.name, []), part.name, *joined.pop(part.name, [])]
         k = max(1, k - 1)  # the grown function may itself continue the one before it now
@@ -962,6 +973,14 @@ def merge_pieces(pe: PE, functions: list[Function], keep: set[str] = frozenset()
         log(f"{sum(len(v) for v in joined.values())} pieces of functions Ghidra cut off joined to the function they "
             "belong to")
     return out, joined
+
+
+def _own_table(pe: PE, owner: Function, part: Function) -> bool:
+    """Whether `part` is only a jump table into `owner`, the function before it: every whole word of it an address
+    in the owner's code (a byte left over is the table's last entry, cut short where Ghidra's next function began)."""
+    data = pe.read(part.addr, part.size)
+    words = [struct.unpack_from("<I", data, o)[0] for o in range(0, len(data) - 3, 4)]
+    return bool(words) and all(owner.addr <= w < part.addr for w in words)
 
 
 def _reads_from(md, code: bytes, at: int, addr: int) -> bool:
