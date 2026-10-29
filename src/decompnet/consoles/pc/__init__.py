@@ -82,10 +82,11 @@ class WindowsPC(Console):
     # functions keep an ebp frame built with /Oy- (scratch.set_frame_flags), but for files with matched code: after
     # the thunks, which keep no frame and would count against their file's; 7 the stubs again, now that Visual C++
     # 2005's /GS handlers are known (a 2007 game's 2,860 stubs were open: none of its handlers had the older shape); 8
-    # the joins again, for the jump tables Ghidra made functions of (scratch.merge_pieces).
+    # the joins again, for the jump tables Ghidra made functions of (scratch.merge_pieces); 9 the functions Ghidra didn't
+    # know the stack arguments of named by their `ret N` (scratch.fix_unknown_purges), their rows renamed with them.
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 8
+    ANALYSIS = 9
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -223,6 +224,24 @@ class WindowsPC(Console):
             return (f"{n} source files whose functions keep an ebp frame build with {scratch.FRAME_FLAG} now (Visual "
                     "C++ keeps the frame pointer), as the game's were" if n else None)
 
+        renamed: dict[str, str] = {}
+
+        def rename_rows(names: dict[str, str]) -> None:  # (their attempts, notes and claims hang off the row)
+            rows = net.store.all("SELECT id, name, meta FROM functions WHERE project_id=?", net.project_row(slug)["id"])
+            with net.store.tx() as db:
+                for r in rows:
+                    meta = json.loads(r["meta"] or "{}")
+                    if (old := meta.get("symbol")) in names:
+                        meta["symbol"] = names[old]
+                        db.execute("UPDATE functions SET name=?, meta=? WHERE id=?",
+                                   (names[old] if r["name"] == old else r["name"], json.dumps(meta), r["id"]))
+
+        def purges(fp):  # (before the sync: the rows keep their history under the new names)
+            renamed.update(scratch.fix_unknown_purges(fp.root, version, keep=matched()))
+            rename_rows(renamed)
+            return (f"{len(renamed)} functions whose stack arguments Ghidra didn't know are named by what their `ret` "
+                    "takes off the stack (no C declaration made the old names)" if renamed else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -230,11 +249,13 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (stubs, True), 8: (pieces, False)}
+                 7: (stubs, True), 8: (pieces, False), 9: (purges, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
                 kept[level] = net.forks.reanalyse(slug, step, fix=fix, log=log)
+                if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
+                    rename_rows({new: old for old, new in renamed.items()})
                 net.forks.get(slug)[1].update_manifest(analysis=level)  # tried: a step taken back isn't tried again
         if manifest.get("tools") != scratch.tools_version():
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
