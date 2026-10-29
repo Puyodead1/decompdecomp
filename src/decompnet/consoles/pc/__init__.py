@@ -97,8 +97,9 @@ class WindowsPC(Console):
     # Ghidra found and, from 2015 on, the int3 after a call that never returns: they come from Ghidra's list, so they
     # reach a project made before them by Reimport.) Its build tools have a version of their own (the manifest's "tools":
     # scratch.tools_version), so each change to them reaches it; 8 the joins again, for the jump tables Ghidra
-    # made functions of (scratch.merge_pieces)
-    ANALYSIS = 8
+    # made functions of (scratch.merge_pieces); 9 the functions Ghidra didn't know the stack arguments of named by
+    # their `ret N` (scratch.fix_unknown_purges), their rows renamed with them
+    ANALYSIS = 9
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -276,6 +277,24 @@ class WindowsPC(Console):
             return (f"{n} source files whose functions keep an ebp frame build with {scratch.FRAME_FLAG} now (Visual "
                     "C++ keeps the frame pointer), as the game's were" if n else None)
 
+        renamed: dict[str, str] = {}
+
+        def rename_rows(names: dict[str, str]) -> None:  # (their attempts, notes and claims hang off the row)
+            rows = net.store.all("SELECT id, name, meta FROM functions WHERE project_id=?", net.project_row(slug)["id"])
+            with net.store.tx() as db:
+                for r in rows:
+                    meta = json.loads(r["meta"] or "{}")
+                    if (old := meta.get("symbol")) in names:
+                        meta["symbol"] = names[old]
+                        db.execute("UPDATE functions SET name=?, meta=? WHERE id=?",
+                                   (names[old] if r["name"] == old else r["name"], json.dumps(meta), r["id"]))
+
+        def purges(fp):  # (before the sync: the rows keep their history under the new names)
+            renamed.update(scratch.fix_unknown_purges(fp.root, version, keep=matched()))
+            rename_rows(renamed)
+            return (f"{len(renamed)} functions whose stack arguments Ghidra didn't know are named by what their `ret` "
+                    "takes off the stack (no C declaration made the old names)" if renamed else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -283,12 +302,14 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False), 8: (pieces, False)}
+                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
                 if not (level == 7 and 4 in kept):  # (7 is 3 and 4 again, by their rules now: not when they just ran)
                     kept[level] = net.forks.reanalyse(slug, step, fix=fix, log=log)
+                if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
+                    rename_rows({new: old for old, new in renamed.items()})
                 net.forks.get(slug)[1].update_manifest(analysis=level)  # tried: a step taken back isn't tried again
         if manifest.get("tools") != scratch.tools_version():
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
