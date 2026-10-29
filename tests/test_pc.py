@@ -1732,6 +1732,43 @@ def test_a_project_made_before_gets_its_stubs_set_aside_once(tmp_path, monkeypat
     assert net.store.one("SELECT COUNT(*) AS n FROM events WHERE project_id=? AND kind='analysis'", pid)["n"] == 1
 
 
+def test_a_split_of_the_exes_source_file_keeps_its_functions_rows(tmp_path, monkeypatch):
+    """The .exe's source files have no folder (text_0043A160), and the sync took each for a program of its own: a
+    split left every function it moved behind as "gone", with its attempts and notes, beside a new row named
+    _func_0043AC30'. A split moves the row now, and a sync merges the rows earlier splits left behind."""
+    from decompnet.forks.project import Unit
+
+    net, root, _ = _project_with_stubs(tmp_path, monkeypatch)
+    pid = net.project_row("p")["id"]
+    first = net.store.one("SELECT * FROM functions WHERE project_id=? ORDER BY id LIMIT 1", pid)
+    name = first["name"]
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET attempts=3 WHERE id=?", (first["id"],))
+    report = ForkProject.report(None)
+    units = {"u": [f for f in report["units"][0]["functions"] if f["name"] != name], "v": [
+        f for f in report["units"][0]["functions"] if f["name"] == name]}
+    split = {"units": [{"name": u, "functions": fns} for u, fns in units.items()]}
+    monkeypatch.setattr(ForkProject, "report", lambda self: split)
+    monkeypatch.setattr(ForkProject, "units", lambda self: [Unit(u, None, None, f"src/auto/{u}.cpp", False, None)
+                                                            for u in units])
+    net.forks.sync("p", log=lambda *_: None)
+    rows = net.store.all("SELECT * FROM functions WHERE project_id=? AND meta LIKE ?", pid, f'%"{name}"%')
+    assert [(r["id"], r["name"], r["unit"], r["attempts"]) for r in rows] == [(first["id"], name, "v", 3)]
+    # what an earlier split left: the function's row gone in its old file, a new one named past it
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET unit='u', status='nosource', meta=json_set(meta, '$.gone', 1) WHERE id=?",
+                   (first["id"],))
+        new = db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,meta,attempts) VALUES"
+                         "(?,?,?,?,?,?,?,?)", (pid, name + "'", first["size"], first["n_insns"], "open", "v",
+                                               json.dumps({"symbol": name}), 2)).lastrowid
+        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,NULL,'tried',1)",
+                   (pid, first["id"]))
+    net.forks.sync("p", log=lambda *_: None)
+    rows = net.store.all("SELECT * FROM functions WHERE project_id=? AND meta LIKE ?", pid, f'%"{name}"%')
+    assert [(r["id"], r["name"], r["unit"], r["attempts"]) for r in rows] == [(new, name, "v", 5)]
+    assert net.store.one("SELECT function_id FROM notes WHERE text='tried'")["function_id"] == new
+
+
 def test_a_project_without_the_program_in_it_waits_for_it(tmp_path, monkeypatch):
     net, root, stubs = _project_with_stubs(tmp_path, monkeypatch)
     (root / "orig" / "v.exe").unlink()
