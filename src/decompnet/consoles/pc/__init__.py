@@ -96,8 +96,9 @@ class WindowsPC(Console):
     # have. (Two more rules of #138 read where a function starts and ends, the code before the first function
     # Ghidra found and, from 2015 on, the int3 after a call that never returns: they come from Ghidra's list, so they
     # reach a project made before them by Reimport.) Its build tools have a version of their own (the manifest's "tools":
-    # scratch.tools_version), so each change to them reaches it
-    ANALYSIS = 7
+    # scratch.tools_version), so each change to them reaches it; 8 the joins again, for the jump tables Ghidra
+    # made functions of (scratch.merge_pieces)
+    ANALYSIS = 8
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -247,8 +248,9 @@ class WindowsPC(Console):
         joined: dict[str, list[str]] = {}
 
         def pieces(fp):
-            joined.update(scratch.merge_project_pieces(fp.root, version, keep=matched(), log=log))
-            n = sum(len(v) for v in joined.values())
+            took = scratch.merge_project_pieces(fp.root, version, keep=matched(), log=log)
+            joined.update(took)  # (each step's own: step 8 runs it again)
+            n = sum(len(v) for v in took.values())
             return f"{n} pieces of functions Ghidra cut off are part of the function they belong to again" if n else None
         rejoined: dict[str, list[str]] = {}
 
@@ -281,7 +283,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False)}
+                 7: (newer_rules, False), 8: (pieces, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -292,7 +294,7 @@ class WindowsPC(Console):
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
             net.forks.get(slug)[1].update_manifest(tools=scratch.tools_version())  # (tried: not again until they change)
         # (a step taken back joined nothing)
-        grew = {**(joined if kept.get(4) else {}), **(rejoined if kept.get(7) else {})}
+        grew = {**(joined if kept.get(4) or kept.get(8) else {}), **(rejoined if kept.get(7) else {})}
         if grew:
             agent, _ = net.local_agent("decompdecomp")
             for name, took in grew.items():
