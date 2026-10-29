@@ -97,6 +97,9 @@ Where to start on a gap:
 
 ## Recently done
 
+- **A switch's jump table Ghidra made a function of is the switch's.** Agents of two models said a PC game's 23-byte
+  "function" was pointers, not code: its switch's table, cut a byte short. It's joined to the function before it,
+  every entry relocated, so neither is left that no C makes (analysis 8 on projects made before).
 - **API requests a server drops are sent again.** DeepSeek closed about 1 request in 100 without an answer, or
   partway through one, or stayed silent past the timeout; each ended the helper's session and its functions' work.
   The same request goes again after 5, 15 and 30 seconds.

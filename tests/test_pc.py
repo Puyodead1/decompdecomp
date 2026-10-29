@@ -848,6 +848,27 @@ def test_a_piece_is_delinked_with_the_function_it_belongs_to():
     assert scratch_pe.merge_pieces(pe, scratch_pe.analyse(pe, ROWS), log=lambda *_: None)[1] == {}
 
 
+# 0x401000 a switch (jmp [eax*4 + 0x401020]) over three cases, its jump table at 0x401020, where Ghidra made a function
+# of it and stopped a byte short of its last entry; 0x401030 another function
+SWITCH = (bytes.fromhex("8b442404 83f802 7710 ff248520104000 b801000000c3 33c0c3 83c8ffc3").ljust(0x20, b"\x90")
+          + struct.pack("<3I", 0x401010, 0x401016, 0x401019).ljust(0x10, b"\x90") + bytes.fromhex("33c0c3"))
+
+
+def test_a_jump_table_ghidra_made_a_function_of_is_its_switchs():
+    """No C makes a function of 23 bytes of pointers (agents of two models said so of a PC game's), and the function
+    whose switch it is couldn't match without it: the table is that function's, every entry relocated."""
+    pe = scratch_pe.read_pe(_tiny_exe(SWITCH))
+    found = scratch_pe.analyse(pe, [_row(0x401000, 0x40101D), _row(0x401020, 0x40102B), _row(0x401030, 0x401033)])
+    functions, joined = scratch_pe.merge_pieces(pe, found, log=lambda *_: None)
+    assert joined == {"_func_00401000": ["_func_00401020"]}
+    whole = functions[0]
+    assert (whole.addr, whole.size) == (0x401000, 0x2C)  # its last entry whole
+    assert [r for r in whole.relocs if r[0] >= 0x20] == [(0x20 + 4 * k, scratch_pe.DIR32, None, case)
+                                                         for k, case in enumerate((0x10, 0x16, 0x19))]
+    # a matched switch stays as it is
+    assert scratch_pe.merge_pieces(pe, found, keep={"_func_00401000"}, log=lambda *_: None)[1] == {}
+
+
 def test_a_function_found_in_a_gap_keeps_its_last_instruction_whole():
     """A `ret 8` ends with a zero byte, which the gap's padding was stripped with: the byte belonged to no
     function, its function's object ended mid-instruction, and the piece after it was never next to it."""
