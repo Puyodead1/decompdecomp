@@ -297,6 +297,12 @@ class Console:
         as hand-written assembly is, whatever the project covers, unless the user gave one back to the agents."""
         return {}
 
+    def register_args(self, fp, version: str) -> dict[str, str]:
+        """The report's name of each function that takes an argument in a register no convention of the compiler
+        passes one in -> that register (PC: link-time code generation's conventions, arch/x86.register_args). Agents
+        claim them last, and their briefs say so: no C of one file makes such an entry."""
+        return {}
+
     def rename_pattern(self, old: str) -> str:
         """A regex for how source files spell `old`, which rename_symbol replaces with the new name."""
         return rf"\b{re.escape(old)}\b"

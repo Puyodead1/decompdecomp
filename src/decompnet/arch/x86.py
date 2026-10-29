@@ -93,6 +93,49 @@ def _uses_unset(code: bytes) -> tuple[str, str] | None:
     return None
 
 
+REGISTER_ARGS = ("eax", "ebx", "esi", "edi")  # no Visual C++ convention passes an argument in one of them
+REGISTER_ARGS_READ = 48  # bytes of a function's start read for them
+
+
+def register_args(code: bytes) -> str | None:
+    """The first register a function reads before it sets it that no Visual C++ convention passes an argument in
+    (REGISTER_ARGS: ecx and edx are __thiscall's and __fastcall's), up to its first call, ret or jmp; None when it
+    reads none. Link-time code generation (/GL /LTCG) gives a function whose callers it all sees a convention of its
+    own like that: a 2007 PC game had a third of its open functions so (`mov eax, [eax]; ret`, a `this` in esi), and
+    no C declaration in one file makes it. Saving one (`push esi`) isn't using it."""
+    ready: set[str] = set()
+    for i in _READER.disasm(code[:REGISTER_ARGS_READ], 0):
+        if i.mnemonic in ("call", "ret", "retn", "jmp"):
+            return None
+        if i.mnemonic == "push" and i.op_str in REGISTER_ARGS or _filler(i):  # (saved for the caller; padding)
+            continue
+        read, written = ({_whole(i.reg_name(r)) for r in regs} & set(REGISTER_ARGS) for regs in i.regs_access())
+        if _only_sets(i):
+            read = set()
+        if unset := [r for r in REGISTER_ARGS if r in read - ready]:
+            return unset[0]
+        ready |= written
+    return None
+
+
+def _only_sets(i) -> bool:
+    """Whether an instruction sets its register without reading what was in it: xor, sub or sbb of a register with
+    itself, `or r, -1` and `and r, 0` (MSVC's short ways of writing 0 and -1)."""
+    ops = i.operands
+    if len(ops) != 2 or ops[0].type != cs_x86.X86_OP_REG:
+        return False
+    if ops[1].type == cs_x86.X86_OP_REG:
+        return i.mnemonic in ("xor", "sub", "sbb") and ops[0].reg == ops[1].reg
+    return ops[1].type == cs_x86.X86_OP_IMM and (i.mnemonic == "or" and ops[1].imm & 0xFFFFFFFF == 0xFFFFFFFF
+                                                 or i.mnemonic == "and" and ops[1].imm == 0)
+
+
+def _whole(reg: str) -> str:
+    """The 32-bit register a part of one belongs to: al and ax are eax's."""
+    return {"al": "eax", "ah": "eax", "ax": "eax", "bl": "ebx", "bh": "ebx", "bx": "ebx", "si": "esi",
+            "di": "edi"}.get(reg, reg)
+
+
 def piece(before: bytes, code: bytes) -> str | None:
     """Why `code` is the rest of the function whose code `before` is, right before it, or None. On a PC game Ghidra
     started 181 of 11,877 functions in the middle of others: a lone epilogue after a call it took for one that never
