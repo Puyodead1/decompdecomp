@@ -81,10 +81,11 @@ class WindowsPC(Console):
     # functions of their own, named after their imports and set aside (scratch.name_import_thunks); 6 the files whose
     # functions keep an ebp frame built with /Oy- (scratch.set_frame_flags), but for files with matched code: after
     # the thunks, which keep no frame and would count against their file's; 7 the stubs again, now that Visual C++
-    # 2005's /GS handlers are known (a 2007 game's 2,860 stubs were open: none of its handlers had the older shape).
+    # 2005's /GS handlers are known (a 2007 game's 2,860 stubs were open: none of its handlers had the older shape); 8
+    # the joins again, for the jump tables Ghidra made functions of (scratch.merge_pieces).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 7
+    ANALYSIS = 8
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -206,8 +207,9 @@ class WindowsPC(Console):
         joined: dict[str, list[str]] = {}
 
         def pieces(fp):
-            joined.update(scratch.merge_project_pieces(fp.root, version, keep=matched(), log=log))
-            n = sum(len(v) for v in joined.values())
+            took = scratch.merge_project_pieces(fp.root, version, keep=matched(), log=log)
+            joined.update(took)  # (each step's own: step 8 runs it again)
+            n = sum(len(v) for v in took.values())
             return f"{n} pieces of functions Ghidra cut off are part of the function they belong to again" if n else None
         def thunks(fp):
             n = scratch.name_import_thunks(fp.root, version, keep=matched())
@@ -228,7 +230,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (stubs, True)}
+                 7: (stubs, True), 8: (pieces, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -237,7 +239,7 @@ class WindowsPC(Console):
         if manifest.get("tools") != scratch.tools_version():
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
             net.forks.get(slug)[1].update_manifest(tools=scratch.tools_version())  # (tried: not again until they change)
-        if kept.get(4):  # (taken back: nothing was joined)
+        if kept.get(4) or kept.get(8):  # (taken back: nothing was joined)
             agent, _ = net.local_agent("decompdecomp")
             for name, took in joined.items():
                 net.joined(name, slug)
