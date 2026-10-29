@@ -200,6 +200,7 @@ IMPORT_JUMP, THUNK_BYTES = b"\xff\x25", 6
 THUNK_WHY = "an import thunk the linker adds for calls to {name}, a DLL's function: no C of its own makes it"
 PADDING = b"\x90\xcc"  # what pads code: Visual C++ 6's nops, the linker's int3
 MAX_PURGE = 0x400  # what a __stdcall function's arguments can take off the stack; Ghidra says 2147483647 when unsure
+UNKNOWN_PURGE = 2147483647
 TOOL_SECONDS = 3600  # Ghidra on a big game, the project's build
 ERROR_TAIL = 1500  # how much of a tool's output an error shows
 
@@ -745,6 +746,24 @@ def _disasm(md, code: bytes, addr: int):
     return md.disasm(code, addr)
 
 
+def _purge(md, pe: PE, start: int, code_end: int, row: dict) -> int:
+    """What the function takes off the stack as it returns, as Ghidra says it, or, where Ghidra doesn't know
+    (2147483647), as its `ret N` does: a 2007 PC game had 94 functions named @func_00401180@2147483651, which no C
+    declaration makes."""
+    purge = int(row.get("purge") or 0)
+    if 0 <= purge <= MAX_PURGE:
+        return purge
+    return _ret_purge(md, pe.read(start, code_end - start), start)
+
+
+def _ret_purge(md, code: bytes, at: int) -> int:
+    """The N of the code's `ret N` (0: a plain `ret`, or none)."""
+    for ins in _disasm(md, code, at):
+        if ins.id == x86.X86_INS_RET and ins.operands:
+            return ins.operands[0].imm
+    return 0
+
+
 def _tables(md, pe: PE, start: int, code_end: int, limit: int) -> tuple[int, int, list[int]]:
     """(where the function's code ends, where its data ends, the jump table entries' offsets): MSVC puts a switch's
     jump table (and its byte index table) right after the function's code."""
@@ -824,7 +843,7 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         base = r.get("name", "")
         named = r.get("source") in ("IMPORTED", "USER_DEFINED") and _IDENT.fullmatch(base) and base != "entry"
         names[start] = decorate(base if named else f"func_{start:08X}", r.get("convention", ""),
-                                int(r.get("purge") or 0), int(r.get("params") or 0))
+                                _purge(md, pe, start, extents[start][0], r), int(r.get("params") or 0))
     for start, r in rows.items():  # an import thunk by its import's name (`_RtlUnwind@16`), once
         if r.get("thunk") and (symbol := _thunk_symbol(import_thunk(pe, start), r)) not in names.values():
             names[start] = symbol
@@ -1411,6 +1430,36 @@ def name_import_thunks(root: Path, version: str, keep: set[str] = frozenset()) -
     if marked:
         path.write_text(json.dumps({**info, "names": dict(sorted(names.items()))}, indent=1), encoding="utf-8")
     return marked
+
+
+_UNKNOWN_PURGE = re.compile(r"([_@])(\w+)@(\d{10})")  # a symbol decorated with Ghidra's "don't know" (2147483647)
+
+
+def fix_unknown_purges(root: Path, version: str, keep: set[str] = frozenset()) -> dict[str, str]:
+    """A project made before _purge: each function named with Ghidra's "don't know" for what it takes off the stack
+    (@func_00401180@2147483651) named by its `ret N` instead, and every call to it in the config (relocations): no
+    C declaration makes the old name. Not a matched function (`keep`). Returns {old name: new name}."""
+    path, info, pes, functions = _project_functions(root, version)
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    taken, renamed = {f.name for f in functions}, {}
+    for f in functions:
+        m = _UNKNOWN_PURGE.fullmatch(f.name)
+        if not m or int(m.group(3)) <= MAX_PURGE or f.name in keep:
+            continue
+        registers = int(m.group(3)) - UNKNOWN_PURGE  # (__fastcall's and __thiscall's register arguments, counted in)
+        purge = _ret_purge(md, pes[unit_module(f.unit)].read(f.addr, f.size), f.addr)
+        new = f"{m.group(1)}{m.group(2)}@{purge + registers}" if m.group(1) == "@" or purge + registers > 0 \
+            else f"_{m.group(2)}"
+        if new not in taken:
+            renamed[f.name] = new
+            taken.add(new)
+    if renamed:
+        _save_functions(path, info, pes, [
+            Function(f.addr, f.size, renamed.get(f.name, f.name),
+                     [(o, k, renamed.get(s, s) if s else s, a) for o, k, s, a in f.relocs], f.unit)
+            for f in functions])
+    return renamed
 
 
 def function_extent(root: Path, version: str, name: str) -> tuple[int, int] | None:

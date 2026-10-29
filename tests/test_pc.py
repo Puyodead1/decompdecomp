@@ -869,6 +869,32 @@ def test_a_jump_table_ghidra_made_a_function_of_is_its_switchs():
     assert scratch_pe.merge_pieces(pe, found, keep={"_func_00401000"}, log=lambda *_: None)[1] == {}
 
 
+def test_a_function_ghidra_didnt_know_the_stack_arguments_of_is_named_by_its_ret(tmp_path):
+    """Ghidra says 2147483647 for what a function takes off the stack when it doesn't know: a 2007 PC game had 94
+    functions named @func_00401180@2147483651, which no C declaration makes. Its `ret N` says, at the import and in a
+    project made before (the calls to it renamed too, a matched one left alone)."""
+    code = bytes.fromhex("8bc1 c20400").ljust(0x10, b"\x90") + bytes.fromhex("e8ebffffff c3")  # ret 4; call it
+    pe = scratch_pe.read_pe(_tiny_exe(code))
+    unknown = {"purge": scratch_pe.UNKNOWN_PURGE, "convention": "__fastcall"}
+    found = scratch_pe.analyse(pe, [_row(0x401000, 0x401006) | unknown, _row(0x401010, 0x401016)])
+    assert found[0].name == "@func_00401000@8"  # ecx's 4 and its 4 on the stack
+    # a project made before: named with the "don't know", called by that name
+    (tmp_path / "orig").mkdir()
+    (tmp_path / "orig" / "game.exe").write_bytes(_tiny_exe(code))
+    entries = [scratch_pe._entry(pe, f) for f in found]
+    entries[0]["name"] = "@func_00401000@2147483651"
+    entries[1]["relocs"] = [[r[0], r[1], "@func_00401000@2147483651", r[3]] for r in entries[1]["relocs"]]
+    (tmp_path / "config" / "game").mkdir(parents=True)
+    path = tmp_path / "config" / "game" / "functions.json"
+    path.write_text(json.dumps({"exe": "orig/game.exe", "units": {"u": entries}}))
+    assert scratch_pe.fix_unknown_purges(tmp_path, "game", keep={"@func_00401000@2147483651"}) == {}
+    assert scratch_pe.fix_unknown_purges(tmp_path, "game") == {"@func_00401000@2147483651": "@func_00401000@8"}
+    fns = json.loads(path.read_text())["units"]["u"]
+    assert [fn["name"] for fn in fns] == ["@func_00401000@8", "_func_00401010"]
+    assert [r[2] for r in fns[1]["relocs"]] == ["@func_00401000@8"]
+    assert scratch_pe.fix_unknown_purges(tmp_path, "game") == {}  # (done)
+
+
 def test_a_function_found_in_a_gap_keeps_its_last_instruction_whole():
     """A `ret 8` ends with a zero byte, which the gap's padding was stripped with: the byte belonged to no
     function, its function's object ended mid-instruction, and the piece after it was never next to it."""

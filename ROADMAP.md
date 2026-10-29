@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **PC functions Ghidra didn't know the stack arguments of are named by their `ret`.** Ghidra says 2147483647 when
+  it doesn't know, and the import took it for the count: a 2007 PC game had 94 functions named like
+  @func_00401180@2147483651. The import reads the function's `ret N` instead, and projects made before get their
+  unmatched ones renamed, history kept (analysis 9).
 - **A switch's jump table Ghidra made a function of is the switch's.** Agents of two models said a PC game's 23-byte
   "function" was pointers, not code: its switch's table, cut a byte short. It's joined to the function before it,
   every entry relocated, so neither is left that no C makes (analysis 8 on projects made before).
