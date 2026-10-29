@@ -258,7 +258,7 @@ def _which(cmd: str) -> str | None:
         return found
     home = Path.home()
     directories = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin",
-                   home / ".npm-global" / "bin"]
+                   home / ".npm-global" / "bin", home / ".bun" / "bin"]  # (bun's global installs: ZCode's)
     if os.name == "nt":
         directories.append(Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "npm")
         directories.append(Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "agy" / "bin")
@@ -1053,11 +1053,12 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         cmd, more = k.session_command(exe, workdir, self.mcp_url, token, s.model)
-        cmd = agents.cli_argv(cmd)
+        prompt = self.prompt(s)
+        cmd = agents.cli_argv(cmd + ([k.prompt_flag, prompt] if k.prompt_flag else []))
         # PWD too: opencode 2 works in $PWD, not the folder it starts in, and the app's PWD was the user's home, so
         # Mario Kart 64's helpers worked there without their folder's settings: no tools, and a free shell
         env = dict(os.environ, PWD=str(workdir), **{HELPER_ENV: str(self.home)}, **more)
-        return cmd, env, k.stdin(self.prompt(s))
+        return cmd, env, k.stdin(prompt)
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
         k = agents.get(s.kind)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -103,7 +104,8 @@ def test_a_used_up_plan_waits_instead_of_stopping():
 
 def _manager(tmp_path, monkeypatch, kind):
     (tmp_path / "bin").mkdir(exist_ok=True)
-    exe = tmp_path / "bin" / {"claude": "claude", "codex": "codex", "antigravity": "agy", "opencode": "opencode"}[kind]
+    exe = tmp_path / "bin" / {"claude": "claude", "codex": "codex", "antigravity": "agy", "opencode": "opencode",
+                              "zcode": "zcode"}[kind]
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     monkeypatch.setattr(agents, "_which", lambda cmd: str(exe))
@@ -111,6 +113,58 @@ def _manager(tmp_path, monkeypatch, kind):
     m.mcp_url, m.home = "http://127.0.0.1:6464/mcp", tmp_path
     m.prompt = lambda s: "line one\nline two with \"quotes\" & <ampersands>"
     return m
+
+
+def test_zcode_takes_its_prompt_as_an_argument_and_only_decompdecomps_tools(tmp_path, monkeypatch):
+    """`zcode -p -` is the prompt "-": it reads none on stdin. Its settings file replaces the user's (their MCP
+    servers, plugins and hooks stay out), the token stays off the command line, and its own tools (shell, files,
+    web) are taken out of the request."""
+    m = _manager(tmp_path, monkeypatch, "zcode")
+    s = agents.Session("zcode-1", "zcode", "z", "demo", "zcode-1", {"model": "account:zai-start-plan/GLM-5.3-Flash#low"})
+    work = tmp_path / "z"
+    work.mkdir()
+    cmd, env, stdin = m._command(s, "tok", work)
+    assert cmd[-2:] == ["-p", "line one\nline two with \"quotes\" & <ampersands>"] and stdin == ""
+    assert cmd[cmd.index("--model") + 1] == "account:zai-start-plan/GLM-5.3-Flash" and "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "low" and not any("tok" in a for a in cmd)
+    own = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+    assert {"Bash", "Write", "Edit", "Read", "WebFetch", "Agent"} <= set(own)
+    settings = json.loads(Path(env["ZCODE_CLI_SETTINGS_FILE"]).read_text())
+    assert settings["mcp"]["servers"] == {"decomp": {"type": "http", "url": "http://127.0.0.1:6464/mcp",
+                                                     "headers": {"Authorization": "Bearer tok"}}}
+    assert not settings["plugins"]["enabled"] and not settings["hooks"]["enabled"]
+    assert not settings["features"]["subagent"] and not settings["skills"]["enabled"]
+    # an effort the model doesn't take: the nearest it does (GLM-5.2: high and max), none for one without any
+    catalog = {"modelConfigRules": {"modelRules": [
+        {"modelMatch": ".*", "config": {"optionSpecs": {"reasoningLevel": {"values": ["disabled", "enabled"]}}}},
+        {"modelMatch": ".*GLM-5\\.2.*", "config": {"optionSpecs": {"reasoningLevel": {"values": ["disabled", "high", "max"]}}}}]}}
+    monkeypatch.setattr("decompnet.agents.zcode._catalog", lambda: catalog)
+    z = kinds.get("zcode")
+    assert z.offered_effort("account:zai-start-plan/GLM-5.2", "low") == "high"
+    assert z.offered_effort("account:zai-start-plan/GLM-5.2", "max") == "max"
+    assert z.offered_effort("account:zai-start-plan/GLM-5-Turbo", "high") == ""
+
+
+def test_zcode_reads_its_event_stream():
+    """What zcode 0.17.0 printed for a session that called one tool: reasoning, the call, its text, and each model
+    request's usage (its inputTokens counts the cached ones)."""
+    from decompnet import agents as kinds
+
+    z = kinds.get("zcode")
+    m = lambda **p: json.dumps({"type": "model.streaming", "payload": p})
+    lines = [m(kind="reasoning_start"), m(kind="reasoning_delta", delta="Claim "), m(kind="reasoning_delta", delta="it."),
+             m(kind="reasoning_end"),
+             m(kind="tool_call", toolName="mcp__decomp__claim_function", input={"project": "game"}),
+             json.dumps({"type": "session.updated", "payload": {"type": "model_request_completed", "usage": {
+                 "inputTokens": 2188, "outputTokens": 29, "cacheReadTokens": 2048, "cacheWriteTokens": 0}}}),
+             m(kind="text_delta", delta="Done."), m(kind="text_end"),
+             json.dumps({"type": "session.updated", "payload": {"type": "model_request_failed", "retryable": False,
+                                                                "message": "Usage limit reached for 5 hour"}})]
+    state: dict = {}
+    got = [item for line in lines for item in z.parse_line(line, state)]
+    assert got == [("think", "Claim it."), ("tool", "claim_function(game)"),
+                   ("usage", json.dumps({"input": 140, "output": 29, "cache_read": 2048, "turns": 1})),
+                   ("text", "Done."), ("error", "Usage limit reached for 5 hour")]
 
 
 def test_prompts_go_in_on_stdin_never_the_command_line(tmp_path, monkeypatch):

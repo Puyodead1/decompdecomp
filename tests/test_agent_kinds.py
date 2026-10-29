@@ -49,7 +49,9 @@ def test_every_agent_says_everything_the_app_asks(agent, stand_in, tmp_path):
         assert cmd[0] == str(stand_in) and "some-model" in cmd
         assert not any(TOKEN in a for a in cmd), "a token on the command line is there for every process to read"
         assert all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
-        assert "line one" in agent.stdin(PROMPT) and agent.parse_line("not json") == [("info", "not json")]
+        # the prompt: on stdin, or after its prompt_flag (ZCode reads none on stdin), never both
+        assert ("line one" in agent.stdin(PROMPT)) != bool(agent.prompt_flag)
+        assert agent.parse_line("not json") == [("info", "not json")]
         assert agent.version(str(stand_in)) == "1.0.0"
     else:  # built into the app: a loop of its own
         assert type(agent).run is not agents.Agent.run, "it says how a session runs"

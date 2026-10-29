@@ -1,5 +1,5 @@
 """The connector: how decompdecomp talks to a helper agent. Every agent the app can start is a module in this folder
-(agents/claude.py, codex.py, antigravity.py, opencode.py, api.py) that makes an `Agent` below and fills in its parts;
+(agents/claude.py, codex.py, antigravity.py, opencode.py, zcode.py, api.py) that makes an `Agent` below and fills in its parts;
 the list at the end of this file registers them. The rest of the app (the helpers' manager in app/agents.py, the
 routes, the GUI) asks the agent of a helper, `agents.get(kind)`, and never compares agent names. A person or an agent
 adding support for another agent reads its module and this file, nothing else.
@@ -106,6 +106,9 @@ class Agent:
     # it keeps retrying a usage limit instead of exiting (its stderr says the limit): the app ends the session when it
     # says so, and the helper waits for the limit to reset (app/agents.py LIMIT)
     limit_hangs = False
+    # the flag its prompt goes after on the command line, for an agent that can't read one on stdin (ZCode's -p); ""
+    # sends it on stdin
+    prompt_flag = ""
 
     def __repr__(self) -> str:
         return f"<agent {self.id}>"
@@ -188,9 +191,10 @@ class Agent:
         raise RuntimeError(f"{self.name} isn't a program the app runs")
 
     def stdin(self, prompt: str) -> str:
-        """What goes in on stdin: the prompt, as the agent reads it. Never on the command line: no length limit, and
-        nothing in it is parsed."""
-        return prompt
+        """What goes in on stdin: the prompt, as the agent reads it. On the command line only for an agent that reads
+        it nowhere else (prompt_flag): one argument, never parsed by a shell, but limited in length (128 KiB on Linux,
+        32 KiB on Windows)."""
+        return "" if self.prompt_flag else prompt
 
     def parse_line(self, line: str, state: dict | None = None) -> list[tuple[str, str]]:
         """(type, text) items for the helper's feed from one line the agent printed: the same for every agent (a line
@@ -302,9 +306,10 @@ def _registry() -> list[Agent]:
     from .claude import CLAUDE
     from .codex import CODEX
     from .opencode import OPENCODE
+    from .zcode import ZCODE
 
     # the order the Agents page lists them in (the launcher puts the recommended one first)
-    return [CLAUDE, CODEX, ANTIGRAVITY, OPENCODE, API]
+    return [CLAUDE, CODEX, ANTIGRAVITY, OPENCODE, ZCODE, API]
 
 
 AGENTS: list[Agent] = _registry()
