@@ -532,3 +532,33 @@ def test_a_function_with_an_argument_in_a_register_no_c_passes_one_in_comes_last
                        (pid, name, n * 4, n, "open", "a", json.dumps(meta)))
     order = [net.claim_row(net.local_agent(f"a{k}")[0], "game", None, "easiest")["name"] for k in range(3)]
     assert order == ["small", "big", "usercall"]
+
+
+def test_a_model_that_gave_a_function_back_three_times_isnt_handed_it_again(tmp_path, monkeypatch):
+    """A PC game with 114 open functions: four helpers of one model gave most back 10-11 times in two hours, one 9
+    times with the same note. After MODEL_GIVE_UPS give-ups by a model it's left to other models, until the compiler or
+    the shared header changes; by name it's still the agent's."""
+    monkeypatch.setattr(network, "RELEASE_COOLDOWN", 0)
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("game", "Game", "", "x86", 0, str(tmp_path), json.dumps({"kind": "rom"}))).lastrowid
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit) VALUES(?,?,?,?,?,?)",
+                   (pid, "stuck", 40, 10, "open", "a"))
+    sonnets = [net.local_agent(f"claude-sonnet-{k}")[0] for k in range(1, 5)]
+    for a in sonnets[:network.MODEL_GIVE_UPS]:
+        assert net.claim_row(a, "game", None, "easiest")["name"] == "stuck"
+        net.release(a, "stuck", "test byte vs dword", "game")
+    assert net.claim_row(sonnets[3], "game", None, "easiest") is None
+    assert net.given_up(sonnets[3], "game") == 1
+    assert "gave back 3 times" in net.nothing_to_claim(sonnets[3], net._project("game"))
+    other, _ = net.local_agent("opencode-deepseek-v4-1")
+    assert net.claim_row(other, "game", None, "easiest")["name"] == "stuck"
+    net.release(other, "stuck", "", "game")
+    assert net.claim_row(sonnets[3], "game", "stuck")["name"] == "stuck"  # by name
+    net.release(sonnets[3], "stuck", "", "game")
+    with net.store.tx() as db:
+        net._event(db, pid, None, "compiler", "range check")
+    fresh, _ = net.local_agent("claude-sonnet-5")  # (one that didn't just release it itself)
+    assert net.given_up(fresh, "game") == 0
+    assert net.claim_row(fresh, "game", None, "easiest")["name"] == "stuck"
