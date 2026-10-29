@@ -36,6 +36,10 @@ API_CONTEXT_SHARE = 0.7
 API_TRIM_RETRIES = 4
 API_TRIM_FACTOR = 0.6
 API_TIMEOUT, API_CONNECT_TIMEOUT = 300, 15
+# a request the server dropped (closed without an answer, or partway through one, or silent past API_TIMEOUT) is
+# sent again after these waits (seconds): DeepSeek dropped about 1 in 100, and each ended the whole session, its
+# functions' work with it
+API_RESEND_WAITS = (5, 15, 30)
 PROPS_TIMEOUT = 5  # asking a llama.cpp server its context, or a provider its models
 MIN_CONTEXT = 2048
 LOCAL_CONTEXT = 16384  # what a local server runs when it doesn't say (they often run small contexts)
@@ -110,7 +114,9 @@ class Api(Agent):
                     request = {"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"}
                     if s.options.get("effort"):
                         request["reasoning_effort"] = s.options["effort"]
-                    r = client.post(f"{base}/chat/completions", headers=headers, json=request)
+                    r = _post(client, f"{base}/chat/completions", headers, request, s)
+                    if r is None:  # stopped while waiting to send it again
+                        return True
                     if r.status_code == 200 or not _too_long(r):
                         break
                     budget = int(budget * API_TRIM_FACTOR)  # the server counts differently, or knows better: trim more
@@ -334,6 +340,21 @@ def fit(messages: list[dict], budget: int, keep: int = 2) -> int:
                 m["content"] = text[:TRIM_TO] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
     return total
+
+
+def _post(client, url: str, headers: dict, request: dict, s):
+    """The request's answer, sent again (API_RESEND_WAITS) when the server drops it; the last drop is raised. None
+    when the helper is stopped while it waits."""
+    for wait in (*API_RESEND_WAITS, None):
+        try:
+            return client.post(url, headers=headers, json=request)
+        except httpx.TransportError as e:
+            if wait is None:
+                raise
+            s.push("info", f"{type(e).__name__}: {str(e)[:ERROR_SHOWN]}; sending it again in {wait}s")
+            if s.stop.wait(wait):
+                return None
+    return None
 
 
 def model_efforts(entry: dict) -> list[str]:
