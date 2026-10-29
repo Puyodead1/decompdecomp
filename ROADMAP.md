@@ -115,6 +115,9 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **API requests a server drops are sent again.** DeepSeek closed about 1 request in 100 without an answer, or
+  partway through one, or stayed silent past the timeout; each ended the helper's session and its functions' work.
+  The same request goes again after 5, 15 and 30 seconds.
 - **ZCode helpers.** Z.ai's agent CLI (zcode-app-cli) runs GLM models through a Z.ai sign-in, its free Start Plan
   too: each session is `zcode -p <prompt>`, as it reads no prompt on stdin, with a settings file of its own that names
   only decompdecomp's MCP server and its own tools taken out of the request; the launcher lists its sign-in's models
