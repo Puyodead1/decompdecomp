@@ -1500,6 +1500,31 @@ def test_a_split_of_the_exes_source_file_keeps_its_functions_rows(tmp_path, monk
     assert net.store.one("SELECT function_id FROM notes WHERE text='tried'")["function_id"] == new
 
 
+def test_a_kept_compiler_never_commits_another_files_try(tmp_path, monkeypatch):
+    """A 2007 PC game's file stayed "built with Visual C++ 2010": an agent's try of it was in file_compilers.json when
+    another file's compiler was committed, and the whole map went in. A kept choice commits its own entry; a try the
+    app was stopped in the middle of (a restart for an update) is put back at the next start."""
+    net, root, _ = _project_with_stubs(tmp_path, monkeypatch)
+    proj, fp, _ = net.forks.get("p")
+    pc = consoles.get("pc")
+    (root / ".decomp.wtf.json").write_text(json.dumps(json.loads((root / ".decomp.wtf.json").read_text())
+                                                      | {"compiler": "MSVC/8.0SP1"}))
+    rel = pc.set_file_compiler(fp, "src/auto/u.cpp", "MSVC/8.0SP1")  # (the map, as a project is made with it)
+    subprocess.run(["git", "add", rel], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q", "-m", "map"], cwd=root,
+                   check=True)
+    pc.set_file_compiler(fp, "src/auto/tried.cpp", "MSVC/10.0")  # (another agent's try, in progress)
+    net.forks._commit_entry(proj, fp, rel, lambda: pc.set_file_compiler(fp, "src/auto/u.cpp", "MSVC/8.0"),
+                            "Build src/auto/u.cpp with MSVC/8.0")
+    committed = json.loads(subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=root, capture_output=True,
+                                          text=True).stdout)
+    assert committed == {"src/auto/u.cpp": "8.0"}
+    assert json.loads((root / rel).read_text()) == {"src/auto/tried.cpp": "10.0", "src/auto/u.cpp": "8.0"}
+    assert net.forks.put_back_tries("p", log=lambda *_: None) == [rel]
+    assert json.loads((root / rel).read_text()) == {"src/auto/u.cpp": "8.0"}
+    assert net.forks.put_back_tries("p", log=lambda *_: None) == []
+
+
 def test_a_project_without_the_program_in_it_waits_for_it(tmp_path, monkeypatch):
     net, root, stubs = _project_with_stubs(tmp_path, monkeypatch)
     (root / "orig" / "v.exe").unlink()

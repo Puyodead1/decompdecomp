@@ -584,6 +584,38 @@ class ForkEngine:
         self._keep_scores(proj, unit, text, d.unit_scores)
         return d.unit_scores, True
 
+    def _commit_entry(self, proj, fp: ForkProject, rel: str, setter, message: str) -> None:
+        """Commit one source file's entry of a map every file's tries write to (file_compilers.json, file_flags.json):
+        the committed map is the last commit's with `setter()`'s entry, never another try's in progress, which the
+        working tree keeps. A commit of the whole file swept one up: a 2007 PC game's file stayed "built with Visual
+        C++ 2010" after an agent's try of it was in the map when a choice in Settings was committed."""
+        path = fp.root / rel
+        with self._build_locks[proj["id"]]:
+            now = path.read_text(encoding="utf-8")
+            ok, head = fp.git("show", f"HEAD:{rel}")
+            if ok:  # (one no commit has yet is as it is: projects commit their maps when they're made)
+                path.write_text(head + "\n", encoding="utf-8")
+            setter()
+            try:
+                self._commit(proj, fp, rel, message)
+            finally:
+                path.write_text(now, encoding="utf-8")
+                setter()  # (the working tree: the tries in progress, and this entry)
+
+    def put_back_tries(self, slug: str, log=print) -> list[str]:
+        """At start, a change to the project's config no commit has is a try the app ended part-way (a restart for an
+        update in the middle of try_compiler or search_flags, whose clean-up never ran): agents can't edit the config,
+        and the app commits what it keeps. Put back as committed, before any helper starts; returns the files."""
+        _, fp, cfg = self.get(slug)
+        if cfg.get("origin") != "scratch":  # (a public decomp's config may be someone's own change)
+            return []
+        ok, out = fp.git("diff", "--name-only", "HEAD", "--", "config")
+        changed = out.splitlines() if ok else []
+        if changed:
+            fp.git("checkout", "HEAD", "--", *changed)
+            log(f"{slug}: put back {', '.join(changed)} as committed (a try the app was stopped in the middle of)")
+        return changed
+
     def _commit(self, proj, fp: ForkProject, rel: str, message: str) -> None:
         """Commit one file (agents work side by side: never sweep up another one's change)."""
         with self._git_locks[proj["id"]]:
@@ -3061,7 +3093,8 @@ class ForkEngine:
                         if res["matched"]:
                             kept = c
                             self.net.bump_generation(proj["id"])  # (earlier compiles of the file aren't repeats)
-                            self._commit(proj, fp, rel, f"Build {unit.source} with {c}\n\n{fn['name']} matches with "
+                            self._commit_entry(proj, fp, rel, lambda c=c: console.set_file_compiler(fp, unit.source, c),
+                                               f"Build {unit.source} with {c}\n\n{fn['name']} matches with "
                                                         f"it (found by {agent.name} with decompdecomp).")
                             self.net.filecompilers.tried(slug, unit.source, c)  # (the range checks around it)
                             return f"{c}: {res['text']}\n{unit.source} is built with {c} from now on."
@@ -3139,7 +3172,8 @@ class ForkEngine:
                         if res["matched"]:
                             kept = flags
                             self.net.bump_generation(proj["id"])  # (earlier compiles of the file aren't repeats)
-                            self._commit(proj, fp, rel, f"Build {unit.source} with {shown(flags)}\n\n{fn['name']} "
+                            self._commit_entry(proj, fp, rel, lambda flags=flags: console.set_file_flags(fp, unit.source, flags),
+                                               f"Build {unit.source} with {shown(flags)}\n\n{fn['name']} "
                                                         f"matches with them (found by {agent.name} with decompdecomp).")
                             return f"{shown(flags)}: {res['text']}\n{unit.source} is built with them from now on."
                         if res.get("broken") and res.get("alone") and apart is None:
@@ -3158,7 +3192,8 @@ class ForkEngine:
                         kept = near[1]
                         self._build_unit(proj, fp, unit)
                         self.net.bump_generation(proj["id"])
-                        self._commit(proj, fp, rel, f"Build {unit.source} with {shown(kept)}\n\n{fn['name']}'s C "
+                        self._commit_entry(proj, fp, rel, lambda: console.set_file_flags(fp, unit.source, kept),
+                                           f"Build {unit.source} with {shown(kept)}\n\n{fn['name']}'s C "
                                                     f"comes {ours / max(near[0], 1):.0f} times closer with them (score "
                                                     f"{near[0]}, {ours} with {shown(own)}; found by {agent.name} with "
                                                     f"decompdecomp).")
@@ -3281,7 +3316,8 @@ class ForkEngine:
                 else:
                     said = (f"{source} is built with {shown}: its open functions come closer with them (on average "
                             f"{nearer[1]:.0f} points), and every match holds")
-                self._commit(proj, fp, rel, f"Build {source} with {shown}\n\n{said} (decompdecomp's flag survey).")
+                self._commit_entry(proj, fp, rel, lambda: console.set_file_flags(fp, source, flags),
+                                   f"Build {source} with {shown}\n\n{said} (decompdecomp's flag survey).")
                 self.net.bump_generation(proj["id"])  # (the file's flags: earlier compiles aren't repeats any more)
                 for u in units:
                     self._keep_scores(proj, u, text, after[u.name])
@@ -4166,7 +4202,8 @@ class ForkEngine:
                 why = (f"{', '.join(sorted(broken)[:8])} no longer match with it" if broken
                        else f"the file doesn't build with it:\n{_tail(log)}")
                 raise NetworkError(f"{source} stays with {own}: {why}")
-            self._commit(proj, fp, rel, f"Build {source} with {compiler}\n\nChosen in decompdecomp's project settings.")
+            self._commit_entry(proj, fp, rel, lambda: console.set_file_compiler(fp, source, compiler),
+                               f"Build {source} with {compiler}\n\nChosen in decompdecomp's project settings.")
             self.net.bump_generation(proj["id"])  # (the file's compiler: earlier compiles aren't repeats any more)
             for u in units:
                 self._keep_scores(proj, u, text, after[u.name])
