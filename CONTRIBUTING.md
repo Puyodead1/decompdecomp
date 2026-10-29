@@ -255,6 +255,7 @@ connector, `agents/__init__.py`.
 | `agents/codex.py` | Codex CLI | `codex exec --json`, the user's own MCP servers switched off for the run |
 | `agents/antigravity.py` | Antigravity CLI | `agy` with stream-json in and out; its models from `agy models`; once Gemini CLI |
 | `agents/opencode.py` | opencode | `opencode run`, its own server per helper (opencode 2); its models from `opencode models` |
+| `agents/zcode.py` | ZCode | `zcode -p <prompt> --output-format stream-json` (no prompt on stdin: `prompt_flag`), a settings file of its own per helper; its models from its sign-in's catalog |
 | `agents/api.py` | API helper | No program: the app's own loop for any OpenAI-compatible API, and the saved endpoints' presets |
 
 Around them:
@@ -268,7 +269,7 @@ Around them:
 
 An agent is one of two sorts:
 
-- **A program** the user installs and signs in to (Claude Code, Codex, Antigravity CLI, opencode). The app runs it
+- **A program** the user installs and signs in to (Claude Code, Codex, Antigravity CLI, opencode, ZCode). The app runs it
   headless, a session at a time, in a private folder. It connects only to the app's own MCP server, with a token of
   its own, and may use only decompdecomp's tools. The prompt goes in on stdin; what it prints is read into the feed.
 - **A loop in the app** (the API helper). It talks to a model's API itself and calls the tools directly.

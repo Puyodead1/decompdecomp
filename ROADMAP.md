@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **ZCode helpers.** Z.ai's agent CLI (zcode-app-cli) runs GLM models through a Z.ai sign-in, its free Start Plan
+  too: each session is `zcode -p <prompt>`, as it reads no prompt on stdin, with a settings file of its own that names
+  only decompdecomp's MCP server and its own tools taken out of the request; the launcher lists its sign-in's models
+  with the efforts each takes.
 - **An API endpoint offers the efforts its model takes.** The launcher listed all six of OpenAI's words for every
   endpoint; DeepSeek takes only low, high and max (its /models says so) and accepts the rest without a word. Each
   endpoint's levels are read from its provider's /models when it's saved and at start.
