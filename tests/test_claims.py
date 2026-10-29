@@ -517,3 +517,18 @@ def test_a_function_is_found_by_the_name_it_had_before(tmp_path):
             net._event(db, pid, None, "rename", detail)
     assert net._function("func_800007D0", "g")["name"] == "clamp_to_range"
     assert net._function("clamp_s32", "g")["name"] == "clamp_to_range"
+
+
+def test_a_function_with_an_argument_in_a_register_no_c_passes_one_in_comes_last(tmp_path):
+    """A 2007 PC game built with link-time code generation had a third of its open functions take an argument in
+    eax, esi, edi or ebx: agents of two or three models each spent a session on one before it was set aside, and few
+    sessions matched anything. Those come after every other function."""
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("game", "Game", "", "x86", 0, str(tmp_path), json.dumps({"kind": "rom"}))).lastrowid
+        for name, n, meta in (("usercall", 2, {"register_arg": "eax"}), ("big", 300, {}), ("small", 20, {})):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,meta) VALUES(?,?,?,?,?,?,?)",
+                       (pid, name, n * 4, n, "open", "a", json.dumps(meta)))
+    order = [net.claim_row(net.local_agent(f"a{k}")[0], "game", None, "easiest")["name"] for k in range(3)]
+    assert order == ["small", "big", "usercall"]
