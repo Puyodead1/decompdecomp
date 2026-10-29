@@ -868,6 +868,43 @@ def test_an_api_helper_asks_its_model_for_the_effort_it_was_given(tmp_path, monk
         assert sent[-1].get("reasoning_effort") == effort  # none at all without one: the model's default
 
 
+def test_an_api_helper_sends_a_dropped_request_again(tmp_path, monkeypatch):
+    """DeepSeek dropped about 1 request in 100 ("Server disconnected without sending a response", "peer closed
+    connection", silent past the timeout); each ended the session and its functions' work. The same request goes
+    again after a wait, and only drops past the last wait end the session."""
+    import httpx
+
+    from decompnet.agents import api
+
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    m.prompt = lambda s: "task"
+    drops = iter([2, len(api.API_RESEND_WAITS) + 1])
+    left = {"n": next(drops)}
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        if left["n"]:
+            left["n"] -= 1
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    options = {"base_url": "http://mock/v1", "model": "m", "context_tokens": 32768}
+    s = m._record("game", "api", "api-m-1", "box #1", options)
+    s.stop = Quick()
+    m._run(s)
+    assert sent[0] == sent[1] == sent[2] and s.stop.waits[:2] == list(api.API_RESEND_WAITS[:2])
+    assert "RemoteProtocolError" not in (s.error or "")
+    left["n"], sent[:] = next(drops), []  # dropped every time: the drop ends the session
+    s.stop = Quick()
+    with real(transport=httpx.MockTransport(handler)) as client, pytest.raises(httpx.RemoteProtocolError):
+        api._post(client, "http://mock/v1/chat/completions", {}, {"model": "m"}, s)
+    assert len(sent) == len(api.API_RESEND_WAITS) + 1 and s.stop.waits == list(api.API_RESEND_WAITS)
+
+
 def test_opencode_titles_its_sessions_with_the_helpers_own_model(tmp_path, monkeypatch):
     """opencode titles each session with its "small model", OpenCode Zen's paid nano one by default: a free-only
     account saw it called by every helper ("Insufficient account funds"). The helper's own model does it, without
