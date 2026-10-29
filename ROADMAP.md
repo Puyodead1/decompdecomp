@@ -115,6 +115,11 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **A kept compiler or flags never commits another file's try.** try_compiler and search_flags write a candidate
+  into the shared map while they build; a kept choice committed the whole map, and with it whatever another try had
+  in it then, or what one the app was stopped in the middle of had left (a 2007 PC game's file stayed "built with
+  Visual C++ 2010"). A kept choice commits only its own entry, and at start what no commit has in a project's config
+  is put back.
 - **A split of a PC game's .exe source file keeps its functions' rows.** The sync took each folderless source file
   for a program of its own, so a split left every moved function's row behind as "gone", with its attempts and
   notes, beside a new row named past it (_func_0043AC30'). A split moves the row now, and the next sync merges what

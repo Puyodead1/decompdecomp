@@ -90,6 +90,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     # rooms this computer belongs to reconnect (members keep their place; their agents wait while the host is away)
     net.restore_links()
 
+    for row in net.store.all("SELECT slug FROM projects"):  # (before the helpers resume: none may be trying yet)
+        try:
+            if net.fork_slug(row["slug"]):
+                net.forks.put_back_tries(net.fork_slug(row["slug"]), log=jobs.logger.info)
+        except Exception:  # never stands between the user and the app
+            jobs.logger.exception("%s's config couldn't be checked at start", row["slug"])
+
     def consoles_start() -> None:  # what each console does for its projects at start (Console.on_start)
         for row in net.store.all("SELECT slug, config FROM projects"):
             try:
