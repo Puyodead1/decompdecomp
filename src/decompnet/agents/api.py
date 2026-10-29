@@ -295,10 +295,14 @@ def _retry_after(r) -> float | None:
 
 def fold(messages: list[dict], start: int, end: int, n: int, line: str) -> None:
     """Replace messages[start:end] (a finished function's work) with one call and `line` as its result: a call and
-    its result keep the conversation valid for every API, and what came before stays as it was sent."""
+    its result keep the conversation valid for every API, and what came before stays as it was sent. The call has
+    reasoning, empty, where the model's own calls had some: DeepSeek's thinking mode refuses a call without it (every
+    API helper on a DeepSeek endpoint stopped at its first finished function)."""
     call = f"folded-{n}"
+    thought = {"reasoning_content": ""} if any("reasoning_content" in m for m in messages[start:end]) else {}
     messages[start:end] = [{"role": "assistant", "content": None, "tool_calls": [
-                               {"id": call, "type": "function", "function": {"name": "project_info", "arguments": "{}"}}]},
+                               {"id": call, "type": "function", "function": {"name": "project_info", "arguments": "{}"}}]}
+                           | thought,
                            {"role": "tool", "tool_call_id": call, "content": line}]
 
 

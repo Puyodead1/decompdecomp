@@ -687,6 +687,21 @@ def test_an_api_helper_that_never_starts_says_why(tmp_path, monkeypatch, answer,
     assert said in s.error and said in s.why
 
 
+def test_a_folded_function_keeps_a_thinking_models_reasoning_field():
+    """DeepSeek's thinking mode refused every request after a fold ("The reasoning_content in the thinking mode must
+    be passed back to the API"): the folded call had none. Other servers' folds stay as they were."""
+    from decompnet.agents.api import fold
+
+    call = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function",
+                                                                "function": {"name": "claim_function", "arguments": "{}"}}]}
+    for thought in ({"reasoning_content": "hmm"}, {}):
+        messages = [{"role": "system"}, {"role": "user"}, call | thought, {"role": "tool", "tool_call_id": "c1"}]
+        fold(messages, 2, 4, 1, "matched f0")
+        assert len(messages) == 4 and messages[3]["content"] == "matched f0"
+        assert messages[2].get("reasoning_content") == ("" if thought else None)
+        assert ("reasoning_content" in messages[2]) == bool(thought)
+
+
 def test_the_api_helper_sends_a_thinking_models_reasoning_back(tmp_path, monkeypatch):
     """DeepSeek in thinking mode refuses a request whose tool calls come without the reasoning that made them ("The
     reasoning_content in the thinking mode must be passed back to the API"): two DeepSeek helpers waited out that
