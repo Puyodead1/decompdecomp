@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **A split of a PC game's .exe source file keeps its functions' rows.** The sync took each folderless source file
+  for a program of its own, so a split left every moved function's row behind as "gone", with its attempts and
+  notes, beside a new row named past it (_func_0043AC30'). A split moves the row now, and the next sync merges what
+  earlier splits left (4 rows of a 2007 PC game, 13 of a 2008 one).
 - **PC functions Ghidra didn't know the stack arguments of are named by their `ret`.** Ghidra says 2147483647 when
   it doesn't know, and the import took it for the count: a 2007 PC game had 94 functions named like
   @func_00401180@2147483651. The import reads the function's `ret N` instead, and projects made before get their
