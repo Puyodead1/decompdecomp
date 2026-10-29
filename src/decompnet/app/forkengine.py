@@ -1001,6 +1001,7 @@ class ForkEngine:
         # real names a report doesn't give (a PC game's stay _func_0041B470@8): how the source spells them
         reals = console.real_names(fp, version)
         generated = console.generated_functions(fp, version)  # no C of their own makes them (a PC game's EH stubs)
+        registers = console.register_args(fp, version)  # an argument in a register no C declaration passes one in
         copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
@@ -1054,6 +1055,8 @@ class ForkEngine:
                     kept = _KEPT_KEYS if old["size"] == size else ("reopened",)
                     meta.update({k: v for k, v in was.items() if k in kept
                                  and not (k == "asm_code" and was.get("set_aside"))})  # (set aside: decided below)
+                if sym in registers:  # (claimed last, and its brief says why)
+                    meta["register_arg"] = registers[sym]
                 if sym in generated and not meta.get("reopened"):  # set aside as assembly is, whatever the scope
                     meta["asm_code"] = generated[sym]
                 if sym in aside:  # code the project says isn't the game's own (library code, middleware)
@@ -2357,6 +2360,11 @@ class ForkEngine:
         lines = [f"## {header}: {fn['name']}  ({proj['name']})", f"unit {unit.name}, {fn['size']} bytes"]
         if fn["status"] != "matched":
             lines.append(move_on_brief(fn))
+        if (reg := meta.get("register_arg")) and fn["status"] != "matched":
+            lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, a convention link-time code "
+                         f"generation (/GL /LTCG) gives functions whose callers it all sees. No C declaration of one "
+                         f"file passes an argument in {reg}: once your C's body matches and only its entry and exit "
+                         f"differ, say so (release_function with not_c) instead of trying more")
         if meta.get("demangled"):
             lines.append(f"C++ name: {meta['demangled']}")
         if unit.scratch:

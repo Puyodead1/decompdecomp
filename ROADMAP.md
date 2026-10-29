@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **PC functions with a link-time-generated convention come last.** A game built with /GL /LTCG passes arguments in
+  eax, esi, edi or ebx to functions whose callers the linker all saw, which no C declaration of one file does: a third
+  of a 2007 PC game's open functions, each of which cost three agents a session before it was set aside. They're
+  found by their code (arch/x86.register_args: of a 2008 game's 1,309, agents had set aside 1,251 and matched 2),
+  claimed after every other function, and their briefs say why.
 - **A kept compiler or flags never commits another file's try.** try_compiler and search_flags write a candidate
   into the shared map while they build; a kept choice committed the whole map, and with it whatever another try had
   in it then, or what one the app was stopped in the middle of had left (a 2007 PC game's file stayed "built with

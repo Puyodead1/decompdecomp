@@ -895,6 +895,28 @@ def test_a_function_ghidra_didnt_know_the_stack_arguments_of_is_named_by_its_ret
     assert scratch_pe.fix_unknown_purges(tmp_path, "game") == {}  # (done)
 
 
+@pytest.mark.parametrize("code, register", [
+    ("8b00c3", "eax"),  # mov eax, [eax]; ret: the pointer in eax
+    ("83c030c3", "eax"),  # add eax, 0x30; ret
+    ("568b06 5ec3", "esi"),  # push esi; mov eax, [esi]: saved, and read as it came
+    ("8a8358030000c3", "ebx"),  # mov al, [ebx+0x358]; ret
+    ("8b442404 8b00c3", None),  # mov eax, [esp+4]: a stack argument
+    ("8b01 c3", None),  # mov eax, [ecx]: __thiscall's this
+    ("33c0 c3", None),  # xor eax, eax: sets it
+    ("83c8ff c3", None),  # or eax, -1: sets it too
+    ("83e000 c3", None),  # and eax, 0
+    ("8d9b00000000 8bff c3", None),  # lea ebx, [ebx]; mov edi, edi: padding to align a loop
+    ("56 8bf1 8b06 5ec3", None),  # push esi; mov esi, ecx; mov eax, [esi]
+    ("e800000000 8b00c3", None),  # a call first: eax is its result
+])
+def test_an_argument_in_a_register_no_visual_cpp_convention_uses(code, register):
+    """Link-time code generation passes arguments in registers of its choosing; eax, ebx, esi and edi read before
+    they're set are one (ecx and edx are __thiscall's and __fastcall's)."""
+    from decompnet.arch import x86 as x86_arch
+
+    assert x86_arch.register_args(bytes.fromhex(code.replace(" ", ""))) == register
+
+
 def test_a_function_found_in_a_gap_keeps_its_last_instruction_whole():
     """A `ret 8` ends with a zero byte, which the gap's padding was stripped with: the byte belonged to no
     function, its function's object ended mid-instruction, and the piece after it was never next to it."""

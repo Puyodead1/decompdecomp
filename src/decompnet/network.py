@@ -692,7 +692,8 @@ class Network:
                                    "AS tried FROM functions WHERE project_id=? AND status != 'asm'", (proj["id"],)).fetchone()
                 overall = (tried["won"] or 0) / tried["tried"] if tried["tried"] else 0.5
                 # not what this agent released lately (see SELF_RELEASE_WINDOW); what it released before that last
-                # functions waiting for another to match come last (WAITING); the ones they wait for, and those whose
+                # functions waiting for another to match come last (WAITING), then those taking an argument in a register
+                # no C declaration passes one in (Console.register_args); the ones they wait for, and those whose
                 # wait is over, first (after what the release rules put back, before model routing's escalations)
                 query = (
                     f"""SELECT f.* FROM functions f LEFT JOIN {_REGION} r ON r.region = f.vram / {REGION_BYTES}
@@ -702,6 +703,7 @@ class Network:
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                            AND kind='release' AND created_at > :mine)
                         ORDER BY f.id IN ({WAITING}),
+                                 json_extract(f.meta, '$.register_arg') IS NOT NULL,
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                             AND kind='release'),
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND kind='release'
