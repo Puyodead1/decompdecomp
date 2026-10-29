@@ -235,6 +235,13 @@ def _copies(fp: ForkProject) -> dict[str, str]:
     return data if isinstance(data, dict) else {}
 
 
+def _module(unit: str) -> str:
+    """The program a unit is of, for a function that moves between its source files: its first folder, "" for a unit
+    with none (a PC game's .exe: text_0043A160 is a file of it, not a program of its own, and every split of one lost
+    its functions' rows, left as "gone" beside a new row named _func_0043AC30')."""
+    return unit.split("/", 1)[0] if "/" in unit else ""
+
+
 def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str]]:
     """(unit, function) pairs a progress report counts as matched; units that don't build are measured from an old
     object, so nothing in them counts."""
@@ -871,6 +878,37 @@ class ForkEngine:
         log(said)
         return said if kept else None
 
+    def _merge_left_behind(self, db, proj, gone: list[int]) -> list[int]:
+        """The rows of `gone` that are a function still in the project, left behind by a split before _module: each
+        one's history (attempts, notes, its best) goes to the function's row, which takes its name back
+        (_func_0043AC30' was named past it), and the row goes. Returns the rest."""
+        rows = {r["id"]: r for r in db.execute("SELECT * FROM functions WHERE project_id=?", (proj["id"],))}
+        present = {(_module(r["unit"] or ""), self._meta(r).get("symbol")): r for fid, r in rows.items()
+                   if fid not in gone and not self._meta(r).get("gone")}
+        rest = []
+        for fid in gone:
+            old = rows[fid]
+            row = present.get((_module(old["unit"] or ""), self._meta(old).get("symbol")))
+            if row is None:
+                rest.append(fid)
+                continue
+            for table in ("attempts", "notes", "twin_misses", "waits"):
+                db.execute(f"UPDATE {table} SET function_id=? WHERE function_id=?", (row["id"], fid))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fid,))
+            better = old["best_source"] and old["best_score"] is not None and row["status"] != "matched" and (
+                row["best_score"] is None or old["best_score"] < row["best_score"])
+            db.execute("UPDATE functions SET attempts=attempts+?, abandons=abandons+? WHERE id=?",
+                       (old["attempts"] or 0, old["abandons"] or 0, row["id"]))
+            if better:
+                db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=?",
+                           (old["best_score"], old["best_source"], old["best_agent_id"], row["id"]))
+            db.execute("DELETE FROM functions WHERE id=?", (fid,))
+            del rows[fid]
+            symbol = self._meta(row).get("symbol") or row["name"]
+            if row["name"].endswith("'") and symbol not in {r["name"] for r in rows.values()}:
+                db.execute("UPDATE functions SET name=? WHERE id=?", (symbol, row["id"]))
+        return rest
+
     def reimport(self, slug: str, game: Path, log=print) -> dict:
         """Settings' Reimport for a project decompdecomp made (Console.reimport: PC analyses its program again), every
         match, note and name kept. Returns what the GUI says: functions, matched, and what changed."""
@@ -950,7 +988,7 @@ class ForkEngine:
         moved: dict[tuple[str, str], list] = defaultdict(list)  # (module, symbol) -> rows no unit has any more
         for key, r in existing.items():
             if key not in here and key[0]:
-                moved[(key[0].split("/", 1)[0], key[1])].append(r)
+                moved[(_module(key[0]), key[1])].append(r)
         with self.net.store.tx() as db:
             for uname, f in rows:
                 sym = f["name"]
@@ -967,8 +1005,8 @@ class ForkEngine:
                 if real := reals.get(sym):
                     meta["real"] = real
                 old = existing.get((uname, sym, k))
-                if old is None and moved.get((uname.split("/", 1)[0], sym)):
-                    old = moved[(uname.split("/", 1)[0], sym)].pop(0)
+                if old is None and moved.get((_module(uname), sym)):
+                    old = moved[(_module(uname), sym)].pop(0)
                     name = sym if counts[sym] == 1 else f"{sym}@{uname}" + (f"#{k + 1}" if k else "")
                     used.discard(old["name"])
                     while name in used:
@@ -1029,6 +1067,7 @@ class ForkEngine:
                                 texts[uname] = None
                         self._matched(db, proj, old, agent, texts[uname])
             gone = [r["id"] for rs in moved.values() for r in rs]  # functions no unit has any more
+            gone = self._merge_left_behind(db, proj, gone)
             if gone:
                 with_history = {r["function_id"] for r in db.execute(
                     f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(gone))})", gone)}
