@@ -31,6 +31,12 @@ CLAIM_TTL = 30 * 60
 # (see model_family): only 5.5% of released functions ever matched later, and another try by the same model mostly
 # fails the same way.
 RELEASE_COOLDOWN = 15 * 60
+# A model whose agents gave a function back this often (since the shared header or the compiler last changed) isn't
+# handed it again: another model, or the change, may do better. Ordering it last wasn't enough once nothing else was
+# left: on a PC game with 114 open functions four helpers of one model gave most of them back 10-11 times in two hours
+# (one 9 times with the same "test byte vs dword" note, one 8 times as alignment padding waiting for a second model's
+# verdict). Asked for by name, it's still the agent's.
+MODEL_GIVE_UPS = 3
 # The family of a helper's model, from its name (app/agents.py helper_name: kind-model-n): its agent's, when the
 # agent runs one maker's models (agents.FAMILIES: Claude Code Anthropic's, Codex OpenAI's, Antigravity Google's),
 # else the model the name says (opencode and API helpers).
@@ -119,6 +125,9 @@ TWIN_VALUE_SCALE, TWIN_SIZE_FLOOR = 64, 16
 # The value orders only the twins that come first: one given up on waits by size like any other function. Counted for
 # every twin, it put twins given up on ahead of every untried function: overnight on a game, eight agents passed 41
 # two-instruction twins no C compiles to around, each one back after every RELEASE_COOLDOWN (1,025 turns, no match).
+# the functions an agent's model gave back MODEL_GIVE_UPS times since the last change (Network._given_up_args)
+_GIVEN_UP = ("SELECT detail FROM events WHERE project_id=:pid AND kind='release' AND created_at > :changed "
+             "AND agent_id IN (SELECT value FROM json_each(:same)) GROUP BY detail HAVING COUNT(*) >= :give_ups")
 _TWIN_FIRST = f"(f.boost > 0 AND f.n_insns <= {TWIN_MAX_INSNS} AND f.abandons < {TWIN_MAX_ABANDONS})"
 _TWINS = (f"{_TWIN_FIRST} DESC, "
           f"CASE WHEN {_TWIN_FIRST} THEN (f.boost + 1) * {TWIN_VALUE_SCALE} / (f.n_insns + {TWIN_SIZE_FLOOR}) ELSE 0 "
@@ -610,6 +619,22 @@ class Network:
                 "your claim on it, not a new one. Compile the next step; release_function goes through once you've "
                 "compiled it, when you ask again.\n\n")
 
+    @staticmethod
+    def _given_up_args(db, project_id: int, agent: Agent) -> dict:
+        """The parameters _GIVEN_UP takes: the agents of agent's model, the last change of the shared header or the
+        compiler, MODEL_GIVE_UPS."""
+        same = [r["id"] for r in db.execute("SELECT id, name FROM agents") if model_of(r["name"]) == model_of(agent.name)]
+        changed = db.execute("SELECT MAX(created_at) AS t FROM events WHERE project_id=? AND kind IN ('context', "
+                             "'compiler')", (project_id,)).fetchone()["t"] or 0
+        return {"pid": project_id, "same": json.dumps(same), "changed": changed, "give_ups": MODEL_GIVE_UPS}
+
+    def given_up(self, agent: Agent, slug: str) -> int:
+        """How many open functions agent's model gave back MODEL_GIVE_UPS times and won't be handed again."""
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            return db.execute(f"SELECT COUNT(*) AS n FROM functions f WHERE f.project_id=:pid AND f.status='open' "
+                              f"AND f.name IN ({_GIVEN_UP})", self._given_up_args(db, proj["id"], agent)).fetchone()["n"]
+
     def _own_release_cutoff(self, db, agent_id: int, now: float) -> float:
         """Releases by this agent after this time keep it off those functions: the last SELF_RELEASE_WINDOW, and
         only since its run started (its last 'freed' event, release_stopped's, or 'stopped', a helper's own)."""
@@ -643,6 +668,9 @@ class Network:
                               for r in held[:10])
             lines.append(f"{len(held)} held by other agents: {shown}{', ...' if len(held) > 10 else ''}. Each is "
                          "free again when its agent matches or releases it, or when its lease runs out.")
+        if (gone := self.given_up(agent, proj["slug"])):
+            lines.append(f"{gone} your model ({model_of(agent.name)}) gave back {MODEL_GIVE_UPS} times or more: they're "
+                         "left to other models, or until the shared header or the compiler changes.")
         if mine:
             names = [r["name"] for r in mine]
             lines.append(f"{len(names)} you released yourself in the last {SELF_RELEASE_WINDOW // 60} minutes: "
@@ -702,14 +730,14 @@ class Network:
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                            AND kind='release' AND created_at > :mine)
+                        AND f.name NOT IN ({_GIVEN_UP})
                         ORDER BY f.id IN ({WAITING}),
                                  json_extract(f.meta, '$.register_arg') IS NOT NULL,
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                             AND kind='release'),
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND kind='release'
-                                            AND agent_id IN (SELECT value FROM json_each(:kin)) AND created_at >
-                                            COALESCE((SELECT MAX(created_at) FROM events WHERE project_id=:pid
-                                                      AND kind IN ('context', 'compiler')), 0)),
+                                            AND agent_id IN (SELECT value FROM json_each(:kin))
+                                            AND created_at > :changed),
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND kind='release'
                                             AND created_at > :cooled),
                                  f.id IN ({READY}) DESC, f.id IN ({WANTED}) DESC,
@@ -717,7 +745,7 @@ class Network:
                 escalate = self._escalation(db, proj["id"]) if route else ESCALATE_AFTER
                 args = {"pid": proj["id"], "agent": agent.id, "kin": json.dumps(kin), "cooled": now - RELEASE_COOLDOWN,
                         "overall": overall, "escalate": escalate, "weak": route == "weak", "strong": route == "strong",
-                        "mine": self._own_release_cutoff(db, agent.id, now)}
+                        "mine": self._own_release_cutoff(db, agent.id, now)} | self._given_up_args(db, proj["id"], agent)
                 fn = db.execute(query, args).fetchone()
                 if fn is None and route == "weak":  # only what stronger models are for is left: better tried than idle
                     fn = db.execute(query, args | {"weak": False}).fetchone()

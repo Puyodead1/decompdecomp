@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **A model doesn't get the same function back after giving it back three times.** Ordering released functions last
+  wasn't enough once nothing else was left: on a small PC game four helpers of one model gave most of its 114 open
+  functions back 10-11 times in two hours. A function a model gave back three times (since the shared header or the
+  compiler last changed) is left to other models; a helper whose model gave back all of them waits instead of
+  starting sessions that find nothing.
 - **PC functions with a link-time-generated convention come last.** A game built with /GL /LTCG passes arguments in
   eax, esi, edi or ebx to functions whose callers the linker all saw, which no C declaration of one file does: a third
   of a 2007 PC game's open functions, each of which cost three agents a session before it was set aside. They're

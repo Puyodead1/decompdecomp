@@ -100,6 +100,9 @@ LIMIT_RESET_FURTHEST = 8 * 24 * 3600
 # in a room whose host is away: look again this often; the host counts as away after ROOM_STALE without an answer
 ROOM_RETRY = 10
 ROOM_STALE = 30
+# when its model gave back every open function (network.MODEL_GIVE_UPS): look again this often instead of starting
+# sessions that find nothing to claim
+GIVEN_UP_RETRY = 10 * 60
 PREP_WAIT = 15 * 60  # longest wait for start_files before the helpers start anyway
 ORDER_WAIT = 2 * 60  # longest wait for the twins' first ordering
 STOP_GRACE = 5  # seconds between asking a helper's processes to end (SIGTERM) and ending them (SIGKILL)
@@ -859,6 +862,20 @@ class Manager:
         s.stop.wait(ROOM_RETRY)
         return True
 
+    def _all_given_up(self, s: Session, agent, task: str) -> bool:
+        """Waits a while when the helper's model gave back every open function MODEL_GIVE_UPS times: a session would
+        find nothing to claim. Another model's match or verdict, or a change to the shared header or the compiler,
+        gives them back. True when it waited."""
+        if task == "readable" or (n := self.net.given_up(agent, s.slug)) < self._left(s.slug):
+            return False
+        why = (f"its model gave back each of the {n} open functions {network.MODEL_GIVE_UPS} times: they're left to "
+               "other models, or until the shared header or the compiler changes")
+        if s.state != "waiting" or s.why != why:
+            s.push("info", why)
+            self._set(s, "waiting", why)
+        s.stop.wait(GIVEN_UP_RETRY)
+        return True
+
     def _run(self, s: Session) -> None:
         agent, token = self.net.local_agent(s.agent_name)
         self.assignments[agent.id] = s.slug
@@ -882,6 +899,8 @@ class Manager:
                 self._finish(s, f"the agents on this project have spent the ${cap:.2f} budget (Setup)")
                 break
             if self._room_away(s):
+                continue
+            if self._all_given_up(s, agent, task):
                 continue
             if (broken := self._build_problem(s.slug)) is not None:
                 self._pause(s, f"the project doesn't build on this computer, so no session starts: {broken}",
