@@ -228,7 +228,7 @@ function renderAutopilot(ov) {
   const running = ap && ap.state === "running";
   const twinsRunning = tw && tw.state === "running";
   box.classList.toggle("on", !!(running || twinsRunning));
-  $("apBar").hidden = !running || ap.phase === "twins";
+  $("apBar").hidden = !running || ap.phase === "twins" || ap.phase === "stl";
   const perm = pm && (pm.tried || pm.state === "running")
     ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.` : "";
   const twinsDone = (ap && ap.twins) || (tw && tw.matched) || 0;
@@ -236,9 +236,13 @@ function renderAutopilot(ov) {
     $("apTitle").textContent = "Autopilot: matching code the game has more than once (twins of matched functions)";
     $("apSub").textContent = `Each match's code is tried on its identical copies, names swapped; the judge decides.${perm}`;
     $("apBtn").textContent = "Stop";
+  } else if (running && ap.phase === "stl") {
+    $("apTitle").textContent = "Autopilot: finding the STL's code (std::map, vector, string...) the game compiled in";
+    $("apSub").textContent = `Common containers are compiled with the game's compiler and each file's flags; what matches is named as compiled. The first time takes a few minutes.${perm}`;
+    $("apBtn").textContent = "Stop";
   } else if (running) {
     $("apTitle").textContent = `Autopilot: trying each function's machine draft · ${ap.matched.toLocaleString()} matched for free`;
-    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}${ap.twins ? ` · ${ap.twins.toLocaleString()} from identical code` : ""}. Agents work alongside it.${perm}`;
+    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}${ap.twins ? ` · ${ap.twins.toLocaleString()} from identical code` : ""}${ap.stl ? ` · ${ap.stl.toLocaleString()} STL code` : ""}. Agents work alongside it.${perm}`;
     $("apBar").firstElementChild.style.width = `${(100 * ap.tried) / Math.max(1, ap.total)}%`;
     $("apBtn").textContent = "Stop";
   } else if (ap || tw) {
@@ -247,6 +251,7 @@ function renderAutopilot(ov) {
       : total ? `Autopilot matched ${total.toLocaleString()} function${total === 1 ? "" : "s"} for free` : "Autopilot found no free matches this time";
     const parts = [];
     if (twinsDone) parts.push(`${twinsDone.toLocaleString()} from identical code`);
+    if (ap && ap.stl) parts.push(`${ap.stl.toLocaleString()} STL code the game compiled in`);
     if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
     if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
     $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;

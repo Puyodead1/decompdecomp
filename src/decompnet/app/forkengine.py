@@ -257,6 +257,10 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 
 
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
+# what autopilot_instances adds to a file for the STL probes it needs (consoles/pc/stl.py's PRELUDE)
+STL_HEADERS = ("#include <map>\n", "#include <set>\n", "#include <list>\n", "#include <vector>\n", "#include <deque>\n",
+               "#include <string>\n")
+STL_TYPES = ("struct STL_P20 { int a[5]; };\n", "struct STL_P24 { int a[6]; };\n")
 _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
 # kept by sync too: the agents' verdicts that no C makes it (red in the map), the user giving it back to them (or the
 # next check would set it aside again), and agents' proposals to join it or end it elsewhere (each sync, after every
@@ -1731,32 +1735,67 @@ class ForkEngine:
         proj, fp, cfg = self.get(slug)
         if slug in self.net.links:
             raise NetworkError("in a room, the host's project is the one to name functions in: say it in a note")
-        console = consoles.get(cfg.get("platform"))
-        version = (fp.manifest or {}).get("version") or cfg.get("version")
         fn = self._fn(slug, function)
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} already matches")
-        unit = fp.unit(fn["unit"])
         symbol = self._meta(fn).get("symbol") or fn["name"]
+        found, now, own = self._name_instances(agent, slug, fn["unit"], [symbol], strict=True)
+        source = fp.unit(fn["unit"]).source
+        return (f"✅ {len(found)} of the game's functions are instances {source} compiles: "
+                + ", ".join(f"{t} ({'matches' if t in now else 'named, not matching yet'})" for t in found) + "."
+                + (f" {', '.join(own)} compile{'s' * (len(own) == 1)} as instances too, but {source} defines "
+                   f"{'it' if len(own) == 1 else 'them'} by hand: take that out (edit_file) and call name_instance for "
+                   f"{'it' if len(own) == 1 else 'each'}." if own else "")
+                + " Call claim_function for the next one.")
+
+    def _name_instances(self, agent: Agent | None, slug: str, unit_name: str, symbols: list[str], strict: bool,
+                        source_was: str | None = None) -> tuple[dict[str, str], set[str], list[str]]:
+        """name_instance for the functions `symbols` of one unit: each found with what it calls (Console.
+        instance_names), named, kept only when the project builds, the game rebuilds as it did and every match still
+        matches; else all is put back, the unit's source too where `source_was` is what it held before (autopilot
+        added an instantiation). `strict`: a function not found or defined by hand in the file raises (an agent asked
+        for it); else it's left out. Returns the names given {game symbol: compiled symbol}, those matching now, and
+        the instances found but defined by hand in the file."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        version = (fp.manifest or {}).get("version") or cfg.get("version")
+        unit = fp.unit(unit_name)
         checks = consoles.REBUILD_CHECK in console.features
+        path = fp.root / unit.source
+
+        def put_back() -> None:
+            if source_was is not None:
+                path.write_text(source_was, encoding="utf-8")
+                self._build_unit(proj, fp, unit)
         with self._tree(proj).exclusive():
             ok, out = self._build_unit(proj, fp, unit)
             if not ok:
+                put_back()
                 raise NetworkError(f"{unit.source} doesn't build as it is, so nothing was searched:\n{_tail(out)}")
-            found = console.instance_names(fp, version, unit, symbol)
-            if not found:
-                raise NetworkError(
-                    f"nothing {unit.source} compiles to is {fn['name']}'s code. Make the file compile the instance: "
-                    "include the template's header (<map>, <vector>, <string>...) and use it with the game's types "
-                    "(an explicit instantiation, `template class std::map<std::string, int>;`, compiles all of it); "
-                    "the types are right when the layout is (a map node's _Isnil at the offset the code tests)")
-            text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+            found: dict[str, str] = {}
+            for symbol in symbols:
+                for t, c in console.instance_names(fp, version, unit, symbol).items():
+                    if t not in found and c not in found.values():
+                        found[t] = c
+                if strict and symbol not in found:
+                    put_back()
+                    raise NetworkError(
+                        f"nothing {unit.source} compiles to is {symbol}'s code. Make the file compile the instance: "
+                        "include the template's header (<map>, <vector>, <string>...) and use it with the game's "
+                        "types (an explicit instantiation, `template class std::map<std::string, int>;`, compiles all "
+                        "of it); the types are right when the layout is (a map node's _Isnil at the offset the code "
+                        "tests)")
+            text = path.read_text(errors="replace", encoding="utf-8")
             own = [t for t in found if (m := re.search(r"func_([0-9A-Fa-f]{8})", t))
                    and re.search(rf"\bfunc_{m.group(1)}\s*\(", text)]
-            if symbol in own:
-                raise NetworkError(f"{unit.source} defines {symbol} by hand too: take that out first (edit_file), the "
-                                   "compiled instance is the function")
+            if strict and symbols[0] in own:
+                put_back()
+                raise NetworkError(f"{unit.source} defines {symbols[0]} by hand too: take that out first (edit_file), "
+                                   "the compiled instance is the function")
             found = {t: c for t, c in found.items() if t not in own}  # (those it calls: named once theirs are out)
+            if not found:
+                put_back()
+                return {}, set(), own
             matched = {self._meta(r).get("symbol") or r["name"] for r in self.net.store.all(
                 "SELECT name, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
             before = (fp.manifest or {}).get("rebuild") or {}
@@ -1779,24 +1818,59 @@ class ForkEngine:
                 except (ForkError, RomError, ObjdiffError, OSError, ValueError) as e:
                     for p, t in saved.items():
                         p.write_text(t, encoding="utf-8")
+                    if source_was is not None:
+                        path.write_text(source_was, encoding="utf-8")
                     for cmd in fp.setup_commands(version):
                         fp.run(cmd, log=lambda *_: None)
                     raise NetworkError(f"not named, nothing changed: {e}") from None
             with self.net.store.tx() as db:
                 for t, c in found.items():
                     self.net._event(db, proj["id"], agent.id if agent else None, "rename", f"{t} → {c}")
-            self._commit_paths(proj, fp, [p.relative_to(fp.root).as_posix() for p in saved],
-                               f"Name {len(found)} template instances {unit.source} compiles\n\n"
+            changed = [p.relative_to(fp.root).as_posix() for p in saved] + ([unit.source] if source_was is not None else [])
+            self._commit_paths(proj, fp, changed,
+                               f"Name {len(found)} template instance{'s' * (len(found) != 1)} {unit.source} "
+                               "compiles\n\n"
                                + "\n".join(f"{t}: {c}" for t, c in found.items())
                                + f"\n\nFound by {agent.name if agent else 'decompdecomp'} with decompdecomp.")
         self.sync(slug, log=lambda *_: None, rep=rep)
-        done = {t for t in found if t in now}
-        return (f"✅ {len(found)} of the game's functions are instances {unit.source} compiles: "
-                + ", ".join(f"{t} ({'matches' if t in done else 'named, not matching yet'})" for t in found) + "."
-                + (f" {', '.join(own)} compile{'s' * (len(own) == 1)} as instances too, but {unit.source} defines "
-                   f"{'it' if len(own) == 1 else 'them'} by hand: take that out (edit_file) and call name_instance for "
-                   f"{'it' if len(own) == 1 else 'each'}." if own else "")
-                + " Call claim_function for the next one.")
+        return found, {t for t in found if t in now}, own
+
+    def autopilot_instances(self, agent: Agent, slug: str, log=print) -> int:
+        """Autopilot's STL pass (Console.stl_matches): each open function that is an instance a common container's
+        explicit instantiation compiles with its file's compiler and flags gets that instantiation in its file (with
+        the headers), and is named as name_instance names it, file by file; a file whose names don't hold is put back
+        as it was. A function defined by hand in its file is left to its agents. Returns how many match now."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        version = (fp.manifest or {}).get("version") or cfg.get("version")
+        wanted = {self._meta(r).get("symbol") or r["name"] for r in self.net.store.all(
+            "SELECT name, meta FROM functions WHERE project_id=? AND status='open'", proj["id"])}
+        found = console.stl_matches(fp, version, wanted, log=log)
+        matched = 0
+        for unit_name, hits in sorted(found.items()):
+            unit = fp.unit(unit_name)
+            if unit is None or not unit.source:
+                continue
+            path = fp.root / unit.source
+            was = path.read_text(errors="replace", encoding="utf-8")
+            lines = [ln for ln in dict.fromkeys(hits.values()) if ln not in was]
+            if not lines:
+                text = was
+            else:
+                head = "".join(h for h in STL_HEADERS if h.strip() not in was and any(
+                    h[10:-2] in ln or (h[10:-2] == "string" and "basic_string" in ln) for ln in lines))
+                head += "".join(d for d in STL_TYPES if any(d.split()[1] in ln for ln in lines) and d.split()[1] not in was)
+                block = head + "\n".join(lines) + "  // (the game's instances of these: autopilot)\n"
+                at = was.find("\n", was.find('#include "common.h"')) + 1 if '#include "common.h"' in was else 0
+                text = was[:at] + block + was[at:]
+                path.write_text(text, encoding="utf-8")
+            try:
+                _, now, _ = self._name_instances(agent, slug, unit_name, sorted(hits), strict=False,
+                                                 source_was=was if text != was else None)
+                matched += len(now)
+            except NetworkError as e:
+                log(f"autopilot: {unit.source}'s STL instances weren't named: {str(e)[:300]}")
+        return matched
 
     def rename_symbol(self, agent: Agent | None, slug: str, old: str, new: str, message: str = "") -> str:
         """Give one of the game's symbols (a function, data) a real name: in the console's config, where its name

@@ -73,6 +73,15 @@ class AutopilotMixin:
                 state["matched"] += job.matched
         except Exception as e:
             logging.getLogger("decompdecomp").info("autopilot twins: %s", e)
+        # then the STL's code: instances of common containers, named as compiled (ForkEngine.autopilot_instances)
+        if (fork := self.fork_slug(slug)) and slug not in self.links and not state["stop"].is_set():
+            state["phase"] = "stl"
+            try:
+                state["stl"] = self.forks.autopilot_instances(
+                    agent, fork, log=logging.getLogger("decompdecomp").info)
+                state["matched"] += state["stl"]
+            except Exception as e:
+                logging.getLogger("decompdecomp").info("autopilot STL instances: %s", e)
         state["phase"] = "drafts"
         ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
         state["total"] = len(ids)
@@ -96,8 +105,8 @@ class AutopilotMixin:
             state["finished_at"] = time.time()
             with self.store.tx() as db:
                 cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
-                cfg["autopilot"] = {k: state.get(k) for k in ("total", "tried", "matched", "near", "twins", "started_at",
-                                                              "finished_at")}
+                cfg["autopilot"] = {k: state.get(k) for k in ("total", "tried", "matched", "near", "twins", "stl",
+                                                              "started_at", "finished_at")}
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             drafts = state["matched"] - state.get("twins", 0)
             if drafts:  # (twins announce their own)

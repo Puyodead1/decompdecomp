@@ -2624,3 +2624,34 @@ def test_what_the_runtimes_startup_calls_stays_the_games():
                                                       (6, scratch_pe.REL32, "_far_from_it", 0)], "b")]
     known = {0x2000: "Visual C++'s runtime library (_WinMainCRTStartup, VS), recognised by Ghidra's Function ID"}
     assert sorted(scratch_pe.library_functions(functions, known, lambda a, s: b"\x55\x8b\xec")) == [0x2000]
+
+
+def test_each_files_compiler_and_flags_are_read_from_the_build():
+    """The STL probes compile as each file builds: build.ninja's cl rule flags with the file's own."""
+    from decompnet.consoles.pc import stl
+
+    ninja = ("rule cl\n  command = $\n      python $\n      tools/compile.py --config c.json --wrapper $\n"
+             "      /opt/wibo --compiler $cl $\n      --include $include --output $out --source $in -- /nologo /c /O2 $\n"
+             "      /GX $cflags\n"
+             "build build/g/src/auto/a.obj: cl src/auto/a.cpp $\n    | include/common.h\n  cl = /opt/7.0/CL.EXE\n"
+             "  include = /opt/7.0/Include\n  cflags = /Oy- /GS\n"
+             "build build/g/src/auto/b.obj: cl src/auto/b.cpp\n  cl = /opt/7.0/CL.EXE\n  include = /opt/7.0/Include\n")
+    assert stl.wrapper(ninja) == "/opt/wibo"
+    assert stl.unit_compilers(ninja) == {
+        "build/g/src/auto/a.obj": ("/opt/7.0/CL.EXE", "/opt/7.0/Include", ("/nologo", "/c", "/O2", "/GX", "/Oy-", "/GS")),
+        "build/g/src/auto/b.obj": ("/opt/7.0/CL.EXE", "/opt/7.0/Include", ("/nologo", "/c", "/O2", "/GX"))}
+
+
+@pytest.mark.skipif(toolchains.installed("msvc") is None or not (toolchains.root() / "msvc" / "7.0" / "Bin").is_dir(),
+                    reason="needs Visual C++ 7.0 (msvc, proprietary)")
+def test_the_stl_probes_compile_the_instances_a_game_has(tmp_path):
+    """A 2003 game's std::map<std::string, int> erase is what the probe compiles, as the game's file builds."""
+    from decompnet.consoles.pc import stl
+
+    tc = toolchains.root()
+    compiler = (str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), str(tc / "msvc" / "7.0" / "Include"),
+                ("/nologo", "/c", "/O2", "/W3", "/GX", "/Oy-"))
+    prints = stl.prints(tmp_path, str(tc / "wibo" / "wibo"), compiler, tmp_path / "stl", log=lambda *_: None)
+    erase = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
+             if f.name.startswith("?erase@?$_Tree") and stl.PROBES[int(f.library)].endswith("<std::string, int>;")]
+    assert erase and len(prints.by_shape) > 100
