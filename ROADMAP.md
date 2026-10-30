@@ -115,6 +115,11 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **Autopilot finds the STL's code in PC games.** Between twins and drafts, common containers' explicit
+  instantiations (map, set, list, vector, deque, string over int, std::string, pointers) are compiled with the game's
+  compiler and each file's flags (consoles/pc/stl.py), and each open function that is one of their instances gets the
+  instantiation in its file and its compiled name (name_instance's checks, a file put back when they fail): on a
+  copy of a 2003 game 120 functions matched in one pass, in 38 files, the rebuild identical throughout.
 - **The STL's code in a PC game matches as compiled (name_instance).** A std::map's erase in a 2003 game was the
   instance <map> compiles, 91 of 91 instructions, but agents could only rebuild the red-black tree by hand (22%):
   the compiler's name for it (?erase@?$_Tree@...) didn't pair with the game's. An agent makes the file compile the
@@ -629,11 +634,6 @@ Where to start on a gap:
   the time against 62% for the rest, because agents guessed the layouts.
 
 ## Next
-
-- **STL instances found by autopilot.** Compile the common containers with the game's compiler (map, set, list,
-  vector, string, deque over int, std::string, pointers) and name the game's functions that are one of their
-  instances, the explicit instantiation added to their files, without an agent (name_instance does it one at a time):
-  on a 2003 PC game 136 at least, 115 of them open.
 
 ### The flag survey for every console
 

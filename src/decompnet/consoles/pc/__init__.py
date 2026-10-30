@@ -578,6 +578,34 @@ class WindowsPC(Console):
                     queue.append((tname, cname))
         return out
 
+    def stl_matches(self, fp, version: str, wanted: set[str], log=print) -> dict[str, dict[str, str]]:
+        """The functions of `wanted` (symbols) that an STL probe compiles to with their file's compiler and flags
+        (stl.PROBES), by unit: {unit: {symbol: the probe's explicit instantiation}}. The probes are compiled once
+        per compiler and flags, into the build folder."""
+        from . import scratch, stl
+
+        ninja = (fp.root / "build.ninja").read_text(encoding="utf-8") if (fp.root / "build.ninja").is_file() else ""
+        compilers = stl.unit_compilers(ninja)
+        if not compilers:
+            return {}
+        _, info, pes, functions = scratch._project_functions(fp.root, version)
+        run_with, cache = stl.wrapper(ninja), fp.root / "build" / version / "stl"
+        made: dict = {}
+        out: dict[str, dict[str, str]] = {}
+        for f in functions:
+            if f.name not in wanted or f.size < runtime_shortest():
+                continue
+            unit = fp.unit(f.unit)
+            obj = unit.base.relative_to(fp.root).as_posix() if unit is not None and unit.base is not None else None
+            compiler = compilers.get(obj or "")
+            if compiler is None:
+                continue
+            if compiler not in made:
+                made[compiler] = stl.prints(fp.root, run_with, compiler, cache, log=log)
+            if (hit := made[compiler].find(pes[scratch.unit_module(f.unit)].read(f.addr, f.size))):
+                out.setdefault(f.unit, {})[f.name] = stl.PROBES[int(hit[0].library)]
+        return out
+
     def real_names(self, fp, version: str) -> dict[str, str]:
         """(a function's report name is its entry's in functions.json: the target objects are cut out with it)"""
         info = _functions_json(fp, version)
@@ -664,6 +692,12 @@ def _library_said(changed: tuple[int, int] | None, what: str) -> str | None:
     said = ([f"{added} functions are {what}: set aside as library code, not the game's own"] if added else []) + \
         ([f"{dropped} it had set aside are the game's own code after all: given back"] if dropped else [])
     return "; ".join(said) or None
+
+
+def runtime_shortest() -> int:
+    from .runtime import SHORTEST
+
+    return SHORTEST
 
 
 def _masked(code: bytes, relocs) -> bytes:

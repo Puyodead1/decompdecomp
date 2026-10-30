@@ -310,6 +310,11 @@ class Console:
         console has no such pairing."""
         return {}
 
+    def stl_matches(self, fp, version: str, wanted: set[str], log=print) -> dict[str, dict[str, str]]:
+        """Functions of `wanted` that are a template instance the console's probes compile, by unit -> the line that
+        compiles it (autopilot_instances). {} where the console has none."""
+        return {}
+
     def static_callees(self, fp, version: str) -> dict[str, list[str]]:
         """Each function that calls functions static_register_args has -> those: its brief says to write them static
         in its file, as its own C's convention depends on theirs."""
