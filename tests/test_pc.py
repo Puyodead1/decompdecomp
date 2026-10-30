@@ -1634,6 +1634,28 @@ def test_functions_only_a_table_reaches_that_ghidra_took_for_one_are_cut_apart(t
     assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
 
 
+def test_the_runtime_library_ghidra_knows_is_set_aside_with_the_helpers_only_it_uses():
+    """Ghidra's Function ID knew 112 of a 2002 PC game's 242 functions as Visual C++'s runtime library, and agents
+    spent sessions on them all. They're library code, with what only they refer to and the table right after one
+    nothing refers to; what the game's own code calls stays the game's, and so does code before the library."""
+    F = scratch_pe.Function
+    functions = [F(0x1000, 16, "_game", [(1, scratch_pe.REL32, "_strlen", 0), (6, scratch_pe.REL32, "_shared", 0)], "a"),
+                 F(0x1010, 16, "_before", [], "a"),
+                 F(0x2000, 16, "_strlen", [(1, scratch_pe.REL32, "_helper", 0)], "b"),
+                 F(0x2010, 16, "_helper", [], "b"),
+                 F(0x2020, 16, "_table", [], "b"),
+                 F(0x2030, 16, "_shared", [], "b"),  # the game calls it too
+                 F(0x2040, 16, "_lonely", [], "b")]  # nothing refers to it, after one that isn't library
+    rows = [{"entry": 0x2000, "name": "_strlen", "library": "Library Function - Single Match\n _strlen\n\n"
+                                                             "Library: Visual Studio 2003 Release"},
+            {"entry": 0x1000, "name": "_game", "library": ""}]
+    known = scratch_pe.library_rows(rows)
+    assert list(known) == [0x2000] and "_strlen, Visual Studio 2003 Release" in known[0x2000]
+    found = scratch_pe.library_functions(functions, known)
+    assert sorted(found) == [0x2000, 0x2010, 0x2020]
+    assert "helper" in found[0x2010] and "_strlen" in found[0x2010]
+
+
 def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
     """Visual C++ 7.0 and 7.1 make /GS's cookie (the cookie xored with the return address) only when asked: on a 2002
     game nine files had it, agents suggested it eleven times, and a suggestion can't set a flag."""
