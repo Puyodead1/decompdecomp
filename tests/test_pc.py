@@ -280,6 +280,37 @@ def test_a_constructor_or_destructor_stands_for_the_address_its_class_names():
     assert _coff_names(out) == [b"_func_00401000", b"_func_00401020@4", b"_func_00401060"]
 
 
+def test_a_template_instance_given_whole_stands_for_its_address():
+    """std::map<std::string, int>'s erase(first, last), as the compiler names it, is a 2003 game's func_00428560
+    (name_instance gives it): the instance pairs with it, and so does a call to it."""
+    names = _template_tool("names")
+    erase = b"?erase@?$_Tree@V?$_Tmap_traits@HHU?$less@H@std@@V?$allocator@U?$pair@$$CBHH@std@@@2@$0A@@std@@@std@@QAE?AViterator@12@V312@0@Z"
+    real = names.real_names({"names": {"func_00428560": erase.decode()}})
+    assert names.address_of(erase, real) == b"func_00428560"
+    out = names.rename(_coff([erase]), {b"func_00428560": b"@func_00428560@20"}, real)
+    assert _coff_names(out) == [b"@func_00428560@20"]
+
+
+def test_a_compilers_section_symbols_dont_name_its_functions():
+    """A compiler's object puts the section's own symbol (.text) before its function's: read as the function's name,
+    no compiled template instance could be found (name_instance)."""
+    from decompnet import coffobj
+
+    body = bytes.fromhex("c3")
+    head = struct.pack("<HHIIIHH", 0x14C, 1, 0, 20 + 40 + len(body), 2, 0, 0)
+    section = struct.pack("<8sIIIIIIHHI", b".text", 0, 0, len(body), 20 + 40, 0, 0, 0, 0, 0x60000020)
+    symbols = struct.pack("<8sIhHBB", b".text", 0, 1, 0, 3, 0) + struct.pack("<8sIhHBB", b"_f", 0, 1, 0x20, 2, 0)
+    assert coffobj.sections(head + section + body + symbols + struct.pack("<I", 4))[0][0] == "_f"
+
+
+def test_name_instance_is_a_pc_tool():
+    from decompnet.app import tools
+
+    assert "name_instance" in tools.tool_names(True, consoles.get("pc"))
+    assert "name_instance" not in tools.tool_names(True, consoles.get("gc"))
+    assert "name_instance" not in tools.tool_names(False)
+
+
 def _coff(symbols: list[bytes]) -> bytes:
     """A COFF object with no sections, only these symbols (long names in the string table)."""
     strings, table = bytearray(4), b""

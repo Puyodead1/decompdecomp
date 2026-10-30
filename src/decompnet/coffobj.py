@@ -40,7 +40,9 @@ def sections(obj: bytes) -> list[tuple[str, bytes, list[tuple[int, int, str, int
     for i in range(count):
         _, _, _, size, data, relocs, _, nrelocs, _, _ = struct.unpack_from(
             "<8sIIIIIIHHI", obj, HEADER_BYTES + SECTION_BYTES * i)
-        owner = next((name for name, value, section in syms if section == i + 1 and not name.startswith("$")), "")
+        # (not a label, nor the section's own symbol: what a compiler writes, .text, comes before its function's)
+        owner = next((name for name, value, section in syms if section == i + 1 and not name.startswith(("$", "."))),
+                     "")
         rel = []
         for r in range(nrelocs):
             off, index, kind = struct.unpack_from("<IIH", obj, relocs + RELOC_BYTES * r)
