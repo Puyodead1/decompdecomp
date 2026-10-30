@@ -91,16 +91,17 @@ class WindowsPC(Console):
     # functions of their own, named after their imports and set aside (scratch.name_import_thunks); 6 the files whose
     # functions keep an ebp frame built with /Oy- (scratch.set_frame_flags), but for files with matched code: after
     # the thunks, which keep no frame and would count against their file's; 7 the stubs and joins again, by the rules
-    # Visual C++ 2017 brought (#138: a handler that checks its function's /GS cookie first is a stub, a `catch (...)
-    # {}` block that only says where to go on is joined to its function: x86.resumes), which games of any version
-    # have. (Two more rules of #138 read where a function starts and ends, the code before the first function
-    # Ghidra found and, from 2015 on, the int3 after a call that never returns: they come from Ghidra's list, so they
-    # reach a project made before them by Reimport.) Its build tools have a version of their own (the manifest's "tools":
-    # scratch.tools_version), so each change to them reaches it; 8 the joins again, for the jump tables Ghidra
-    # made functions of (scratch.merge_pieces); 9 the functions Ghidra didn't know the stack arguments of named by
-    # their `ret N` (scratch.fix_unknown_purges), their rows renamed with them; 10 the int3 Visual C++ 7.0 and 8.0 end a
-    # function with after a call that doesn't return too (scratch.take_noreturn_int3s)
-    ANALYSIS = 10
+    # Visual C++ 2017 brought (#138: a handler that checks its function's /GS cookie first is a stub, a `catch (...) {}`
+    # block that only says where to go on is joined to its function: x86.resumes), which games of any version have. (Two
+    # more rules of #138 read where a function starts and ends, the code before the first function Ghidra found and,
+    # from 2015 on, the int3 after a call that never returns: they come from Ghidra's list, so they reach a project made
+    # before them by Reimport.) Its build tools have a version of their own (the manifest's "tools":
+    # scratch.tools_version), so each change to them reaches it; 8 the joins again, for the jump tables Ghidra made
+    # functions of (scratch.merge_pieces); 9 the functions Ghidra didn't know the stack arguments of named by their `ret
+    # N` (scratch.fix_unknown_purges), their rows renamed with them; 10 the int3 Visual C++ 7.0 and 8.0 end a function
+    # with after a call that doesn't return too (scratch.take_noreturn_int3s); 11 /GS for the files whose functions make
+    # its cookie (scratch.set_gs_flags)
+    ANALYSIS = 11
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -301,6 +302,15 @@ class WindowsPC(Console):
             return (f"{n} functions ending in a call that doesn't return have the int3 their compiler puts after it "
                     "(it was taken for padding, so no C matched them)" if n else None)
 
+        def gs(fp):  # (files with matched code keep their flags: agents' C with an array where the game has none
+            #           took the cookie, and five matched functions of a 2002 game stopped matching. search_flags tries
+            #           /GS on those, kept when the file's matched functions still match)
+            done = {scratch._source(fp.root, r["unit"]) for r in net.store.all(
+                "SELECT DISTINCT unit FROM functions WHERE project_id=? AND status='matched'", net.project_row(slug)["id"])}
+            n = scratch.set_gs_flags(fp.root, version, keep=done)
+            return (f"{n} source files whose functions make a buffer security cookie build with {scratch.GS_FLAG} now, "
+                    "as the game's were" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -308,7 +318,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False)}
+                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -429,8 +439,9 @@ class WindowsPC(Console):
         return scratch.flags_file(fp.root, version).relative_to(fp.root).as_posix()
 
     # What search_flags tries on a file: the frame pointer kept or not (/Oy-: about half of a 2010 game's code keeps
-    # it), optimised for size (/O1: some of a game's libraries were), and inlining only what's marked inline (/Ob1)
-    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"))
+    # it), optimised for size (/O1: some of a game's libraries were), inlining only what's marked inline (/Ob1), and
+    # the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it unasked)
+    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",))
 
     def flag_variants(self, flags: list[str]) -> list[list[str]]:
         out = [list(flags)]
