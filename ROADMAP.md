@@ -115,6 +115,12 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **The runtime libraries' own code finds a PC game's runtime.** Every function of the libraries a game's Visual C++
+  has (its pack's Lib folder; for 6.0-7.1, which ship none, the user's copy there) matched byte for byte
+  (consoles/pc/runtime.py), with Function ID, in analysis step 15: on a 2002 game 167 found against Function ID's 112
+  (rand, fopen, sprintf and the C++ library's exception classes among the 66 it missed), 199 of 250 set aside with
+  their helpers; on a 2007 game 608 against 558. A function nothing refers to after library code is taken only when
+  it's a piece (a table, a tail): puyo.31's rule took a 2007 game's virtual methods with them.
 - **Visual C++'s runtime library in PC games is set aside as library code.** Ghidra's Function ID knows it; the
   import threw its names away, and agents spent sessions on it as the game's: on a 2002 game 178 of 250 functions
   (125 matched), on a 2007 game 957 (395 still open). Those it knows, and what only they refer to, go in the project's
