@@ -76,7 +76,15 @@ brings back a window closed while helpers work. Free tools use Windows builds wh
 
 ### macOS (Intel and Apple Silicon)
 
-Install the current source branch, or clone the repository and install the checkout:
+For an app you can put in `/Applications`, download `macos_arm64` (Apple Silicon) or
+`macos_x86_64` (Intel) from the [releases](https://github.com/n-delic/decompdecomp/releases).
+Unzip it, move `decompdecomp.app` to Applications, and open it from Finder. The app includes
+Python and its dependencies. It is not signed or notarized, so macOS may ask you to approve its
+first launch in Privacy & Security. Install the free compilers and tools from Setup, and replace
+the app with a later release to update it.
+
+Alternatively, install the current source branch or a local checkout:
+
 
 ```sh
 curl -fsSL https://decomp.ndelic.com/install.sh | bash -s -- --source branch:main
@@ -93,7 +101,7 @@ toolchains live in `~/Library/Application Support/decompnet/toolchains`. Xcode C
 build PS1 GCC 2.6.3 from pinned source on first use. The ready-made 2.7.2 and 2.8.1 compiler binaries are for
 Apple Silicon. Finder launches preserve the PATH
 from installation so your installed Node and helper CLIs remain available; rerun `decomp shortcut` after
-changing their locations. This is a source install; there is no signed DMG or macOS release bundle yet.
+changing their locations. This source install uses an external uv installation.
 
 **Apple Silicon:** the app, WebKit window and modern tools run natively. The pinned N64 KMC-compatible
 GCC 2.7.2 and binutils 2.6 archives contain Intel programs, so install Apple's Rosetta runtime before setup:
