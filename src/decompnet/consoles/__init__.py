@@ -304,6 +304,11 @@ class Console:
         has."""
         return {}
 
+    def static_callees(self, fp, version: str) -> dict[str, list[str]]:
+        """Each function that calls functions static_register_args has -> those: its brief says to write them static
+        in its file, as its own C's convention depends on theirs."""
+        return {}
+
     def static_register_args(self, fp, version: str) -> dict[str, str]:
         """The functions taking an argument in a register whose callers are all in their own source file -> that
         register: a static function's convention (PC: Visual C++ 7.0 on passes a static function's arguments in

@@ -538,7 +538,12 @@ class WindowsPC(Console):
         code; written `static` (with its caller in the file) it matched. Of a 2007 game's 970, 196 were such."""
         return self._register_args(fp, version)[1]
 
-    def _register_args(self, fp, version: str) -> tuple[dict[str, str], dict[str, str]]:
+    def static_callees(self, fp, version: str) -> dict[str, list[str]]:
+        """The callers of static_register_args' functions: agents on a 2002 game's _setargv, _output and C++ catch
+        code, each calling such a helper of its file, said link-time code generation and gave up."""
+        return self._register_args(fp, version)[2]
+
+    def _register_args(self, fp, version: str) -> tuple[dict[str, str], dict[str, str], dict[str, list[str]]]:
         from ...arch import x86
         from . import scratch
 
@@ -546,21 +551,23 @@ class WindowsPC(Console):
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
-            return {}, {}
+            return {}, {}, {}
         if (kept := _REGISTER_ARGS.get(str(path))) is None or kept[0] != mtime:
             info = _functions_json(fp, version)
             try:
                 if scratch.missing(fp.root, version):  # (the user's copies of the programs aren't in the project)
-                    return {}, {}
+                    return {}, {}, {}
                 pes = scratch.programs(fp.root, info)
             except (OSError, ValueError, KeyError):  # (a config without them: an older project's, a test's)
-                return {}, {}
+                return {}, {}, {}
             users: dict[str, set[str]] = {}  # a function -> the source files whose code refers to it
+            callers: dict[str, set[str]] = {}  # ... and the functions
             for unit, fns in info.get("units", {}).items():
                 for fn in fns:
                     for reloc in fn.get("relocs") or ():
                         if reloc[2]:
                             users.setdefault(reloc[2], set()).add(unit)
+                            callers.setdefault(reloc[2], set()).add(fn["name"])
             found, static = {}, {}
             for unit, fns in info.get("units", {}).items():
                 pe = pes.get(scratch.unit_module(unit))
@@ -568,7 +575,12 @@ class WindowsPC(Console):
                     if not fn.get("generated") and (reg := x86.register_args(
                             pe.read(fn["addr"], min(fn["size"], x86.REGISTER_ARGS_READ)))):
                         (static if users.get(fn["name"]) == {unit} else found)[fn["name"]] = reg
-            kept = _REGISTER_ARGS[str(path)] = (mtime, (found, static))
+            calls: dict[str, list[str]] = {}
+            for callee in sorted(static):
+                for caller in callers.get(callee, ()):
+                    if caller != callee:
+                        calls.setdefault(caller, []).append(callee)
+            kept = _REGISTER_ARGS[str(path)] = (mtime, (found, static, calls))
         return kept[1]
 
     def rename_pattern(self, old: str) -> str:

@@ -928,3 +928,14 @@ def test_coff_objects_data_isnt_called_different(tmp_path):
     obj.write_bytes(b"\x4c\x01\x03\x00" + bytes(60))  # an i386 COFF header
     net = RomNetwork(tmp_path / "decomp.db", tmp_path / "ws")
     assert net.forks._data_status(SimpleNamespace(target=obj, base=obj)) is None
+
+
+def test_a_failed_builds_message_shows_its_errors_not_the_warnings_after_them():
+    """ninja goes on building other files after one fails: agents splitting a PC game's files read the next files'
+    "unknown pragma" warnings five times, never the error."""
+    from decompnet.app.forkengine import _tail
+
+    log = "\n".join(["[1/9] cl a.cpp", "a.cpp(3) : error C2065: 'x' : undeclared identifier", "FAILED: a.obj"]
+                    + [f"b.cpp({k}) : warning C4068: unknown pragma" for k in range(30)])
+    assert "error C2065" in _tail(log) and "FAILED: a.obj" in _tail(log) and "C4068" not in _tail(log)
+    assert _tail("\n".join(f"line {k}" for k in range(30))).splitlines()[-1] == "line 29"  # no error: the end

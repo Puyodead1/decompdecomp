@@ -1178,6 +1178,10 @@ def test_a_function_ghidra_didnt_know_the_stack_arguments_of_is_named_by_its_ret
     ("8d9b00000000 8bff c3", None),  # lea ebx, [ebx]; mov edi, edi: padding to align a loop
     ("56 8bf1 8b06 5ec3", None),  # push esi; mov esi, ecx; mov eax, [esi]
     ("e800000000 8b00c3", None),  # a call first: eax is its result
+    ("3910 c3", "eax"),  # cmp [eax], edx: eax read first
+    ("a100000000 3910 c3", "edx"),  # mov eax, [g]; cmp [eax], edx: edx without ecx, a static function's
+    ("8b01 3bc2 c3", None),  # mov eax, [ecx]; cmp eax, edx: __fastcall's two
+    ("8bc2 c3", "edx"),  # mov eax, edx; ret
 ])
 def test_an_argument_in_a_register_no_visual_cpp_convention_uses(code, register):
     """Link-time code generation passes arguments in registers of its choosing; eax, ebx, esi and edi read before
@@ -1599,6 +1603,7 @@ def test_a_register_argument_from_callers_in_its_own_file_is_a_static_functions(
     pc = consoles.get("pc")
     assert (pc.static_register_args(fp, "game"), pc.register_args(fp, "game")) == (
         ({"_func_00401000": "esi"}, {}) if static else ({}, {"_func_00401000": "esi"}))
+    assert pc.static_callees(fp, "game") == ({"_func_00401010": ["_func_00401000"]} if static else {})
 
 
 def test_functions_only_a_table_reaches_that_ghidra_took_for_one_are_cut_apart(tmp_path):
