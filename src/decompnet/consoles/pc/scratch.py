@@ -2265,6 +2265,10 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
 LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
 LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
+IMPORT_ANALYSIS = 16  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
+SHORTEST = 16  # (runtime.SHORTEST: what Function ID knows shorter isn't taken either)
+# what the runtime's startup calls is the game's: WinMain, main (a 2003 game's whole code was taken as its "helpers")
+STARTUP = re.compile(r"CRTStartup|^_?_?(w?main|w?WinMain|initterm|cinit)", re.I)
 
 
 def library_rows(rows: list[dict]) -> dict[int, str]:
@@ -2274,6 +2278,8 @@ def library_rows(rows: list[dict]) -> dict[int, str]:
         lines = [ln.strip() for ln in str(r.get("library") or "").splitlines() if ln.strip()]
         if not lines or not lines[0].startswith("Library Function"):
             continue
+        if re.fullmatch(r"_?\$E\d+", str(r.get("name", ""))) or r.get("end") and int(r["end"]) - int(r["entry"]) < SHORTEST:
+            continue  # (a dynamic initializer's stub, or code that short: every object has such, the game's too)
         name = r.get("name") if not str(r.get("name", "")).startswith("FID_conflict") else (lines[1] if len(lines) > 1
                                                                                           else "a library function")
         library = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Library:")), "")
@@ -2287,7 +2293,9 @@ def library_functions(functions: list[Function], known: dict[int, str], read=Non
     refer to (their private helpers), until no more are found; and a piece right after one that nothing refers to,
     which isn't a function of its own (`read(addr, size)` its bytes: a table of addresses into the one before, or code
     using a register it never set: a hand-written memcpy's table and tails). Not any function nothing refers to there:
-    a game's virtual methods are only in its vtables, and on a 2007 game such a rule took 1,700 of them. Functions the
+    a game's virtual methods are only in its vtables, and on a 2007 game such a rule took 1,700 of them. A helper is
+    beside the runtime's code (a static function of its object), and never what its startup calls: WinMain is only
+    called by WinMainCRTStartup, and on a 2003 game that rule took WinMain and the game's code from it. Functions the
     game's own code calls stay the game's (a game's own libraries come after its objects too)."""
     if not known:
         return {}
@@ -2312,7 +2320,8 @@ def library_functions(functions: list[Function], known: dict[int, str], read=Non
             if f.addr in out or f.addr < first:
                 continue
             users = [by_name[n] for n in referred.get(f.name, ()) if n in by_name]
-            if users and all(u.addr in out for u in users):
+            beside = k > 0 and functions[k - 1].addr in out or k + 1 < len(functions) and functions[k + 1].addr in out
+            if users and beside and all(u.addr in out and not STARTUP.search(named(u)) for u in users):
                 out[f.addr] = LIBRARY_HELPER_WHY.format(what=", ".join(sorted({named(u) for u in users}))[:200])
                 found = True
             elif not users and k > 0 and functions[k - 1].addr in out and read is not None and \
@@ -2353,10 +2362,11 @@ def _piece(code: bytes, before: Function) -> bool:
         x86_arch.register_args(code[:x86_arch.REGISTER_ARGS_READ]) is not None
 
 
-def set_library_aside(root: Path, version: str, known: dict[int, str], compiler: str | None = None) -> int:
+def set_library_aside(root: Path, version: str, known: dict[int, str], compiler: str | None = None) -> tuple[int, int]:
     """library_functions in the project's set_aside.json (its "functions", by address: they keep it through renames),
     beside what's there, which counts as known too (a step before found it); with the runtime libraries' own code
-    (runtime_matches) where the game's `compiler` has them. Returns how many it lists now that it didn't."""
+    (runtime_matches) where the game's `compiler` has them. Returns how many it lists now that it didn't, and how many
+    it listed that it doesn't now."""
     _, info, pes, functions = _project_functions(root, version)
     path = root / "config" / version / "set_aside.json"
     try:
@@ -2375,24 +2385,32 @@ def set_library_aside(root: Path, version: str, known: dict[int, str], compiler:
                     before[int(k, 0)] = why
                 except ValueError:
                     continue
+    size = {f.addr: f.size for f in functions}
+    # (what an older library_rows took: a dynamic initializer's stub, code too short to say whose it is)
+    before = {a: why for a, why in before.items() if size.get(a, 0) >= SHORTEST and not re.search(r"\(_?\$E\d+,", why)}
     module = {f.addr: unit_module(f.unit) for f in functions}
     found = library_functions(functions, {**runtime_matches(functions, pes, compiler), **known, **before},
                               lambda addr, size: pes[module[addr]].read(addr, size))
     now = {f"0x{a:08X}": why for a, why in sorted(found.items()) if f"0x{a:08X}" not in listed or f"0x{a:08X}" in mine}
-    added = len(set(now) - mine)
+    added, dropped = len(set(now) - mine), len(mine - set(now))
     if now != {k: listed[k] for k in mine}:
         data["functions"] = {**{k: v for k, v in listed.items() if k not in mine}, **now}
         path.write_text(json.dumps(data, indent=1), encoding="utf-8")
-    return added
+    return added, dropped
 
 
-def recognise_library(root: Path, version: str, log=print) -> int | None:
+def recognise_library(root: Path, version: str, compiler: str | None = None, log=print) -> tuple[int, int] | None:
     """set_library_aside for a project made before its import read Function ID: Ghidra analyses its programs again
     (minutes for a big game), only for that. Returns how many functions it set aside; None without the user's copies
-    of the programs, or Ghidra."""
+    of the programs, or Ghidra; with how many it no longer does (set_library_aside)."""
     from ...forks import ghidra
 
-    if missing(root, version) or not ghidra.available():
+    if missing(root, version):
+        return None
+    listed = root / "config" / version / "set_aside.json"
+    if listed.is_file() and "Function ID" in listed.read_text(encoding="utf-8"):  # (its import read it already)
+        return set_library_aside(root, version, {}, compiler)
+    if not ghidra.available():
         return None
     info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
     known: dict[int, str] = {}
@@ -2401,7 +2419,7 @@ def recognise_library(root: Path, version: str, log=print) -> int | None:
         moved = base - read_pe(path.read_bytes()).image_base if base is not None else 0
         log(f"reading {path.name} with Ghidra's Function ID (the runtime library's functions in it)")
         known.update(library_rows([{**r, "entry": r["entry"] + moved} for r in ghidra.functions(path)]))
-    return set_library_aside(root, version, known)
+    return set_library_aside(root, version, known, compiler)
 
 
 def module_rows(ghidra, module: Path, moved: int) -> list[dict]:
@@ -2550,7 +2568,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
             "function each calls, and set aside")
     if merged := split_merged_functions(root, version):
         log(f"{merged} functions the analysis took for part of the one before them are functions of their own")
-    if library := set_library_aside(root, version, known, compiler):
+    if library := set_library_aside(root, version, known, compiler)[0]:
         log(f"{library} of them are Visual C++'s runtime library (Ghidra's Function ID knows them), or helpers only it "
             "uses: set aside as library code, not the game's own")
     if frames := set_frame_flags(root, version):
@@ -2583,7 +2601,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
         "created": "from scratch", "platform": "pc", "version": version, "compiler": f"MSVC/{compiler}",
-        "analysis": 6,  # (WindowsPC.ANALYSIS: nothing to repair, stubs set aside, pieces joined, thunks named, frames read)
+        # (WindowsPC.ANALYSIS: an import does every step, so none runs again at the next start. It said 6 while steps
+        # 7-15 were added, and a 2003 game imported with all of them was to take them again, Ghidra's run too)
+        "analysis": IMPORT_ANALYSIS,
         "tools": tools_version(),
         "game": {"what": "your copy of the game's program (.exe)", "path": f"orig/{version}.exe", "sha1": info["sha1"]},
         "setup": [["python", "tools/configure.py", version, *args], ["ninja", "prepare"]],
