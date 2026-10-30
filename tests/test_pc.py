@@ -688,7 +688,8 @@ def test_a_file_of_a_newer_game_takes_any_installed_packs_visual_cpp(tmp_path, b
     adder = named("_add_score")
     whole = max(p.relative_to(root).as_posix() for p in (root / "src" / "auto").glob("*.cpp")
                 if p.stem <= f"text_{syms['_add_score']:08X}")
-    assert net.forks.split_file(agent, slug, whole, adder).startswith("✅")
+    # (a bare new name, as agents give it: the file's folder and kind are added)
+    assert net.forks.split_file(agent, slug, whole, adder, f"text_{syms['_add_score']:08X}").startswith("✅")
     last = f"src/auto/text_{syms['_add_score']:08X}.cpp"
     said = net.forks.try_compiler(agent, slug, adder, f"MSVC/{other}", source=sub(csource.get(GAME.read_text(), "add_score")))
     assert f"{last} is built with MSVC/{other} from now on" in said, said
@@ -1579,6 +1580,25 @@ def test_a_project_made_before_gets_the_int3_after_a_call_that_doesnt_return(tmp
     assert scratch_pe.take_noreturn_int3s(root, "game") == 0
     _delink(root)
     assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
+
+
+@pytest.mark.parametrize("static", [True, False])
+def test_a_register_argument_from_callers_in_its_own_file_is_a_static_functions(tmp_path, static):
+    """Visual C++ 7.0 passed a static function's argument in edx, link-time code generation or not: a 2002 game's
+    signal lookup, set aside by agents as link-time code, matched written `static`. A function taking an argument in
+    a register whose callers are all in its file is told so; one called from other files stays link-time code's."""
+    callee = bytes.fromhex("8b06c3")  # mov eax, [esi]; ret: esi read before it's set
+    caller = bytes.fromhex("e8") + (-(16 + 5)).to_bytes(4, "little", signed=True) + bytes.fromhex("c3")
+    root = _project(tmp_path, callee.ljust(16, b"\xcc") + caller, [_row(TEXT, TEXT + 3), _row(TEXT + 16, TEXT + 22)])
+    if static:  # (one file for both)
+        config = root / "config" / "game" / "functions.json"
+        info = json.loads(config.read_text())
+        info["units"] = {"text_00401000": [f for fns in info["units"].values() for f in fns]}
+        config.write_text(json.dumps(info))
+    fp = type("FP", (), {"root": root})()
+    pc = consoles.get("pc")
+    assert (pc.static_register_args(fp, "game"), pc.register_args(fp, "game")) == (
+        ({"_func_00401000": "esi"}, {}) if static else ({}, {"_func_00401000": "esi"}))
 
 
 def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):

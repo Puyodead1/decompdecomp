@@ -1005,6 +1005,7 @@ class ForkEngine:
         reals = console.real_names(fp, version)
         generated = console.generated_functions(fp, version)  # no C of their own makes them (a PC game's EH stubs)
         registers = console.register_args(fp, version)  # an argument in a register no C declaration passes one in
+        statics = console.static_register_args(fp, version)  # ... or a static function's, which C makes
         copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
@@ -1060,6 +1061,8 @@ class ForkEngine:
                                  and not (k == "asm_code" and was.get("set_aside"))})  # (set aside: decided below)
                 if sym in registers:  # (claimed last, and its brief says why)
                     meta["register_arg"] = registers[sym]
+                if sym in statics:
+                    meta["static_register_arg"] = statics[sym]
                 if sym in generated and not meta.get("reopened"):  # set aside as assembly is, whatever the scope
                     meta["asm_code"] = generated[sym]
                 if sym in aside:  # code the project says isn't the game's own (library code, middleware)
@@ -1652,6 +1655,12 @@ class ForkEngine:
         tail = re.search(r"([0-9A-Fa-f]{8})(?:@\d+)?$", sym)  # (a PC function: @func_0041B470@8)
         new = new_name.strip().lstrip("./") or (Path(rel).parent / f"{stem}_{(tail.group(1) if tail else sym).upper()}"
                                                 f"{Path(rel).suffix}").as_posix()
+        # a bare name is the file's folder's, and its kind: agents gave text_00401AA0 and were told they "may only
+        # edit C/C++ source", four times on a PC game, and gave up on the split
+        if "/" not in new:
+            new = (Path(rel).parent / new).as_posix()
+        if not Path(new).suffix:
+            new += Path(rel).suffix
         old_path, new_path = fp.root / rel, fp.root / new
         if not fp.safe_path(new, write=True) or new_path.exists() or fp.units_for(new):
             raise NetworkError(f"{new} exists already: pick another new_name")
@@ -2363,6 +2372,12 @@ class ForkEngine:
         lines = [f"## {header}: {fn['name']}  ({proj['name']})", f"unit {unit.name}, {fn['size']} bytes"]
         if fn["status"] != "matched":
             lines.append(move_on_brief(fn))
+        if (reg := meta.get("static_register_arg")) and fn["status"] != "matched":
+            lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, from callers all in its own "
+                         f"source file. Visual C++ gives a static function a convention of its own (arguments in "
+                         f"registers it picks): write it `static`, with ordinary parameters, above its callers in the "
+                         f"file, and call it plainly; never __fastcall with an unused argument (its callers then set "
+                         f"ecx, which the game's don't)")
         if (reg := meta.get("register_arg")) and fn["status"] != "matched":
             lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, a convention link-time code "
                          f"generation (/GL /LTCG) gives functions whose callers it all sees. No C declaration of one "
