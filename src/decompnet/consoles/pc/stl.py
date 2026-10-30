@@ -17,6 +17,7 @@ from . import runtime
 # what a probe file includes: the containers' headers, and stand-ins for a game's small structs of the sizes its
 # containers hold most (a map of 20- and 24-byte values)
 PRELUDE = ("#include <map>\n#include <set>\n#include <list>\n#include <vector>\n#include <deque>\n#include <string>\n"
+           "#include <locale>\n"
            "struct STL_P20 { int a[5]; };\nstruct STL_P24 { int a[6]; };\n")
 PROBES = (
     "template class std::map<std::string, int>;",
@@ -40,10 +41,23 @@ PROBES = (
     "template class std::deque<int>;",
     "template class std::deque<void*>;",
     "template class std::basic_string<char>;",
+    # a facet's members as a game's stream use makes them: an explicit instantiation inlines what that doesn't (a
+    # 2003 game's do_get calls istreambuf_iterator::equal; `template class` put it inline), so a function using it
+    *(f"const std::{facet}<char>& stl_{facet}(const std::locale& l) {{ return std::use_facet<std::{facet}<char> >(l); }}"
+      for facet in ("num_get", "num_put")),
 )
 PROBE_SECONDS = 300
+_USES = re.compile(r"^const std::(\w+)<char>& stl_")
 # a unit's build statement in build.ninja: its object, then its compiler, include folder and flags
 _BUILD = re.compile(r"^build (\S+): cl\b.*\n(?:[ \t]+.*\n)*", re.M)
+
+
+def spoiler(line: str) -> re.Pattern | None:
+    """For a probe that uses a facet, the explicit instantiation of it a file may have (an agent's) that makes the
+    facet's code otherwise: the probe's code isn't the game's while that line is there too."""
+    if (m := _USES.match(line)) is None:
+        return None
+    return re.compile(rf"^[ \t]*template\s+class\s+std::{m.group(1)}\s*<\s*char\b[^;]*;[^\n]*\n?", re.M)
 
 
 def wrapper(ninja: str) -> str:
