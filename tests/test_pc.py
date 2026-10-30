@@ -1332,6 +1332,33 @@ def test_a_register_argument_from_callers_in_its_own_file_is_a_static_functions(
         ({"_func_00401000": "esi"}, {}) if static else ({}, {"_func_00401000": "esi"}))
 
 
+def test_functions_only_a_table_reaches_that_ghidra_took_for_one_are_cut_apart(tmp_path):
+    """Ghidra took seven atexit entries and destructors (reached only through a table of pointers) on a 2002 PC game
+    for one function, and agents had to vote on each cut. A `ret` nothing before it jumps past, padding to 16 bytes,
+    then code: a function of its own. Not after a `ret` a jump before it goes past (the code goes on there)."""
+    first = bytes.fromhex("6a00e800000000") + bytes.fromhex("59c3")  # push 0; call; pop ecx; ret
+    goes_on = bytes.fromhex("85c07401c3") + bytes.fromhex("33c0c3")  # test; je over the ret; ret; xor eax,eax; ret
+    program = first.ljust(16, b"\x90") + first.ljust(16, b"\x90") + goes_on.ljust(16, b"\x90") + first
+    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(program))])
+    assert scratch_pe.split_merged_functions(root, "game", keep={"_func_00401000"}) == 0
+    config = root / "config" / "game" / "functions.json"
+    info = json.loads(config.read_text())
+    info["units"]["held"] = [{"name": "_held", "addr": TEXT + 0x100, "size": 0,
+                              "relocs": [[0, scratch_pe.DIR32, "_D_00401010", 0]]}]
+    config.write_text(json.dumps(info))
+    assert scratch_pe.split_merged_functions(root, "game", keep={"_held"}) == 2  # (not where a matched one points)
+    info = json.loads(config.read_text())
+    del info["units"]["held"]
+    config.write_text(json.dumps(info))
+    assert scratch_pe.split_merged_functions(root, "game") == 1
+    info = json.loads((root / "config" / "game" / "functions.json").read_text())
+    assert sorted((f["addr"] - TEXT, f["size"]) for fns in info["units"].values() for f in fns) == [
+        (0, 16), (16, 16), (32, 16), (48, len(first))]
+    assert scratch_pe.split_merged_functions(root, "game") == 0
+    _delink(root)
+    assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
+
+
 def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
     """Visual C++ 7.0 and 7.1 make /GS's cookie (the cookie xored with the return address) only when asked: on a 2002
     game nine files had it, agents suggested it eleven times, and a suggestion can't set a flag."""
