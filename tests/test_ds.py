@@ -785,6 +785,32 @@ def test_a_join_needs_agents_of_two_models_and_a_refused_one_isnt_tried_again(tm
         say("claude-opus-5-5-2")
 
 
+def test_join_votes_survive_the_sync_after_a_match(tmp_path, monkeypatch):
+    """Each sync (after every match) rebuilt a function's meta without its join votes: three agents of three models
+    proposed the same join on a PC game, a match between each, and it was never tried. They're kept now, and the
+    ones lost before count from the project's feed."""
+    from decompnet.app import forkengine
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "ws")
+    root = tmp_path / "ws" / "p"
+    root.mkdir(parents=True)
+    (root / "objdiff.json").write_text(json.dumps({"units": []}))
+    net.forks._register("p", "P", "fork", root, {"kind": "fork", "platform": "nds", "ready": True}, "x")
+    with net.store.tx() as db:
+        for k, name in enumerate(("f", "g")):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,vram) VALUES(1,?,8,2,'open','a',?)",
+                       (name, BASE + 8 * k))
+    tried = []
+    monkeypatch.setattr(forkengine.ForkEngine, "reanalyse", lambda self, slug, step, **kw: tried.append(step) or None)
+    say = lambda who: net.forks.propose_join(net.local_agent(who)[0], "p", "g", "f", "g is f's tail")  # noqa: E731
+    assert "joins" in forkengine._KEPT_KEYS and "boundaries" in forkengine._KEPT_KEYS
+    say("opencode-beam-free-1")
+    say("claude-sonnet-5-5-1")
+    with net.store.tx() as db:  # what a sync did before: the votes gone from the meta
+        db.execute("UPDATE functions SET meta='{}'")
+    assert "refused" in say("claude-opus-5-5-1") and len(tried) == 1  # the feed still had the other two
+
+
 def test_a_ds_source_file_is_split_in_its_delinks_with_its_compiler(tmp_path):
     """split_file on DS: agents wanted a function built by another CodeWarrior version in a file of its own, to give
     it its own compiler (try_compiler), and split_file was GameCube/Wii's only. The file's block in delinks.txt ends
