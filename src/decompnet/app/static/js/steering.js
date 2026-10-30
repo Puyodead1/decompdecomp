@@ -676,7 +676,7 @@ $("saveGo").onclick = async () => {
     if (slug !== S.slug) return;
     S.ov.save_folder = r.folder;
     input.value = r.folder;
-    $("saveState").textContent = `saved ${clock(Date.now() / 1000).slice(0, 5)}`;
+    $("saveState").textContent = `saved ${hhmm(Date.now() / 1000)}`;
     log.hidden = false;
     log.textContent = kind === "fork" ? `Saved ${plural(r.best || 0, "closest attempt")} to ${r.folder}/best.`
       : `Saved to ${r.folder}: ${plural(r.matched || 0, "matched function")}, ${plural(r.best || 0, "best attempt")}.`;
