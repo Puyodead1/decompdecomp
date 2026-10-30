@@ -519,7 +519,10 @@ def compilable(draft: str, symbol: str, symbols: dict[str, str], known: str = ""
     declared = {}
     for m in _GHIDRA_SYMBOL.finditer(body):
         other = f"{m.group(1)}_{m.group(2).upper()}"
-        if other in declared or other == name or re.search(rf"\b{other}\b", known):
+        # (declared where this draft sees it: at the file's top level, not in another function's body, where an
+        # earlier draft declared it for itself: on a 2003 game every draft after the first calling operator new in
+        # its file failed to build, "undeclared identifier")
+        if other in declared or other == name or re.search(rf"^(?![ \t]).*\b{other}\b", known, re.M):
             declared.setdefault(other, None)
             continue
         if other.startswith("D_"):

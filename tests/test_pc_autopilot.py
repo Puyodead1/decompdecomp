@@ -132,6 +132,16 @@ def test_ghidras_callees_and_globals_are_declared_by_their_conventions():
     assert drafts.compilable(GHIDRA_CALLS.replace("param_1;", "unaff_ESI;"), "_func_00401000", SYMBOLS) is None
 
 
+def test_a_callee_another_drafts_body_declares_is_declared_again():
+    """An earlier draft in the file declared operator new inside its own body: the next draft calling it took it for
+    declared, and every such draft of a 2003 game's failed to build ("undeclared identifier")."""
+    other_body = "void func_00400F00(void)\n{\n  int func_00401300(...);\n  func_00401300(1);\n}\n"
+    _, code = drafts.compilable(GHIDRA_CALLS, "_func_00401000", SYMBOLS, known=other_body)
+    assert "int func_00401300(...);" in code
+    _, code = drafts.compilable(GHIDRA_CALLS, "_func_00401000", SYMBOLS, known="int func_00401300(...);\n")
+    assert "int func_00401300(...);" not in code  # (the file declares it for all of it)
+
+
 def _tiny_pe(code: bytes) -> scratch_pe.PE:
     return scratch_pe.PE(b"\0" * 0x400 + code, 0x400000, 0x2000, AT, 0,
                          [scratch_pe.Section(".text", AT, len(code), 0x400, len(code), True)])
