@@ -817,6 +817,8 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
         limit = min(starts[i + 1] if i + 1 < len(starts) else sec.va + sec.size, sec.va + sec.size)
         code_end = max(start + 1, min(rows[start].get("end", limit), limit))
         code_end, end, entries = _tables(md, pe, start, code_end, limit)
+        if end == code_end and _noreturn_int3(md, pe, start, code_end, limit):
+            code_end = end = code_end + 1
         gap = pe.read(end, limit - end)
         rest = gap.lstrip(b"\x90").lstrip(b"\xcc\x00")
         if rest and not rest.strip(b"\x90\xcc\x00") == b"":
@@ -1255,6 +1257,43 @@ def drop_far_call_relocations(root: Path, version: str) -> int:
     if changed:
         path.write_text(json.dumps(info, indent=1), encoding="utf-8")
     return changed
+
+
+def _noreturn_int3(md, pe: PE, start: int, code_end: int, limit: int) -> bool:
+    """Whether the int3 after a function's code is its compiler's: Visual C++ (7.0 and 8.0 alike) ends a function
+    whose last instruction is a call that doesn't return (ExitProcess, a throw) with an int3 of its own. Taken for the
+    linker's padding, it was left out of the function, and the C that makes it compiled a byte longer: on three PC
+    games 17 functions ending in such a call before an int3 that no alignment explains, and every one ending in a call
+    before an int3 (78), were open; none had matched."""
+    if limit <= code_end or pe.read(code_end, 1) != b"\xcc":
+        return False
+    last = None
+    for last in _disasm(md, pe.read(start, code_end - start), start):
+        pass
+    return last is not None and last.mnemonic == "call" and last.address + last.size == code_end
+
+
+def take_noreturn_int3s(root: Path, version: str, keep: set[str] = frozenset()) -> int:
+    """A project made before analyse took the int3 a function ending in a call that doesn't return has
+    (_noreturn_int3) gets it now; not a matched function (`keep`). Returns how many grew."""
+    path, info, pes, functions = _project_functions(root, version)
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    names = {f.addr: f.name for f in functions}
+    grown = 0
+    for k, f in enumerate(functions):
+        pe = pes[unit_module(f.unit)]
+        sec = pe.section_at(f.addr)
+        end = f.addr + f.size
+        limit = min(functions[k + 1].addr if k + 1 < len(functions) else end, sec.va + sec.size if sec else end)
+        if f.name in keep or not _noreturn_int3(md, pe, f.addr, end, limit) or \
+                _tables(md, pe, f.addr, end, end)[:2] != (end, end):
+            continue
+        functions[k] = join(pe, [Function(f.addr, f.size + 1, f.name, f.relocs, f.unit)], names)
+        grown += 1
+    if grown:
+        _save_functions(path, info, pes, functions)
+    return grown
 
 
 def complete_last_instructions(root: Path, version: str, keep: set[str] = frozenset()) -> int:

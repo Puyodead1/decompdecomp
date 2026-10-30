@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **The int3 after a PC function's last call is its own.** Visual C++ (7.0 and 8.0) ends a function whose last
+  instruction is a call that doesn't return with an int3, which the import took for the linker's padding: the function
+  was a byte short of what its C compiles to. On three PC games 78 such functions were open and none matched; on a
+  small one, four of its eight matched with the C agents had already written once analysis step 10 gave them the byte.
 - **A model doesn't get the same function back after giving it back three times.** Ordering released functions last
   wasn't enough once nothing else was left: on a small PC game four helpers of one model gave most of its 114 open
   functions back 10-11 times in two hours. A function a model gave back three times (since the shared header or the

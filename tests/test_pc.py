@@ -926,6 +926,17 @@ def test_a_function_found_in_a_gap_keeps_its_last_instruction_whole():
     assert [(f.addr, f.size) for f in found] == [(0x401000, 1), (0x401001, 5), (0x401006, 5)]
 
 
+def test_the_int3_after_a_call_that_doesnt_return_is_its_functions():
+    """Visual C++ ends a function whose last instruction is a call that doesn't return (ExitProcess) with an int3 of
+    its own: taken for padding, the function was a byte short of what its C compiles to, on three PC games 17 of them,
+    none matched. Padding after a `ret` stays padding."""
+    code = PUSH_FRAME + bytes.fromhex("e800000000") + b"\xcc" + bytes.fromhex("c3") + b"\xcc" * 3 + bytes.fromhex("c3")
+    pe = scratch_pe.read_pe(_tiny_exe(code))
+    found = scratch_pe.analyse(pe, [_row(TEXT, TEXT + len(PUSH_FRAME) + 5), _row(TEXT + len(PUSH_FRAME) + 6, 0),
+                                    _row(TEXT + len(PUSH_FRAME) + 10, 0)])
+    assert [f.size for f in found] == [len(PUSH_FRAME) + 6, 1, 1]
+
+
 def test_functions_nothing_calls_are_cut_at_the_int3s_between_them():
     """Visual C++ 2005 and later pad each function of a file to 16 bytes with int3. A run of functions inlined
     everywhere (nothing calls them, so Ghidra misses them) was one function in a 2010 build of the demo: 14
@@ -1279,6 +1290,24 @@ def test_a_far_call_is_not_taken_for_a_call_to_another_function(tmp_path):
     assert not scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
     assert scratch_pe.drop_far_call_relocations(root, "game") == 1
     assert scratch_pe.drop_far_call_relocations(root, "game") == 0
+    _delink(root)
+    assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
+
+
+def test_a_project_made_before_gets_the_int3_after_a_call_that_doesnt_return(tmp_path):
+    program = PUSH_FRAME + bytes.fromhex("e800000000") + b"\xcc" + PUSH_FRAME + bytes.fromhex("5dc3")
+    second = TEXT + len(PUSH_FRAME) + 6
+    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(PUSH_FRAME) + 5), _row(second, second + 3)])
+    config = root / "config" / "game" / "functions.json"
+    info = json.loads(config.read_text())
+    first = info["units"]["text_00401000"][0]
+    assert first["size"] == len(PUSH_FRAME) + 6  # (as analyse makes it now)
+    first["size"] -= 1  # as it made it before
+    config.write_text(json.dumps(info))
+    assert scratch_pe.take_noreturn_int3s(root, "game", keep={first["name"]}) == 0
+    assert scratch_pe.take_noreturn_int3s(root, "game") == 1
+    assert json.loads(config.read_text())["units"]["text_00401000"][0]["size"] == len(PUSH_FRAME) + 6
+    assert scratch_pe.take_noreturn_int3s(root, "game") == 0
     _delink(root)
     assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
 
