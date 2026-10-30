@@ -34,6 +34,7 @@ packs: build.py 10.0SP1). Older projects' configs say "win32" (decomp.dev's id):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ...network import NetworkError
@@ -458,7 +459,7 @@ class WindowsPC(Console):
 
     # Autopilot's drafts: Ghidra's made compilable, and exact ones for the tiny shapes Visual C++ makes (drafts.py)
     own_drafts = True
-    own_tools = frozenset({"redraft", "search_flags"})
+    own_tools = frozenset({"redraft", "search_flags", "name_instance"})
 
     def prepare_drafts(self, fp) -> str | None:
         from .drafts import GHIDRA_H, GHIDRA_HEADER
@@ -510,6 +511,55 @@ class WindowsPC(Console):
         names[key] = new
         path.write_text(json.dumps({**info, "names": dict(sorted(names.items()))}, indent=1), encoding="utf-8")
         return {path: text}
+
+    def instance_names(self, fp, version: str, unit, symbol: str) -> dict[str, str]:
+        """The game's functions (by symbol) that functions the unit's source compiles to are, byte for byte where
+        relocations fill in: `symbol`'s, and from it each function its code calls that one of them calls at the same
+        place (an STL template's instance and the instances it calls: std::map's erase(first, last), _Erase, erase).
+        -> the compiled function's symbol, as the compiler names it. Only a compiled function no func_<address> or
+        D_<address> names (the agents' own C pairs by its name already)."""
+        from ... import coffobj
+
+        info = _functions_json(fp, version)
+        where = {fn["name"]: u for u, fns in info.get("units", {}).items() for fn in fns}
+        targets: dict[str, dict] = {}
+
+        def target(sym: str):
+            u = where.get(sym)
+            if u is None:
+                return None
+            if u not in targets:
+                t = fp.unit(u).target if fp.unit(u) is not None else None
+                targets[u] = {o: (b, r) for o, b, r in coffobj.sections(t.read_bytes())} if t and t.is_file() else {}
+            return targets[u].get(sym)
+        if unit.base is None or not unit.base.is_file():
+            return {}
+        built = {o: (b, r) for o, b, r in coffobj.sections(unit.base.read_bytes())
+                 if o and not re.search(r"(?:func|D)_[0-9A-Fa-f]{8}", o)}
+        def same(game, compiled) -> bool:  # (game, compiled): (code, relocations)
+            # every relocation the game's has, the compiled one has; what only the compiled one relocates is a call
+            # to itself or to a function beside it, which the cut-out code has as plain bytes (_Erase is recursive)
+            mine = {off for off, *_ in compiled[1]}
+            if len(game[0].rstrip(b"\x90\xcc")) != len(compiled[0].rstrip(b"\x90\xcc")) or \
+                    not {off for off, *_ in game[1]} <= mine:
+                return False
+            return _masked(game[0], compiled[1]) == _masked(compiled[0], compiled[1])
+        first = target(symbol)
+        if first is None:
+            return {}
+        found = next((c for c, code in built.items() if same(first, code)), None)
+        if found is None:
+            return {}
+        out, queue = {symbol: found}, [(symbol, found)]
+        while queue:
+            t, c = queue.pop()
+            for (off, _, tname, _, _), (coff, _, cname, _, _) in zip(sorted(target(t)[1]), sorted(built[c][1])):
+                if off != coff or tname in out or cname in out.values() or cname not in built or target(tname) is None:
+                    continue
+                if same(target(tname), built[cname]):
+                    out[tname] = cname
+                    queue.append((tname, cname))
+        return out
 
     def real_names(self, fp, version: str) -> dict[str, str]:
         """(a function's report name is its entry's in functions.json: the target objects are cut out with it)"""
@@ -597,6 +647,14 @@ def _library_said(changed: tuple[int, int] | None, what: str) -> str | None:
     said = ([f"{added} functions are {what}: set aside as library code, not the game's own"] if added else []) + \
         ([f"{dropped} it had set aside are the game's own code after all: given back"] if dropped else [])
     return "; ".join(said) or None
+
+
+def _masked(code: bytes, relocs) -> bytes:
+    """A function's code with what its relocations fill in zeroed, and the padding after it off."""
+    out = bytearray(code)
+    for off, *_ in relocs:
+        out[off:off + 4] = bytes(len(out[off:off + 4]))
+    return bytes(out).rstrip(b"\x90\xcc")
 
 
 def _functions_json(fp, version: str) -> dict:

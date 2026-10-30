@@ -1722,6 +1722,82 @@ class ForkEngine:
 
     SOURCE_SUFFIXES = (".c", ".h", ".cpp", ".hpp", ".cp", ".cc", ".inc")
 
+    def name_instance(self, agent: Agent | None, slug: str, function: str) -> str:
+        """The function is an instance of a template the game used (the STL's: std::map's erase), which its source
+        file compiles now: what the file compiles to is searched for the function's code (Console.instance_names),
+        and the compiled function's name becomes its real name, with each instance it calls that the game has too.
+        Kept as rename_symbol is: the project builds, the game rebuilds as it did, every match still matches. On a
+        2003 PC game an agent rebuilt std::map's red-black tree by hand to 22%, while <map> compiled it exactly."""
+        proj, fp, cfg = self.get(slug)
+        if slug in self.net.links:
+            raise NetworkError("in a room, the host's project is the one to name functions in: say it in a note")
+        console = consoles.get(cfg.get("platform"))
+        version = (fp.manifest or {}).get("version") or cfg.get("version")
+        fn = self._fn(slug, function)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} already matches")
+        unit = fp.unit(fn["unit"])
+        symbol = self._meta(fn).get("symbol") or fn["name"]
+        checks = consoles.REBUILD_CHECK in console.features
+        with self._tree(proj).exclusive():
+            ok, out = self._build_unit(proj, fp, unit)
+            if not ok:
+                raise NetworkError(f"{unit.source} doesn't build as it is, so nothing was searched:\n{_tail(out)}")
+            found = console.instance_names(fp, version, unit, symbol)
+            if not found:
+                raise NetworkError(
+                    f"nothing {unit.source} compiles to is {fn['name']}'s code. Make the file compile the instance: "
+                    "include the template's header (<map>, <vector>, <string>...) and use it with the game's types "
+                    "(an explicit instantiation, `template class std::map<std::string, int>;`, compiles all of it); "
+                    "the types are right when the layout is (a map node's _Isnil at the offset the code tests)")
+            text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+            own = [t for t in found if (m := re.search(r"func_([0-9A-Fa-f]{8})", t))
+                   and re.search(rf"\bfunc_{m.group(1)}\s*\(", text)]
+            if symbol in own:
+                raise NetworkError(f"{unit.source} defines {symbol} by hand too: take that out first (edit_file), the "
+                                   "compiled instance is the function")
+            found = {t: c for t, c in found.items() if t not in own}  # (those it calls: named once theirs are out)
+            matched = {self._meta(r).get("symbol") or r["name"] for r in self.net.store.all(
+                "SELECT name, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
+            before = (fp.manifest or {}).get("rebuild") or {}
+            saved: dict[Path, str] = {}
+            with self._build_locks[proj["id"]]:
+                try:
+                    for t, c in found.items():
+                        saved.update(console.rename_symbol(fp, version, t, c))
+                    for cmd in fp.setup_commands(version):
+                        ok, out = fp.run(cmd, log=lambda *_: None)
+                        if not ok:
+                            raise ForkError(f"the project didn't build with the names:\n{_tail(out)}")
+                    if checks and before.get("identical") and not console.check_rebuild(fp, version).get("identical"):
+                        raise ForkError("the game no longer rebuilt byte for byte with them")
+                    rep = fp.report()
+                    now = {f["name"] for u in rep.get("units", []) for f in u.get("functions", [])
+                           if (f.get("fuzzy_match_percent") or 0) >= 100}
+                    if lost := sorted(n for n in matched if n not in now):
+                        raise ForkError(f"these functions would stop matching: {', '.join(lost[:8])}")
+                except (ForkError, RomError, ObjdiffError, OSError, ValueError) as e:
+                    for p, t in saved.items():
+                        p.write_text(t, encoding="utf-8")
+                    for cmd in fp.setup_commands(version):
+                        fp.run(cmd, log=lambda *_: None)
+                    raise NetworkError(f"not named, nothing changed: {e}") from None
+            with self.net.store.tx() as db:
+                for t, c in found.items():
+                    self.net._event(db, proj["id"], agent.id if agent else None, "rename", f"{t} → {c}")
+            self._commit_paths(proj, fp, [p.relative_to(fp.root).as_posix() for p in saved],
+                               f"Name {len(found)} template instances {unit.source} compiles\n\n"
+                               + "\n".join(f"{t}: {c}" for t, c in found.items())
+                               + f"\n\nFound by {agent.name if agent else 'decompdecomp'} with decompdecomp.")
+        self.sync(slug, log=lambda *_: None, rep=rep)
+        done = {t for t in found if t in now}
+        return (f"✅ {len(found)} of the game's functions are instances {unit.source} compiles: "
+                + ", ".join(f"{t} ({'matches' if t in done else 'named, not matching yet'})" for t in found) + "."
+                + (f" {', '.join(own)} compile{'s' * (len(own) == 1)} as instances too, but {unit.source} defines "
+                   f"{'it' if len(own) == 1 else 'them'} by hand: take that out (edit_file) and call name_instance for "
+                   f"{'it' if len(own) == 1 else 'each'}." if own else "")
+                + " Call claim_function for the next one.")
+
     def rename_symbol(self, agent: Agent | None, slug: str, old: str, new: str, message: str = "") -> str:
         """Give one of the game's symbols (a function, data) a real name: in the console's config, where its name
         comes from (Console.rename_symbol), and as a whole word in every source and header file. Kept only when the

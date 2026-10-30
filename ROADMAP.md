@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **The STL's code in a PC game matches as compiled (name_instance).** A std::map's erase in a 2003 game was the
+  instance <map> compiles, 91 of 91 instructions, but agents could only rebuild the red-black tree by hand (22%):
+  the compiler's name for it (?erase@?$_Tree@...) didn't pair with the game's. An agent makes the file compile the
+  instance and calls name_instance: the compiled function, and each instance it calls the game has, take their
+  names, and tools/names.py pairs a name given whole. At least 136 of that game's functions are such instances.
 - **The runtime's helpers are only its own.** On a 2003 PC game the rule taking what only the runtime refers to took
   WinMain (only WinMainCRTStartup calls it) and the game's code from it, and Function ID's matches of the game's
   own initializer stubs (`$E1`) did the same: 1,244 functions set aside, 322 of them the game's. A helper is beside

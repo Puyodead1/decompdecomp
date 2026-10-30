@@ -334,6 +334,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "edit_file": lambda net, agent, slug, path, old, new, message="":
         net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
+    "name_instance": lambda net, agent, slug, function:
+        net.forks.name_instance(agent, _fork(net, slug, "name_instance"), function),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
     "join_functions": lambda net, agent, slug, function, with_function, reason:
@@ -342,8 +344,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
 
 ROM_ONLY = {"get_context", "edit_context", "split_function",
             "redraft",
-            "search_flags"}
-FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done"}
+            "search_flags", "name_instance"}
+# (name_instance is in both: only a console whose games started from scratch have it, Console.own_tools)
+FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done",
+             "name_instance"}
 
 
 def tool_names(fork: bool, console=None) -> list[str]:
@@ -671,6 +675,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         functions still differ, its data next to the original's (with what to fix), why the last link failed.
         A file is linked (the game built from its C) once every function and all its data match."""
         return await run(ctx, "file_status", path=path)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def name_instance(ctx: Context, function: str) -> str:
+        """PC games: the function is a template's code the game used (the STL's: std::map's erase, a vector's
+        insert), not the game's own. Don't rewrite it by hand: make its source file compile the instance (include
+        <map>, <vector>, <string>... and use it with the game's types, or `template class std::map<K, V>;`), then
+        call this. What the file compiles to is searched for the function's code, and the compiled function, with
+        each instance it calls that the game has, takes that name: it matches as compiled."""
+        return await run(ctx, "name_instance", function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def split_file(ctx: Context, path: str, at: str, new_name: str = "", data: str = "") -> str:

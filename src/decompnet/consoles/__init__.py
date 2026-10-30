@@ -291,6 +291,12 @@ class Console:
         has."""
         return {}
 
+    def instance_names(self, fp, version: str, unit, symbol: str) -> dict[str, str]:
+        """The game's functions a unit's source compiles to under the compiler's own names, starting at `symbol`'s:
+        a template's instance (the STL's) and those it calls -> each compiled symbol (name_instance). {} where the
+        console has no such pairing."""
+        return {}
+
     def static_callees(self, fp, version: str) -> dict[str, list[str]]:
         """Each function that calls functions static_register_args has -> those: its brief says to write them static
         in its file, as its own C's convention depends on theirs."""
