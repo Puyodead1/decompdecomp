@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **PC functions Ghidra took for one are cut apart.** Functions only a table of pointers reaches (atexit entries,
+  destructors) were one function to Ghidra, and agents voted each cut: seven in one on a 2002 game. After a `ret`
+  nothing before it jumps past and padding to 16 bytes, code is a function of its own (analysis step 12, and
+  import); on a copy the first of the seven matched at once. 29 such functions on three PC games.
 - **A PC function taking an argument in a register may be a static one.** Visual C++ 7.0 on passes a static
   function's arguments in registers of its choosing, link-time code generation or not: a 2002 game's signal lookup,
   set aside as link-time code, matched written `static` with its caller. A function whose callers are all in its own

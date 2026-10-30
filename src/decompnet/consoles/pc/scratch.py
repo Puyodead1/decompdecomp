@@ -1435,6 +1435,52 @@ def _thunk_cuts(pe: PE, f: Function) -> list[int]:
     return found
 
 
+def _merged_cuts(md, pe: PE, f: Function) -> list[int]:
+    """Where the functions after the first one start in a function the analysis took several for: after a `ret` (or
+    an indirect `jmp`) that nothing before it jumps past, padding up to a 16-byte boundary, then code. Functions only
+    a table of pointers reaches (atexit entries, destructors) were one to Ghidra: on a 2002 PC game seven in one, four
+    agents of three models agreeing on the first cut, a vote per cut. [] for a function with a jump table (its table
+    follows its code, padded too)."""
+    code = pe.read(f.addr, f.size)
+    found, past = [], f.addr
+    for ins in _disasm(md, code, f.addr):
+        if ins.mnemonic == "jmp" and "*4" in ins.op_str:
+            return []
+        if ins.mnemonic.startswith("j") and ins.op_str.startswith("0x"):
+            past = max(past, int(ins.op_str, 16))
+        if ins.mnemonic in ("ret", "retn") or ins.mnemonic == "jmp" and not ins.op_str.startswith("0x"):
+            end = at = ins.address + ins.size
+            while at < f.addr + f.size and code[at - f.addr] in PADDING:
+                at += 1
+            if past < end and at > end and at % FUNCTION_ALIGN == 0 and at < f.addr + f.size:
+                found.append(at)
+    return found
+
+
+def split_merged_functions(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
+    """Every function the analysis made of several (_merged_cuts) cut into them, each a function of its own; not a
+    matched one (`keep`), nor where a matched function refers to inside one. Returns how many functions were cut out; None
+    without the user's copies of the programs."""
+    if missing(root, version):
+        return None
+    path, info, pes, functions = _project_functions(root, version)
+    generated = {fn["name"] for fns in info["units"].values() for fn in fns if fn.get("generated")}
+    reached = {name for f in functions if f.name in keep for _, _, name, _ in f.relocs if name}
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    plan = {}
+    for k, f in enumerate(functions):
+        if f.name in keep or f.name in generated:
+            continue
+        # (not where a matched function refers to: its relocation would name the new function)
+        cuts = [a for a in _merged_cuts(md, pes[unit_module(f.unit)], f) if f"_D_{a:08X}" not in reached]
+        if cuts:
+            plan[k] = [f.addr, *cuts]
+    if plan:
+        _cut_functions(path, info, pes, functions, plan, {})
+    return sum(len(v) - 1 for v in plan.values())
+
+
 def name_import_thunks(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
     """Every import thunk of the project a function of its own, named after its import (`_RtlUnwind`: a call to it
     reads as one, in the brief and the draft) and set aside: functions.json says why (`generated`) and gives the
@@ -2351,6 +2397,8 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     if thunks := name_import_thunks(root, version):
         log(f"{thunks} of them are import thunks the linker adds for calls to DLLs' functions: named after the "
             "function each calls, and set aside")
+    if merged := split_merged_functions(root, version):
+        log(f"{merged} functions the analysis took for part of the one before them are functions of their own")
     if frames := set_frame_flags(root, version):
         log(f"{frames} of {len(groups)} source files keep an ebp frame in most of their functions: they build "
             f"with {FRAME_FLAG} (Visual C++ keeps the frame pointer)")
