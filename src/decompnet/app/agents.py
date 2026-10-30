@@ -753,8 +753,9 @@ class Manager:
 
     def detected(self) -> list[dict]:
         """The agents installed and their models, as last found, at once: finding out runs every agent's CLI (seconds),
-        so it happens in the background, at start and on refresh_detected(). Before the first look ends: where the
-        agents are, without their models."""
+        so it happens in the background, at start and on refresh_detected() (the launcher's "Look again": an OpenCode
+        Go plan signed in to after the app started never showed until a restart). Before the first look ends: where
+        the agents are, without their models."""
         with self._lock:
             found = self._found
         return detect(quick=True) if found is None else found
@@ -762,8 +763,13 @@ class Manager:
     def detecting(self) -> bool:
         return self._finding is not None and self._finding.is_alive()
 
-    def refresh_detected(self, wait: bool = False) -> None:
-        """Look again which agents are installed (an agent installed, a sign-in added a model), in the background."""
+    def refresh_detected(self, wait: bool = False, fresh: bool = False) -> None:
+        """Look again which agents are installed (an agent installed, a sign-in added a model), in the background.
+        `fresh`: ask each agent for its models even when it was asked less than MODELS_CACHE ago (the user's "Look
+        again")."""
+        if fresh:
+            agents.forget_models()
+
         def find() -> None:
             try:
                 found = detect()

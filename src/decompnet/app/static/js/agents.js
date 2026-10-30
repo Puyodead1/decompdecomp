@@ -240,6 +240,7 @@ function renderLauncher(box, compact = true) {
     const known = opts.some((o) => o.id === LZ.model);
     body = `<label class="field"><span>Model</span><select data-f="model">${opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === LZ.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")}
         <option value="__other" ${known ? "" : "selected"}>Another model…</option></select></label>
+      <p class="muted small">Signed in to more models since? <button class="link-btn" data-act="detect" type="button">${S.st.agents_detecting ? "Looking…" : "Look again"}</button></p>
       <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${known ? "" : esc(LZ.model)}" ${known ? "hidden" : ""}>
       ${effortField(a)}`;
   }

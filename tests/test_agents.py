@@ -662,6 +662,18 @@ def test_finding_the_installed_agents_never_holds_up_a_page(tmp_path, monkeypatc
     assert m.detected() == [{"id": "claude", "models": ["opus"]}] and not m.detecting()
 
 
+def test_look_again_asks_each_agent_for_its_models_afresh(tmp_path, monkeypatch):
+    """An OpenCode Go plan signed in to after the app started never showed in the launcher: models were found once,
+    at start. "Look again" finds them again, past the models' cache."""
+    kinds._models["opencode"] = (time.time(), [{"id": "opencode/old"}])
+    seen = []
+    monkeypatch.setattr(agents, "detect", lambda quick=False: seen.append(dict(kinds._models)) or [])
+    m = agents.Manager(RomNetwork(tmp_path / "app.db", tmp_path), tmp_path, URL)
+    m.refresh_detected(wait=True)
+    m.refresh_detected(wait=True, fresh=True)
+    assert seen[-1] == {}
+
+
 def test_the_tests_never_run_an_agent_to_find_it(monkeypatch):
     """`agy models` starts the MCP servers in Antigravity's settings (the old bridge among them started the user's own
     app): with DECOMP_DETECT_AGENTS=off nothing is run, only looked for."""

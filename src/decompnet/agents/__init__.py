@@ -47,6 +47,11 @@ known_versions: dict[str, tuple[float, str | None]] = {}
 _models: dict[str, tuple[float, list[dict]]] = {}
 
 
+def forget_models() -> None:
+    """Ask every agent for its models again next time (a sign-in since may have added some)."""
+    _models.clear()
+
+
 def _node() -> str | None:
     """Find Node using the real host's path rules, even when a test simulates another `sys.platform`."""
     if os.name == "nt" or sys.platform != "win32":

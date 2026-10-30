@@ -76,7 +76,7 @@ def register(app: App) -> None:
         """Look again which agents are installed and their models (a sign-in since): in the background."""
         if (bad := guard(request, write=True)):
             return bad
-        manager.refresh_detected()
+        manager.refresh_detected(fresh=True)
         return JSONResponse({"detecting": True})
 
     @mcp.custom_route("/api/agents/start", methods=["POST"])
