@@ -1651,9 +1651,14 @@ def test_the_runtime_library_ghidra_knows_is_set_aside_with_the_helpers_only_it_
             {"entry": 0x1000, "name": "_game", "library": ""}]
     known = scratch_pe.library_rows(rows)
     assert list(known) == [0x2000] and "_strlen, Visual Studio 2003 Release" in known[0x2000]
-    found = scratch_pe.library_functions(functions, known)
+    code = {0x2020: (0x2004).to_bytes(4, "little") * 4,  # a table of addresses in the one before: a piece
+            0x2040: bytes.fromhex("558bec5dc3")}  # push ebp; mov ebp, esp: a function of its own
+    found = scratch_pe.library_functions(functions, known, lambda addr, size: code.get(addr, b"\xc3"))
     assert sorted(found) == [0x2000, 0x2010, 0x2020]
     assert "helper" in found[0x2010] and "_strlen" in found[0x2010]
+    functions[5] = F(0x2030, 16, "_virtual", [], "b")  # only a vtable refers to it, after library code: the game's
+    code[0x2030] = bytes.fromhex("8b4104c3")  # mov eax, [ecx+4]; ret
+    assert 0x2030 not in scratch_pe.library_functions(functions, known, lambda addr, size: code.get(addr, b"\xc3"))
 
 
 def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
@@ -2801,3 +2806,37 @@ def test_a_project_waits_for_its_visual_cpp_before_it_is_brought_up_to_date(tmp_
     assert "2005" in scratch_pe.compiler_missing(tmp_path)
     monkeypatch.setattr(toolchains, "installed", lambda tid, linux=None: {"id": tid})
     assert scratch_pe.compiler_missing(tmp_path) is None
+
+
+@pytest.mark.skipif(not (toolchains.root() / "msvc" / "7.0" / "Lib").is_dir(),
+                    reason="needs Visual C++ .NET 2002's runtime libraries (the user's copy, in msvc/7.0/Lib)")
+def test_the_runtime_libraries_own_code_is_found_whatever_its_relocations_fill_in():
+    """Function ID knew a 2002 game's runtime by 2003's fingerprints and missed rand, fopen and sprintf; the libraries
+    the game was linked with know them byte for byte, wherever the linker put what they call."""
+    import random
+
+    from decompnet.consoles.pc import runtime
+
+    prints = runtime.fingerprints(runtime.compiler_libraries(toolchains.root(), "7.0"))
+    assert prints.count > 1000
+    strlen = next(f for by in prints.by_shape.values() for fs in by.values() for f in fs if f.name == "_strlen")
+    linked = bytearray(strlen.code)
+    for m in strlen.mask:  # (what the linker filled in)
+        linked[m] = random.randrange(256)
+    assert any(f.name == "_strlen" for f in prints.find(bytes(linked) + b"\xcc" * 3))
+    assert not prints.find(b"\x33\xc0\xc3")  # too short to say
+
+
+def test_the_library_list_is_found_again_each_time_and_others_entries_stay(tmp_path):
+    """puyo.31's rule set aside too much on a 2007 game: what set_library_aside listed before is found again, not
+    kept (what Function ID knew stays known); entries someone else wrote stay."""
+    program = FRAME_RET.ljust(16, b"\xcc") + FRAME_RET
+    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(FRAME_RET)), _row(TEXT + 16, TEXT + 16 + len(FRAME_RET))])
+    path = root / "config" / "game" / "set_aside.json"
+    path.write_text(json.dumps({"functions": {
+        "0x00401000": "Visual C++'s runtime library (_f, VS), recognised by Ghidra's Function ID: not the game's own code",
+        "0x00401010": "Visual C++'s runtime library, a helper of _f: only its functions refer to it",
+        "0x00409999": "middleware"}}))
+    scratch_pe.set_library_aside(root, "game", {})
+    listed = json.loads(path.read_text())["functions"]
+    assert set(listed) == {"0x00401000", "0x00409999"}  # (nothing refers to the helper now: not a helper)
