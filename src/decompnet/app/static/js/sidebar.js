@@ -158,7 +158,7 @@ function noteLine(g, tag = "li") {
   const all = g.kind === "match" && g.events.length > 1
     ? `<details class="n-all"><summary>Which ones</summary><span>${g.events.map((e) => `<button type="button" class="fn" data-slug="${esc(g.slug)}" data-fn="${esc(e.detail)}">${esc(e.detail)}</button>`).join(" ")}</span></details>` : "";
   return `<${tag} class="note-line${g.kind === "paused" ? " bad" : ""}"><span class="swatch pc-${colourOf(g.slug)}" aria-hidden="true"></span>
-    <span class="n-body"><span class="n-head"><a href="#/p/${esc(g.slug)}">${esc(g.project)}</a><time>${clock(g.t).slice(0, 5)}</time></span>
+    <span class="n-body"><span class="n-head"><a href="#/p/${esc(g.slug)}">${esc(g.project)}</a><time>${hhmm(g.t)}</time></span>
     <span class="n-text">${noteHtml(g)}</span>${tag === "li" ? all : ""}</span></${tag}>`;
 }
 

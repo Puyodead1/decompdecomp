@@ -44,7 +44,6 @@ const SAID_SHOWN = 1600, THOUGHT_SHOWN = 1200;  // characters of a helper's mess
 const MAX_PER_SESSION = 20;  // functions a helper takes in one session, at most
 const MAX_AT_ONCE = 8;
 const MAX_PER_START = 24;  // helpers one start may begin in total (models × count), as on the server
-const hhmm = (t) => clock(t).slice(0, 5);
 const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : "");
 
 function helperState(s, claim) {

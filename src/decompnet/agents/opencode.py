@@ -19,6 +19,7 @@ MCP_WAIT_SECONDS = 10  # how long opencode 2's first prompt waits for that serve
 MCP_SETTLE_MS = 300  # then for the registry's 100 ms debounce to publish its tools
 PLUGIN_DIR = "decompdecomp-wait"  # the plugin's folder in a helper's own folder, next to its opencode.json
 # reasoning efforts from least to most: a model offers some of them (its variants), and one it doesn't stops a session
+USAGE_SECONDS = 15  # how long its service may take to say when a usage limit resets
 EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 _PLUGIN_SOURCE = Path(__file__).with_name("opencode_wait.js")
 
@@ -47,6 +48,25 @@ class Opencode(Agent):
     # OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence for as long as it let it
     # (a helper's session hung, then counted as a failure)
     limit_hangs = True
+
+    def limit_resets_at(self) -> float | None:
+        """OpenCode Go's "5 hour usage limit reached" says no time: its background service does (2.2's usage route,
+        each meter's `limited` and `resetsAt`). A helper otherwise waited 30 minutes for a limit that reset in 10."""
+        import httpx
+
+        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        service = read_json(base / "opencode" / "service.json")
+        if not service.get("url") or not service.get("password"):
+            return None
+        try:
+            r = httpx.get(f"{service['url']}/api/experimental/usage/limits", auth=("opencode", service["password"]),
+                          timeout=USAGE_SECONDS)
+            meters = ((r.json().get("data") or {}).get("go") or {}).values() if r.status_code == 200 else []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        resets = [m["resetsAt"] / 1000 for m in meters if isinstance(m, dict) and m.get("limited")
+                  and isinstance(m.get("resetsAt"), (int, float))]
+        return max(resets) if resets else None
 
     def read_models(self, lines: list[str]) -> list[dict]:
         """`opencode models`: "<provider>/<model>" per model."""

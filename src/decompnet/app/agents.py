@@ -1219,7 +1219,7 @@ class Manager:
             raise Fatal(refused)  # every retry would meet it the same way
         if LIMIT.search(everything):
             s.limited = True  # whatever the exit code: Claude Code says so in an ordinary result
-            s.limit_until = limit_reset(everything)
+            s.limit_until = limit_reset(everything) or k.limit_resets_at()
         elif code != 0 and (why := no_credit(everything)):
             raise Fatal(why)  # every agent on this account fails the same way until it's topped up
         if code != 0 and THROTTLED.search(everything):
