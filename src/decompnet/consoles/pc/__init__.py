@@ -100,8 +100,9 @@ class WindowsPC(Console):
     # functions of (scratch.merge_pieces); 9 the functions Ghidra didn't know the stack arguments of named by their `ret
     # N` (scratch.fix_unknown_purges), their rows renamed with them; 10 the int3 Visual C++ 7.0 and 8.0 end a function
     # with after a call that doesn't return too (scratch.take_noreturn_int3s); 11 /GS for the files whose functions make
-    # its cookie (scratch.set_gs_flags)
-    ANALYSIS = 11
+    # its cookie (scratch.set_gs_flags); 12 the functions Ghidra took several for cut into them
+    # (scratch.split_merged_functions)
+    ANALYSIS = 12
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -311,6 +312,11 @@ class WindowsPC(Console):
             return (f"{n} source files whose functions make a buffer security cookie build with {scratch.GS_FLAG} now, "
                     "as the game's were" if n else None)
 
+        def merged(fp):
+            n = scratch.split_merged_functions(fp.root, version, keep=matched())
+            return (f"{n} functions Ghidra took for part of the one before them (only a table of pointers reaches "
+                    "them) are functions of their own" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -318,7 +324,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True)}
+                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True), 12: (merged, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
