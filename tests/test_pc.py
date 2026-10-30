@@ -1346,11 +1346,12 @@ def test_functions_only_a_table_reaches_that_ghidra_took_for_one_are_cut_apart(t
     info["units"]["held"] = [{"name": "_held", "addr": TEXT + 0x100, "size": 0,
                               "relocs": [[0, scratch_pe.DIR32, "_D_00401010", 0]]}]
     config.write_text(json.dumps(info))
-    assert scratch_pe.split_merged_functions(root, "game", keep={"_held"}) == 2  # (not where a matched one points)
+    # where a matched function points (an atexit table's entry), the new function has the name it points by
+    assert scratch_pe.split_merged_functions(root, "game", keep={"_held"}) == 3
     info = json.loads(config.read_text())
+    assert any(f["name"] == "_D_00401010" for fns in info["units"].values() for f in fns)
     del info["units"]["held"]
     config.write_text(json.dumps(info))
-    assert scratch_pe.split_merged_functions(root, "game") == 1
     info = json.loads((root / "config" / "game" / "functions.json").read_text())
     assert sorted((f["addr"] - TEXT, f["size"]) for fns in info["units"].values() for f in fns) == [
         (0, 16), (16, 16), (32, 16), (48, len(first))]

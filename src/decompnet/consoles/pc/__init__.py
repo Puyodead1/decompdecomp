@@ -77,10 +77,11 @@ class WindowsPC(Console):
     # know the stack arguments of named by their `ret N` (scratch.fix_unknown_purges), their rows renamed with them;
     # 10 the int3 Visual C++ ends a function with after a call that doesn't return (scratch.take_noreturn_int3s);
     # 11 /GS for the files whose functions make its cookie (scratch.set_gs_flags); 12 the functions Ghidra took
-    # several for cut into them (scratch.split_merged_functions).
+    # several for cut into them (scratch.split_merged_functions); 13 again, where a matched function refers to the
+    # cut's address too (12 left those whole).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 12
+    ANALYSIS = 13
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -255,7 +256,7 @@ class WindowsPC(Console):
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
-                 11: (gs, True), 12: (merged, False)}
+                 11: (gs, True), 12: (merged, False), 13: (merged, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:

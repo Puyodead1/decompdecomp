@@ -1449,7 +1449,7 @@ def _merged_cuts(md, pe: PE, f: Function) -> list[int]:
 
 def split_merged_functions(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
     """Every function the analysis made of several (_merged_cuts) cut into them, each a function of its own; not a
-    matched one (`keep`), nor where a matched function refers to inside one. Returns how many functions were cut out; None
+    matched one (`keep`). Returns how many functions were cut out; None
     without the user's copies of the programs."""
     if missing(root, version):
         return None
@@ -1458,16 +1458,17 @@ def split_merged_functions(root: Path, version: str, keep: set[str] = frozenset(
     reached = {name for f in functions if f.name in keep for _, _, name, _ in f.relocs if name}
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
-    plan = {}
+    plan, symbols = {}, {}
     for k, f in enumerate(functions):
         if f.name in keep or f.name in generated:
             continue
-        # (not where a matched function refers to: its relocation would name the new function)
-        cuts = [a for a in _merged_cuts(md, pes[unit_module(f.unit)], f) if f"_D_{a:08X}" not in reached]
-        if cuts:
+        if cuts := _merged_cuts(md, pes[unit_module(f.unit)], f):
             plan[k] = [f.addr, *cuts]
+            # where a matched function refers to as data (a table's entry), the new function takes the name its
+            # relocation has: its match holds (on a 2002 game the last of seven was a matched function's atexit entry)
+            symbols.update({a: f"_D_{a:08X}" for a in cuts if f"_D_{a:08X}" in reached})
     if plan:
-        _cut_functions(path, info, pes, functions, plan, {})
+        _cut_functions(path, info, pes, functions, plan, symbols)
     return sum(len(v) - 1 for v in plan.values())
 
 
@@ -1579,8 +1580,10 @@ def cut_function(root: Path, version: str, name: str, at: int, keep: set[str] = 
         raise ForkError(f"0x{at:08X} isn't inside {name} (0x{f.addr:08X}, {f.size} bytes)")
     if name in keep:
         raise ForkError(f"{name} is matched: its end is proven")
-    if any(r[2] in (name, f"_D_{at:08X}") for g in functions if g.name in keep for r in g.relocs):
+    if any(r[2] == name for g in functions if g.name in keep for r in g.relocs):
         raise ForkError(f"a matched function refers to {name} as it is, so it can't be cut")
+    # (where a matched function refers to as data, the new function takes the name its relocation has: it holds)
+    held = f"_D_{at:08X}" if any(r[2] == f"_D_{at:08X}" for g in functions if g.name in keep for r in g.relocs) else None
     rest = pe.read(at, f.addr + f.size - at)
     if not rest.strip(PADDING):
         raise ForkError(f"what follows 0x{at:08X} is padding Visual C++ puts in the function's own section: it's "
@@ -1589,7 +1592,7 @@ def cut_function(root: Path, version: str, name: str, at: int, keep: set[str] = 
     md.detail = True
     if not any(ins.address + ins.size == at - f.addr for ins in _disasm(md, pe.read(f.addr, at - f.addr), 0)):
         raise ForkError(f"0x{at:08X} isn't where one of {name}'s instructions ends")
-    functions = _cut_functions(path, info, pes, functions, {k: [f.addr, at]}, {})
+    functions = _cut_functions(path, info, pes, functions, {k: [f.addr, at]}, {at: held} if held else {})
     tail = functions[k + 1]
     code = _reads_as_code(md, rest)
     if not code:
