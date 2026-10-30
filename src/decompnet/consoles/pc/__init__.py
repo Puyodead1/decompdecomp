@@ -98,8 +98,9 @@ class WindowsPC(Console):
     # reach a project made before them by Reimport.) Its build tools have a version of their own (the manifest's "tools":
     # scratch.tools_version), so each change to them reaches it; 8 the joins again, for the jump tables Ghidra
     # made functions of (scratch.merge_pieces); 9 the functions Ghidra didn't know the stack arguments of named by
-    # their `ret N` (scratch.fix_unknown_purges), their rows renamed with them
-    ANALYSIS = 9
+    # their `ret N` (scratch.fix_unknown_purges), their rows renamed with them; 10 the int3 Visual C++ 7.0 and 8.0 end a
+    # function with after a call that doesn't return too (scratch.take_noreturn_int3s)
+    ANALYSIS = 10
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -295,6 +296,11 @@ class WindowsPC(Console):
             return (f"{len(renamed)} functions whose stack arguments Ghidra didn't know are named by what their `ret` "
                     "takes off the stack (no C declaration made the old names)" if renamed else None)
 
+        def int3s(fp):
+            n = scratch.take_noreturn_int3s(fp.root, version, keep=matched())
+            return (f"{n} functions ending in a call that doesn't return have the int3 their compiler puts after it "
+                    "(it was taken for padding, so no C matched them)" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -302,7 +308,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True)}
+                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
