@@ -364,6 +364,7 @@ function renderLauncher(box, compact = true) {
       ${LZ.multiple ? `<div class="field"><span>Choose models</span><div class="lz-models">${available.map((m) => `<label class="check inline"><input type="checkbox" data-model-choice="${esc(m.id)}" ${LZ.models.includes(m.id) ? "checked" : ""}><span><b>${esc(m.name)}</b>${m.note ? ` <span class="muted small">${esc(m.note)}</span>` : ""}</span></label>`).join("")}</div>
       <span class="muted small" data-model-limit>Each selected model gets ${LZ.count} session${LZ.count === 1 ? "" : "s"}.</span>
       ${!(a.models || []).length ? `<div class="row"><input data-f="manual-model" class="mono" placeholder="Model name"><button type="button" class="ghost small-btn" data-act="add-cli-model">Add model</button></div>` : ""}</div>` : ""}
+      <p class="muted small">Signed in to more models since? <button class="link-btn" data-act="detect" type="button">${S.st.agents_detecting ? "Looking…" : "Look again"}</button></p>
       <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${custom ? esc(LZ.model) : ""}" ${custom ? "" : "hidden"}>
       ${effortField(a)}`;
   }
