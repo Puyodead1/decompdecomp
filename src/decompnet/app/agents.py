@@ -100,8 +100,8 @@ LIMIT_RESET_FURTHEST = 8 * 24 * 3600
 # in a room whose host is away: look again this often; the host counts as away after ROOM_STALE without an answer
 ROOM_RETRY = 10
 ROOM_STALE = 30
-# when its model gave back every open function (network.MODEL_GIVE_UPS): look again this often instead of starting
-# sessions that find nothing to claim
+# when nothing is claimable for a helper (held by others, given back by its model: network.MODEL_GIVE_UPS): look
+# again this often instead of starting sessions that find nothing to claim
 GIVEN_UP_RETRY = 10 * 60
 PREP_WAIT = 15 * 60  # longest wait for start_files before the helpers start anyway
 ORDER_WAIT = 2 * 60  # longest wait for the twins' first ordering
@@ -863,13 +863,14 @@ class Manager:
         return True
 
     def _all_given_up(self, s: Session, agent, task: str) -> bool:
-        """Waits a while when the helper's model gave back every open function MODEL_GIVE_UPS times: a session would
-        find nothing to claim. Another model's match or verdict, or a change to the shared header or the compiler,
-        gives them back. True when it waited."""
-        if task == "readable" or (n := self.net.given_up(agent, s.slug)) < self._left(s.slug):
+        """Waits a while when a session would find nothing to claim: every open function held by another agent or
+        given back by the helper's model MODEL_GIVE_UPS times. A release, another model's match or verdict, or a
+        change to the shared header or the compiler gives some back. True when it waited."""
+        if task == "readable" or self.net.claimable(agent, s.slug):
             return False
-        why = (f"its model gave back each of the {n} open functions {network.MODEL_GIVE_UPS} times: they're left to "
-               "other models, or until the shared header or the compiler changes")
+        n = self.net.given_up(agent, s.slug)
+        why = (f"nothing to claim: {n} of the open functions its model gave back {network.MODEL_GIVE_UPS} times (left "
+               "to other models, or until the shared header or the compiler changes), the rest are held by others")
         if s.state != "waiting" or s.why != why:
             s.push("info", why)
             self._set(s, "waiting", why)
