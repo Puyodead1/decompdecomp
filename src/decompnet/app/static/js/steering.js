@@ -272,16 +272,19 @@ function renderAutopilot(ov) {
 function openExport() {
   const fork = S.ov.kind === "fork";
   dialog(fork ? "The source code" : "Export the source code", `<p id="srcText"></p><p class="muted small" id="srcWhen"></p><div class="src-state" id="srcState"></div>
-    <div class="row"><button class="primary" id="srcExport" type="button">Export project</button><button class="ghost" id="srcOpen" type="button">Open folder</button></div>
+    <div class="row"><button class="primary" id="srcExport" type="button">Export project</button><button class="ghost" id="srcZip" type="button">Download .zip</button><button class="ghost" id="srcOpen" type="button">Open folder</button></div>
+    <p class="muted small" id="srcZipNote">The .zip has the source tree without your game's files (what <code>.gitignore</code> keeps out), so it's safe to share.</p>
     <pre class="joblog tall" id="expLog" hidden></pre><div id="expResult"></div>`, "export");
   $("srcOpen").onclick = () => openFolder();
   $("srcExport").onclick = exportNow;
+  $("srcZip").onclick = downloadArchive;
   renderSource(S.ov);
 }
 const exportOpen = () => S.dialogKind === "export" && !$("dialog").hidden;
 function renderSource(ov) {
   const ex = ov.export, fork = ov.kind === "fork";
   $("srcExport").hidden = fork || !ov.exportable;
+  $("srcZip").hidden = $("srcZipNote").hidden = !fork && !ex;  // (a ROM project's archive is its export)
   $("srcWhen").textContent = !fork && ex ? `exported ${since(ex.t)}` : "";
   if (fork) {
     const rb = ov.rebuild;
@@ -330,6 +333,25 @@ function renderSource(ov) {
        <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions in C` : ""}${stale ? ` · <b>${ov.matched - ex.matched} new matches since</b>` : ""}</div>
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";
+}
+/* The source tree as a .zip (GET /api/export/archive): fetched first, so a refusal is a toast, not a page of JSON. */
+async function downloadArchive() {
+  const finish = beginWork($("expLog"), "Packing the source tree", [$("srcZip"), $("srcExport")], "Archive downloaded.");
+  try {
+    const res = await fetch(`/api/export/archive?slug=${encodeURIComponent(S.slug)}`);
+    if (!res.ok) {
+      let data = null;
+      try { data = await res.json(); } catch { /* not json */ }
+      throw new Error((data && data.error) || `request failed (${res.status})`);
+    }
+    const name = (/filename="?([^";]+)"?/.exec(res.headers.get("Content-Disposition") || "") || [])[1] || `${S.slug}.zip`;
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { showJobError($("expLog"), e.message); toast(esc(e.message), "err"); } finally { finish(); }
 }
 async function exportNow() {
   const log = $("expLog");

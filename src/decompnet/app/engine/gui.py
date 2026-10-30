@@ -8,11 +8,16 @@ import hashlib
 import json
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 from ... import compilermap, consoles, scoring, toolchains
-from ...network import IN_BUILD, PROGRESS_COLUMNS, set_aside
+from ...hostenv import NO_WINDOW
+from ...network import IN_BUILD, PROGRESS_COLUMNS, NetworkError, set_aside
 from ...project import compiler_for
 
 # What the notification centre tells: news a person wants to hear about, not every claim and attempt agents make.
@@ -44,6 +49,34 @@ class GuiMixin:
                              "fallback": len(res.get("fallback") or [])}
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         return res
+
+    def export_archive(self, slug: str) -> tuple[Path, str]:
+        """A .zip of the project's source tree, to download: the app may run on another computer (a server behind a
+        browser), where Open folder can't reach. Every file the tree's .gitignore keeps (the C, headers, the build
+        setup) and none it leaves out (the user's copy of the game, what's made from it, the build), nor .git. A
+        fork's tree is the project itself, uncommitted work too; a ROM project's is its export (Export writes it).
+        Returns the zip, for the caller to delete once it's sent, and the name to save it as."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            tree = Path(proj["root"])
+        else:
+            ex = self.cfg(proj).get("export")
+            tree = Path(ex["path"]) if ex and ex.get("path") else None
+            if tree is None or not tree.is_dir():
+                raise NetworkError("export the project first: the archive is the source tree Export writes")
+        files = _kept_files(tree)
+        if not files:
+            raise NetworkError(f"{tree} has no files to put in an archive")
+        fd, name = tempfile.mkstemp(prefix=f"{proj['slug']}-", suffix=".zip")
+        out = Path(name)
+        try:
+            with open(fd, "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+                for rel in files:
+                    z.write(tree / rel, f"{proj['slug']}/{rel}")
+        except BaseException:
+            out.unlink(missing_ok=True)
+            raise
+        return out, f"{proj['slug']}-source-{time.strftime('%Y%m%d')}.zip"
 
     def overview(self, slug: str) -> dict:
         proj = self._project(slug)
@@ -341,3 +374,25 @@ class GuiMixin:
         if proj is not None:
             with self.store.tx() as db:
                 self._event(db, proj["id"], agent["id"] if agent else None, kind, detail)
+
+
+def _kept_files(tree: Path) -> list[str]:
+    """The files of `tree` its .gitignore keeps (git decides, as it would for a commit), its own repository's or, in a
+    tree that isn't one (a ROM project's export), an empty one's. Never a file of .git."""
+    git = shutil.which("git")
+    if git is None:
+        raise NetworkError("making the archive needs git (it reads the project's .gitignore): install it")
+    run = lambda args: subprocess.run([git, *args, "ls-files", "-z", "--others", "--cached", "--exclude-standard"],  # noqa: E731
+                                      capture_output=True, check=True, timeout=120, creationflags=NO_WINDOW).stdout
+    try:
+        if (tree / ".git").exists():
+            listed = run(["-C", str(tree)])
+        else:
+            with tempfile.TemporaryDirectory() as empty:
+                subprocess.run([git, "init", "-q", "--bare", empty], capture_output=True, check=True, timeout=60,
+                               creationflags=NO_WINDOW)
+                listed = run(["--git-dir", empty, "--work-tree", str(tree), "-C", str(tree)])
+    except (OSError, subprocess.SubprocessError) as e:
+        raise NetworkError(f"git couldn't list the project's files: {e}") from None
+    names = sorted({n for n in listed.decode("utf-8", "replace").split("\0") if n})
+    return [n for n in names if ".git" not in Path(n).parts and (tree / n).is_file()]

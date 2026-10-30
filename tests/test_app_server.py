@@ -703,3 +703,37 @@ def test_the_map_brings_polished_and_set_aside_and_changes_when_a_function_is_po
     assert {"polished", "not_c"} <= set(after["keys"]) and "same" not in after
     rows = {r[after["keys"].index("name")]: dict(zip(after["keys"], r)) for r in after["rows"]}
     assert rows["func_0"]["polished"] and not rows["func_1"]["polished"]
+
+
+def test_the_source_tree_downloads_as_a_zip_without_the_game(app, tmp_path):
+    """The app may run on a server the user reaches by browser, where Open folder can't help: Export's tree comes
+    as a .zip of what its .gitignore keeps, never the game or what's made from it. Before an export there's none."""
+    import io
+    import zipfile
+
+    client, net, _ = app
+    job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
+    for _ in range(200):
+        j = client.get(f"/api/job?id={job}").json()
+        if j["state"] != "running":
+            break
+        time.sleep(0.1)
+    slug = j["result"]["slug"]
+    assert client.get(f"/api/export/archive?slug={slug}").status_code == 400  # (not exported yet)
+    tree = tmp_path / "source"
+    (tree / "src").mkdir(parents=True)
+    (tree / "asm").mkdir()
+    (tree / ".gitignore").write_text("baserom*\nasm/\nbuild/\n")
+    (tree / "src" / "game.c").write_text("int f(void) { return 1; }\n")
+    (tree / "build.py").write_text("print('build')\n")
+    (tree / "baserom.z64").write_bytes(b"the game")
+    (tree / "asm" / "func.s").write_text("glabel func\n")
+    net._update_cfg(slug, lambda cfg: cfg.update(export={"t": 0, "path": str(tree)}))
+    res = client.get(f"/api/export/archive?slug={slug}")
+    assert res.status_code == 200 and res.headers["content-type"] == "application/zip"
+    assert f'{slug}-source-' in res.headers["content-disposition"]
+    names = zipfile.ZipFile(io.BytesIO(res.content)).namelist()
+    assert sorted(names) == [f"{slug}/.gitignore", f"{slug}/build.py", f"{slug}/src/game.c"]
+    assert not list(tmp_path.glob("*.zip")) and not (tree / ".git").exists()  # (nothing left behind)
+    assert TestClient(client.app, base_url=f"http://127.0.0.1:{PORT}").get(
+        f"/api/export/archive?slug={slug}").status_code == 401  # (only the app's own window)

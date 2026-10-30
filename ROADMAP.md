@@ -97,6 +97,9 @@ Where to start on a gap:
 
 ## Recently done
 
+- **Export downloads as a .zip.** The app may run on a server reached by browser, where Open folder can't help:
+  Export's panel has Download .zip, the source tree (a fork's own, uncommitted work too; a ROM project's export)
+  with only what its .gitignore keeps, never the game or what's made from it.
 - **Callers of static PC functions are told so; build failures show their errors.** A function calling a helper of
   its file that takes an argument in a register gets a brief line saying to write that helper `static` (a 2002
   game's _setargv, _output, raise and C++ catch code: agents had said link-time code and given up), and edx read

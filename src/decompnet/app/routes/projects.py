@@ -9,8 +9,9 @@ import json
 import shutil
 from pathlib import Path
 
+from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from ... import consoles, hostenv, toolchains
 from ...forks.project import SCOPES
@@ -262,5 +263,17 @@ def register(app: App) -> None:
     }
     for path, (fn, methods) in routes.items():
         mcp.custom_route(path, methods=methods)(with_project(fn))
+
+    @mcp.custom_route("/api/export/archive", methods=["GET"])
+    async def api_export_archive(request: Request) -> Response:
+        """The project's source tree as a .zip to download (RomNetwork.export_archive), deleted once sent."""
+        if (bad := guard(request)):
+            return bad
+        try:
+            path, name = await call(lambda: net.export_archive(request.query_params.get("slug", "")))
+        except (NetworkError, OSError) as e:
+            return fail(e)
+        return FileResponse(path, media_type="application/zip", filename=name,
+                            background=BackgroundTask(path.unlink, missing_ok=True))
 
     app.with_project = with_project

@@ -843,3 +843,21 @@ def test_a_failed_builds_message_shows_its_errors_not_the_warnings_after_them():
                     + [f"b.cpp({k}) : warning C4068: unknown pragma" for k in range(30)])
     assert "error C2065" in _tail(log) and "FAILED: a.obj" in _tail(log) and "C4068" not in _tail(log)
     assert _tail("\n".join(f"line {k}" for k in range(30))).splitlines()[-1] == "line 29"  # no error: the end
+
+
+def test_a_forks_archive_has_its_work_uncommitted_too_but_never_the_game(tmp_path):
+    import subprocess
+
+    from decompnet.app.engine.gui import _kept_files
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("orig/\nbuild/\n")
+    (tmp_path / "orig").mkdir()
+    (tmp_path / "orig" / "game.exe").write_bytes(b"MZ")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.cpp").write_text("int a;\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+                   check=True)
+    (tmp_path / "src" / "b.cpp").write_text("int b;\n")  # not committed yet: an agent's work in progress
+    assert _kept_files(tmp_path) == [".gitignore", "src/a.cpp", "src/b.cpp"]
