@@ -1958,6 +1958,46 @@ def gs_cookie(md, pe: PE, f: Function) -> bool:
     return False
 
 
+# Which C runtime the game linked, which every file was compiled for: /MD (the DLL's, msvcrt.dll, msvcr71.dll...)
+# or /MT (the static multithreaded one, LIBCMT: the only static one that keeps data per thread, so the program imports
+# TlsAlloc or FlsAlloc). Without it the headers make the single-threaded runtime's code: a 2003 game's
+# std::num_get<char>::do_get calls _errno() and takes a _Lockit, and no C matched it with errno a global and no lock
+RUNTIME_DLL = re.compile(r"msvcr(t|\d+)d?\.dll", re.I)
+_PER_THREAD = ("TlsAlloc", "FlsAlloc")
+
+
+def runtime_flag(pe: PE) -> str | None:
+    """The flag for the C runtime the program links (/MD, /MT), or None: the single-threaded one (/ML, Visual C++'s
+    default before 2005)."""
+    if any(RUNTIME_DLL.fullmatch(dll) for dll in pe.dlls):
+        return "/MD"
+    return "/MT" if any(name in _PER_THREAD for name in pe.imports.values()) else None
+
+
+def with_flag(configure: str, flag: str) -> str:
+    """tools/configure.py's text with `flag` last in CL_FLAGS, where no runtime flag (/MD, /MT, /ML) is yet."""
+    m = re.search(r"^CL_FLAGS = \[([^\]]*)\]", configure, re.M)
+    if m is None or re.search(r'"/M[DTL]d?"', m.group(1)):
+        return configure
+    return configure[:m.end(1)] + f', "{flag}"' + configure[m.end(1):]
+
+
+def set_runtime_flag(root: Path, version: str) -> str | None:
+    """The game's C runtime flag (runtime_flag) in a project's CL_FLAGS, every file's: no match is lost by it, as C
+    that matched without it makes none of the code it changes (in a 2003 game, 656 matches all held). Returns the
+    flag added, or None."""
+    info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    path = root / info.get("exe", f"orig/{version}.exe")
+    if not path.is_file() or (flag := runtime_flag(read_pe(path.read_bytes()))) is None:
+        return None
+    cfg = root / "tools" / "configure.py"
+    text = cfg.read_text(encoding="utf-8")
+    if (new := with_flag(text, flag)) == text:
+        return None
+    cfg.write_text(new, encoding="utf-8")
+    return flag
+
+
 def set_gs_flags(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
     """/GS for each source file one of whose functions makes the cookie (gs_cookie), with the flags it has; not
     `keep`'s. Returns how many files got it; None without the user's copies of the programs."""
@@ -2722,9 +2762,13 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
     (root / "include").mkdir()
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     cfg = root / "tools" / "configure.py"
-    cfg.write_text(configure_settings(cfg.read_text(encoding="utf-8"), compiler, pe, log=log, modules=modules,
-                                      ehsc=pack != "msvc" or info.get("modern_eh"), cl_flags=cl_flags),
-                   encoding="utf-8")
+    text = configure_settings(cfg.read_text(encoding="utf-8"), compiler, pe, log=log, modules=modules,
+                              ehsc=pack != "msvc" or info.get("modern_eh"), cl_flags=cl_flags)
+    # the C runtime the game links, by its imports (/MT: LIBCMT, a 2003 game's TlsAlloc), where configure_settings
+    # didn't say it (its /MD is Visual C++ 2015 on); with_flag adds none where one is
+    if (flag := runtime_flag(pe)):
+        text = with_flag(text, flag)
+    cfg.write_text(text, encoding="utf-8")
     conf = root / "config" / version
     conf.mkdir(parents=True)
     (conf / "functions.json").write_text(json.dumps({
