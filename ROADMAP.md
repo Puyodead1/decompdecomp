@@ -115,6 +115,13 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **Join and boundary proposals add up.** Every sync (after every match) rebuilt a function's details without the
+  agents' join and end proposals: on a small PC game three agents of three models proposed the same join, a match
+  between each, and it was never tried. They're kept now, and the ones lost before count from the project's feed.
+- **/GS on PC games built with Visual C++ 7.0 and 7.1.** Functions making the buffer security cookie can't match
+  without it, and agents could only suggest a compiler: the flag search (`search_flags`) tries /GS now, and files
+  with no matched code get it from analysis step 11. On a copy of a 2002 game the search matched two at once,
+  dividing a file where its matched code needed it without.
 - **The int3 after a PC function's last call is its own.** Visual C++ (7.0 and 8.0) ends a function whose last
   instruction is a call that doesn't return with an int3, which the import took for the linker's padding: the function
   was a byte short of what its C compiles to. On three PC games 78 such functions were open and none matched; on a
