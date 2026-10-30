@@ -550,7 +550,7 @@ def test_a_model_that_gave_a_function_back_three_times_isnt_handed_it_again(tmp_
         assert net.claim_row(a, "game", None, "easiest")["name"] == "stuck"
         net.release(a, "stuck", "test byte vs dword", "game")
     assert net.claim_row(sonnets[3], "game", None, "easiest") is None
-    assert net.given_up(sonnets[3], "game") == 1
+    assert net.given_up(sonnets[3], "game") == 1 and net.claimable(sonnets[3], "game") == 0
     assert "gave back 3 times" in net.nothing_to_claim(sonnets[3], net._project("game"))
     other, _ = net.local_agent("opencode-deepseek-v4-1")
     assert net.claim_row(other, "game", None, "easiest")["name"] == "stuck"
@@ -560,5 +560,6 @@ def test_a_model_that_gave_a_function_back_three_times_isnt_handed_it_again(tmp_
     with net.store.tx() as db:
         net._event(db, pid, None, "compiler", "range check")
     fresh, _ = net.local_agent("claude-sonnet-5")  # (one that didn't just release it itself)
-    assert net.given_up(fresh, "game") == 0
+    assert net.given_up(fresh, "game") == 0 and net.claimable(fresh, "game") == 1
     assert net.claim_row(fresh, "game", None, "easiest")["name"] == "stuck"
+    assert net.claimable(net.local_agent("claude-sonnet-6")[0], "game") == 0  # held: nothing for a helper to start on
