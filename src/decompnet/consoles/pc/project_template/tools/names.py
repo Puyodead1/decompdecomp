@@ -10,9 +10,10 @@ renames every symbol whose name holds func_<address> or D_<address> to the name 
 "names", kept by decompdecomp's rename_symbol or read from the game's debug information: func_0041B470 ->
 UpdateTown, or a method's Town::Update) counts as its address too, written in C or C++. So is a constructor's or
 destructor's (`CFoo::CFoo`, `CFoo::~CFoo`, which decompdecomp gives a function an agent writes as one):
-`??0CFoo@@QAE@XZ` and `??1CFoo@@QAE@XZ` pair with it, and so do calls to them. Other names are left as they are.
-A 64-bit game's addresses have 9 digits or more (func_140001000), and its C names no underscore in front (x64
-decorates none: `D_140003000`). Standard library only. Made by decompdecomp.
+`??0CFoo@@QAE@XZ` and `??1CFoo@@QAE@XZ` pair with it, and so do calls to them. So does a symbol given whole: an
+instance of a template the game used (the STL's std::map erase, ?erase@?$_Tree@...), as the compiler names it. Other
+names are left as they are. A 64-bit game's addresses have 9 digits or more (func_140001000), and its C names no
+underscore in front (x64 decorates none: `D_140003000`). Standard library only. Made by decompdecomp.
 """
 
 import json
@@ -53,6 +54,8 @@ def address_of(name: bytes, real: dict[bytes, bytes], wide: bool = False) -> byt
     CFoo::~CFoo). `wide`: a 64-bit program's, whose C names are as they are (`UpdateTown`)."""
     if name.startswith((b".", b"$")):  # (a section's, and the compiler's own for a function: a 64-bit one's
         return None  # $pdata$func_140001000 and $unwind$func_140001000, its exception data)
+    if name in real:  # a symbol given whole: a template's instance the game has (?erase@?$_Tree@...), as compiled
+        return real[name]
     if m := REF.search(name):
         return m.group(1) + b"_" + m.group(2).upper()
     if not real:
