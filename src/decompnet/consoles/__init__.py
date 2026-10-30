@@ -287,7 +287,14 @@ class Console:
     def register_args(self, fp, version: str) -> dict[str, str]:
         """The report's name of each function that takes an argument in a register no convention of the compiler
         passes one in -> that register (PC: link-time code generation's conventions, arch/x86.register_args). Agents
-        claim them last, and their briefs say so: no C of one file makes such an entry."""
+        claim them last, and their briefs say so: no C of one file makes such an entry. Not those static_register_args
+        has."""
+        return {}
+
+    def static_register_args(self, fp, version: str) -> dict[str, str]:
+        """The functions taking an argument in a register whose callers are all in their own source file -> that
+        register: a static function's convention (PC: Visual C++ 7.0 on passes a static function's arguments in
+        registers of its choosing, link-time code generation or not), which C makes. Their briefs say so."""
         return {}
 
     def rename_pattern(self, old: str) -> str:

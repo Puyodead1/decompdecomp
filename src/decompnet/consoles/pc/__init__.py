@@ -505,7 +505,16 @@ class WindowsPC(Console):
 
     def register_args(self, fp, version: str) -> dict[str, str]:
         """Each function's register argument (arch/x86.register_args), read from the user's copies of the programs
-        once per change of functions.json."""
+        once per change of functions.json; not one static_register_args has."""
+        return self._register_args(fp, version)[0]
+
+    def static_register_args(self, fp, version: str) -> dict[str, str]:
+        """The register-argument functions whose code only their own source file calls or takes the address of: a
+        2002 game's signal lookup took its argument in edx from its one caller, and agents set it aside as link-time
+        code; written `static` (with its caller in the file) it matched. Of a 2007 game's 970, 196 were such."""
+        return self._register_args(fp, version)[1]
+
+    def _register_args(self, fp, version: str) -> tuple[dict[str, str], dict[str, str]]:
         from ...arch import x86
         from . import scratch
 
@@ -513,23 +522,29 @@ class WindowsPC(Console):
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
-            return {}
+            return {}, {}
         if (kept := _REGISTER_ARGS.get(str(path))) is None or kept[0] != mtime:
             info = _functions_json(fp, version)
             try:
                 if scratch.missing(fp.root, version):  # (the user's copies of the programs aren't in the project)
-                    return {}
+                    return {}, {}
                 pes = scratch.programs(fp.root, info)
             except (OSError, ValueError, KeyError):  # (a config without them: an older project's, a test's)
-                return {}
-            found = {}
+                return {}, {}
+            users: dict[str, set[str]] = {}  # a function -> the source files whose code refers to it
+            for unit, fns in info.get("units", {}).items():
+                for fn in fns:
+                    for reloc in fn.get("relocs") or ():
+                        if reloc[2]:
+                            users.setdefault(reloc[2], set()).add(unit)
+            found, static = {}, {}
             for unit, fns in info.get("units", {}).items():
                 pe = pes.get(scratch.unit_module(unit))
                 for fn in fns if pe is not None else ():
                     if not fn.get("generated") and (reg := x86.register_args(
                             pe.read(fn["addr"], min(fn["size"], x86.REGISTER_ARGS_READ)))):
-                        found[fn["name"]] = reg
-            kept = _REGISTER_ARGS[str(path)] = (mtime, found)
+                        (static if users.get(fn["name"]) == {unit} else found)[fn["name"]] = reg
+            kept = _REGISTER_ARGS[str(path)] = (mtime, (found, static))
         return kept[1]
 
     def rename_pattern(self, old: str) -> str:
@@ -549,7 +564,7 @@ def _functions_json(fp, version: str) -> dict:
         return {}
 
 
-_REGISTER_ARGS: dict[str, tuple[int, dict]] = {}  # functions.json's path -> (its mtime, register_args' answer)
+_REGISTER_ARGS: dict[str, tuple[int, tuple]] = {}  # functions.json's path -> (its mtime, _register_args' answer)
 _ENTRIES: dict[str, tuple[int, dict]] = {}  # functions.json's path -> (its mtime, its functions by name)
 
 

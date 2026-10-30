@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **A PC function taking an argument in a register may be a static one.** Visual C++ 7.0 on passes a static
+  function's arguments in registers of its choosing, link-time code generation or not: a 2002 game's signal lookup,
+  set aside as link-time code, matched written `static` with its caller. A function whose callers are all in its own
+  source file is told so (196 of a 2007 game's 970), not claimed last. And `split_file` takes a bare new name.
 - **Join and boundary proposals add up.** Every sync (after every match) rebuilt a function's details without the
   agents' join and end proposals: on a small PC game three agents of three models proposed the same join, a match
   between each, and it was never tried. They're kept now, and the ones lost before count from the project's feed.

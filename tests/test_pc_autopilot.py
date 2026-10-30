@@ -166,7 +166,7 @@ def test_files_whose_functions_keep_a_frame_build_with_oy_minus():
 
 def test_pc_search_flags_tries_the_frame_pointer_size_and_inlining():
     pc = consoles.get("pc")
-    assert pc.flag_variants([]) == [[], ["/Oy-"], ["/O1"], ["/Ob1"], ["/O1", "/Oy-"]]
+    assert pc.flag_variants([]) == [[], ["/Oy-"], ["/O1"], ["/Ob1"], ["/O1", "/Oy-"], ["/GS"]]
     assert pc.flag_variants(["/Oy-"])[:2] == [["/Oy-"], []]  # the file's own first, then without it
     assert consoles.get("gc").flag_variants(["-O4"]) == [["-O4"]] and consoles.get("gc").file_flags(None, "x") is None
 
