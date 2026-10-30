@@ -559,8 +559,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """The function's C (its best attempt, or source) built with each of its compiler's flag variants
         (optimisation levels, small data, code-shape options), judged and ranked. For C that looks right but won't
         match: the flags may be what's wrong. compiler: another one to try instead of the project's. Games started
-        from scratch (PC, V.Flash): the function's source file's flags (PC: /Oy- keeps the frame pointer, /O1, /Ob1;
-        V.Flash: -O2, -O1, -O0, -frename-registers); one that matches stays the file's."""
+        from scratch (PC, V.Flash): the function's source file's flags (PC: /Oy- keeps the frame pointer, /O1, /Ob1,
+        /GS the buffer security cookie Visual C++ 7.0/7.1 make only with it; V.Flash: -O2, -O1, -O0,
+        -frename-registers); one that matches stays the file's."""
         return await run(ctx, "search_flags", function=function, compiler=compiler, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
