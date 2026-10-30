@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **The runtime's helpers are only its own.** On a 2003 PC game the rule taking what only the runtime refers to took
+  WinMain (only WinMainCRTStartup calls it) and the game's code from it, and Function ID's matches of the game's
+  own initializer stubs (`$E1`) did the same: 1,244 functions set aside, 322 of them the game's. A helper is beside
+  the runtime's code now and never what its startup calls, and Function ID's matches under 16 bytes don't count;
+  step 16 gives the rest back. An import also says the analysis it did (it said 6, so the app was to redo 7-15).
 - **The runtime libraries' own code finds a PC game's runtime.** Every function of the libraries a game's Visual C++
   has (its pack's Lib folder; for 6.0-7.1, which ship none, the user's copy there) matched byte for byte
   (consoles/pc/runtime.py), with Function ID, in analysis step 15: on a 2002 game 167 found against Function ID's 112

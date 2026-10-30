@@ -1380,7 +1380,9 @@ def test_the_runtime_library_ghidra_knows_is_set_aside_with_the_helpers_only_it_
     rows = [{"entry": 0x2000, "name": "_strlen", "library": "Library Function - Single Match\n _strlen\n\n"
                                                              "Library: Visual Studio 2003 Release"},
             {"entry": 0x1000, "name": "_game", "library": ""}]
-    known = scratch_pe.library_rows(rows)
+    rows += [{"entry": 0x3000, "end": 0x3008, "name": "_tiny", "library": "Library Function - Single Match\n _tiny"},
+             {"entry": 0x3010, "end": 0x3030, "name": "_$E1", "library": "Library Function - Single Match\n _$E1"}]
+    known = scratch_pe.library_rows(rows)  # (not a stub every object has, nor code too short to say whose)
     assert list(known) == [0x2000] and "_strlen, Visual Studio 2003 Release" in known[0x2000]
     code = {0x2020: (0x2004).to_bytes(4, "little") * 4,  # a table of addresses in the one before: a piece
             0x2040: bytes.fromhex("558bec5dc3")}  # push ebp; mov ebp, esp: a function of its own
@@ -2558,16 +2560,36 @@ def test_the_runtime_libraries_own_code_is_found_whatever_its_relocations_fill_i
     assert not prints.find(b"\x33\xc0\xc3")  # too short to say
 
 
+def test_an_import_says_it_did_every_analysis_step():
+    """An import said analysis 6 while steps 7-15 were added: a 2003 game imported with all of them was to take them
+    again at the next start, Ghidra's run too."""
+    assert scratch_pe.IMPORT_ANALYSIS == consoles.get("pc").ANALYSIS
+
+
 def test_the_library_list_is_found_again_each_time_and_others_entries_stay(tmp_path):
     """puyo.31's rule set aside too much on a 2007 game: what set_library_aside listed before is found again, not
     kept (what Function ID knew stays known); entries someone else wrote stay."""
-    program = FRAME_RET.ljust(16, b"\xcc") + FRAME_RET
-    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(FRAME_RET)), _row(TEXT + 16, TEXT + 16 + len(FRAME_RET))])
+    code = PUSH_FRAME + b"\x90" * 10 + bytes.fromhex("33c08be55dc3")  # (16 bytes or more: long enough to say whose)
+    program = code.ljust(32, b"\xcc") + code
+    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(code)), _row(TEXT + 32, TEXT + 32 + len(code))])
     path = root / "config" / "game" / "set_aside.json"
     path.write_text(json.dumps({"functions": {
         "0x00401000": "Visual C++'s runtime library (_f, VS), recognised by Ghidra's Function ID: not the game's own code",
-        "0x00401010": "Visual C++'s runtime library, a helper of _f: only its functions refer to it",
+        "0x00401020": "Visual C++'s runtime library, a helper of _f: only its functions refer to it",
         "0x00409999": "middleware"}}))
-    scratch_pe.set_library_aside(root, "game", {})
+    assert scratch_pe.set_library_aside(root, "game", {}) == (0, 1)
     listed = json.loads(path.read_text())["functions"]
     assert set(listed) == {"0x00401000", "0x00409999"}  # (nothing refers to the helper now: not a helper)
+
+
+def test_what_the_runtimes_startup_calls_stays_the_games():
+    """The runtime's WinMainCRTStartup is the only caller of the game's WinMain: on a 2003 game the helper rule took
+    WinMain and, from it, the game's code. A helper is beside the runtime's code, and never what its startup calls."""
+    F = scratch_pe.Function
+    functions = [F(0x1000, 32, "_WinMain@16", [(1, scratch_pe.REL32, "_game_loop", 0)], "a"),
+                 F(0x1020, 32, "_game_loop", [], "a"),
+                 F(0x1040, 32, "_far_from_it", [], "a"),
+                 F(0x2000, 32, "_WinMainCRTStartup", [(1, scratch_pe.REL32, "_WinMain@16", 0),
+                                                      (6, scratch_pe.REL32, "_far_from_it", 0)], "b")]
+    known = {0x2000: "Visual C++'s runtime library (_WinMainCRTStartup, VS), recognised by Ghidra's Function ID"}
+    assert sorted(scratch_pe.library_functions(functions, known, lambda a, s: b"\x55\x8b\xec")) == [0x2000]

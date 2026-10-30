@@ -80,10 +80,11 @@ class WindowsPC(Console):
     # several for cut into them (scratch.split_merged_functions); 13 again, where a matched function refers to the
     # cut's address too (12 left those whole); 14 Visual C++'s runtime library set aside as library code, as
     # Ghidra's Function ID knows it (scratch.recognise_library: Ghidra runs again, once); 15 the runtime libraries'
-    # own code, where the game's Visual C++ has them (scratch.runtime_matches).
+    # own code, where the game's Visual C++ has them (scratch.runtime_matches); 16 that list found again, its helpers
+    # beside the runtime's code and never what its startup calls (15's took a 2003 game's WinMain and what it calls).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 15
+    ANALYSIS = 16
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -251,15 +252,13 @@ class WindowsPC(Console):
                     "them) are functions of their own" if n else None)
 
         def library(fp):  # (set_aside.json: what's matched stays matched, off the progress like the rest)
-            n = scratch.recognise_library(fp.root, version, log=log)
-            return (f"{n} functions are Visual C++'s runtime library (Ghidra's Function ID knows them) or helpers only "
-                    "it uses: set aside as library code, not the game's own" if n else None)
+            return _library_said(scratch.recognise_library(fp.root, version, _compiler(fp), log=log),
+                                 "Visual C++'s runtime library (Ghidra's Function ID knows them) or helpers only it uses")
 
         def runtime_code(fp):
-            n = scratch.set_library_aside(fp.root, version, {},
-                                          str((fp.manifest or {}).get("compiler") or "").removeprefix("MSVC/") or None)
-            return (f"{n} more functions are Visual C++'s runtime library, found by its own code in the libraries its "
-                    "compiler has: set aside as library code" if n else None)
+            return _library_said(scratch.set_library_aside(fp.root, version, {}, _compiler(fp)),
+                "Visual C++'s runtime library, found by Function ID or by its own code in the libraries its compiler "
+                "has, or helpers only it uses")
 
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
@@ -270,7 +269,7 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
                  11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
-                 15: (runtime_code, True)}
+                 15: (runtime_code, True), 16: (runtime_code, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -585,6 +584,19 @@ class WindowsPC(Console):
         Town::func_0041B470 too); a real name given before as itself."""
         key = _address_key(old)
         return rf"\b_*{key}\b" if key else super().rename_pattern(old)
+
+
+def _compiler(fp) -> str | None:
+    """The project's Visual C++ as its pack names it ("7.0", "8.0SP1"), from its manifest."""
+    return str((fp.manifest or {}).get("compiler") or "").removeprefix("MSVC/") or None
+
+
+def _library_said(changed: tuple[int, int] | None, what: str) -> str | None:
+    """What a step that found the runtime library says (scratch.set_library_aside's added and dropped), or None."""
+    added, dropped = changed or (0, 0)
+    said = ([f"{added} functions are {what}: set aside as library code, not the game's own"] if added else []) + \
+        ([f"{dropped} it had set aside are the game's own code after all: given back"] if dropped else [])
+    return "; ".join(said) or None
 
 
 def _functions_json(fp, version: str) -> dict:
