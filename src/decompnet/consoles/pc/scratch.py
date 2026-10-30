@@ -2251,7 +2251,8 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 # them as if the game's: on a 2002 PC game 112 of its 242 functions (87 matched, 26 given up on), its own code the first
 # 29. They're set aside as library code (config/<version>/set_aside.json), off the progress and the agents' queue.
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
-LIBRARY_HELPER_WHY = "a helper of Visual C++'s runtime library ({what}): only its functions refer to it"
+LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
+LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
 
 
 def library_rows(rows: list[dict]) -> dict[int, str]:
@@ -2268,12 +2269,14 @@ def library_rows(rows: list[dict]) -> dict[int, str]:
     return out
 
 
-def library_functions(functions: list[Function], known: dict[int, str]) -> dict[int, str]:
-    """Address -> why for every function of the runtime library: those Function ID knew (`known`), and, after the
-    first of them (the linker puts libraries after the game's own objects), what only those refer to (their private
-    helpers), until no more are found; a function nothing refers to right after one of them too (its table, its
-    tail: a hand-written memcpy's). Functions the game's own code calls stay the game's (a game's own libraries come after
-    its objects too)."""
+def library_functions(functions: list[Function], known: dict[int, str], read=None) -> dict[int, str]:
+    """Address -> why for every function of the runtime library: those Function ID or the libraries' own code knew
+    (`known`), and, after the first of them (the linker puts libraries after the game's own objects), what only those
+    refer to (their private helpers), until no more are found; and a piece right after one that nothing refers to,
+    which isn't a function of its own (`read(addr, size)` its bytes: a table of addresses into the one before, or code
+    using a register it never set: a hand-written memcpy's table and tails). Not any function nothing refers to there:
+    a game's virtual methods are only in its vtables, and on a 2007 game such a rule took 1,700 of them. Functions the
+    game's own code calls stay the game's (a game's own libraries come after its objects too)."""
     if not known:
         return {}
     out = {a: why for a, why in known.items() if any(f.addr == a for f in functions)}
@@ -2285,7 +2288,11 @@ def library_functions(functions: list[Function], known: dict[int, str]) -> dict[
         for _, _, name, _ in f.relocs:
             if name and name != f.name:
                 referred.setdefault(name, set()).add(f.name)
-    named = lambda f: next((w.split("(", 1)[1].split(",")[0].split(")")[0] for w in [out[f.addr]]), f.name)  # noqa: E731
+    def named(f: Function) -> str:  # (the name its why gives: "...library (_strlen, ..." or "a helper of _strlen: ...")
+        why = out[f.addr]
+        if "a helper of " in why:
+            return why.split("a helper of ", 1)[1].split(":")[0]
+        return why.split("(", 1)[1].split(",")[0].split(")")[0] if "(" in why else f.name
     found = True
     while found:
         found = False
@@ -2296,28 +2303,75 @@ def library_functions(functions: list[Function], known: dict[int, str]) -> dict[
             if users and all(u.addr in out for u in users):
                 out[f.addr] = LIBRARY_HELPER_WHY.format(what=", ".join(sorted({named(u) for u in users}))[:200])
                 found = True
-            elif not users and k > 0 and functions[k - 1].addr in out:  # (its table or its tail: memcpy's)
+            elif not users and k > 0 and functions[k - 1].addr in out and read is not None and \
+                    _piece(read(f.addr, f.size), functions[k - 1]):
                 out[f.addr] = LIBRARY_HELPER_WHY.format(what=named(functions[k - 1]))
                 found = True
     return out
 
 
-def set_library_aside(root: Path, version: str, known: dict[int, str]) -> int:
+RUNTIME_WHY = "Visual C++'s runtime library ({name}, {library}): its code byte for byte, not the game's own"
+
+
+def runtime_matches(functions: list[Function], pes: dict[str, PE], compiler: str | None) -> dict[int, str]:
+    """Address -> why for the functions whose code is a function of the runtime libraries the game's Visual C++ has
+    (runtime.fingerprints: its pack's Lib folder, or the user's copy of it there), byte for byte where relocations
+    don't fill in. Function ID knew 112 of a 2002 game's; these libraries 167, among them rand, fopen, sprintf and
+    the C++ library's exception classes, which it didn't. None without them."""
+    from . import runtime
+
+    folders = runtime.compiler_libraries(toolchains.root(), compiler) if compiler else []
+    prints = runtime.fingerprints(folders) if folders else None
+    if prints is None or not prints.count:
+        return {}
+    out = {}
+    for f in functions:
+        if (hit := prints.find(pes[unit_module(f.unit)].read(f.addr, f.size))):
+            out[f.addr] = RUNTIME_WHY.format(name=hit[0].name, library=hit[0].library)
+    return out
+
+
+def _piece(code: bytes, before: Function) -> bool:
+    """Whether code is no function of its own but a piece of the one `before` it: a table of addresses in it, or code
+    using a register it never set (arch/x86.register_args)."""
+    from ...arch import x86 as x86_arch
+
+    first = int.from_bytes(code[:4], "little") if len(code) >= 4 else -1
+    return before.addr <= first < before.addr + before.size + len(code) or \
+        x86_arch.register_args(code[:x86_arch.REGISTER_ARGS_READ]) is not None
+
+
+def set_library_aside(root: Path, version: str, known: dict[int, str], compiler: str | None = None) -> int:
     """library_functions in the project's set_aside.json (its "functions", by address: they keep it through renames),
-    beside what's there. Returns how many it lists now that it didn't."""
-    _, info, _, functions = _project_functions(root, version)
-    found = library_functions(functions, known)
+    beside what's there, which counts as known too (a step before found it); with the runtime libraries' own code
+    (runtime_matches) where the game's `compiler` has them. Returns how many it lists now that it didn't."""
+    _, info, pes, functions = _project_functions(root, version)
     path = root / "config" / version / "set_aside.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except ValueError:
         data = {}
     listed = data.setdefault("functions", {})
-    new = {f"0x{a:08X}": why for a, why in sorted(found.items()) if f"0x{a:08X}" not in listed}
-    if new:
-        listed.update(new)
+    # its own entries are found again each time (a rule that took too much leaves nothing behind), what Function ID
+    # knew kept as known (it runs only in step 14); anyone else's stay as they are
+    before, mine = {}, set()
+    for k, why in listed.items():
+        if isinstance(why, str) and why.startswith(LIBRARY_OWN):
+            mine.add(k)
+            if "Function ID" in why:
+                try:
+                    before[int(k, 0)] = why
+                except ValueError:
+                    continue
+    module = {f.addr: unit_module(f.unit) for f in functions}
+    found = library_functions(functions, {**runtime_matches(functions, pes, compiler), **known, **before},
+                              lambda addr, size: pes[module[addr]].read(addr, size))
+    now = {f"0x{a:08X}": why for a, why in sorted(found.items()) if f"0x{a:08X}" not in listed or f"0x{a:08X}" in mine}
+    added = len(set(now) - mine)
+    if now != {k: listed[k] for k in mine}:
+        data["functions"] = {**{k: v for k, v in listed.items() if k not in mine}, **now}
         path.write_text(json.dumps(data, indent=1), encoding="utf-8")
-    return len(new)
+    return added
 
 
 def recognise_library(root: Path, version: str, log=print) -> int | None:
@@ -2484,7 +2538,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
             "function each calls, and set aside")
     if merged := split_merged_functions(root, version):
         log(f"{merged} functions the analysis took for part of the one before them are functions of their own")
-    if library := set_library_aside(root, version, known):
+    if library := set_library_aside(root, version, known, compiler):
         log(f"{library} of them are Visual C++'s runtime library (Ghidra's Function ID knows them), or helpers only it "
             "uses: set aside as library code, not the game's own")
     if frames := set_frame_flags(root, version):

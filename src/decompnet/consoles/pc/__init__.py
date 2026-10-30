@@ -79,10 +79,11 @@ class WindowsPC(Console):
     # 11 /GS for the files whose functions make its cookie (scratch.set_gs_flags); 12 the functions Ghidra took
     # several for cut into them (scratch.split_merged_functions); 13 again, where a matched function refers to the
     # cut's address too (12 left those whole); 14 Visual C++'s runtime library set aside as library code, as
-    # Ghidra's Function ID knows it (scratch.recognise_library: Ghidra runs again, once).
+    # Ghidra's Function ID knows it (scratch.recognise_library: Ghidra runs again, once); 15 the runtime libraries'
+    # own code, where the game's Visual C++ has them (scratch.runtime_matches).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 14
+    ANALYSIS = 15
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -254,6 +255,12 @@ class WindowsPC(Console):
             return (f"{n} functions are Visual C++'s runtime library (Ghidra's Function ID knows them) or helpers only "
                     "it uses: set aside as library code, not the game's own" if n else None)
 
+        def runtime_code(fp):
+            n = scratch.set_library_aside(fp.root, version, {},
+                                          str((fp.manifest or {}).get("compiler") or "").removeprefix("MSVC/") or None)
+            return (f"{n} more functions are Visual C++'s runtime library, found by its own code in the libraries its "
+                    "compiler has: set aside as library code" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -262,7 +269,8 @@ class WindowsPC(Console):
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
-                 11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True)}
+                 11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
+                 15: (runtime_code, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
