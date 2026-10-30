@@ -2246,6 +2246,98 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
         f.relocs = [(off, kind, renamed.get(name, name), addend) for off, kind, name, addend in f.relocs]
 
 
+# Visual C++'s runtime library (the C runtime, its C++ library) linked into the game: Ghidra's Function ID knows its
+# functions, and writes on each "Library Function - Single Match", its name and library. Agents spent sessions on
+# them as if the game's: on a 2002 PC game 112 of its 242 functions (87 matched, 26 given up on), its own code the first
+# 29. They're set aside as library code (config/<version>/set_aside.json), off the progress and the agents' queue.
+LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
+LIBRARY_HELPER_WHY = "a helper of Visual C++'s runtime library ({what}): only its functions refer to it"
+
+
+def library_rows(rows: list[dict]) -> dict[int, str]:
+    """Address -> why, for the functions in Ghidra's rows its Function ID recognised (library_why)."""
+    out = {}
+    for r in rows:
+        lines = [ln.strip() for ln in str(r.get("library") or "").splitlines() if ln.strip()]
+        if not lines or not lines[0].startswith("Library Function"):
+            continue
+        name = r.get("name") if not str(r.get("name", "")).startswith("FID_conflict") else (lines[1] if len(lines) > 1
+                                                                                          else "a library function")
+        library = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Library:")), "")
+        out[int(r["entry"])] = LIBRARY_WHY.format(what=f"{name}, {library}" if library else name)
+    return out
+
+
+def library_functions(functions: list[Function], known: dict[int, str]) -> dict[int, str]:
+    """Address -> why for every function of the runtime library: those Function ID knew (`known`), and, after the
+    first of them (the linker puts libraries after the game's own objects), what only those refer to (their private
+    helpers), until no more are found; a function nothing refers to right after one of them too (its table, its
+    tail: a hand-written memcpy's). Functions the game's own code calls stay the game's (a game's own libraries come after
+    its objects too)."""
+    if not known:
+        return {}
+    out = {a: why for a, why in known.items() if any(f.addr == a for f in functions)}
+    if not out:
+        return {}
+    first, by_name = min(out), {f.name: f for f in functions}
+    referred: dict[str, set[str]] = {}
+    for f in functions:
+        for _, _, name, _ in f.relocs:
+            if name and name != f.name:
+                referred.setdefault(name, set()).add(f.name)
+    named = lambda f: next((w.split("(", 1)[1].split(",")[0].split(")")[0] for w in [out[f.addr]]), f.name)  # noqa: E731
+    found = True
+    while found:
+        found = False
+        for k, f in enumerate(functions):
+            if f.addr in out or f.addr < first:
+                continue
+            users = [by_name[n] for n in referred.get(f.name, ()) if n in by_name]
+            if users and all(u.addr in out for u in users):
+                out[f.addr] = LIBRARY_HELPER_WHY.format(what=", ".join(sorted({named(u) for u in users}))[:200])
+                found = True
+            elif not users and k > 0 and functions[k - 1].addr in out:  # (its table or its tail: memcpy's)
+                out[f.addr] = LIBRARY_HELPER_WHY.format(what=named(functions[k - 1]))
+                found = True
+    return out
+
+
+def set_library_aside(root: Path, version: str, known: dict[int, str]) -> int:
+    """library_functions in the project's set_aside.json (its "functions", by address: they keep it through renames),
+    beside what's there. Returns how many it lists now that it didn't."""
+    _, info, _, functions = _project_functions(root, version)
+    found = library_functions(functions, known)
+    path = root / "config" / version / "set_aside.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except ValueError:
+        data = {}
+    listed = data.setdefault("functions", {})
+    new = {f"0x{a:08X}": why for a, why in sorted(found.items()) if f"0x{a:08X}" not in listed}
+    if new:
+        listed.update(new)
+        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return len(new)
+
+
+def recognise_library(root: Path, version: str, log=print) -> int | None:
+    """set_library_aside for a project made before its import read Function ID: Ghidra analyses its programs again
+    (minutes for a big game), only for that. Returns how many functions it set aside; None without the user's copies
+    of the programs, or Ghidra."""
+    from ...forks import ghidra
+
+    if missing(root, version) or not ghidra.available():
+        return None
+    info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    known: dict[int, str] = {}
+    for name, (exe, _, base) in _delink_tool().programs(info).items():
+        path = root / exe
+        moved = base - read_pe(path.read_bytes()).image_base if base is not None else 0
+        log(f"reading {path.name} with Ghidra's Function ID (the runtime library's functions in it)")
+        known.update(library_rows([{**r, "entry": r["entry"] + moved} for r in ghidra.functions(path)]))
+    return set_library_aside(root, version, known)
+
+
 def module_rows(ghidra, module: Path, moved: int) -> list[dict]:
     """Ghidra's functions of one of the game's DLLs, at the address the project gives it (`moved` from the one its
     header prefers, where Ghidra reads it). Its own names (its exports, its debug information) go to "names"
@@ -2292,6 +2384,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
         log(line)
     log(f"analysing {game.name} with Ghidra (finds every function; a big game takes a few minutes)")
     found = ghidra.functions(game)
+    known = library_rows(found)
     if not found:
         why = (info["cannot_match"] or ["a program that is packed or protected in a way decompdecomp doesn't recognise "
                                         "shows none: decompdecomp never unpacks or gets around protection"])[0]
@@ -2314,6 +2407,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
                  "so it's moved by its base relocations, as Windows moves it")
         log(f"analysing {m.rel} with Ghidra: {m.built.summary()}, {where}")
         rows = module_rows(ghidra, m.path, moved)
+        known.update(library_rows(rows))
         found_debug = debuginfo.find(m.path, m.pe.data, HEADER_NAMES, log=log)  # (read at its address in the project)
         if found_debug is not None:
             log(f"{m.rel}: {found_debug.source}: {found_debug.info.summary()}")
@@ -2390,6 +2484,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
             "function each calls, and set aside")
     if merged := split_merged_functions(root, version):
         log(f"{merged} functions the analysis took for part of the one before them are functions of their own")
+    if library := set_library_aside(root, version, known):
+        log(f"{library} of them are Visual C++'s runtime library (Ghidra's Function ID knows them), or helpers only it "
+            "uses: set aside as library code, not the game's own")
     if frames := set_frame_flags(root, version):
         log(f"{frames} of {len(groups)} source files keep an ebp frame in most of their functions: they build "
             f"with {FRAME_FLAG} (Visual C++ keeps the frame pointer)")

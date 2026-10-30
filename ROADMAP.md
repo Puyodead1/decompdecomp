@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **Visual C++'s runtime library in PC games is set aside as library code.** Ghidra's Function ID knows it; the
+  import threw its names away, and agents spent sessions on it as the game's: on a 2002 game 178 of 250 functions
+  (125 matched), on a 2007 game 957 (395 still open). Those it knows, and what only they refer to, go in the project's
+  set_aside.json at import and in analysis step 14 (Ghidra runs once more), off the agents' queue and the progress.
 - **Export downloads as a .zip.** The app may run on a server reached by browser, where Open folder can't help:
   Export's panel has Download .zip, the source tree (a fork's own, uncommitted work too; a ROM project's export)
   with only what its .gitignore keeps, never the game or what's made from it.

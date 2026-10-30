@@ -861,3 +861,16 @@ def test_a_forks_archive_has_its_work_uncommitted_too_but_never_the_game(tmp_pat
                    check=True)
     (tmp_path / "src" / "b.cpp").write_text("int b;\n")  # not committed yet: an agent's work in progress
     assert _kept_files(tmp_path) == [".gitignore", "src/a.cpp", "src/b.cpp"]
+
+
+def test_a_set_aside_list_by_address_alone_is_read_with_the_projects_functions(tmp_path):
+    """A PC import lists the runtime library by address only ("functions"), no ranges: the functions it names were
+    read against an empty list, and nothing was set aside."""
+    from decompnet.app.forkengine import _set_aside
+
+    conf = tmp_path / "config" / "v"
+    conf.mkdir(parents=True)
+    (conf / "functions.json").write_text(json.dumps({"units": {"crt": [{"name": "_strlen", "addr": 0x2000, "size": 8}]}}))
+    (conf / "set_aside.json").write_text(json.dumps({"functions": {"0x00002000": "the C runtime"}}))
+    fp = type("FP", (), {"root": tmp_path, "manifest": {"version": "v"}})()
+    assert _set_aside(fp) == {"_strlen": "the C runtime"}
