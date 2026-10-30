@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **Callers of static PC functions are told so; build failures show their errors.** A function calling a helper of
+  its file that takes an argument in a register gets a brief line saying to write that helper `static` (a 2002
+  game's _setargv, _output, raise and C++ catch code: agents had said link-time code and given up), and edx read
+  without ecx counts as such an argument. A build that fails shows its error lines, not the next files' warnings.
 - **PC functions Ghidra took for one are cut apart.** Functions only a table of pointers reaches (atexit entries,
   destructors) were one function to Ghidra, and agents voted each cut: seven in one on a 2002 game. After a `ret`
   nothing before it jumps past and padding to 16 bytes, code is a function of its own (analysis step 12, and

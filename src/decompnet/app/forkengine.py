@@ -169,9 +169,16 @@ class _TreeLock:
                 self._cond.notify_all()
 
 
+_BUILD_ERROR = re.compile(r"\berror\b|^FAILED:|fatal|undefined reference|unresolved external", re.I)
+
+
 def _tail(log: str, lines: int = 14) -> str:
-    """The end of a build log, where the reason is."""
-    return "\n".join(log.strip().splitlines()[-lines:])
+    """Where a build log says why: its error lines, else its end. ninja goes on building other files after one fails,
+    so the end was their warnings: agents splitting a PC game's files read "unknown pragma" five times and never the
+    error."""
+    every = log.strip().splitlines()
+    errors = [ln for ln in every if _BUILD_ERROR.search(ln)]
+    return "\n".join(errors[:lines] if errors else every[-lines:])
 
 
 def with_constant_values(rows: list, console, fp) -> list:
@@ -1005,6 +1012,7 @@ class ForkEngine:
         generated = console.generated_functions(fp, version)  # no C of their own makes them (a PC game's EH stubs)
         registers = console.register_args(fp, version)  # an argument in a register no C declaration passes one in
         statics = console.static_register_args(fp, version)  # ... or a static function's, which C makes
+        static_calls = console.static_callees(fp, version)  # (and who calls those)
         copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
@@ -1062,6 +1070,8 @@ class ForkEngine:
                     meta["register_arg"] = registers[sym]
                 if sym in statics:
                     meta["static_register_arg"] = statics[sym]
+                if sym in static_calls:
+                    meta["static_callees"] = static_calls[sym]
                 if sym in generated and not meta.get("reopened"):  # set aside as assembly is, whatever the scope
                     meta["asm_code"] = generated[sym]
                 if sym in aside:  # code the project says isn't the game's own (library code, middleware)
@@ -2377,6 +2387,13 @@ class ForkEngine:
                          f"registers it picks): write it `static`, with ordinary parameters, above its callers in the "
                          f"file, and call it plainly; never __fastcall with an unused argument (its callers then set "
                          f"ecx, which the game's don't)")
+        if (callees := meta.get("static_callees")) and fn["status"] != "matched":
+            shown = ", ".join(c.lstrip("_@").split("@")[0] for c in callees)
+            lines.append(f"it calls {shown}, which take{'s' * (len(callees) == 1)} an argument in a register from "
+                         f"callers all in this file: a static function's convention, not link-time code. Write "
+                         f"{'it' if len(callees) == 1 else 'them'} `static` above this function in the file, with "
+                         f"ordinary parameters, and call {'it' if len(callees) == 1 else 'them'} plainly: this "
+                         f"function's own calls then load the registers the game's do")
         if (reg := meta.get("register_arg")) and fn["status"] != "matched":
             lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, a convention link-time code "
                          f"generation (/GL /LTCG) gives functions whose callers it all sees. No C declaration of one "

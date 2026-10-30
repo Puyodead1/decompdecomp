@@ -102,20 +102,24 @@ def register_args(code: bytes) -> str | None:
     (REGISTER_ARGS: ecx and edx are __thiscall's and __fastcall's), up to its first call, ret or jmp; None when it
     reads none. Link-time code generation (/GL /LTCG) gives a function whose callers it all sees a convention of its
     own like that: a 2007 PC game had a third of its open functions so (`mov eax, [eax]; ret`, a `this` in esi), and
-    no C declaration in one file makes it. Saving one (`push esi`) isn't using it."""
+    no C declaration in one file makes it. Saving one (`push esi`) isn't using it. edx read with ecx never read is
+    one too (__fastcall passes edx only after ecx): Visual C++ 7.0 gave a static function's one argument in edx."""
     ready: set[str] = set()
+    tracked = (*REGISTER_ARGS, "ecx", "edx")
+    first: list[str] = []  # ecx and edx as they're first read unset
     for i in _READER.disasm(code[:REGISTER_ARGS_READ], 0):
         if i.mnemonic in ("call", "ret", "retn", "jmp"):
-            return None
+            break
         if i.mnemonic == "push" and i.op_str in REGISTER_ARGS or _filler(i):  # (saved for the caller; padding)
             continue
-        read, written = ({_whole(i.reg_name(r)) for r in regs} & set(REGISTER_ARGS) for regs in i.regs_access())
+        read, written = ({_whole(i.reg_name(r)) for r in regs} & set(tracked) for regs in i.regs_access())
         if _only_sets(i):
             read = set()
         if unset := [r for r in REGISTER_ARGS if r in read - ready]:
             return unset[0]
+        first += [r for r in ("ecx", "edx") if r in read - ready and r not in first]
         ready |= written
-    return None
+    return "edx" if "edx" in first and "ecx" not in first else None
 
 
 def _only_sets(i) -> bool:
