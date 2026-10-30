@@ -75,10 +75,11 @@ class WindowsPC(Console):
     # 2005's /GS handlers are known (a 2007 game's 2,860 stubs were open: none of its handlers had the older shape); 8
     # the joins again, for the jump tables Ghidra made functions of (scratch.merge_pieces); 9 the functions Ghidra didn't
     # know the stack arguments of named by their `ret N` (scratch.fix_unknown_purges), their rows renamed with them;
-    # 10 the int3 Visual C++ ends a function with after a call that doesn't return (scratch.take_noreturn_int3s).
+    # 10 the int3 Visual C++ ends a function with after a call that doesn't return (scratch.take_noreturn_int3s);
+    # 11 /GS for the files whose functions make its cookie (scratch.set_gs_flags).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 10
+    ANALYSIS = 11
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -231,6 +232,15 @@ class WindowsPC(Console):
             return (f"{n} functions ending in a call that doesn't return have the int3 their compiler puts after it "
                     "(it was taken for padding, so no C matched them)" if n else None)
 
+        def gs(fp):  # (files with matched code keep their flags: agents' C with an array where the game has none
+            #           took the cookie, and five matched functions of a 2002 game stopped matching. search_flags tries
+            #           /GS on those, kept when the file's matched functions still match)
+            done = {scratch._source(fp.root, r["unit"]) for r in net.store.all(
+                "SELECT DISTINCT unit FROM functions WHERE project_id=? AND status='matched'", net.project_row(slug)["id"])}
+            n = scratch.set_gs_flags(fp.root, version, keep=done)
+            return (f"{n} source files whose functions make a buffer security cookie build with {scratch.GS_FLAG} now, "
+                    "as the game's were" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -238,7 +248,8 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False)}
+                 7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
+                 11: (gs, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -354,8 +365,9 @@ class WindowsPC(Console):
         return scratch.flags_file(fp.root, version).relative_to(fp.root).as_posix()
 
     # What search_flags tries on a file: the frame pointer kept or not (/Oy-: about half of a 2010 game's code keeps
-    # it), optimised for size (/O1: some of a game's libraries were), and inlining only what's marked inline (/Ob1)
-    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"))
+    # it), optimised for size (/O1: some of a game's libraries were), inlining only what's marked inline (/Ob1), and
+    # the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it unasked)
+    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",))
 
     def flag_variants(self, flags: list[str]) -> list[list[str]]:
         out = [list(flags)]

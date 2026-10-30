@@ -1779,6 +1779,50 @@ def set_frame_flags(root: Path, version: str, keep: set[str] = frozenset()) -> i
     return len(wanted)
 
 
+# Visual C++ 7.0 and 7.1 build without /GS unless asked; a game built with it has functions whose prologue reads the
+# security cookie and xors it with their return address. Without the flag no C makes them: on a small 2002 game agents
+# found it in nine files and suggested it eleven times, but a suggestion names a compiler, not a flag. (2005 on builds
+# with /GS by default, and xors the cookie with ebp instead: nothing to find there.)
+GS_FLAG = "/GS"
+GS_PROLOGUE = 16  # instructions the cookie's read is looked for in (after a call to the exception frame's setup too)
+
+
+def gs_cookie(md, pe: PE, f: Function) -> bool:
+    """Whether f's prologue makes /GS's cookie: `mov r, [cookie]` then `xor r, [ebp+4]` (or [esp+n], the return
+    address of a function without a frame), after an exception frame's setup if it has one."""
+    loaded = None
+    for k, ins in enumerate(_disasm(md, pe.read(f.addr, f.size), f.addr)):
+        if k >= GS_PROLOGUE or ins.mnemonic in ("ret", "jmp"):
+            return False
+        ops = ins.op_str.replace(" ", "")
+        if ins.mnemonic == "mov" and re.fullmatch(r"e[a-d]x,dwordptr\[0x[0-9a-f]+\]", ops):
+            loaded = ops.split(",")[0]
+        elif loaded and ins.mnemonic == "xor" and re.fullmatch(
+                rf"{loaded},dwordptr\[(ebp\+4|esp\+0x[0-9a-f]+|esp\+\d+)\]", ops):
+            return True
+    return False
+
+
+def set_gs_flags(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
+    """/GS for each source file one of whose functions makes the cookie (gs_cookie), with the flags it has; not
+    `keep`'s. Returns how many files got it; None without the user's copies of the programs."""
+    if missing(root, version):
+        return None
+    _, info, pes, functions = _project_functions(root, version)
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    found = file_flags(root, version)
+    wanted = {}
+    for f in functions:
+        source = _source(root, f.unit)
+        if source in keep or source in wanted or GS_FLAG in found.get(source, ()):
+            continue
+        if gs_cookie(md, pes[unit_module(f.unit)], f):
+            wanted[source] = [*found.get(source, []), GS_FLAG]
+    if wanted:
+        _write_compilers(flags_file(root, version), {**found, **wanted})
+    return len(wanted)
+
+
 # ---------------------------------------------------------------------------------------------------- the project
 
 
@@ -2298,6 +2342,8 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     if frames := set_frame_flags(root, version):
         log(f"{frames} of {len(groups)} source files keep an ebp frame in most of their functions: they build "
             f"with {FRAME_FLAG} (Visual C++ keeps the frame pointer)")
+    if gs := set_gs_flags(root, version):
+        log(f"{gs} source files have functions with a buffer security cookie: they build with {GS_FLAG}")
     sources = {addr: source for known in debugs for addr, source in known.units.items()}
     for u, fns in groups.items():
         src = root / "src" / "auto" / f"{u}.cpp"  # C++, as PC games of the time were written (C compiles too)
