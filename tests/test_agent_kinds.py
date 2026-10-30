@@ -149,3 +149,31 @@ def test_nothing_outside_agents_asks_an_agents_name():
             if _NAME_CHECK.search(line):
                 found.append(f"{path.relative_to(SRC)}:{number}: {line.strip()}")
     assert not found, "\n".join(found)
+
+
+def test_opencode_asks_its_service_when_a_go_limit_resets(tmp_path, monkeypatch):
+    """OpenCode Go's "5 hour usage limit reached" says no time, and a helper waited 30 minutes for a limit that reset
+    in 10: opencode's background service says when each meter resets."""
+    import json
+
+    import httpx
+
+    state = tmp_path / "opencode"
+    state.mkdir()
+    (state / "service.json").write_text(json.dumps({"url": "http://127.0.0.1:1", "password": "pw"}))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    asked = []
+
+    def get(url, auth, timeout):
+        asked.append((url, auth))
+        return httpx.Response(200, json={"data": {"go": {
+            "rolling": {"percent": 100, "limited": True, "resetsAt": 1_800_000_000_000},
+            "weekly": {"percent": 54, "limited": False, "resetsAt": 1_900_000_000_000}}}})
+    monkeypatch.setattr(httpx, "get", get)
+    kind = agents.get("opencode")
+    assert kind.limit_resets_at() == 1_800_000_000
+    assert asked == [("http://127.0.0.1:1/api/experimental/usage/limits", ("opencode", "pw"))]
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(404))  # (an older service: no such route)
+    assert kind.limit_resets_at() is None
+    (state / "service.json").unlink()
+    assert kind.limit_resets_at() is None

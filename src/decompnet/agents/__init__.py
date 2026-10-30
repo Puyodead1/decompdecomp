@@ -225,6 +225,11 @@ class Agent:
         """One line of the agent's stderr as worth showing, or "" for noise: the last ones say why a session failed."""
         return line.strip()
 
+    def limit_resets_at(self) -> float | None:
+        """When the usage limit it just reached resets (seconds since the epoch), asked of the agent itself where its
+        message doesn't say; None when it can't tell (the helper then waits longer each time: app/agents.py)."""
+        return None
+
     def fatal(self, error: str) -> bool:
         """Whether an error it said is one every try would meet the same way (Antigravity refusing decompdecomp's
         tools): the helper pauses with it, instead of starting again."""

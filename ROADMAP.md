@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **opencode helpers wait for OpenCode Go's limit as long as it lasts.** Its error says no time, so helpers waited
+  15, 30, then 60 minutes; its background service says when each meter (5-hour, weekly, monthly) resets, and the
+  helper carries on then (Agent.limit_resets_at). Times in the GUI read as the user's clock does (7:49 PM).
+
 - **PC projects build for the C runtime the game links.** The import reads it from the program's imports (msvcr*.dll:
   /MD; TlsAlloc or FlsAlloc: LIBCMT, /MT) into CL_FLAGS, and analysis 17 does it for existing projects. A 2003 game
   linked LIBCMT, and its STL code (errno through _errno(), the _Lockit locks) never compiled the same without /MT:

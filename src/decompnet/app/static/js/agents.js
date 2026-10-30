@@ -43,7 +43,6 @@ const FEED_KEEP = 400;  // lines of each helper's log kept here (the app keeps a
 const ACTIVITY_ROWS = 300;  // lines "What's happening" keeps: older ones scroll away
 const SAID_SHOWN = 1600, THOUGHT_SHOWN = 1200;  // characters of a helper's message and thought its log shows
 const MAX_PER_SESSION = 20;  // functions a helper takes in one session, at most
-const hhmm = (t) => clock(t).slice(0, 5);
 const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : "");
 
 function helperState(s, claim) {
