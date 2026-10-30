@@ -601,6 +601,11 @@ Where to start on a gap:
 
 ## Next
 
+- **STL instances found by autopilot.** Compile the common containers with the game's compiler (map, set, list,
+  vector, string, deque over int, std::string, pointers) and name the game's functions that are one of their
+  instances, the explicit instantiation added to their files, without an agent (name_instance does it one at a time):
+  on a 2003 PC game 136 at least, 115 of them open.
+
 ### The flag survey for every console
 
 The survey builds each file with its console's other flags, which needs flags a file can have of its own
