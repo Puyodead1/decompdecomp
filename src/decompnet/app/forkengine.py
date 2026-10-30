@@ -225,7 +225,7 @@ def _set_aside(fp: ForkProject) -> dict[str, str]:
     try:
         data = json.loads((fp.root / rel).read_text(encoding="utf-8"))
         info = json.loads((fp.root / rel).with_name("functions.json").read_text(encoding="utf-8")) \
-            if isinstance(data.get("ranges"), list) else {}
+            if isinstance(data.get("ranges"), list) or isinstance(data.get("functions"), dict) else {}
     except (OSError, ValueError, AttributeError):
         return {}
     return objdiff.expand_set_aside(data, info)
