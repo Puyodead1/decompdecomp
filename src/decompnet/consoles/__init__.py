@@ -291,16 +291,21 @@ class Console:
         has."""
         return {}
 
-    def instance_names(self, fp, version: str, unit, symbol: str) -> dict[str, str]:
+    def instance_names(self, fp, version: str, unit, symbol: str, taken=frozenset()) -> dict[str, str]:
         """The game's functions a unit's source compiles to under the compiler's own names, starting at `symbol`'s:
-        a template's instance (the STL's) and those it calls -> each compiled symbol (name_instance). {} where the
-        console has no such pairing."""
+        a template's instance (the STL's) and those it calls -> each compiled symbol (name_instance), none of
+        `taken`. {} where the console has no such pairing."""
         return {}
 
     def stl_matches(self, fp, version: str, wanted: set[str], log=print) -> dict[str, dict[str, str]]:
         """Functions of `wanted` that are a template instance the console's probes compile, by unit -> the line that
         compiles it (autopilot_instances). {} where the console has none."""
         return {}
+
+    def instance_spoiler(self, line: str):
+        """For a stl_matches line, a pattern of the lines a file may have that make its code otherwise (taken out
+        when the line goes in), or None."""
+        return None
 
     def static_callees(self, fp, version: str) -> dict[str, list[str]]:
         """Each function that calls functions static_register_args has -> those: its brief says to write them static

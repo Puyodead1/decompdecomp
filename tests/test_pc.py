@@ -2655,3 +2655,51 @@ def test_the_stl_probes_compile_the_instances_a_game_has(tmp_path):
     erase = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
              if f.name.startswith("?erase@?$_Tree") and stl.PROBES[int(f.library)].endswith("<std::string, int>;")]
     assert erase and len(prints.by_shape) > 100
+
+
+def test_the_c_runtime_a_game_links_is_every_files_flag(tmp_path, monkeypatch):
+    """A 2003 game linked LIBCMT (it imports TlsAlloc), so its headers made the multithreaded runtime's code: its
+    std::num_get<char>::do_get calls _errno() and takes a _Lockit, which no file built without /MT makes."""
+    PE = scratch_pe.PE
+    assert scratch_pe.runtime_flag(PE(b"", 0, 0, 0, 0, [], {1: "TlsAlloc"}, ["KERNEL32.dll"])) == "/MT"
+    assert scratch_pe.runtime_flag(PE(b"", 0, 0, 0, 0, [], {1: "strlen"}, ["MSVCR71.dll"])) == "/MD"
+    assert scratch_pe.runtime_flag(PE(b"", 0, 0, 0, 0, [], {1: "Sleep"}, ["KERNEL32.dll"])) is None
+    cfg = 'CL_FLAGS = ["/nologo", "/c", "/O2", "/W3", "/GX"]  # /GX: C++ exceptions\n'
+    assert scratch_pe.with_flag(cfg, "/MT") == 'CL_FLAGS = ["/nologo", "/c", "/O2", "/W3", "/GX", "/MT"]  # /GX: C++ exceptions\n'
+    assert scratch_pe.with_flag(scratch_pe.with_flag(cfg, "/MD"), "/MT").count("/M") == 1  # (one runtime, never two)
+
+    root = _project(tmp_path, PUSH_FRAME + bytes.fromhex("33c08be55dc3"), [_row(TEXT, TEXT + 9)])
+    (root / "tools").mkdir()
+    (root / "tools" / "configure.py").write_text(cfg)
+    monkeypatch.setattr(scratch_pe, "runtime_flag", lambda pe: "/MT")
+    assert scratch_pe.set_runtime_flag(root, "game") == "/MT"
+    assert '"/GX", "/MT"]' in (root / "tools" / "configure.py").read_text()
+    assert scratch_pe.set_runtime_flag(root, "game") is None  # (there already)
+
+
+def test_a_facets_explicit_instantiation_goes_where_a_probe_uses_it():
+    """`template class std::num_get<char, ...>;` (an agent's) makes do_get inline what the game's calls: the line
+    using the facet replaces it, and other instantiations stay."""
+    from decompnet.consoles.pc import stl
+
+    use = next(p for p in stl.PROBES if "stl_num_get" in p)
+    text = ('#include "common.h"\n#include <locale>\n\ntemplate class std::num_get<char, std::istreambuf_iterator<char, '
+            'std::char_traits<char> > >;\ntemplate class std::map<int, int>;\n')
+    assert stl.spoiler(use).sub("", text) == '#include "common.h"\n#include <locale>\n\ntemplate class std::map<int, int>;\n'
+    assert stl.spoiler("template class std::map<int, int>;") is None
+
+
+@pytest.mark.skipif(toolchains.installed("msvc") is None or not (toolchains.root() / "msvc" / "7.0" / "Bin").is_dir(),
+                    reason="needs Visual C++ 7.0 (msvc, proprietary)")
+def test_a_facet_used_compiles_as_the_games_stream_code(tmp_path):
+    """A 2003 game's num_get<char>::do_get(unsigned long&) is 281 bytes, calling istreambuf_iterator::equal: what the
+    facet probe compiles with /MT (the explicit instantiation's inlines equal)."""
+    from decompnet.consoles.pc import stl
+
+    tc = toolchains.root()
+    compiler = (str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), str(tc / "msvc" / "7.0" / "Include"),
+                ("/nologo", "/c", "/O2", "/W3", "/GX", "/MT", "/Oy-", "/GS"))
+    prints = stl.prints(tmp_path, str(tc / "wibo" / "wibo"), compiler, tmp_path / "stl", log=lambda *_: None)
+    do_get = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
+              if f.name.startswith("?do_get@?$num_get@D") and f.name.endswith("AAK@Z")]
+    assert {(len(f.code), "stl_num_get" in stl.PROBES[int(f.library)]) for f in do_get} == {(281, True)}

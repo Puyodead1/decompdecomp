@@ -134,6 +134,7 @@ class PE:
     timestamp: int
     sections: list[Section]
     imports: dict[int, str] = field(default_factory=dict)  # import address table slot -> "Sleep"
+    dlls: list[str] = field(default_factory=list)  # the DLLs it imports from ("KERNEL32.dll")
 
     def section_at(self, addr: int) -> Section | None:
         return next((s for s in self.sections if s.va <= addr < s.va + max(s.vsize, s.size)), None)
@@ -255,6 +256,7 @@ def _imports(pe: PE, opt: int) -> dict[int, str]:
             break
         lookup, _, _, name_rva, iat = struct.unpack("<IIIII", desc)
         dll = pe.read(pe.image_base + name_rva, DLL_NAME_BYTES).split(b"\0", 1)[0].decode("latin-1")
+        pe.dlls.append(dll)
         lookup = lookup or iat
         for k in range(MAX_IMPORTS_PER_DLL):
             entry = pe.read(pe.image_base + lookup + 4 * k, 4)
@@ -1852,6 +1854,46 @@ def gs_cookie(md, pe: PE, f: Function) -> bool:
     return False
 
 
+# Which C runtime the game linked, which every file was compiled for: /MD (the DLL's, msvcrt.dll, msvcr71.dll...)
+# or /MT (the static multithreaded one, LIBCMT: the only static one that keeps data per thread, so the program imports
+# TlsAlloc or FlsAlloc). Without it the headers make the single-threaded runtime's code: a 2003 game's
+# std::num_get<char>::do_get calls _errno() and takes a _Lockit, and no C matched it with errno a global and no lock
+RUNTIME_DLL = re.compile(r"msvcr(t|\d+)d?\.dll", re.I)
+_PER_THREAD = ("TlsAlloc", "FlsAlloc")
+
+
+def runtime_flag(pe: PE) -> str | None:
+    """The flag for the C runtime the program links (/MD, /MT), or None: the single-threaded one (/ML, Visual C++'s
+    default before 2005)."""
+    if any(RUNTIME_DLL.fullmatch(dll) for dll in pe.dlls):
+        return "/MD"
+    return "/MT" if any(name in _PER_THREAD for name in pe.imports.values()) else None
+
+
+def with_flag(configure: str, flag: str) -> str:
+    """tools/configure.py's text with `flag` last in CL_FLAGS, where no runtime flag (/MD, /MT, /ML) is yet."""
+    m = re.search(r"^CL_FLAGS = \[([^\]]*)\]", configure, re.M)
+    if m is None or re.search(r'"/M[DTL]d?"', m.group(1)):
+        return configure
+    return configure[:m.end(1)] + f', "{flag}"' + configure[m.end(1):]
+
+
+def set_runtime_flag(root: Path, version: str) -> str | None:
+    """The game's C runtime flag (runtime_flag) in a project's CL_FLAGS, every file's: no match is lost by it, as C
+    that matched without it makes none of the code it changes (in a 2003 game, 656 matches all held). Returns the
+    flag added, or None."""
+    info = json.loads((root / "config" / version / "functions.json").read_text(encoding="utf-8"))
+    path = root / info.get("exe", f"orig/{version}.exe")
+    if not path.is_file() or (flag := runtime_flag(read_pe(path.read_bytes()))) is None:
+        return None
+    cfg = root / "tools" / "configure.py"
+    text = cfg.read_text(encoding="utf-8")
+    if (new := with_flag(text, flag)) == text:
+        return None
+    cfg.write_text(new, encoding="utf-8")
+    return flag
+
+
 def set_gs_flags(root: Path, version: str, keep: set[str] = frozenset()) -> int | None:
     """/GS for each source file one of whose functions makes the cookie (gs_cookie), with the flags it has; not
     `keep`'s. Returns how many files got it; None without the user's copies of the programs."""
@@ -2253,7 +2295,7 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
 LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
 LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
-IMPORT_ANALYSIS = 16  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
+IMPORT_ANALYSIS = 17  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
 SHORTEST = 16  # (runtime.SHORTEST: what Function ID knows shorter isn't taken either)
 # what the runtime's startup calls is the game's: WinMain, main (a 2003 game's whole code was taken as its "helpers")
 STARTUP = re.compile(r"CRTStartup|^_?_?(w?main|w?WinMain|initterm|cinit)", re.I)
@@ -2529,6 +2571,8 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     text = cfg.read_text(encoding="utf-8").replace(f'MSVC_VERSION = "{MSVC_DEFAULT}"', f'MSVC_VERSION = "{compiler}"')
     if pack != "msvc":  # /GX is /EHsc from 2005 on, and saying /GX warns on every file
         text = text.replace('"/GX"]  # /GX:', '"/EHsc"]  # /EHsc (/GX before 2005):')
+    if (flag := runtime_flag(pe)):
+        text = with_flag(text, flag)
     cfg.write_text(text, encoding="utf-8")
     conf = root / "config" / version
     conf.mkdir(parents=True)
