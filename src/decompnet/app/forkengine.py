@@ -251,9 +251,11 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
 _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
-# kept by sync too: the agents' verdicts that no C makes it (red in the map), and the user giving it back to them
-# (or the next check would set it aside again)
-_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened")
+# kept by sync too: the agents' verdicts that no C makes it (red in the map), the user giving it back to them (or the
+# next check would set it aside again), and agents' proposals to join it or end it elsewhere (each sync, after every
+# match, dropped them: on a small PC game three agents of three models proposed the same join over twenty minutes, a
+# match between each, and it never added up)
+_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries")
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 _MSVC_C = re.compile(r"[_@]([A-Za-z_]\w*?)(?:@\d+)?")  # how MSVC decorates a C function's name (PC, Xbox)
 # a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,
@@ -3567,10 +3569,16 @@ class ForkEngine:
 
     def _vote(self, agent: Agent, proj, fn, kind: str, key: str, reason: str, event: str, what: str):
         """An agent's say on a change to the project's functions (`kind`: joins, boundaries; `key`: which change),
-        kept in the function's meta; returns everyone's say on it and their models."""
+        kept in the function's meta; returns everyone's say on it and their models. The project's feed counts too
+        (each say is an `event` of `what`): what a sync before _KEPT_KEYS had them dropped is counted again."""
         with self.net.store.tx() as db:
             meta = json.loads(db.execute("SELECT meta FROM functions WHERE id=?", (fn["id"],)).fetchone()["meta"] or "{}")
             said = meta.setdefault(kind, {}).setdefault(key, {})
+            for r in db.execute("SELECT a.name, e.detail, e.created_at FROM events e JOIN agents a ON a.id=e.agent_id "
+                                "WHERE e.project_id=? AND e.kind=? AND substr(e.detail, 1, ?)=?",
+                                (proj["id"], event, len(what) + 1, f"{what}:")):
+                said.setdefault(r["name"], {"model": model_of(r["name"]), "why": r["detail"][len(what) + 1:].strip(),
+                                            "t": r["created_at"]})
             said[agent.name] = {"model": model_of(agent.name), "why": reason.strip()[:2000], "t": time.time()}
             db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
             self.net._event(db, proj["id"], agent.id, event, f"{what}: {reason.strip()[:200]}")
