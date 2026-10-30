@@ -588,7 +588,7 @@ $("saveGo").onclick = async () => {
   $("saveGo").disabled = true;
   try {
     const r = await api("/api/save", { method: "POST", body: { slug: S.slug, folder: $("saveFolder").value.trim() || undefined } });
-    $("saveState").textContent = `saved ${clock(Date.now() / 1000).slice(0, 5)}`;
+    $("saveState").textContent = `saved ${hhmm(Date.now() / 1000)}`;
     $("saveLog").hidden = false;
     $("saveLog").textContent = S.ov.kind === "fork" ? `Saved ${plural(r.best || 0, "closest attempt")} to ${r.folder}/best.`
       : `Saved to ${r.folder}: ${plural(r.matched || 0, "matched function")}, ${plural(r.best || 0, "best attempt")}.`;
