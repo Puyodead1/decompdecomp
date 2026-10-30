@@ -102,8 +102,9 @@ class WindowsPC(Console):
     # with after a call that doesn't return too (scratch.take_noreturn_int3s); 11 /GS for the files whose functions make
     # its cookie (scratch.set_gs_flags); 12 the functions Ghidra took several for cut into them
     # (scratch.split_merged_functions); 13 again, where a matched function refers to the cut's address too (12 left
-    # those whole)
-    ANALYSIS = 13
+    # those whole); 14 Visual C++'s runtime library set aside as library code, as Ghidra's Function ID knows it
+    # (scratch.recognise_library: Ghidra runs again, once)
+    ANALYSIS = 14
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -318,6 +319,11 @@ class WindowsPC(Console):
             return (f"{n} functions Ghidra took for part of the one before them (only a table of pointers reaches "
                     "them) are functions of their own" if n else None)
 
+        def library(fp):  # (set_aside.json: what's matched stays matched, off the progress like the rest)
+            n = scratch.recognise_library(fp.root, version, log=log)
+            return (f"{n} functions are Visual C++'s runtime library (Ghidra's Function ID knows them) or helpers only "
+                    "it uses: set aside as library code, not the game's own" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -325,7 +331,7 @@ class WindowsPC(Console):
         # (fix for the stubs: a step that changes no code can't break the rebuild, so it's kept where the rebuild
         # isn't identical yet too)
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
-                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True), 12: (merged, False), 13: (merged, False)}
+                 7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
