@@ -115,6 +115,13 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **PC projects build for the C runtime the game links.** The import reads it from the program's imports (msvcr*.dll:
+  /MD; TlsAlloc or FlsAlloc: LIBCMT, /MT) into CL_FLAGS, and analysis 17 does it for existing projects. A 2003 game
+  linked LIBCMT, and its STL code (errno through _errno(), the _Lockit locks) never compiled the same without /MT:
+  with it, autopilot's STL pass matched 81 more functions. The stream facets' code (num_get's do_get) matches only as
+  a game's use makes it, so the probes use the facet instead of `template class`, which autopilot takes out; identical
+  instances (do_get for long and unsigned long) each get a name of their own.
+
 - **Autopilot finds the STL's code in PC games.** Between twins and drafts, common containers' explicit
   instantiations (map, set, list, vector, deque, string over int, std::string, pointers) are compiled with the game's
   compiler and each file's flags (consoles/pc/stl.py), and each open function that is one of their instances gets the

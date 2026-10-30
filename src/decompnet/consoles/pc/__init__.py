@@ -91,10 +91,11 @@ class WindowsPC(Console):
     # cut's address too (12 left those whole); 14 Visual C++'s runtime library set aside as library code, as
     # Ghidra's Function ID knows it (scratch.recognise_library: Ghidra runs again, once); 15 the runtime libraries'
     # own code, where the game's Visual C++ has them (scratch.runtime_matches); 16 that list found again, its helpers
-    # beside the runtime's code and never what its startup calls (15's took a 2003 game's WinMain and what it calls).
+    # beside the runtime's code and never what its startup calls (15's took a 2003 game's WinMain and what it calls);
+    # 17 the C runtime the game links (/MT, /MD) in every file's flags (scratch.set_runtime_flag).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 16
+    ANALYSIS = 17
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -278,6 +279,11 @@ class WindowsPC(Console):
                 "Visual C++'s runtime library, found by Function ID or by its own code in the libraries its compiler "
                 "has, or helpers only it uses")
 
+        def runtime_flag(fp):
+            flag = scratch.set_runtime_flag(fp.root, version)
+            return (f"every source file builds with {flag} now, for the C runtime the game links (its headers make "
+                    "that runtime's code: errno, the STL's locks)" if flag else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -287,11 +293,12 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
                  11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
-                 15: (runtime_code, True), 16: (runtime_code, True)}
+                 15: (runtime_code, True), 16: (runtime_code, True), 17: (runtime_flag, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
-                kept[level] = net.forks.reanalyse(slug, step, fix=fix, log=log)
+                kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config",),
+                                                  fix=fix, log=log)  # (17 changes configure.py's CL_FLAGS)
                 if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
                     rename_rows({new: old for old, new in renamed.items()})
                 net.forks.get(slug)[1].update_manifest(analysis=level)  # tried: a step taken back isn't tried again
@@ -529,12 +536,13 @@ class WindowsPC(Console):
         path.write_text(json.dumps({**info, "names": dict(sorted(names.items()))}, indent=1), encoding="utf-8")
         return {path: text}
 
-    def instance_names(self, fp, version: str, unit, symbol: str) -> dict[str, str]:
+    def instance_names(self, fp, version: str, unit, symbol: str, taken=frozenset()) -> dict[str, str]:
         """The game's functions (by symbol) that functions the unit's source compiles to are, byte for byte where
         relocations fill in: `symbol`'s, and from it each function its code calls that one of them calls at the same
         place (an STL template's instance and the instances it calls: std::map's erase(first, last), _Erase, erase).
         -> the compiled function's symbol, as the compiler names it. Only a compiled function no func_<address> or
-        D_<address> names (the agents' own C pairs by its name already)."""
+        D_<address> names (the agents' own C pairs by its name already), and not `taken`'s nor one a function of the
+        file has already: identical instances (do_get for long and for unsigned long) each take one of their own."""
         from ... import coffobj
 
         info = _functions_json(fp, version)
@@ -564,7 +572,10 @@ class WindowsPC(Console):
         first = target(symbol)
         if first is None:
             return {}
-        found = next((c for c, code in built.items() if same(first, code)), None)
+        names = info.get("names") or {}
+        taken = {*taken, *(names.get(m.group(0)) for s, u in where.items() if u == where.get(symbol)
+                           and (m := re.search(r"func_[0-9A-Fa-f]{8}", s)))}  # (one name per function in a file)
+        found = next((c for c, code in built.items() if c not in taken and same(first, code)), None)
         if found is None:
             return {}
         out, queue = {symbol: found}, [(symbol, found)]
@@ -605,6 +616,11 @@ class WindowsPC(Console):
             if (hit := made[compiler].find(pes[scratch.unit_module(f.unit)].read(f.addr, f.size))):
                 out.setdefault(f.unit, {})[f.name] = stl.PROBES[int(hit[0].library)]
         return out
+
+    def instance_spoiler(self, line: str):
+        from . import stl
+
+        return stl.spoiler(line)
 
     def real_names(self, fp, version: str) -> dict[str, str]:
         """(a function's report name is its entry's in functions.json: the target objects are cut out with it)"""

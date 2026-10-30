@@ -259,7 +259,7 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
 # what autopilot_instances adds to a file for the STL probes it needs (consoles/pc/stl.py's PRELUDE)
 STL_HEADERS = ("#include <map>\n", "#include <set>\n", "#include <list>\n", "#include <vector>\n", "#include <deque>\n",
-               "#include <string>\n")
+               "#include <string>\n", "#include <locale>\n")
 STL_TYPES = ("struct STL_P20 { int a[5]; };\n", "struct STL_P24 { int a[6]; };\n")
 _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
 # kept by sync too: the agents' verdicts that no C makes it (red in the map), the user giving it back to them (or the
@@ -1775,7 +1775,7 @@ class ForkEngine:
                 raise NetworkError(f"{unit.source} doesn't build as it is, so nothing was searched:\n{_tail(out)}")
             found: dict[str, str] = {}
             for symbol in symbols:
-                for t, c in console.instance_names(fp, version, unit, symbol).items():
+                for t, c in console.instance_names(fp, version, unit, symbol, taken=set(found.values())).items():
                     if t not in found and c not in found.values():
                         found[t] = c
                 if strict and symbol not in found:
@@ -1858,12 +1858,18 @@ class ForkEngine:
             if not lines:
                 text = was
             else:
-                head = "".join(h for h in STL_HEADERS if h.strip() not in was and any(
+                text = was
+                for ln in lines:  # (an agent's `template class` of a facet a probe uses makes its code otherwise)
+                    if (spoils := console.instance_spoiler(ln)) is not None:
+                        text = spoils.sub("", text)
+                head = "".join(h for h in STL_HEADERS if h.strip() not in text and any(
                     h[10:-2] in ln or (h[10:-2] == "string" and "basic_string" in ln) for ln in lines))
-                head += "".join(d for d in STL_TYPES if any(d.split()[1] in ln for ln in lines) and d.split()[1] not in was)
+                head += "".join(d for d in STL_TYPES if any(d.split()[1] in ln for ln in lines) and d.split()[1] not in text)
                 block = head + "\n".join(lines) + "  // (the game's instances of these: autopilot)\n"
-                at = was.find("\n", was.find('#include "common.h"')) + 1 if '#include "common.h"' in was else 0
-                text = was[:at] + block + was[at:]
+                # after the file's includes: its own <map> below common.h came after the line, which didn't build
+                last = list(re.finditer(r"^[ \t]*#[ \t]*include\b[^\n]*\n", text, re.M))
+                at = last[-1].end() if last else 0
+                text = text[:at] + block + text[at:]
                 path.write_text(text, encoding="utf-8")
             try:
                 _, now, _ = self._name_instances(agent, slug, unit_name, sorted(hits), strict=False,
