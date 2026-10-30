@@ -1581,6 +1581,27 @@ def test_a_project_made_before_gets_the_int3_after_a_call_that_doesnt_return(tmp
     assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
 
 
+def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
+    """Visual C++ 7.0 and 7.1 make /GS's cookie (the cookie xored with the return address) only when asked: on a 2002
+    game nine files had it, agents suggested it eleven times, and a suggestion can't set a flag."""
+    cookie = bytes.fromhex("a100a04000") + bytes.fromhex("334504") + bytes.fromhex("8945fc")  # mov eax,[]; xor; mov
+    gs = PUSH_FRAME + bytes.fromhex("83ec10") + cookie + bytes.fromhex("c9c3")
+    plain = PUSH_FRAME + bytes.fromhex("a100a04000") + bytes.fromhex("c9c3")  # reads a global: no cookie
+    assert len(gs) <= 32
+    root = _project(tmp_path, gs.ljust(32, b"\xcc") + plain,
+                    [_row(TEXT, TEXT + len(gs)), _row(TEXT + 32, TEXT + 32 + len(plain))], unit_bytes=16)
+    flags = lambda: json.loads(scratch_pe.flags_file(root, "game").read_text())  # noqa: E731
+    sources = sorted(scratch_pe._source(root, u) for u in json.loads(
+        (root / "config" / "game" / "functions.json").read_text())["units"])
+    assert len(sources) == 2
+    scratch_pe._write_compilers(scratch_pe.flags_file(root, "game"), {sources[0]: ["/Oy-"]})  # made before
+    assert scratch_pe.set_gs_flags(root, "game", keep={sources[0]}) == 0
+    assert scratch_pe.set_gs_flags(root, "game") == 1 and flags()[sources[0]] == ["/Oy-", "/GS"]
+    assert scratch_pe.GS_FLAG not in flags().get(sources[1], [])
+    assert scratch_pe.set_gs_flags(root, "game") == 0
+    assert ["/Oy-", "/GS"] in consoles.get("pc").flag_variants(["/Oy-"])
+
+
 def test_a_project_made_before_gets_its_functions_last_instructions_whole(tmp_path):
     """Found in a gap, `jmp <next function>` (e9 0a 00 00 00) lost its zeros with the padding after it: the function
     was 2 bytes, and no C could match it. 465 functions of a PC game ended mid-instruction."""
