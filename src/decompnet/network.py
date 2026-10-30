@@ -635,6 +635,19 @@ class Network:
             return db.execute(f"SELECT COUNT(*) AS n FROM functions f WHERE f.project_id=:pid AND f.status='open' "
                               f"AND f.name IN ({_GIVEN_UP})", self._given_up_args(db, proj["id"], agent)).fetchone()["n"]
 
+    def claimable(self, agent: Agent, slug: str) -> int:
+        """How many open functions a claim by agent could get now: not held, not a copy, not given up on by its model
+        (MODEL_GIVE_UPS), not released by it lately (SELF_RELEASE_WINDOW)."""
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            args = self._given_up_args(db, proj["id"], agent) | {
+                "agent": agent.id, "mine": self._own_release_cutoff(db, agent.id, time.time())}
+            return db.execute(f"""SELECT COUNT(*) AS n FROM functions f WHERE f.project_id=:pid AND f.status='open'
+                AND json_extract(f.meta, '$.copy_of') IS NULL AND f.id NOT IN (SELECT function_id FROM claims)
+                AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
+                                   AND kind='release' AND created_at > :mine)
+                AND f.name NOT IN ({_GIVEN_UP})""", args).fetchone()["n"]
+
     def _own_release_cutoff(self, db, agent_id: int, now: float) -> float:
         """Releases by this agent after this time keep it off those functions: the last SELF_RELEASE_WINDOW, and
         only since its run started (its last 'freed' event, release_stopped's, or 'stopped', a helper's own)."""
