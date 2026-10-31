@@ -556,7 +556,7 @@ class Console:
         reg = toolchains.registry()
         return [c.id for c in self.compilers if c.id in reg and reg[c.id].supported]
 
-    def function_asm(self, root: Path, unit: str, symbol: str) -> str | None:
+    def unit_function_asm(self, root: Path, unit: str, symbol: str) -> str | None:
         """PROJECT mode, a project that keeps no assembly files (its objects are cut from the program at build time):
         a function's assembly as m2c reads it, for its draft; None when there's none."""
         return None
