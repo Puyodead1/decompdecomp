@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...rom import Picked
+from ...rom import Picked, RomError
 from .. import EXPORT, RECOMMENDED, ROM, Compiler, Console
 
 
@@ -43,6 +43,43 @@ class Nintendo64(Console):
         from .rom import MAGIC
 
         return head[:4] in MAGIC
+
+    def identity(self, path: Path) -> str | None:
+        from .rom import z64_file_sha1
+
+        try:
+            result = z64_file_sha1(path)
+        except RomError:  # an incomplete cartridge is not an N64 game identity
+            return None
+        return result[0] if result else None
+
+    def fork_game_help(self, target: str, sha1: str | None) -> str | None:
+        if not target.lower().endswith(".z64"):
+            return None
+        check = ("Its normalized SHA-1 must match this project's hash."
+                 if sha1 else "The project's build still checks that it is the right game.")
+        return ("Supply your N64 ROM in .z64, .v64 or .n64 byte order. decompdecomp saves a .z64 copy for the "
+                f"project. {check}")
+
+    def prepare_fork_game(self, src: Path, dest: Path, sha1: str | None, *, move: bool = False) -> bool:
+        from .rom import copy_z64_file, z64_file_sha1
+
+        if dest.suffix.lower() != ".z64":
+            return False
+        normalized = z64_file_sha1(src)
+        if normalized is None:
+            return False
+        digest, byte_order = normalized
+        if sha1 and digest != sha1:
+            raise RomError("that file isn't the version this project decompiles (its sha1 doesn't match the "
+                           "project's); check the README for the exact version")
+        if byte_order == "z64":
+            return False  # the ordinary path checks its hash and can hard-link it
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        copy_z64_file(src, dest)
+        if move and src.resolve() != dest.resolve():
+            src.unlink()
+        return True
 
     def read_game(self, file, name: str = "") -> Picked:
         from .rom import read_info

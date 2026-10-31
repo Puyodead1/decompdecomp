@@ -79,7 +79,9 @@ these projects as they are:
    project says about AI, then clones it to your computer, on a local `decomp-wtf` branch.
 2. **Add your copy of the game.** The app knows the usual project layouts (dtk-template, configure.py and ninja,
    splat and make). It puts your copy in the correct location and runs the setup of the project. For other layouts,
-   follow the README of the project.
+   follow the README of the project. For an N64 splat project that expects a `.z64` ROM, you can supply the same
+   ROM in `.v64` or `.n64` byte order; decompdecomp saves a `.z64` copy for the project's build. When the project
+   declares a SHA-1, decompdecomp checks it against the normalized ROM before copying.
 3. **Start helper agents.** Each agent writes code in the real source file. The build of the project compiles it, and
    [objdiff](https://github.com/encounter/objdiff) compares it.
 4. **Examine the commits.** Each match is a git commit on `decomp-wtf`. decompdecomp sends nothing upstream.

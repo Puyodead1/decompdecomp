@@ -555,7 +555,8 @@ class ForkEngine:
         proj = self.net._project(slug)
         if not self.is_fork(proj):
             raise NetworkError(f"{slug} isn't a fork")
-        return proj, ForkProject(Path(proj["root"])), json.loads(proj["config"])
+        cfg = json.loads(proj["config"])
+        return proj, ForkProject(Path(proj["root"]), cfg.get("platform") or ""), cfg
 
     def _save_cfg(self, proj, cfg: dict) -> None:
         with self.net.store.tx() as db:

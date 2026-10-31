@@ -139,9 +139,16 @@ def _hash_mismatch(tail: str) -> str | None:
 
 
 class ForkProject:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, platform: str = ""):
         self.root = Path(root)
+        self.platform = platform
         (self.root / STATE).mkdir(parents=True, exist_ok=True)
+
+    def _game_consoles(self):
+        """The named console, or each console's file preparation when a public project's platform is unknown."""
+        from .. import consoles
+
+        return [consoles.get(self.platform)] if self.platform else consoles.startable()
 
     # ------------------------------------------------------------------ what is it
 
@@ -258,10 +265,13 @@ class ForkProject:
             path = self._inside(path) if path else None
             if path is None:
                 return manual
+            digest = sha1.group(1).lower() if sha1 else None
+            help_text = next((hint for console in self._game_consoles()
+                              if (hint := console.fork_game_help(path, digest))), None)
             return {"what": f"your copy of the game ({Path(path).name})", "path": path,
-                    "sha1": sha1.group(1).lower() if sha1 else None, "auto": True,
-                    "help": "Checked against the sha1 in the project's splat config. A PlayStation disc image works "
-                            "too: the file is taken from it."}
+                    "sha1": digest, "auto": True,
+                    "help": help_text or "Checked against the sha1 in the project's splat config. A PlayStation "
+                                         "disc image works too: the file is taken from it."}
         return manual
 
     # ------------------------------------------------------------------ setup
@@ -273,6 +283,16 @@ class ForkProject:
         if not need["path"]:
             raise ForkError("decompdecomp doesn't know where this project expects the game; follow its README")
         src = Path(src)
+        if not need["path"].endswith("/"):
+            from ..rom import RomError
+
+            dest = self.root / need["path"]
+            try:
+                for console in self._game_consoles():
+                    if console.prepare_fork_game(src, dest, need.get("sha1"), move=move):
+                        return dest
+            except RomError as error:
+                raise ForkError(str(error)) from error
         if need.get("sha1") and _sha1(src) != need["sha1"]:
             inner = self._from_disc(src.read_bytes(), Path(need["path"]).name) if src.stat().st_size < 1 << 30 else None
             if inner is None or hashlib.sha1(inner).hexdigest() != need["sha1"]:

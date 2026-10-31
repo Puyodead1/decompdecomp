@@ -215,6 +215,14 @@ class Console:
         """Which game a file is (a sha1), when that isn't the file's own bytes: rooms check members have the same."""
         return None
 
+    def fork_game_help(self, target: str, sha1: str | None) -> str | None:
+        """Console-specific guidance for supplying a game file to a public decomp, or None for its usual help."""
+        return None
+
+    def prepare_fork_game(self, src: Path, dest: Path, sha1: str | None, *, move: bool = False) -> bool:
+        """Prepare a user's file in the format a public decomp expects; True when this console placed it."""
+        return False
+
     def reimport(self, net, slug: str, game: Path, log=print) -> str | None:
         """A new analysis of a project the console made, from the user's copy (`game`) again, keeping every match,
         note and name (forkengine.reanalyse): Settings' Reimport. Returns what changed, as a sentence; None: nothing
