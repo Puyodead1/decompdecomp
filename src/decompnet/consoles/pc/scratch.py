@@ -2307,7 +2307,7 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
 LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
 LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
-IMPORT_ANALYSIS = 17  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
+IMPORT_ANALYSIS = 18  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
 SHORTEST = 16  # (runtime.SHORTEST: what Function ID knows shorter isn't taken either)
 # what the runtime's startup calls is the game's: WinMain, main (a 2003 game's whole code was taken as its "helpers")
 STARTUP = re.compile(r"CRTStartup|^_?_?(w?main|w?WinMain|initterm|cinit)", re.I)
@@ -2374,6 +2374,8 @@ def library_functions(functions: list[Function], known: dict[int, str], read=Non
 
 
 RUNTIME_WHY = "Visual C++'s runtime library ({name}, {library}): its code byte for byte, not the game's own"
+RUNTIME_PART_WHY = ("Visual C++'s runtime library ({name}, {library}): its code byte for byte with the function "
+                    "{other} it was cut from, not the game's own")
 
 
 def runtime_matches(functions: list[Function], pes: dict[str, PE], compiler: str | None) -> dict[int, str]:
@@ -2391,6 +2393,17 @@ def runtime_matches(functions: list[Function], pes: dict[str, PE], compiler: str
     for f in functions:
         if (hit := prints.find(pes[unit_module(f.unit)].read(f.addr, f.size))):
             out[f.addr] = RUNTIME_WHY.format(name=hit[0].name, library=hit[0].library)
+    # one the analysis cut in two where the runtime calls into its middle: a 2003 game's sin, 9 bytes and a call
+    # whose return is the rest (_CIsin's entry), each piece no library function, and agents were handed the 9 bytes
+    # again and again
+    ordered = sorted(functions, key=lambda f: f.addr)
+    for a, b in zip(ordered, ordered[1:]):
+        if a.addr in out or a.addr + a.size != b.addr or unit_module(a.unit) != unit_module(b.unit):
+            continue
+        if (hit := prints.find(pes[unit_module(a.unit)].read(a.addr, a.size + b.size))):
+            for f, other in ((a, b), (b, a)):
+                out.setdefault(f.addr, RUNTIME_PART_WHY.format(name=hit[0].name, library=hit[0].library,
+                                                               other=other.name))
     return out
 
 

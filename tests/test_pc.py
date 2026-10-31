@@ -2972,3 +2972,26 @@ def test_a_facet_used_compiles_as_the_games_stream_code(tmp_path):
     do_get = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
               if f.name.startswith("?do_get@?$num_get@D") and f.name.endswith("AAK@Z")]
     assert {(len(f.code), "stl_num_get" in stl.PROBES[int(f.library)]) for f in do_get} == {(281, True)}
+
+
+def test_a_runtime_function_cut_in_two_is_found_whole(monkeypatch):
+    """A 2003 game's sin: Ghidra cut it after its first call (lea edx, [esp+4]; call _fload), where _CIsin calls in,
+    and neither 9-byte head nor the rest is a library function. The two together are: both are set aside, and an
+    agent was handed the head again and again before."""
+    from decompnet.consoles.pc import runtime
+
+    head = bytes.fromhex("8d542404e800000000")
+    rest = bytes.fromhex("529bd93c24d9fedfe0a90004000075") + b"\x90" * 8 + bytes.fromhex("5ac3")
+    monkeypatch.setattr(runtime, "compiler_libraries", lambda *a: [Path("lib")])
+    monkeypatch.setattr(runtime, "fingerprints", lambda folders: runtime.Fingerprints(
+        [runtime.LibraryFunction("_sin", "LIBC.LIB(sin.obj)", runtime._masked(head + rest, (5, 6, 7, 8), 0),
+                                 (5, 6, 7, 8))]))
+
+    class Program:
+        def read(self, addr, n):
+            return (head + rest + b"\xcc" * 4)[addr - 0x1000:][:n]
+    F = scratch_pe.Function
+    functions = [F(0x1000, len(head), "@func_00001000@8", [], "text_00001000"),
+                 F(0x1000 + len(head), len(rest), "_func_00001009", [], "text_00001000")]
+    found = scratch_pe.runtime_matches(functions, {"": Program()}, "7.0")
+    assert set(found) == {0x1000, 0x1009} and "_sin" in found[0x1000] and "_func_00001009" in found[0x1000]
