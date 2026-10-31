@@ -29,6 +29,7 @@ _PIECE = "a piece cut off the function before it (Ghidra put a function's start 
 _PADDING = ("nop", "int3")  # what Visual C++ and the linker fill the bytes between functions with
 _ENDS = ("ret", "retn", "jmp", "hlt", *_PADDING)  # what doesn't run on into the next instruction
 SHORT_JUMP_BYTES = 2  # jmp rel8, jcc rel8
+LONGEST_INSTRUCTION = 15  # bytes
 IMM32_INSTRUCTION_BYTES = 5  # mov eax, imm32; push imm32: an address
 
 
@@ -160,6 +161,12 @@ def piece(before: bytes, code: bytes) -> str | None:
     ins = list(_READER.disasm(before, 0))
     if not ins or sum(i.size for i in ins) != len(before) or ins[-1].mnemonic in _PADDING:
         return None  # data at its end (a jump table), or padding: a function's end
+    # the arguments of the call `before` ends with taken off the stack: no function starts by popping what it never
+    # pushed (a catch block's `call operator delete; add esp, 4; push 0; push 0; call _CxxThrowException`, cut at
+    # the call: on a 2003 PC game the STL's node allocators of 11 containers, none matching)
+    first = next(_READER.disasm(code[:LONGEST_INSTRUCTION], 0), None)
+    if ins[-1].mnemonic == "call" and first is not None and first.mnemonic == "add" and first.op_str.startswith("esp,"):
+        return f"it takes the arguments of the call before it off the stack: the rest of {_PIECE}"
     unset = _uses_unset(code)
     if unset is None:
         return None

@@ -3006,3 +3006,16 @@ def test_a_runtime_function_cut_in_two_is_found_whole(monkeypatch):
                  F(0x1000 + len(head), len(rest), "_func_00001009", [], "text_00001000")]
     found = scratch_pe.runtime_matches(functions, {"": Program()}, "7.0")
     assert set(found) == {0x1000, 0x1009} and "_sin" in found[0x1000] and "_func_00001009" in found[0x1000]
+
+
+def test_a_catch_blocks_rethrow_after_its_call_is_a_piece():
+    """A 2003 game's STL node allocators (list<T>::_Buynode) were each cut at the operator delete of their catch(...)
+    block: the rest, `add esp, 4; push 0; push 0; call _CxxThrowException`, starts by taking that call's argument off
+    the stack, which no function does. 11 functions and their 11 tails could never match."""
+    from decompnet.arch import x86
+
+    catch = bytes.fromhex("8b45ec50e800000000")  # mov eax, [ebp-0x14]; push eax; call operator delete
+    rethrow = bytes.fromhex("83c4046a006a00e800000000cc")
+    assert "off the stack" in x86.piece(PUSH_FRAME + catch, rethrow)
+    assert x86.piece(PUSH_FRAME + catch + bytes.fromhex("c3"), rethrow) is None  # (after a ret: a function's start)
+    assert x86.piece(PUSH_FRAME + catch, bytes.fromhex("6a006a00e800000000")) is None  # (pushes first: could start one)

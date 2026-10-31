@@ -97,6 +97,10 @@ Where to start on a gap:
 
 ## Recently done
 
+- **A catch block's rethrow Ghidra cut off is joined to its function.** A 2003 game's STL node allocators
+  (list<T>::_Buynode) were each cut at the operator delete of their catch(...); the rest takes that call's argument
+  off the stack, which no function starts by doing (arch/x86.piece), and analysis 19 joins them: 14 on that game.
+
 - **Visual C++ 2017 for Windows PC, through wine.** The `msvc2015` pack (proprietary, installed after the user
   accepts it, 220 MB): Visual C++ 2017's last toolset (14.16, cl 19.16.27027.1) and the Windows 10 SDK it was used
   with (10.0.17763), from ojdkbuild's copies of the Build Tools, pinned by sha256. The SDK's headers are a toolchain
