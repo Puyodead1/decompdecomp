@@ -749,6 +749,16 @@ def test_agents_divide_a_file_and_give_it_its_own_compiler(pc):
     second = f"src/auto/text_{syms['_clamp_s32']:08X}.cpp"
     with pytest.raises(NetworkError, match="stays with MSVC/6.0: .* no longer match"):  # player_take_damage, in it
         net.forks.set_file_compiler_by_hand(slug, second, "MSVC/7.1")
+    # the user may switch it anyway (Settings asks first): what no longer matches is open again, and back on 6.0 it
+    # matches again
+    matched = {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")}
+    net.forks.set_file_compiler_by_hand(slug, second, "MSVC/7.1", force=True)
+    assert scratch_pe.file_compilers(root, "demoquest") == {second: "7.1"}
+    lost = matched - {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")}
+    assert lost
+    net.forks.set_file_compiler_by_hand(slug, second, "MSVC/6.0")
+    assert {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")} == matched
+    assert scratch_pe.file_compilers(root, "demoquest") == {}
     assert net.forks.split_file(agent, slug, second, f"_func_{syms['_entity_spawn']:08X}").startswith("✅")
     last = f"src/auto/text_{syms['_entity_spawn']:08X}.cpp"
     net.forks.set_file_compiler_by_hand(slug, last, "MSVC/7.1")  # (nothing in it matches yet)
