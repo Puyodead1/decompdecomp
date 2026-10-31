@@ -18,10 +18,11 @@ does the delinking itself:
 
 The project (tools/configure.py, tools/delink.py) cuts the functions out of the user's copy into COFF objects at
 build time, one per source file (src/auto/text_<address>.cpp, about 4 KiB of functions each), and compiles src/ with
-MSVC through wibo. A program built without relocations (most games before 2005) has every address fixed, which is
-what this reads. `ninja rebuild` (tools/rebuild.py) puts the whole .exe back together from the project, each function
-at its address from its C where that compiles to the game's code, else from the delinked objects, the rest your
-copy's, and compares it with the user's copy: the project's rebuild check (check_code) and its export.
+MSVC through wibo (Visual C++ 2017 through wine). A program built without relocations (most games before 2005) has
+every address fixed, which is what this reads. `ninja rebuild` (tools/rebuild.py) puts the whole .exe back together
+from the project, each function at its address from its C where that compiles to the game's code, else from the
+delinked objects, the rest your copy's, and compares it with the user's copy: the project's rebuild check (check_code)
+and its export.
 The game's own DLLs are analysed the same way, each a program of the project (find_modules), rebuilt against its
 own copy.
 """
@@ -92,7 +93,9 @@ RELEASES = {("6.0", 8447): "SP3", ("6.0", 8799): "SP4", ("6.0", 8966): "SP5", ("
 # header keeps no more of the version), so an import takes SP1; RTM ("8.0") is chosen by file, with try_compiler. From each compiler's own banner (cl.exe)
 RICH_BUILDS = {("6.0", 8168): "6.0", ("7.0", 9466): "7.0", ("7.1", 3077): "7.1", ("8.0", 50727): "8.0SP1",
                ("9.0", 21022): "9.0", ("9.0", 30729): "9.0SP1", ("10.0", 30319): "10.0", ("10.0", 40219): "10.0SP1"}
-MSVC_PACKS = ("msvc", "msvc2005")  # toolchains.toml: 6.0-7.1, 2005-2010; each version in a folder of its pack
+# toolchains.toml's packs, each named after its first version: 6.0-7.1, 2005-2010, and 2017 (msvc2015: 2015 is to
+# join it); each version in a folder of its pack
+MSVC_PACKS = ("msvc", "msvc2005", "msvc2015")
 LAST_IN_SCOPE = (14, 0)  # Visual C++ 2015: games built with 2017 and newer are out of decompdecomp's scope for now
 LINKER_VERSION_AT = 2  # in the optional header: the linker's major and minor version, a byte each
 # DRM and packers, by the sections they add to a program, as Detect It Easy's rules find them (github.com/horsicq/
@@ -334,7 +337,7 @@ class Build:
         same = [(build, name) for (version, build), name in RICH_BUILDS.items() if version == self.version]
         if same:
             return min(same, key=lambda b: abs(b[0] - self.build) if self.build else -b[0])[1]
-        return _pack()[-1] if self.newer_than_pack else MSVC_DEFAULT
+        return _newest_mapped() if self.newer_than_pack else MSVC_DEFAULT
 
     @property
     def exact(self) -> bool:
@@ -376,8 +379,9 @@ class Build:
         """Why a program decompdecomp does start can't match (all of it, or some): none, it can."""
         out = []
         if self.newer_than_pack:
-            out.append(f"it was built with {self.compiler}, and decompdecomp has Visual C++ 6.0 to 2010 so far: "
-                       "2012 to 2015 come next (ROADMAP.md, Newer Windows games), so nothing matches until then")
+            out.append(f"it was built with {self.compiler}, and decompdecomp builds games with Visual C++ 6.0 to "
+                       "2010 so far: 2012 to 2015 come next (ROADMAP.md, Newer Windows games; 2017's compiler can "
+                       "already be chosen per file), so nothing matches until then")
         if self.whole_program:
             out.append(f"{self.whole_program} of its {self.compiled} compiled files were built with whole-program "
                        "optimisation (/GL): their functions can't match")
@@ -388,6 +392,12 @@ def _pack() -> list[str]:
     from . import MSVC_VERSIONS
 
     return [v.removeprefix("MSVC/") for v in MSVC_VERSIONS]
+
+
+def _newest_mapped() -> str:
+    """The packs' Visual C++ for a game newer than any build RICH_BUILDS maps: the newest one it maps (2010 SP1). Not
+    the packs' newest: 2017's can be chosen in Settings, but a game's Rich header doesn't lead to it yet."""
+    return RICH_BUILDS[max(RICH_BUILDS, key=lambda vb: (_version_key(vb[0]), vb[1]))]
 
 
 def is_windows_program(head: bytes) -> bool:
@@ -1709,7 +1719,9 @@ def write_tools(root: Path, version: str) -> list[str]:
 
 def tool_args() -> list[str]:
     """configure.py arguments pointing at decompdecomp's pinned tools: every installed compiler pack, 6.0-7.1's
-    last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0 to 7.1)."""
+    last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0 to 7.1).
+    Nothing about wine: a 2017 file finds it when it builds (WindowsPC.build_env), so no configure.py, older or
+    new, is given an argument it doesn't know."""
     packs = [p for p in reversed(MSVC_PACKS) if toolchains.installed(p) is not None]
     if not packs:
         raise ForkError("PC games are built with Microsoft Visual C++, which is proprietary: install it in Setup "
@@ -2139,7 +2151,9 @@ Started from scratch with [decompdecomp](https://github.com/n-delic/decompdecomp
 copy of its program and compared with what `src/` compiles to, function by function, with objdiff.
 
 1. Put your own copy of the game's program here as `orig/{version}.exe` (never commit it).
-2. `python tools/configure.py {version} --msvc <Visual C++ folder> [--wibo <wibo>]`, then `ninja`.
+2. `python tools/configure.py {version} --msvc <Visual C++ folder> [--wibo <wibo>]`, then `ninja`. A file built with
+   Visual C++ 2017 on Linux or macOS runs it through wine: set `DECOMPNET_WINE` (or have wine on the PATH) and
+   `DECOMPNET_WINE_PREFIX` (a wine prefix of its own) first.
 3. Decompiled code goes in `src/`; `objdiff.json` shows each function's progress in [objdiff](https://github.com/encounter/objdiff).
 4. `ninja rebuild` puts the whole program back together in `build/{version}/{version}.exe`, each function from its C
    where that compiles to the game's code (else from your copy's), and says whether it's your copy, byte for byte.
