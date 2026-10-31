@@ -4286,9 +4286,10 @@ class ForkEngine:
                            "check": "confirmed", "said": f"{p['file']}: its matched functions match with it"}
                           for p in parts]}
 
-    def set_compiler_ranges(self, slug: str, ranges: list[list[int]], compiler: str | None) -> str:
+    def set_compiler_ranges(self, slug: str, ranges: list[list[int]], compiler: str | None, force: bool = False) -> str:
         """The Settings panel's "only for these address ranges", where each source file has a compiler: the files
-        whose code is in them get `compiler` (None: the project's own again), each only when its matches hold."""
+        whose code is in them get `compiler` (None: the project's own again), each only when its matches hold, or
+        whatever they cost when the user says so (`force`)."""
         _, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         own = console.file_compiler(fp, "")
@@ -4301,7 +4302,7 @@ class ForkEngine:
         done, stayed = [], []
         for f in files:
             try:
-                self.set_file_compiler_by_hand(slug, f, compiler or own)
+                self.set_file_compiler_by_hand(slug, f, compiler or own, force=force)
                 done.append(f)
             except NetworkError as e:
                 stayed.append(str(e))
@@ -4371,10 +4372,12 @@ class ForkEngine:
                     self._build_unit(proj, fp, u)  # the file's objects are its own compiler's again
         return before, after
 
-    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str) -> None:
+    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str, force: bool = False) -> None:
         """The user's choice of a source file's compiler (the project's Settings), kept only when every function of
         the file that matched still matches with it: the rule try_compiler's switches follow. What matches with it
-        now is a match like any other."""
+        now is a match like any other. `force`: kept anyway, the user having been told which matches it costs (an
+        agent's try_compiler put a 2003 game's file on Visual C++ 8.0 for a line 7.0 couldn't read, and the user
+        couldn't take it back): those are open again, their C kept as their best."""
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         own = console.file_compiler(fp, source)
@@ -4399,7 +4402,7 @@ class ForkEngine:
                     after[u.name] = {}
                 broken += [n for n, pct in before[u.name].items()
                            if (pct or 0) >= 100 and (after[u.name].get(n) or 0) < 100]
-            if broken or not all(after.values()):
+            if (broken or not all(after.values())) and not force:
                 with self._build_locks[proj["id"]]:
                     console.set_file_compiler(fp, source, own)
                 for u in units:
@@ -4410,9 +4413,10 @@ class ForkEngine:
             self._commit_entry(proj, fp, rel, lambda: console.set_file_compiler(fp, source, compiler),
                                f"Build {source} with {compiler}\n\nChosen in decompdecomp's project settings.")
             self.net.bump_generation(proj["id"])  # (the file's compiler: earlier compiles aren't repeats any more)
-            for u in units:
-                self._keep_scores(proj, u, text, after[u.name])
-                self._apply_scores(proj, u.name, after[u.name], text=text)
+            for u in units:  # (a file that doesn't build matches nothing: its functions are open again)
+                scores = after[u.name] or {n: None for n in before[u.name]}
+                self._keep_scores(proj, u, text, scores)
+                self._apply_scores(proj, u.name, scores, text=text)
 
     def function_diff(self, slug: str, name: str) -> dict:
         """objdiff's diff of the function as it is in the source tree now."""

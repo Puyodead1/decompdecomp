@@ -511,7 +511,9 @@ $("compilerParts").onclick = async (e) => {
     try {
       S.ov = await remove(false);
     } catch (err) {  // matched functions need the range: the user may judge it a quirk and redo them
-      if (!/wouldn't match/.test(err.message) || !confirm(`${err.message.split(":")[0]}.\n\nRemove the range anyway and reopen them? Their C stays as their best attempt, and agents redo them with the game's compiler.`)) throw err;
+      // (a PC or DS file: "<file> stays with 8.0: <functions> no longer match with it", or it doesn't build)
+      const fileWise = / stays with /.test(err.message);
+      if (!/wouldn't match| stays with /.test(err.message) || !confirm(`${fileWise ? err.message : err.message.split(":")[0]}.\n\nRemove it anyway and reopen them? Their C stays as their best attempt, and agents redo them with the game's compiler.`)) throw err;
       S.ov = await remove(true);
     }
     renderStats(S.ov);

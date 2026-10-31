@@ -97,6 +97,11 @@ Where to start on a gap:
 
 ## Recently done
 
+- **A file's compiler can be taken back whatever it costs.** Removing a PC or DS file's compiler in Settings was
+  refused when a match needed it, with no way past: Settings now says which matches it costs and, if the user goes
+  on, switches anyway and reopens them (an agent had put a 2003 game's file on Visual C++ 8.0 for one line 7.0
+  couldn't read).
+
 - **A catch block's rethrow Ghidra cut off is joined to its function.** A 2003 game's STL node allocators
   (list<T>::_Buynode) were each cut at the operator delete of their catch(...); the rest takes that call's argument
   off the stack, which no function starts by doing (arch/x86.piece), and analysis 19 joins them: 14 on that game.
