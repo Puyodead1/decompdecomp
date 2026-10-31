@@ -139,6 +139,7 @@ def _hash_mismatch(tail: str) -> str | None:
             "files that aren't on the retail disc (check the project's README for which file and where it comes "
             "from). Or start the game from your own copy instead: choose New project → Open a game file.")
 
+
 def _absent_program(prog: str) -> bool:
     """Whether a program build.ninja runs by absolute path isn't on this computer: a folder path, /home/... (not an
     MSVC flag like /O2 or /DNDEBUG), that isn't there, or a Windows one, C:\\Users\\..., anywhere but Windows (a
