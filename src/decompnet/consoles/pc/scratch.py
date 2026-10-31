@@ -2307,7 +2307,7 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
 LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
 LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
-IMPORT_ANALYSIS = 18  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
+IMPORT_ANALYSIS = 19  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
 SHORTEST = 16  # (runtime.SHORTEST: what Function ID knows shorter isn't taken either)
 # what the runtime's startup calls is the game's: WinMain, main (a 2003 game's whole code was taken as its "helpers")
 STARTUP = re.compile(r"CRTStartup|^_?_?(w?main|w?WinMain|initterm|cinit)", re.I)

@@ -93,10 +93,12 @@ class WindowsPC(Console):
     # own code, where the game's Visual C++ has them (scratch.runtime_matches); 16 that list found again, its helpers
     # beside the runtime's code and never what its startup calls (15's took a 2003 game's WinMain and what it calls);
     # 17 the C runtime the game links (/MT, /MD) in every file's flags (scratch.set_runtime_flag); 18 the runtime's
-    # functions Ghidra cut in two found too (scratch.runtime_matches: a 2003 game's sin and cos).
+    # functions Ghidra cut in two found too (scratch.runtime_matches: a 2003 game's sin and cos); 19 the joins again,
+    # for a catch block's rest that takes its call's arguments off the stack (arch/x86.piece: the STL's node
+    # allocators, each cut at the operator delete of its catch(...)).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 18
+    ANALYSIS = 19
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -295,7 +297,7 @@ class WindowsPC(Console):
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
                  11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
                  15: (runtime_code, True), 16: (runtime_code, True), 17: (runtime_flag, False),
-                 18: (runtime_code, True)}
+                 18: (runtime_code, True), 19: (pieces, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -307,7 +309,7 @@ class WindowsPC(Console):
         if manifest.get("tools") != scratch.tools_version():
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
             net.forks.get(slug)[1].update_manifest(tools=scratch.tools_version())  # (tried: not again until they change)
-        if kept.get(4) or kept.get(8):  # (taken back: nothing was joined)
+        if kept.get(4) or kept.get(8) or kept.get(19):  # (taken back: nothing was joined)
             agent, _ = net.local_agent("decompdecomp")
             for name, took in joined.items():
                 net.joined(name, slug)
