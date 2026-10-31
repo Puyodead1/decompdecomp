@@ -267,7 +267,22 @@ def test_the_counts_marks_follow_meta_and_come_to_an_older_database_once(tmp_pat
     assert marks(store) == {"lib": ("the C runtime", None), "own": (None, "1"), "odd": (None, None)}
     # a database from before the marks: its functions get theirs when it opens
     store.conn.executescript("DROP TRIGGER functions_marks_insert; DROP TRIGGER functions_marks_update; "
-                             "DROP INDEX idx_functions_tally; ALTER TABLE functions DROP COLUMN aside_mark; "
-                             "ALTER TABLE functions DROP COLUMN gone_mark")
+                             "DROP INDEX idx_functions_tallies; ALTER TABLE functions DROP COLUMN aside_mark; "
+                             "ALTER TABLE functions DROP COLUMN gone_mark; ALTER TABLE functions DROP COLUMN copy_mark")
     store.conn.close()
     assert marks(Store(tmp_path / "app.db")) == {"lib": ("the C runtime", None), "own": (None, "1"), "odd": (None, None)}
+
+
+def test_a_copys_mark_follows_meta_and_comes_to_a_database_from_before_it(tmp_path):
+    """A V.Flash game's modules' copies of its engine count once (network.COPY): from a column of their own too, so
+    the counts stay on the index; a database made before it (with the other marks) gets it when it opens."""
+    store = Store(tmp_path / "app.db")
+    with store.tx() as db:
+        db.execute("INSERT INTO functions(project_id, name, meta) VALUES(1, 'copy', '{\"copy_of\": \"func_a\"}')")
+        db.execute("INSERT INTO functions(project_id, name, meta) VALUES(1, 'own', '{}')")
+    marks = lambda s: {r["name"]: r["copy_mark"] for r in s.all("SELECT * FROM functions")}  # noqa: E731
+    assert marks(store) == {"copy": "func_a", "own": None}
+    store.conn.executescript("DROP TRIGGER functions_marks_insert; DROP TRIGGER functions_marks_update; "
+                             "DROP INDEX idx_functions_tallies; ALTER TABLE functions DROP COLUMN copy_mark")
+    store.conn.close()
+    assert marks(Store(tmp_path / "app.db")) == {"copy": "func_a", "own": None}
