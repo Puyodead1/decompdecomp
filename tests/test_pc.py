@@ -2925,6 +2925,25 @@ def test_a_neighbouring_file_nobody_can_tell_yet_goes_to_an_agent(tmp_path, monk
     assert net.cfg(net.project_row("p"))["priority"] == []
 
 
+def test_a_dismissed_suggestion_stops_its_file_check(tmp_path, monkeypatch):
+    """A 2003 PC game's suggestion was dismissed while its check kept sending agents to try Visual C++ 6.0 on a
+    neighbouring file: answering a suggestion ends its check (its task out of the line), and a check whose
+    suggestion was answered before this ends at the next recheck."""
+    net, root, switched = _file_compiler_project(tmp_path, monkeypatch, _only_with("00401020"))
+    agent = net.local_agent("claude-sonnet-5-5-1")[0]
+    net.suggest(agent, "p", "7.1 built these", compiler="MSVC/7.1", ranges="0x401020-0x401030")
+    assert net.cfg(net.project_row("p"))["priority"] == ["_func_00401010"]
+    net.resolve_suggestion("p", 1, False)
+    cfg = net.cfg(net.project_row("p"))
+    (check,) = cfg["file_checks"]
+    assert check["status"] == "withdrawn" and check["tasks"] == [] and cfg["priority"] == []
+    assert cfg["suggestions"][0]["status"] == "dismissed" and "stopped" in cfg["suggestions"][0]["check"]
+    # one dismissed before: still checking, ended by the next recheck
+    net._update_cfg("p", lambda c: c["file_checks"][0].update(status="checking", tasks=[0x401010]))
+    assert net.filecompilers.recheck("p") == 0
+    assert net.cfg(net.project_row("p"))["file_checks"][0]["status"] == "withdrawn"
+
+
 @needs_tools
 def test_a_file_built_with_another_visual_cpp_keeps_its_own_and_says_which_matches_need_it(pc):
     """The survey's and range checks' evidence, built for real: the file holding player_take_damage (matched with

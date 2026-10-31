@@ -212,6 +212,11 @@ Where to start on a gap:
   pack imported, matched and refused wrong C) and, per pack, byte for byte against the pack's own object
   (`tests/test_kits.py`); PSP's packs weren't on the machine it was checked on. GameCube, Wii and DS: see "Your
   own compiler for GameCube, Wii and DS".
+- **Answering a suggestion ends its range check.** A dismissed suggestion's check went on sending agents to try its
+  compiler on the next function in line (a 2003 PC game's, Visual C++ 6.0 on a 1,096-instruction function): applying
+  or dismissing it now stops the check and takes its task out of the line, and checks of suggestions answered before
+  end at their next recheck (ROM and PC/DS alike).
+
 - **A file's compiler can be taken back whatever it costs.** Removing a PC or DS file's compiler in Settings was
   refused when a match needed it, with no way past: Settings now says which matches it costs and, if the user goes
   on, switches anyway and reopens them (an agent had put a 2003 game's file on Visual C++ 8.0 for one line 7.0

@@ -340,8 +340,32 @@ class FileCompilers:
             return "confirmed"
         return "neutral" if any((pct or 0) >= 100 for pct in with_other.values()) else "unknown"
 
+    def withdraw(self, slug: str, suggestion_id: int | None = None) -> int:
+        """End the open checks of a suggestion the user answered (applied or dismissed), or of every answered one:
+        their tasks leave the line and agents are no longer sent to try its compiler (RangeChecks.withdraw). Returns
+        how many."""
+        proj = self.net.project_row(slug)
+        cfg = self.net.cfg(proj)
+        answered = {s["id"] for s in cfg.get("suggestions", []) if s["status"] != "open"}
+        files, n = None, 0
+        for c in [copy.deepcopy(c) for c in cfg.get("file_checks") or [] if c["status"] in OPEN]:
+            if c["suggestion"] != suggestion_id if suggestion_id is not None else c["suggestion"] not in answered:
+                continue
+            files = self._files(slug) if files is None else files
+            by_file = self._rows_by_file(proj)
+            for vram in c["tasks"]:
+                source = next((s for s0, _, s, _ in files if s0 == vram), None)
+                for f in by_file.get(source, ()):
+                    self.net.set_priority(slug, f["name"], False)
+            c["status"], c["tasks"] = "withdrawn", []
+            self._save(slug, c, "stopped: the user answered the suggestion")
+            n += 1
+        return n
+
     def recheck(self, slug: str, cid: int | None = None) -> int:
-        """Weigh a check (or every open one) again, in the background. Returns how many."""
+        """Weigh a check (or every open one) again, in the background, once the checks of answered suggestions have
+        ended (withdraw). Returns how many."""
+        self.withdraw(slug)
         checks = [c for c in (self.net.cfg(self.net.project_row(slug)).get("file_checks") or [])
                   if c["status"] in OPEN and (cid is None or c["id"] == cid)]
 
