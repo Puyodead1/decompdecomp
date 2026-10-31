@@ -608,6 +608,7 @@ const PART_STATE = {
   quirk: ["doubtful", "its neighbours don't agree: it may be one function's quirk"],
   checking: ["being checked", "the app tries its neighbours with that compiler"],
   waiting: ["waiting", "agents try its neighbours when they take them"],
+  withdrawn: ["stopped", "you answered its suggestion"],
   "": ["not checked yet", ""],
 };
 const hexShort = (n) => "0x" + n.toString(16).toUpperCase();

@@ -222,6 +222,19 @@ def test_without_evidence_the_nearest_neighbour_goes_to_an_agent_and_giving_up_m
     assert check["status"] == "confirmed" and net.priority == []
 
 
+def test_answering_a_suggestion_ends_its_check():
+    """A dismissed suggestion's check kept sending agents to try its compiler: answering it ends the check, and its
+    task leaves the line."""
+    net = FakeNet(functions(9), {"f4": {CW[0]}})
+    _, check = start(net)
+    assert check["status"] == "checking" and net.priority == ["f3"]
+    net._update_cfg("game", lambda cfg: cfg["suggestions"][-1].__setitem__("status", "dismissed"))
+    assert net.rangechecks.withdraw(net.proj) == 1
+    check = net.cfg(net.proj)["range_checks"][-1]
+    assert check["status"] == "withdrawn" and check["tasks"] == [] and net.priority == []
+    assert net.rangechecks.withdraw(net.proj) == 0
+
+
 def test_a_recheck_reads_the_functions_once_and_never_their_assembly():
     """GTA San Andreas: each of its 62 open checks read every column of every function (73 MB of assembly), 17 s
     after every match. A run reads the functions' addresses once, and the judge's columns for the few it judges."""

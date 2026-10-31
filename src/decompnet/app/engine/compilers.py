@@ -553,6 +553,11 @@ class CompilerMixin:
             self.set_compiler(slug, hit["toolchain"], hit["flags"], guard=guard)
         self._update_cfg(slug, lambda cfg: next(s for s in cfg["suggestions"] if s["id"] == sid).__setitem__(
             "status", "applied" if apply else "dismissed"))
+        # its range check, if one runs, has its answer: agents stop being sent to try the compiler
+        if self.filecompilers.applies(slug):
+            self.filecompilers.withdraw(slug, sid)
+        else:
+            self.rangechecks.withdraw(self._project(slug), sid)
 
     def set_compiler_ranges(self, slug: str, ranges: list[list[int]], toolchain: str | None,
                             flags: list[str] | None = None, reopen: bool = False) -> None:
