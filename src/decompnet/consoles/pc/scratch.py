@@ -2527,6 +2527,8 @@ def library_functions(functions: list[Function], known: dict[int, str], read=Non
 
 
 RUNTIME_WHY = "Visual C++'s runtime library ({name}, {library}): its code byte for byte, not the game's own"
+RUNTIME_PART_WHY = ("Visual C++'s runtime library ({name}, {library}): its code byte for byte with the function "
+                    "{other} it was cut from, not the game's own")
 
 
 def runtime_matches(functions: list[Function], pes: dict[str, PE], compiler: str | None) -> dict[int, str]:
@@ -2544,6 +2546,17 @@ def runtime_matches(functions: list[Function], pes: dict[str, PE], compiler: str
     for f in functions:
         if (hit := prints.find(pes[unit_module(f.unit)].read(f.addr, f.size))):
             out[f.addr] = RUNTIME_WHY.format(name=hit[0].name, library=hit[0].library)
+    # one the analysis cut in two where the runtime calls into its middle: a 2003 game's sin, 9 bytes and a call
+    # whose return is the rest (_CIsin's entry), each piece no library function, and agents were handed the 9 bytes
+    # again and again
+    ordered = sorted(functions, key=lambda f: f.addr)
+    for a, b in zip(ordered, ordered[1:]):
+        if a.addr in out or a.addr + a.size != b.addr or unit_module(a.unit) != unit_module(b.unit):
+            continue
+        if (hit := prints.find(pes[unit_module(a.unit)].read(a.addr, a.size + b.size))):
+            for f, other in ((a, b), (b, a)):
+                out.setdefault(f.addr, RUNTIME_PART_WHY.format(name=hit[0].name, library=hit[0].library,
+                                                               other=other.name))
     return out
 
 

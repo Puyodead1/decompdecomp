@@ -107,8 +107,9 @@ class WindowsPC(Console):
     # (scratch.recognise_library: Ghidra runs again, once); 15 the runtime libraries' own code, where the game's Visual
     # C++ has them (scratch.runtime_matches); 16 that list found again, its helpers beside the runtime's code and never
     # what its startup calls (15's took a 2003 game's WinMain and what it calls); 17 the C runtime the game links (/MT,
-    # /MD) in every file's flags (scratch.set_runtime_flag)
-    ANALYSIS = 17
+    # /MD) in every file's flags (scratch.set_runtime_flag); 18 the runtime's functions Ghidra cut in two found too
+    # (scratch.runtime_matches: a 2003 game's sin and cos)
+    ANALYSIS = 18
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -346,7 +347,7 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True),
                  12: (merged, False), 13: (merged, False), 14: (library, True), 15: (runtime_code, True),
-                 16: (runtime_code, True), 17: (runtime_flag, False)}
+                 16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
