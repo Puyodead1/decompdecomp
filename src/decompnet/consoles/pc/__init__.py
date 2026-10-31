@@ -108,8 +108,10 @@ class WindowsPC(Console):
     # C++ has them (scratch.runtime_matches); 16 that list found again, its helpers beside the runtime's code and never
     # what its startup calls (15's took a 2003 game's WinMain and what it calls); 17 the C runtime the game links (/MT,
     # /MD) in every file's flags (scratch.set_runtime_flag); 18 the runtime's functions Ghidra cut in two found too
-    # (scratch.runtime_matches: a 2003 game's sin and cos)
-    ANALYSIS = 18
+    # (scratch.runtime_matches: a 2003 game's sin and cos); 19 the joins again, for a catch block's rest that takes its
+    # call's arguments off the stack (arch/x86.piece: the STL's node allocators, each cut at the operator delete of its
+    # catch(...))
+    ANALYSIS = 19
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -347,7 +349,7 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True),
                  12: (merged, False), 13: (merged, False), 14: (library, True), 15: (runtime_code, True),
-                 16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True)}
+                 16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True), 19: (pieces, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
@@ -361,7 +363,7 @@ class WindowsPC(Console):
             net.forks.reanalyse(slug, tools, paths=("tools",), log=log)
             net.forks.get(slug)[1].update_manifest(tools=scratch.tools_version())  # (tried: not again until they change)
         # (a step taken back joined nothing)
-        grew = {**(joined if kept.get(4) or kept.get(8) else {}), **(rejoined if kept.get(7) else {})}
+        grew = {**(joined if kept.get(4) or kept.get(8) or kept.get(19) else {}), **(rejoined if kept.get(7) else {})}
         if grew:
             agent, _ = net.local_agent("decompdecomp")
             for name, took in grew.items():
