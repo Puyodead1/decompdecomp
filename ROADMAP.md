@@ -180,6 +180,9 @@ Where to start on a gap:
   matched and refused wrong C) and, per pack, byte for byte against the pack's own object (`tests/test_kits.py`);
   PSP's packs weren't on the machine it was checked on. GameCube, Wii and DS: see "Your own compiler for
   GameCube, Wii and DS".
+- **A catch block's rethrow Ghidra cut off is joined to its function.** A 2003 game's STL node allocators
+  (list<T>::_Buynode) were each cut at the operator delete of their catch(...); the rest takes that call's argument
+  off the stack, which no function starts by doing (arch/x86.piece), and analysis 19 joins them: 14 on that game.
 
 - **Visual C++ 2017 for Windows PC, through wine.** The `msvc2015` pack (proprietary, installed after the user
   accepts it, 220 MB): Visual C++ 2017's last toolset (14.16, cl 19.16.27027.1) and the Windows 10 SDK it was used
