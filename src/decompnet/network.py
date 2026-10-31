@@ -55,7 +55,7 @@ GAME_CODE = "aside_mark IS NULL"
 # A copy of another function of the game (an SQL condition on `functions`): the same code in another of its programs
 # (a V.Flash game's modules each link its engine again: config/<version>/copies.json). It's counted once, as its
 # original, and no agent takes it: twins match it when its original matches.
-COPY = "json_extract(meta, '$.copy_of') IS NOT NULL"
+COPY = "copy_mark IS NOT NULL"  # (meta's copy_of, as store.py's triggers copy it: the counts' index holds it)
 # Set aside, for any reason (an SQL condition on `functions`): no C makes it (status asm: hand-written assembly, a
 # piece of a function, agents' verdict), it isn't the game's own (GAME_CODE), or it's a copy (COPY). Every count
 # takes it off the total and off what matched, so a matched library function doesn't count either.
@@ -644,7 +644,7 @@ class Network:
             args = self._given_up_args(db, proj["id"], agent) | {
                 "agent": agent.id, "mine": self._own_release_cutoff(db, agent.id, time.time())}
             return db.execute(f"""SELECT COUNT(*) AS n FROM functions f WHERE f.project_id=:pid AND f.status='open'
-                AND json_extract(f.meta, '$.copy_of') IS NULL AND f.id NOT IN (SELECT function_id FROM claims)
+                AND f.copy_mark IS NULL AND f.id NOT IN (SELECT function_id FROM claims)
                 AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                    AND kind='release' AND created_at > :mine)
                 AND f.name NOT IN ({_GIVEN_UP})""", args).fetchone()["n"]
@@ -740,7 +740,7 @@ class Network:
                 query = (
                     f"""SELECT f.* FROM functions f LEFT JOIN {_REGION} r ON r.region = f.vram / {REGION_BYTES}
                         WHERE f.project_id=:pid AND f.status='open' AND (:weak = 0 OR f.abandons < :escalate)
-                        AND json_extract(f.meta, '$.copy_of') IS NULL
+                        AND f.copy_mark IS NULL
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                            AND kind='release' AND created_at > :mine)
