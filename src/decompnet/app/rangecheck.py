@@ -189,10 +189,32 @@ class RangeChecks:
             return "unknown"
         return "neutral" if judge(other, src) else "confirmed"
 
+    def withdraw(self, proj, suggestion_id: int | None = None) -> int:
+        """End the open checks of a suggestion the user answered (applied or dismissed), or of every answered one:
+        their tasks leave the line and agents are no longer sent to try its compiler. A 2003 PC game's dismissed
+        suggestion kept its check asking agents to try Visual C++ 6.0 on a 1,096-instruction function. Returns how
+        many."""
+        answered = {s["id"]: s["status"] for s in self.net.cfg(proj).get("suggestions", []) if s["status"] != "open"}
+        rows, n = None, 0
+        for c in self._open(proj):
+            if c.get("audit") or (c["suggestion"] != suggestion_id if suggestion_id is not None
+                                  else c["suggestion"] not in answered):
+                continue
+            rows = self._rows(proj) if rows is None else rows
+            for vram in c["tasks"]:
+                if (fn := self._at(rows, vram)):
+                    self.net.set_priority(proj["slug"], fn["name"], False)
+            c["status"], c["tasks"] = "withdrawn", []
+            self._save(proj, c, "stopped: the user answered the suggestion")
+            n += 1
+        return n
+
     def recheck(self, slug: str, cid: int | None = None, background: bool = True) -> None:
         """Weigh the evidence of a check (or all open ones) again: after it starts, a match, a try_compiler, a give-up.
         In the background, one run per project: it starts a moment after the last request, so a burst of matches is
-        one run, and requests made while it runs make one more run after it."""
+        one run, and requests made while it runs make one more run after it. Checks of answered suggestions end
+        first (withdraw)."""
+        self.withdraw(self.net._project(slug))
         if not (background and self.background):
             self._run(slug, {cid})
             return
