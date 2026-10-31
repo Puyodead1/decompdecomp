@@ -8,7 +8,9 @@ ForkEngine.autopilot_instances adds the instantiation to the function's file and
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -60,32 +62,47 @@ def spoiler(line: str) -> re.Pattern | None:
     return re.compile(rf"^[ \t]*template\s+class\s+std::{m.group(1)}\s*<\s*char\b[^;]*;[^\n]*\n?", re.M)
 
 
-def wrapper(ninja: str) -> str:
-    """What the cl rule runs the compiler with (wibo, off Windows), or ""."""
-    rule = re.search(r"^rule cl\n(?:[ \t]+.*\n)+", ninja, re.M)
-    m = re.search(r"--wrapper\s+(\S+)", rule.group(0).replace("$\n", " ")) if rule else None
-    return m.group(1) if m else ""
+WINE = "wine"  # a file whose compiler runs through wine (Visual C++ 2015 and newer off Windows): no probes for it
 
 
-def unit_compilers(ninja: str) -> dict[str, tuple[str, str, tuple[str, ...]]]:
-    """Each source file's object -> (its compiler, include folder, flags), as build.ninja builds it: the cl rule's
-    flags (CL_FLAGS) and the file's own (cflags)."""
+def _args(text: str) -> list[str]:
+    """build.ninja's quoted arguments (configure.py's q: list2cmdline on Windows, whose backslashes stay)."""
+    return [a.strip('"') for a in shlex.split(text, posix=os.name != "nt")]
+
+
+def unit_compilers(ninja: str) -> dict[str, tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
+    """Each source file's object -> (what runs its compiler: wibo's path, WINE or "", its compiler, its include
+    folders, its flags), as build.ninja builds it: the cl rule's flags (CL_FLAGS) and the file's own (cflags). A
+    file's `runner` and `includes` (#136); a build.ninja written before them has the rule's --wrapper and one
+    `include`."""
     rule = re.search(r"^rule cl\n(?:[ \t]+.*\n)+", ninja, re.M)
-    base = re.search(r"\s--\s+(.*?)\s*\$cflags", rule.group(0).replace("$\n", " "), re.S) if rule else None
+    text = rule.group(0).replace("$\n", " ") if rule else ""
+    base = re.search(r"\s--\s+(.*?)\s*\$cflags", text, re.S)
     flags = tuple((base.group(1) if base else "/nologo /c /O2 /W3 /GX").split())
+    old = re.search(r"--wrapper\s+(\S+)", text)
     out = {}
     for m in _BUILD.finditer(ninja):
         block = m.group(0)
         get = lambda key, block=block: (re.search(rf"^[ \t]+{key} = (.*)$", block, re.M) or [None, ""])[1].strip()  # noqa: E731
-        out[m.group(1)] = (get("cl"), get("include"), flags + tuple(get("cflags").split()))
+        runs = _args(get("runner"))
+        run_with = WINE if "--wine" in runs else runs[runs.index("--wrapper") + 1] if "--wrapper" in runs[:-1] else \
+            (old.group(1) if old and "$runner" not in text else "")
+        includes = _args(get("includes"))
+        folders = tuple(includes[k + 1] for k in range(len(includes) - 1) if includes[k] == "--include") or \
+            tuple(_args(get("include")))
+        out[m.group(1)] = (run_with, get("cl"), folders, flags + tuple(get("cflags").split()))
     return out
 
 
-def prints(root: Path, run_with: str, compiler: tuple[str, str, tuple[str, ...]], cache: Path, log=print) -> runtime.Fingerprints:
-    """The probes compiled as `compiler` builds a file, each function's `library` its probe's index; compiled once
-    per compiler and flags (`cache`)."""
-    cl, include, flags = compiler
-    key = hashlib.sha1(repr((cl, include, flags, PRELUDE, PROBES)).encode()).hexdigest()[:12]
+def prints(root: Path, compiler: tuple[str, str, tuple[str, ...], tuple[str, ...]], cache: Path,
+           log=print) -> runtime.Fingerprints:
+    """The probes compiled as `compiler` (unit_compilers') builds a file, each function's `library` its probe's
+    index; compiled once per compiler and flags (`cache`). Nothing for a compiler wine runs: its probes would take wine's
+    setup, and the STL's code of the games it built is yet to be looked at."""
+    run_with, cl, includes, flags = compiler
+    if run_with == WINE:
+        return runtime.Fingerprints([])
+    key = hashlib.sha1(repr((cl, includes, flags, PRELUDE, PROBES)).encode()).hexdigest()[:12]
     folder = cache / key
     folder.mkdir(parents=True, exist_ok=True)
     found: list[runtime.LibraryFunction] = []
@@ -96,7 +113,7 @@ def prints(root: Path, run_with: str, compiler: tuple[str, str, tuple[str, ...]]
             src.write_text(PRELUDE + line + "\n", encoding="utf-8")
             # (the source by its path from the project, as its build gives it: CL reads /tmp/... as an option)
             command = [*([run_with] if run_with else []), cl, *[f for f in flags if f not in ("/c",)], "/c", "/W1",
-                       f"/I{include}", f"/Fo{obj}", src.relative_to(root).as_posix()]
+                       *(f"/I{d}" for d in includes), f"/Fo{obj}", src.relative_to(root).as_posix()]
             try:
                 subprocess.run(command, cwd=root, capture_output=True, timeout=PROBE_SECONDS)
             except (OSError, subprocess.SubprocessError) as e:
