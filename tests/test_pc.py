@@ -2896,19 +2896,30 @@ def test_what_the_runtimes_startup_calls_stays_the_games():
 
 
 def test_each_files_compiler_and_flags_are_read_from_the_build():
-    """The STL probes compile as each file builds: build.ninja's cl rule flags with the file's own."""
+    """The STL probes compile as each file builds: build.ninja's cl rule flags with the file's own, run as the file's
+    runner says (wibo; wine's files get none), and a build.ninja written before runners and several include folders
+    the same way."""
     from decompnet.consoles.pc import stl
 
-    ninja = ("rule cl\n  command = $\n      python $\n      tools/compile.py --config c.json --wrapper $\n"
+    ninja = ("rule cl\n  command = $\n      python tools/compile.py --config c.json $runner --compiler $cl $\n"
+             "      $includes --output $out --source $in -- /nologo /c /O2 /GX $cflags\n"
+             "build build/g/src/auto/a.obj: cl src/auto/a.cpp $\n    | include/common.h\n  cl = /opt/7.0/CL.EXE\n"
+             "  includes = --include /opt/7.0/Include\n  runner = --wrapper /opt/wibo\n  cflags = /Oy- /GS\n"
+             "build build/g/src/auto/b.obj: cl src/auto/b.cpp\n  cl = /opt/14.16/cl.exe\n"
+             "  includes = --include /opt/14.16/Include --include /opt/sdk/ucrt\n  runner = --wine\n")
+    assert stl.unit_compilers(ninja) == {
+        "build/g/src/auto/a.obj": ("/opt/wibo", "/opt/7.0/CL.EXE", ("/opt/7.0/Include",),
+                                   ("/nologo", "/c", "/O2", "/GX", "/Oy-", "/GS")),
+        "build/g/src/auto/b.obj": (stl.WINE, "/opt/14.16/cl.exe", ("/opt/14.16/Include", "/opt/sdk/ucrt"),
+                                   ("/nologo", "/c", "/O2", "/GX"))}
+    assert not stl.prints(Path("."), stl.unit_compilers(ninja)["build/g/src/auto/b.obj"], Path("."),
+                          log=lambda *_: None).count
+    older = ("rule cl\n  command = $\n      python $\n      tools/compile.py --config c.json --wrapper $\n"
              "      /opt/wibo --compiler $cl $\n      --include $include --output $out --source $in -- /nologo /c /O2 $\n"
              "      /GX $cflags\n"
-             "build build/g/src/auto/a.obj: cl src/auto/a.cpp $\n    | include/common.h\n  cl = /opt/7.0/CL.EXE\n"
-             "  include = /opt/7.0/Include\n  cflags = /Oy- /GS\n"
-             "build build/g/src/auto/b.obj: cl src/auto/b.cpp\n  cl = /opt/7.0/CL.EXE\n  include = /opt/7.0/Include\n")
-    assert stl.wrapper(ninja) == "/opt/wibo"
-    assert stl.unit_compilers(ninja) == {
-        "build/g/src/auto/a.obj": ("/opt/7.0/CL.EXE", "/opt/7.0/Include", ("/nologo", "/c", "/O2", "/GX", "/Oy-", "/GS")),
-        "build/g/src/auto/b.obj": ("/opt/7.0/CL.EXE", "/opt/7.0/Include", ("/nologo", "/c", "/O2", "/GX"))}
+             "build build/g/src/auto/a.obj: cl src/auto/a.cpp\n  cl = /opt/7.0/CL.EXE\n  include = /opt/7.0/Include\n")
+    assert stl.unit_compilers(older) == {
+        "build/g/src/auto/a.obj": ("/opt/wibo", "/opt/7.0/CL.EXE", ("/opt/7.0/Include",), ("/nologo", "/c", "/O2", "/GX"))}
 
 
 @pytest.mark.skipif(toolchains.installed("msvc") is None or not (toolchains.root() / "msvc" / "7.0" / "Bin").is_dir(),
@@ -2918,9 +2929,9 @@ def test_the_stl_probes_compile_the_instances_a_game_has(tmp_path):
     from decompnet.consoles.pc import stl
 
     tc = toolchains.root()
-    compiler = (str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), str(tc / "msvc" / "7.0" / "Include"),
+    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc" / "7.0" / "Include"),),
                 ("/nologo", "/c", "/O2", "/W3", "/GX", "/Oy-"))
-    prints = stl.prints(tmp_path, str(tc / "wibo" / "wibo"), compiler, tmp_path / "stl", log=lambda *_: None)
+    prints = stl.prints(tmp_path, compiler, tmp_path / "stl", log=lambda *_: None)
     erase = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
              if f.name.startswith("?erase@?$_Tree") and stl.PROBES[int(f.library)].endswith("<std::string, int>;")]
     assert erase and len(prints.by_shape) > 100
@@ -2966,9 +2977,9 @@ def test_a_facet_used_compiles_as_the_games_stream_code(tmp_path):
     from decompnet.consoles.pc import stl
 
     tc = toolchains.root()
-    compiler = (str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), str(tc / "msvc" / "7.0" / "Include"),
+    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc" / "7.0" / "Include"),),
                 ("/nologo", "/c", "/O2", "/W3", "/GX", "/MT", "/Oy-", "/GS"))
-    prints = stl.prints(tmp_path, str(tc / "wibo" / "wibo"), compiler, tmp_path / "stl", log=lambda *_: None)
+    prints = stl.prints(tmp_path, compiler, tmp_path / "stl", log=lambda *_: None)
     do_get = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
               if f.name.startswith("?do_get@?$num_get@D") and f.name.endswith("AAK@Z")]
     assert {(len(f.code), "stl_num_get" in stl.PROBES[int(f.library)]) for f in do_get} == {(281, True)}

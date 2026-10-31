@@ -602,7 +602,7 @@ class WindowsPC(Console):
         if not compilers:
             return {}
         _, info, pes, functions = scratch._project_functions(fp.root, version)
-        run_with, cache = stl.wrapper(ninja), fp.root / "build" / version / "stl"
+        cache = fp.root / "build" / version / "stl"
         made: dict = {}
         out: dict[str, dict[str, str]] = {}
         for f in functions:
@@ -614,7 +614,7 @@ class WindowsPC(Console):
             if compiler is None:
                 continue
             if compiler not in made:
-                made[compiler] = stl.prints(fp.root, run_with, compiler, cache, log=log)
+                made[compiler] = stl.prints(fp.root, compiler, cache, log=log)
             if (hit := made[compiler].find(pes[scratch.unit_module(f.unit)].read(f.addr, f.size))):
                 out.setdefault(f.unit, {})[f.name] = stl.PROBES[int(hit[0].library)]
         return out
