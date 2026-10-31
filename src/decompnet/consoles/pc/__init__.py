@@ -92,10 +92,11 @@ class WindowsPC(Console):
     # Ghidra's Function ID knows it (scratch.recognise_library: Ghidra runs again, once); 15 the runtime libraries'
     # own code, where the game's Visual C++ has them (scratch.runtime_matches); 16 that list found again, its helpers
     # beside the runtime's code and never what its startup calls (15's took a 2003 game's WinMain and what it calls);
-    # 17 the C runtime the game links (/MT, /MD) in every file's flags (scratch.set_runtime_flag).
+    # 17 the C runtime the game links (/MT, /MD) in every file's flags (scratch.set_runtime_flag); 18 the runtime's
+    # functions Ghidra cut in two found too (scratch.runtime_matches: a 2003 game's sin and cos).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 17
+    ANALYSIS = 18
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -293,7 +294,8 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
                  11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
-                 15: (runtime_code, True), 16: (runtime_code, True), 17: (runtime_flag, False)}
+                 15: (runtime_code, True), 16: (runtime_code, True), 17: (runtime_flag, False),
+                 18: (runtime_code, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:

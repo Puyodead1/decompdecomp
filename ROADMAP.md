@@ -115,6 +115,10 @@ Where to start on a gap:
   and no older configure.py is given an argument it doesn't know. The build passes every path as `Z:\...`, and
   wine's output goes through a file: the services the first wine program starts outlive it and, given the build's
   pipe, held the build open for as long as the server ran. The older packs stay on wibo.
+- **Runtime functions Ghidra cut in two are found whole.** A 2003 game's sin and cos were cut after their first call
+  (where _CIsin calls in), and neither piece is a library function: a function with the one after it is matched too
+  (analysis 18), and agents no longer get the 9-byte heads.
+
 - **opencode helpers wait for OpenCode Go's limit as long as it lasts.** Its error says no time, so helpers waited
   15, 30, then 60 minutes; its background service says when each meter (5-hour, weekly, monthly) resets, and the
   helper carries on then (Agent.limit_resets_at). Times in the GUI read as the user's clock does (7:49 PM).
