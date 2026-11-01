@@ -88,6 +88,7 @@ MACHINE_AGENTS = ("autopilot", "permuter")  # decompdecomp's own workers: their 
 # of this many models (one model's blind spot isn't proof), say so, it's set aside: no one is handed it again, and
 # the user can give it back (reopen).
 NOT_C_AGENTS, NOT_C_MODELS = 3, 2
+LAST_DIFF_PAGE = 400  # rows of a diff last_diff shows at once (Network.last_diff)
 # The same verdict in agents' notes, from before release_function took one (Network.not_c_from_notes): words that say
 # no C at all makes the code. Not a note about compiler flags: "flag-blocked" code may match with other flags.
 # On every project of a user (October 2026) no function later matched had three agents' notes saying so.
@@ -1232,19 +1233,28 @@ class Network:
         """A compile's diff rows, kept for last_diff (memory only: the next compile replaces them)."""
         self._last_diffs[(agent_id, function_id)] = (list(rows), legend)
 
-    def last_diff(self, agent: Agent, function: str, project: str | None = None, context: int = 2) -> str:
+    def last_diff(self, agent: Agent, function: str, project: str | None = None, context: int = 2,
+                  start: int = 0) -> str:
         """The full diff of this agent's last compile of a function, every differing row: compile_and_diff shows the
         first 60 rows and cut the rest (27 to 181 rows in one project), and the only way to see them was another
-        compile. Costs no compile."""
+        compile. Costs no compile. A page of LAST_DIFF_PAGE rows at a time, from row `start`: a 2,182-instruction
+        function's diff was 3,441 rows in one answer, more than an API helper keeps of a conversation, so the agent
+        saw it cut and could never work on the function."""
         fn = self._function(function, project)
         kept = self._last_diffs.get((agent.id, fn["id"]))
         if kept is None:
             raise NetworkError(f"no compile of {fn['name']} by you since the app started: compile_and_diff first")
         rows, legend = kept
         context = max(0, min(int(context or 0), 10))
-        return (f"Full diff of your last compile of {fn['name']} ({len(rows)} rows; not a new compile):\n"
-                + scoring.render_rows(rows, context, max_rows=len(rows) * (2 * context + 2) + 10, run=len(rows) + 1,
-                                      legend=legend, more_hint=False))
+        start = max(0, min(int(start or 0), max(0, len(rows) - 1)))
+        page = rows[start:start + LAST_DIFF_PAGE]
+        end = start + len(page)
+        where = f"rows {start}-{end - 1} of {len(rows)}" if len(rows) > LAST_DIFF_PAGE else f"{len(rows)} rows"
+        more = (f"\n(more: last_diff(function=\"{fn['name']}\", start={end}) shows rows {end} on)"
+                if end < len(rows) else "")
+        return (f"Full diff of your last compile of {fn['name']} ({where}; not a new compile):\n"
+                + scoring.render_rows(page, context, max_rows=len(page) * (2 * context + 2) + 10, run=len(page) + 1,
+                                      legend=legend, more_hint=False) + more)
 
     def stall_status(self, function_id: int, agent_id: int) -> dict:
         """Where an agent stands against a function's move-on number: one count for compile_and_diff's results,

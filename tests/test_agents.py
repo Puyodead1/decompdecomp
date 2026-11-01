@@ -1346,6 +1346,7 @@ class _FakeClaude:
     def __init__(self, replies):
         self.replies, self.sent = list(replies), []
         self.beta = self.messages = self
+        self.models = type("Models", (), {"retrieve": lambda _, model: type("M", (), {"max_input_tokens": 1000000})()})()
 
     def __enter__(self):
         return self
@@ -1424,3 +1425,27 @@ def test_an_anthropic_rate_limit_waits_like_any_servers():
     fake = _FakeClaude([anthropic.RateLimitError("slow down", response=response, body=None)])
     r = api.anthropic_post(fake, "claude-opus-5-5", [{"role": "user", "content": "task"}], [], None)
     assert r.status_code == 429 and "slow down" in r.text and api._retry_after(r)
+
+
+def test_an_anthropic_helper_keeps_as_much_of_its_conversation_as_its_model_takes():
+    """128K, every remote API's guess, cut a big function's brief and diff out of an Opus helper's conversation each
+    step: its model's own context (the Models API), or what the user set."""
+    from decompnet.agents import api
+
+    fake = _FakeClaude([])
+    assert api.anthropic_window(fake, {"model": "claude-opus-5-5"}) == 1000000
+    assert api.anthropic_window(fake, {"model": "claude-opus-5-5", "context_tokens": 200000}) == 200000
+
+
+def test_a_long_diff_comes_a_page_at_a_time(tmp_path):
+    from decompnet import network
+
+    net = _game(tmp_path)
+    agent, _ = net.local_agent("claude-opus-1")
+    fn = net._function("f0", "game")
+    rows = [("i", f"mov eax, {k}", f"mov ebx, {k}") for k in range(network.LAST_DIFF_PAGE + 50)]
+    net.keep_diff(agent.id, fn["id"], rows)
+    first = net.last_diff(agent, "f0", "game", 0)
+    assert f"rows 0-{network.LAST_DIFF_PAGE - 1} of {len(rows)}" in first and f"start={network.LAST_DIFF_PAGE}" in first
+    rest = net.last_diff(agent, "f0", "game", 0, network.LAST_DIFF_PAGE)
+    assert f"mov eax, {len(rows) - 1}" in rest and "more:" not in rest and "mov eax, 3 " not in rest
