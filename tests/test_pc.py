@@ -3176,3 +3176,17 @@ def test_compare_compilers_ranks_each_visual_cpp_and_flag_set_and_changes_nothin
     assert scores and scores == sorted(scores)
     assert (scratch_pe.file_compilers(root, "demoquest"), (root / unit).read_text()) == before
     assert net._function(name, slug)["status"] == "open"
+
+
+def test_a_destructors_pop_ecx_after_its_call_is_a_piece():
+    """A 2003 game's @func_00468AA0@4 (`mov eax, [ecx+8]; push eax; mov [ecx], vtable; call free`) was cut at the
+    call, and its `pop ecx; ret` was a function of its own: neither could match, and agents of two models had to
+    propose the join. `pop ecx` takes the call's argument off the stack, and the function ends right after."""
+    from decompnet.arch import x86
+
+    body = bytes.fromhex("8b410850c701f0d94c00e800000000")
+    assert "pop ecx" in x86.piece(body, bytes.fromhex("59c3"))
+    assert "pop ecx" in x86.piece(body, bytes.fromhex("59595e5bc3"))  # (two arguments, then the caller's registers)
+    # the C runtime's __EH_epilog starts with `pop ecx` and goes on: a function of its own
+    assert x86.piece(body, bytes.fromhex("5964890d00000000")) is None
+    assert x86.piece(body + bytes.fromhex("c3"), bytes.fromhex("59c3")) is None  # (after a ret: its own)

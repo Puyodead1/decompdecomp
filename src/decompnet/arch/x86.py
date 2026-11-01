@@ -167,6 +167,16 @@ def piece(before: bytes, code: bytes) -> str | None:
     first = next(_READER.disasm(code[:LONGEST_INSTRUCTION], 0), None)
     if ins[-1].mnemonic == "call" and first is not None and first.mnemonic == "add" and first.op_str.startswith("esp,"):
         return f"it takes the arguments of the call before it off the stack: the rest of {_PIECE}"
+    # MSVC takes one argument (two) off with `pop ecx` (twice): a destructor's `call free; pop ecx; ret` cut at the
+    # call (a 2003 PC game's @func_00468AA0@4 and its `pop ecx; ret`, which agents of two models joined by hand).
+    # Then the function ends: a ret, the caller's registers popped, the frame left. A function of its own that starts
+    # with `pop ecx` (the C runtime's __EH_epilog: `pop ecx; mov fs:[0], ecx`) goes on otherwise.
+    if ins[-1].mnemonic == "call" and first is not None and (first.mnemonic, first.op_str) == ("pop", "ecx"):
+        after = [i for i in _READER.disasm(code[:LONGEST_INSTRUCTION * 4], 0)]
+        rest = next((i for i in after if (i.mnemonic, i.op_str) != ("pop", "ecx")), None)
+        if rest is not None and (rest.mnemonic in ("ret", "retn", "leave") or (rest.mnemonic == "pop" and rest.op_str in (
+                "esi", "edi", "ebx", "ebp")) or (rest.mnemonic, rest.op_str) == ("mov", "esp, ebp")):
+            return f"it takes the argument of the call before it off the stack (pop ecx): the rest of {_PIECE}"
     unset = _uses_unset(code)
     if unset is None:
         return None
