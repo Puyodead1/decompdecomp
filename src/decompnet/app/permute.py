@@ -21,6 +21,7 @@ to four), each at a lower CPU priority that the compilers it runs inherit: the a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -246,6 +247,7 @@ class Permuter:
     def _turn(self, agent, proj, fn, st: State) -> None:
         try:
             self._permute(agent, proj, fn, st)
+            self._try_flags(agent, proj, fn, st)
         except NetworkError as e:  # the project refused its source (a helper the file hasn't): an answer, not a crash
             log.info("permuter: %s: %s (left to agents)", fn["name"], str(e).splitlines()[0])
             with self.net.store.tx() as db:  # the same best attempt is refused every time: no more turns on it
@@ -331,6 +333,32 @@ class Permuter:
                 gen.close()
             st.holding(fn["name"], False)
             self._let_go(agent, fn)
+
+    def _try_flags(self, agent, proj, fn, st: State) -> None:
+        """A near miss the turn didn't match, in a project whose source files each have their flags (a PC game's
+        /Oy-, /O1, /Ob1, /GS): its best C built with each of its file's flag variants (search_flags), once per best
+        attempt. A variant it matches with is kept when the file's other matches hold, as when an agent asks; only
+        agents asked before, and a C that was right but for the file's flags waited for one to think of it."""
+        fork = self.net.fork_slug(proj["slug"])
+        if not fork or st.stop.is_set() or proj["slug"] in self.net.links:
+            return
+        row = self.net.store.one("SELECT status, best_source FROM functions WHERE id=?", fn["id"])
+        if row is None or row["status"] != "open" or not row["best_source"] or self.net.store.one(
+                "SELECT 1 FROM claims WHERE function_id=?", fn["id"]):
+            return
+        digest = hashlib.sha1(row["best_source"].encode()).hexdigest()[:16]
+        with self.net.store.tx() as db:
+            if db.execute("INSERT OR IGNORE INTO flag_probes VALUES(?,?)", (fn["id"], digest)).rowcount == 0:
+                return  # (this C was tried with them already)
+        try:
+            said = self.net.forks.search_flags(agent, fork, fn["name"], source=row["best_source"])
+        except NetworkError as e:  # its project has no flags per file, or the function moved on meanwhile
+            log.debug("permuter: %s: no flag search (%s)", fn["name"], str(e).splitlines()[0])
+            return
+        st.add(variants=1)
+        if self.net.store.one("SELECT status FROM functions WHERE id=?", fn["id"])["status"] == "matched":
+            st.add(improved=1, matched=1)
+            log.info("permuter: %s matched with its file's other flags: %s", fn["name"], said.splitlines()[0])
 
     def _score(self, agent, proj, fn, source: str, best: int, fork: str | None) -> int | None:
         """A variant's score; recorded (as the function's best attempt, or its match) only when it beats `best`."""
