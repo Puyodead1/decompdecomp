@@ -1018,3 +1018,10 @@ details.more[open] > summary::before { content: "− "; }
 /* A list of things to tick (a V.Flash game's modules): as many columns as fit, scrolling when long */
 .checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 4px 12px; margin: 8px 0;
   max-height: 240px; overflow: auto; }
+/* Compare compilers (function panel) and a helper's work selection (its card) */
+.compare { margin: 0 0 12px; }
+.compare-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.compare-table th, .compare-table td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line-soft); }
+.compare-table tr.own td { font-weight: 600; }
+details.selection { font-size: 12px; margin-top: 4px; }
+details.selection .field { margin: 4px 0; }

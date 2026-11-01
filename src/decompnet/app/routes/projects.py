@@ -152,6 +152,11 @@ def register(app: App) -> None:
         return {"job": jobs.start("recheck", lambda log: {
             "said": net.recheck(slug, log=log) or "nothing to do on this computer, as the room's host checks the game"})}
 
+    def p_compare(slug, request, data):
+        """One function's best C with each compiler and flag variant, ranked (compare_compilers), in the background."""
+        name = str(data.get("name", ""))
+        return {"job": jobs.start("compare", lambda log: net.compare_compilers(slug, name, log, log.check_cancel))}
+
     def p_set_aside(slug, request, data):
         """You set a function aside: no C makes it (Network.set_aside_by_you)."""
         net.set_aside_by_you(str(data.get("name", "")), slug, str(data.get("why", "")))
@@ -259,7 +264,7 @@ def register(app: App) -> None:
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
-        "/api/recheck": (p_recheck, ["POST"]),
+        "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
         "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/parts": (p_parts, ["POST"]),

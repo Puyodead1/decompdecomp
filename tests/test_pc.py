@@ -3654,3 +3654,31 @@ def test_a_catch_blocks_rethrow_after_its_call_is_a_piece():
     assert "off the stack" in x86.piece(PUSH_FRAME + catch, rethrow)
     assert x86.piece(PUSH_FRAME + catch + bytes.fromhex("c3"), rethrow) is None  # (after a ret: a function's start)
     assert x86.piece(PUSH_FRAME + catch, bytes.fromhex("6a006a00e800000000")) is None  # (pushes first: could start one)
+
+
+@needs_tools
+def test_compare_compilers_ranks_each_visual_cpp_and_flag_set_and_changes_nothing(pc):
+    """The function panel's Compare compilers on a PC game: its best C built with each Visual C++ and each of its
+    file's flag variants, ranked, each with a real score; the file keeps its compiler and flags."""
+    net, slug = pc
+    root = Path(net.project_row(slug)["root"])
+    name = f"_func_{_map()['_lerp']:08X}"
+    fn = net._function(name, slug)
+    if fn["status"] != "open":
+        pytest.skip(f"{name} is {fn['status']} in this run")
+    agent, _ = net.local_agent("pc-compare")
+    wrong = _by_address()(csource.get(GAME.read_text(), "lerp")).replace("(b - a) * t", "(a - b) * t")
+    assert "(a - b)" in wrong
+    net.forks.attempt(agent, slug, name, wrong, keep=False)
+    unit = net.forks.get(slug)[1].unit(fn["unit"]).source
+    before = (scratch_pe.file_compilers(root, "demoquest"), (root / unit).read_text())
+    lines = []
+    said = net.compare_compilers(slug, name, lines.append)
+    assert said["kept"] is None and said["tried"] == said["of"] == len(lines) > 5
+    own = [r for r in said["rows"] if r["own"]]
+    assert len(own) == 1 and own[0]["compiler"] == "MSVC/6.0"
+    assert any(r["flags"] and "/O1" in r["flags"] for r in said["rows"])
+    scores = [r["score"] for r in said["rows"] if r["score"] is not None]
+    assert scores and scores == sorted(scores)
+    assert (scratch_pe.file_compilers(root, "demoquest"), (root / unit).read_text()) == before
+    assert net._function(name, slug)["status"] == "open"
