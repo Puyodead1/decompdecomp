@@ -578,6 +578,26 @@ def test_helpers_are_records_that_outlive_the_app(tmp_path, quiet):
     assert other not in later.sessions and net.store.one("SELECT COUNT(*) AS n FROM helpers")["n"] == 1
 
 
+def test_resuming_prepares_each_project_once_without_the_lock(tmp_path, quiet, monkeypatch):
+    """Twenty helpers of a large PC game prepared their project twenty times, all inside the manager's lock: the
+    agents page waited for every one of them at start."""
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    sids = m.start("claude", "game", 3, {"model": "opus"})
+    later = agents.Manager(net, tmp_path, URL)
+    held = []
+
+    def prepare(self, slug):  # another thread can take the (reentrant) lock meanwhile
+        free = []
+        t = threading.Thread(target=lambda: free.append(self._lock.acquire(timeout=1) and (self._lock.release() or True)))
+        t.start()
+        t.join()
+        held.append((slug, free == [True]))
+    monkeypatch.setattr(agents.Manager, "_prepare", prepare)
+    assert sorted(later.resume()) == sorted(sids)
+    assert held == [("game", True)]
+
+
 def test_remove_paused_stops_and_deletes_only_paused_helpers_on_the_project(tmp_path, quiet):
     net = _game(tmp_path)
     m = agents.Manager(net, tmp_path, URL)
