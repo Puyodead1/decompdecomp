@@ -153,7 +153,7 @@ def register(app: App) -> None:
         requested_models = unique_models
         if given.get("multiple_models") and not requested_models:
             return fail(ValueError("choose at least one model"))
-        options = {k: v for k, v in given.items() if k in ("model", "per_session", "task", "endpoints")}  # task: "readable" polishes
+        options = {k: v for k, v in given.items() if k in ("model", "per_session", "task", "endpoints", "selection")}  # task: "readable" polishes
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
         count = max(1, min(int(data.get("count", 1)), agents.MAX_AT_ONCE))
         total = (len(requested_models) if requested_models else 1) * count
@@ -233,6 +233,17 @@ def register(app: App) -> None:
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
         settings.save()
         return JSONResponse({"started": ids})
+
+    @mcp.custom_route("/api/agents/selection", methods=["POST"])
+    async def api_agents_selection(request: Request) -> Response:
+        """A helper's work selection (`id`, `selection`: strategy, match_below, max_tries, stall_compiles)."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        try:
+            return JSONResponse({"selection": manager.set_selection(str(data.get("id", "")), data.get("selection"))})
+        except (NetworkError, ValueError) as e:
+            return fail(e)
 
     @mcp.custom_route("/api/agents/stop", methods=["POST"])
     async def api_agents_stop(request: Request) -> Response:

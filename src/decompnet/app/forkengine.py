@@ -2718,7 +2718,7 @@ class ForkEngine:
         unit = fp.unit(fn["unit"])
         lines = [f"## {header}: {fn['name']}  ({proj['name']})", f"unit {unit.name}, {fn['size']} bytes"]
         if fn["status"] != "matched":
-            lines.append(move_on_brief(fn))
+            lines.append(move_on_brief(fn, self.net.stall_after(fn, agent)))
         if (reg := meta.get("static_register_arg")) and fn["status"] != "matched":
             lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, from callers all in its own "
                          f"source file. Visual C++ gives a static function a convention of its own (arguments in "
@@ -3142,6 +3142,8 @@ class ForkEngine:
         variants) recorded only when better than this score. A try that isn't kept holds the function only while
         it builds (twins' tries come unclaimed: a 30-minute claim each kept agents off them, then counted as given up).
         `comment`: (polishing) the comment right above the definition goes into the file, in place of the file's."""
+        if keep:  # (an agent's own work: its work selection's max tries)
+            self.net.check_tries(agent, self._fn(slug, function))
         held = None if keep else self._hold_for_try(slug, function, agent)
         try:
             res = self._attempt(agent, slug, function, source, keep, prelude, quiet, comment)

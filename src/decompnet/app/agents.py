@@ -374,6 +374,7 @@ class Session:
     def snapshot(self, since: int = 0) -> dict:
         return {"id": self.id, "kind": self.kind, "kind_name": agents.get(self.kind).name, "label": self.label,
                 "task": self.options.get("task") or "",  # "readable": it polishes matched code
+                "selection": self.options.get("selection") or {},  # its work selection (network.validate_selection)
                 "slug": self.slug, "agent": self.agent_name, "model": self.model, "state": self.state, "why": self.why,
                 "todo": self.todo, "until": self.until, "stopped_by": self.stopped_by,
                 "last_message": self.last_message, "runs": self.runs, "restarts": self.restarts, "error": self.error,
@@ -592,6 +593,8 @@ class Manager:
 
     def start(self, kind: str, slug: str, count: int = 1, options: dict | None = None) -> list[str]:
         options = dict(options or {})
+        if (selection := network.validate_selection(options.pop("selection", None))):
+            options["selection"] = selection
         agent = agents.get(kind)  # (an unknown kind is a ValueError that says which there are)
         if agent.id != kind:
             kind = agent.id
@@ -612,7 +615,24 @@ class Manager:
                 ids.append(s.id)
         return ids
 
+    def set_selection(self, sid: str, policy) -> dict:
+        """A helper's work selection, from its card: kept with its record, and in force from its next claim."""
+        with self._lock:
+            s = self.sessions.get(sid)
+            if s is None:
+                raise ValueError("that helper is gone: refresh the list")
+            policy = self.net.set_selection(s.slug, s.agent_name, policy)
+            if policy:
+                s.options["selection"] = policy
+            else:
+                s.options.pop("selection", None)
+            with self.net.store.tx() as db:  # (the key stays in the settings)
+                db.execute("UPDATE helpers SET options=? WHERE id=?",
+                           (json.dumps({k: v for k, v in s.options.items() if k != "api_key"}), s.id))
+            return policy
+
     def _launch(self, s: Session) -> None:
+        self.net.set_selection(s.slug, s.agent_name, s.options.get("selection"))  # (the queue and the judge read it)
         s.stop = threading.Event()
         s.state, s.why, s.todo, s.until, s.stopped_by, s.error = "starting", "", "", None, "", ""
         s.signed_out = s.throttled = s.limited = s.auth_failed = False
@@ -999,6 +1019,11 @@ class Manager:
                 break
             if (cap := self.over_budget(s.slug)) is not None:
                 self._finish(s, f"the agents on this project have spent the ${cap:.2f} budget (Setup)")
+                break
+            if task != "readable" and self.net.selection_left(agent, s.slug) == 0 and not self.net.store.one(
+                    "SELECT 1 FROM claims WHERE agent_id=?", agent.id):
+                self._pause(s, "nothing open is left within its work selection",
+                            "Change its work selection on its card, then start it again.")
                 break
             if self._room_away(s):
                 continue
