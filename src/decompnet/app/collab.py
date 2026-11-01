@@ -66,6 +66,15 @@ def _check_name(name: str) -> None:
 
 # ---------------------------------------------------------------------------------------------- host
 
+MEMBER_LABEL = 48  # characters of a member's agent's name kept on the host; a longer one ends in a digest of all of it
+
+
+def member_label(label: str) -> str:
+    label = re.sub(r"[^A-Za-z0-9_-]", "", str(label or "agent")) or "agent"
+    if len(label) <= MEMBER_LABEL:
+        return label
+    return label[:MEMBER_LABEL - 7] + "-" + hashlib.sha1(label.encode()).hexdigest()[:6]
+
 class Room:
     """Host-side state for one shared project."""
 
@@ -249,8 +258,10 @@ class Room:
         return agent
 
     def agent_for(self, member: Agent, label: str) -> Agent:
-        """The host-side identity of one of a member's agents, e.g. alex.claude-1."""
-        label = re.sub(r"[^A-Za-z0-9_-]", "", str(label or "agent"))[:24] or "agent"
+        """The host-side identity of one of a member's agents, e.g. alex.claude-1. One per agent: names cut to 24
+        characters made a laptop's opencode-deepseek-v4.1-flash-high-1, -2, -3... one agent on the host, which holds
+        one claim, so each of them was handed the others' function back and released what another was working on."""
+        label = member_label(label)
         name = f"{member.name}.{label}"
         row = self.net.store.one("SELECT id FROM agents WHERE name=?", name)
         if row is None:
