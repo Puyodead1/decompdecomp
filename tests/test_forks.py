@@ -967,6 +967,18 @@ def test_builds_run_in_a_session_of_their_own(tmp_path):
     assert ok and int(out.split()[-1]) != os.getsid(0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the grandchild holds the pipe the POSIX way")
+def test_a_build_that_hangs_stops_at_its_timeout_with_what_it_started(tmp_path):
+    """A compiler that hung under the build kept its output open, so the build never timed out, and killing ninja
+    alone left the compiler running."""
+    import time
+
+    hang = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            "time = __import__('time'); time.sleep(60)")
+    started = time.monotonic()
+    ok, out = _ninja_project(tmp_path).run([sys.executable, "-c", hang], timeout=1)
+    assert not ok and out == "timed out" and time.monotonic() - started < 15
+
 def test_coff_objects_data_isnt_called_different(tmp_path):
     """legobatman (PC): pyelftools can't read COFF ("Magic number does not match"), and file_status said the data
     differed. No verdict is no line."""

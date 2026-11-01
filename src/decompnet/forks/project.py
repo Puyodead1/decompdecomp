@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -28,7 +29,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from decompnet.hostenv import NO_WINDOW, console_python
+from decompnet.hostenv import NO_WINDOW, console_python, stop_process_tree
 
 from ..limits import capped, killed_for_memory
 from ..network import NetworkError
@@ -48,6 +49,19 @@ _CONFIG_LOCK = threading.Lock()
 # Agents may only edit source and header files, never the project's build setup, targets or verification.
 EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.I)
 FORBIDDEN_PARTS = {".git", STATE, "orig", "build", "asm", "expected", "tools", "config", ".github", "assets", "bin"}
+
+
+def _stop_build(proc: subprocess.Popen) -> None:
+    """A build that ran out of time, with everything it started: its own session (start_new_session) is its group."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        stop_process_tree(proc)
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
 
 
 def _sha1(path: Path) -> str:
@@ -396,6 +410,18 @@ class ForkProject:
                                     creationflags=NO_WINDOW, start_new_session=True)
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"
+        # the timeout is a timer: reading the output below waits until every process holding it ends, so a compiler
+        # that hung kept the build (and the attempt waiting on it) going forever, and killing ninja alone left it there
+        expired = threading.Event()
+        timer = threading.Timer(timeout, lambda: (expired.set(), _stop_build(proc)))
+        timer.daemon = True
+        timer.start()
+        try:
+            return self._read_build(proc, log, failed, expired)
+        finally:
+            timer.cancel()
+
+    def _read_build(self, proc, log, failed, expired) -> tuple[bool, str]:
         out, seen, quiet = [], collections.Counter(), 0
         for line in proc.stdout:
             line = line.rstrip()
@@ -407,10 +433,8 @@ class ForkProject:
                 quiet += 1
             elif len(out) <= 400 or len(out) % 50 == 0:
                 log(line)
-        try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        code = proc.wait()
+        if expired.is_set():
             return False, "timed out"
         if quiet:
             log(f"({quiet} repeated lines and linker warnings not shown)")
