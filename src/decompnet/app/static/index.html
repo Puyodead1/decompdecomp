@@ -315,9 +315,10 @@
         <div class="empty" id="noSessions"><p class="muted small">No agent works on this game yet. Press <b>Start agents</b> at the top: each agent picks functions by itself, and starts again by itself if it stops.</p></div>
       </section>
       <section class="panel feed-panel">
-        <header class="panel-head"><h2 id="feedTitle" tabindex="-1">What's happening</h2><span class="muted small" id="feedHint">every agent's work on this game, newest first</span><button class="ghost small-btn" id="helperLogClose" type="button" hidden>Back to everything</button></header>
+        <header class="panel-head"><h2 id="feedTitle" tabindex="-1">What's happening</h2><span class="muted small" id="feedHint">every agent's work on this game, newest first</span><button class="ghost small-btn" id="helperTranscript" type="button" hidden title="Every session it ran, kept: its prompt, its words and thinking, each tool call with its arguments and what the tool answered">Full transcript</button><button class="ghost small-btn" id="helperLogClose" type="button" hidden>Back to everything</button></header>
         <ol class="feed" id="activity" aria-live="off"></ol>
         <ol class="feed thoughts" id="thoughts" hidden></ol>
+        <div class="transcript" id="transcript" hidden><label class="field"><span>Session</span><select id="transcriptSession"></select></label><ol class="feed" id="transcriptList"></ol><button class="ghost small-btn" id="transcriptMore" type="button" hidden>Show more</button></div>
       </section>
     </div>
     <!-- below the helpers, so their cards keep the room they need: the room's other computers, each model's cost -->

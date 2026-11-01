@@ -115,7 +115,7 @@ class Api(Agent):
         headers = {"Content-Type": "application/json", **({} if claude else key_headers(s.options))}
         schema = api_tool_schemas(fork=bool(net.fork_slug(s.slug)), names=tools.project_tools(net, s.slug))
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
-                    {"role": "user", "content": manager.prompt(s)}]
+                    {"role": "user", "content": manager.session_prompt(s)}]
         count = int(s.options.get("per_session", PER_SESSION))
         used_tool, start, done = False, len(messages), 0
         with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=API_CONNECT_TIMEOUT)) as client, \
