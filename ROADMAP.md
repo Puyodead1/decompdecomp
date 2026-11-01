@@ -212,6 +212,17 @@ Where to start on a gap:
   pack imported, matched and refused wrong C) and, per pack, byte for byte against the pack's own object
   (`tests/test_kits.py`); PSP's packs weren't on the machine it was checked on. GameCube, Wii and DS: see "Your
   own compiler for GameCube, Wii and DS".
+- **Helpers' full transcripts.** A helper's card (What it said and did → Full transcript) shows each session it ran,
+  kept: its prompt, its words and thinking, every tool call with its arguments and what the tool answered. Two weeks
+  and 300,000 entries at most, each cut at 20,000 characters, with keys and tokens taken out.
+- **Compare compilers on one function.** The function panel builds its best C with each compiler and flag variant
+  (a PC file: every Visual C++ with /Oy-, /O1, /Ob1, /GS) and ranks them; nothing changes unless one matches, and then
+  only as try_compiler keeps one.
+- **Each helper's work selection.** On its card: the order it takes functions in (now with least tried), functions
+  below a match percentage only, at most so many compiles of one function, its own move-on number. Kept by the queue
+  and the judge; a helper whose selection has nothing left pauses and says so.
+- **The permuter tries a PC near miss's file flags** (search_flags) after its turn, once per best attempt, and its
+  limits (biggest function, seconds per turn, turns per function) are settings.
 - **Anthropic's API for the API helper.** An Anthropic endpoint (Agents & models) runs Claude models through the
   built-in agent loop on an API key's credits, apart from a Claude Code subscription's helpers: the Messages API
   through the anthropic SDK, its thinking sent back as it came (asked to be dropped, not refused, once a fold changes
