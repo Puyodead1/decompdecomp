@@ -144,6 +144,7 @@ function renderSessions(sessions) {
       ${todo ? `<span class="todo-line">${esc(todo)}</span>` : ""}
       ${s.last_message ? `<q class="said" title="${esc(s.last_message)}">${esc(s.last_message)}</q>` : ""}
       <span class="facts-line">${facts.join(" · ")}</span>
+      ${s.task === "readable" ? "" : selectionBox(s)}
       <button class="link-btn" data-log="${id}" type="button" aria-pressed="${S.logFor === s.id}">${S.logFor === s.id ? "Back to everything" : "What it said and did"}</button></div>`;
   }).join("");
   setHtml(box, html);
@@ -163,6 +164,31 @@ function renderSessions(sessions) {
   box.querySelectorAll("[data-log]").forEach((b) => {
     b.onclick = () => { S.logFor = S.logFor === b.dataset.log ? null : b.dataset.log; renderLog(); renderSessions(S.sessions || []); };
   });
+  box.querySelectorAll("details[data-sel]").forEach((d) => {
+    d.ontoggle = () => { S.selOpen = S.selOpen || new Set(); d.open ? S.selOpen.add(d.dataset.sel) : S.selOpen.delete(d.dataset.sel); };
+    d.querySelectorAll("[data-k]").forEach((f) => {
+      f.onchange = async () => {
+        const selection = {};
+        d.querySelectorAll("[data-k]").forEach((x) => { if (x.value !== "") selection[x.dataset.k] = x.dataset.k === "strategy" ? x.value : Number(x.value); });
+        try {
+          await api("/api/agents/selection", { method: "POST", body: { id: d.dataset.sel, selection } });
+          toast("Work selection saved: it applies from its next claim.");
+          poll(false);
+        } catch (e) { toast(esc(e.message), "err"); }
+      };
+    });
+  });
+}
+// a helper's work selection (network.validate_selection): the order it takes functions in, which ones, how long
+const STRATEGY_NAMES = [["", "The app's choice"], ["easiest", "Smallest first"], ["finish", "Files closest to done"], ["closest", "Nearest matches"], ["least_tried", "Least tried"], ["hardest", "Biggest first"], ["random", "Any order"]];
+function selectionBox(s) {
+  const sel = s.selection || {}, id = esc(s.id), set = Object.keys(sel).length;
+  const num = (k, label, min, max, step) => `<label class="field"><span>${label}</span><input data-k="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${sel[k] ?? ""}" placeholder="any"></label>`;
+  return `<details class="selection" data-sel="${id}" ${S.selOpen && S.selOpen.has(s.id) ? "open" : ""}><summary>Work selection${set ? " (set)" : ""}</summary>
+    <label class="field"><span>Order</span><select data-k="strategy">${STRATEGY_NAMES.map(([v, l]) => `<option value="${v}" ${(sel.strategy || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    ${num("match_below", "Only functions below this % matched", 0, 100, "any")}
+    ${num("max_tries", "Compiles of one function at most", 1, 10000, 1)}
+    ${num("stall_compiles", "Move on after this many compiles without a better score (else by the function's size)", 1, 1000, 1)}</details>`;
 }
 $("helperLogClose").onclick = () => { S.logFor = null; renderLog(); renderSessions(S.sessions || []); $("feedTitle").focus(); };
 $("stopAll").onclick = async () => {

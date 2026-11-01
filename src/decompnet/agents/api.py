@@ -554,7 +554,7 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
-                           s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
+                           s(function=st("optional name or address"), strategy=st("finish | easiest | closest | least_tried | hardest | random"),
                              count=it("up to 6 small functions at once"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "

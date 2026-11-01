@@ -63,7 +63,8 @@ class JudgeMixin:
         neighbours in the same file. Most small functions match on the first try, so an agent writes them all and
         judges them in one compile_and_diff: a fraction of the turns. Big functions come alone."""
         count = max(1, min(int(count or 1), 6))
-        if count == 1 or self._link(project) is not None:
+        # (a helper with a work selection takes one at a time: neighbours could be outside it)
+        if count == 1 or self._link(project) is not None or (project and self.selection(project, agent.name)):
             return self.claim(agent, project, None, strategy)
         proj = self._project(project)
         held = self.store.all("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=? "
