@@ -308,8 +308,7 @@ def test_a_source_the_project_refuses_is_one_line_in_the_log(tmp_path, caplog, m
         db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES('g','G','','arm',0,?,'{}')",
                    (str(tmp_path),))
         db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit) VALUES(1,'f',8,2,'open','a')")
-    p = permute.Permuter.__new__(permute.Permuter)
-    p.net = net
+    p = permute.Permuter(net)
     monkeypatch.setattr(p, "_permute", lambda *a: (_ for _ in ()).throw(NetworkError("send the function definition\nmore")),
                         raising=False)
     with caplog.at_level("INFO", logger="decompdecomp"):
@@ -318,3 +317,21 @@ def test_a_source_the_project_refuses_is_one_line_in_the_log(tmp_path, caplog, m
     assert caplog.records[-1].exc_info is None
     # the same best attempt is refused every time: its other turns go too
     assert net.store.one("SELECT permuted FROM functions WHERE id=1")["permuted"] == permute.MAX_TURNS
+
+
+def test_settings_let_the_permuter_take_bigger_functions(tmp_path):
+    """A PC game's near misses are often far over 400 instructions: Settings raises the limits (within their range)."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES('g','G','','arm',0,?,'{}')",
+                   (str(tmp_path),))
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,best_source,best_score) "
+                   "VALUES(1,'big',4000,1000,'open','a','int f;',100)")
+    p = permute.Permuter(net)
+    proj = net.project_row("g")
+    assert p.candidates(proj) == []
+    p.configure({"permuter_max_insns": 2000, "permuter_seconds": "x", "permuter_max_turns": 10**9})
+    assert [r["name"] for r in p.candidates(proj)] == ["big"]
+    assert (p.seconds, p.max_turns) == (permute.SECONDS, 1000)

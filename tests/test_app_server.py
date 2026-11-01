@@ -97,6 +97,8 @@ def test_only_the_apps_own_window_gets_the_gui(app):
     assert client.post("/api/settings", json={"per_session": 3}, headers={"X-Decomp": "1"}).status_code == 200
     # these tests script the agents themselves: no autopilot after the import
     assert client.post("/api/settings", json={"autopilot": False}, headers={"X-Decomp": "1"}).json()["autopilot"] is False
+    said = client.post("/api/settings", json={"permuter_max_insns": 1500}, headers={"X-Decomp": "1"}).json()
+    assert said["permuter_max_insns"] == 1500 and said["permuter_seconds"] == 60
 
 
 def test_reimport_runs_as_a_background_project_job(app, tmp_path, monkeypatch):

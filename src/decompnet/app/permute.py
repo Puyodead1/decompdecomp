@@ -52,6 +52,9 @@ READ_BYTES = 1 << 16
 MAX_SEED = 2**31  # seeds of the generator's runs: the same function and turn write the same variants
 REWRITE_MISSES = 200  # simple rewrites in a row that change nothing: none applies to the C
 MAX_INSNS = 400  # bigger near misses are left to agents: one variant takes too long to judge
+# what Settings may set them to (Permuter.configure): a PC game's near misses are often far bigger than MAX_INSNS
+LIMITS = {"permuter_max_insns": (MAX_INSNS, 100000), "permuter_seconds": (SECONDS, 3600),
+          "permuter_max_turns": (MAX_TURNS, 1000)}
 IDLE_SECONDS = 180  # with no near misses, how long until the permuter looks again
 IDLE_LOOKS = 20  # looks in a row with nothing to do (an hour) and it's done until agents start again
 HOLD_SPARE_SECONDS = 120  # a turn's hold on a function lasts this much longer than the turn, in case it runs over
@@ -172,10 +175,26 @@ class State:
             self.current = ", ".join(self._held)
 
 
+
+def limit(settings: dict, key: str) -> int:
+    """One of LIMITS as Settings has it, within its range (its default when unset or not a number)."""
+    default, top = LIMITS[key]
+    try:
+        return max(1, min(top, int(settings.get(key, default))))
+    except (TypeError, ValueError):
+        return default
+
 class Permuter:
     def __init__(self, net):
         self.net = net
         self.jobs: dict[str, State] = {}
+        self.max_insns, self.seconds, self.max_turns = MAX_INSNS, SECONDS, MAX_TURNS
+
+    def configure(self, settings: dict) -> None:
+        """The limits Settings gives it (LIMITS): from the next turn on, a turn under way keeps its deadline."""
+        given = {k: limit(settings, k) for k in LIMITS}
+        self.max_insns, self.seconds, self.max_turns = (given["permuter_max_insns"], given["permuter_seconds"],
+                                                        given["permuter_max_turns"])
 
     def status(self, slug: str) -> dict | None:
         st = self.jobs.get(slug)
@@ -201,7 +220,7 @@ class Permuter:
             "SELECT * FROM functions WHERE project_id=? AND status='open' AND best_source IS NOT NULL "
             "AND best_score > 0 AND best_score <= n_insns * 100 * ? AND n_insns <= ? AND permuted < ? "
             "AND id NOT IN (SELECT function_id FROM claims) ORDER BY CAST(best_score AS REAL) / (n_insns * 100) LIMIT ?",
-            proj["id"], NEAR, MAX_INSNS, MAX_TURNS, limit)
+            proj["id"], NEAR, self.max_insns, self.max_turns, limit)
 
     def _loop(self, slug: str, st: State) -> None:
         agent, _ = self.net.local_agent("permuter")
@@ -230,7 +249,7 @@ class Permuter:
         except NetworkError as e:  # the project refused its source (a helper the file hasn't): an answer, not a crash
             log.info("permuter: %s: %s (left to agents)", fn["name"], str(e).splitlines()[0])
             with self.net.store.tx() as db:  # the same best attempt is refused every time: no more turns on it
-                db.execute("UPDATE functions SET permuted=MAX(permuted, ?) WHERE id=?", (MAX_TURNS, fn["id"]))
+                db.execute("UPDATE functions SET permuted=MAX(permuted, ?) WHERE id=?", (self.max_turns, fn["id"]))
         except Exception as e:  # one odd function must not stop the rest
             log.info("permuter: %s: %s", fn["name"], e, exc_info=True)
 
@@ -240,7 +259,7 @@ class Permuter:
             self.net._expire_claims(db)
             if db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
                 return False
-            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + SECONDS + HOLD_SPARE_SECONDS))
+            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.seconds + HOLD_SPARE_SECONDS))
             db.execute("UPDATE functions SET permuted = permuted + 1 WHERE id=?", (fn["id"],))
         return True
 
@@ -268,7 +287,7 @@ class Permuter:
                     log.info("permuter: decomp-permuter didn't start: %s", e)
             start_src = best_src = cur_src = fn["best_source"]
             best = cur = fn["best_score"]
-            deadline = time.monotonic() + SECONDS
+            deadline = time.monotonic() + self.seconds
             batches = misses = 0
             while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
                 if gen is not None:

@@ -20,6 +20,7 @@ from ..agents import kind_id
 from ..agents.api import API_PRESETS, endpoint_entry, model_efforts
 from ..network import NetworkError
 from ..rom import RomError
+from . import permute
 from .agents import PER_SESSION
 
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
@@ -257,6 +258,7 @@ class Settings:
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
                 "auto_compiler": bool(self.data.get("auto_compiler")),
+                **{k: permute.limit(self.data, k) for k in permute.LIMITS},
                 "bridges_removed_seen": bool(self.data.get("bridges_removed_seen")),
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
