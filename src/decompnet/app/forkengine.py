@@ -311,6 +311,7 @@ _MSVC_C = re.compile(r"[_@]([A-Za-z_]\w*?)(?:@\d+)?")  # how MSVC decorates a C 
 _SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.M)
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 TRY_ALL_SECONDS = 120  # try_compiler "all" stops trying more versions after this (Codex gives a tool call 180)
+COMPARE_SECONDS = 900  # a comparison of every compiler and flag variant on one function stops after this
 
 
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
@@ -3507,6 +3508,88 @@ class ForkEngine:
         left = wanted[len(tried):]
         return (f"No compiler matches {fn['name']}; {unit.source} stays with {own}.\n" + "\n".join(tried)
                 + (f"\nNot tried yet (time ran out): {', '.join(left)}. Try them by name." if left else ""))
+
+    def compare_compilers(self, slug: str, function: str, log=lambda line: None, check=lambda: None) -> dict:
+        """A function's best C built with each of its console's compilers and, where its file has flags of its own
+        (a PC game's), each flag variant: every result's score, ranked, for the user to see which compiler and flags
+        come closest. Nothing is recorded; the file keeps its compiler and flags. Should one combination match, it
+        stays the file's (committed, when the file's other matched functions still match, as try_compiler and
+        search_flags keep one) and the comparison ends there."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        fn = self._fn(slug, function)
+        unit = fp.unit(fn["unit"])
+        own = console.file_compiler(fp, unit.source) if unit.source else None
+        if own is None:
+            raise NetworkError("this project builds with its own compilers: there's nothing to compare")
+        if self.net.links.get(slug) is not None:
+            raise NetworkError("in a room, the host's project decides each file's compiler: compare there")
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} already matches")
+        source = self.net._source_of(fn) or ""
+        if not source:
+            raise NetworkError(f"{fn['name']} has no attempt yet: compare once an agent or a draft has written its C")
+        own_flags = console.file_flags(fp, unit.source)
+        known = [c.id for c in console.compilers]
+        order = sorted(known, key=lambda c: abs(known.index(c) - known.index(own))) if own in known else known
+        variants = console.flag_variants(own_flags) if own_flags is not None else [None]
+        combos = [(c, f) for c in order for f in variants]
+        agent, _ = self.net.local_agent("decompdecomp")
+        rows, kept, until = [], None, time.monotonic() + COMPARE_SECONDS
+        shown = lambda flags: "" if flags is None else " ".join(flags) or "(the project's flags only)"  # noqa: E731
+        linked = unit.complete and fp.linkable()
+        held = self._hold_for_try(slug, function, agent)
+        try:
+            with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
+                try:
+                    self._baseline(proj, fp, unit, (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
+                    for k, (c, flags) in enumerate(combos, 1):
+                        check()
+                        if time.monotonic() > until:
+                            log(f"time is up: {len(combos) - k + 1} combinations not tried")
+                            break
+                        with self._build_locks[proj["id"]]:
+                            rel = console.set_file_compiler(fp, unit.source, c)
+                            if flags is not None:
+                                console.set_file_flags(fp, unit.source, flags)
+                        res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
+                        d = res.get("percent")
+                        rows.append({"compiler": c, "flags": shown(flags), "score": res.get("score"), "percent": d,
+                                     "exact": bool(res["matched"]), "own": c == own and flags == own_flags,
+                                     "breaks": res.get("broken") or []})
+                        log(f"{k}/{len(combos)} {c} {shown(flags)}: "
+                            + ("MATCH" if res["matched"] else "doesn't build" if res.get("score") is None
+                               else f"score {res['score']}"))
+                        if res["matched"] and c == own and flags == own_flags:
+                            kept = (c, flags)  # (its own: nothing to switch)
+                            break
+                        if res["matched"]:
+                            kept = (c, flags)
+                            self.net.bump_generation(proj["id"])
+
+                            def again(c=c, flags=flags):
+                                console.set_file_compiler(fp, unit.source, c)
+                                if flags is not None:
+                                    console.set_file_flags(fp, unit.source, flags)
+                            self._commit_entry(proj, fp, rel, again,
+                                               f"Build {unit.source} with {c} {shown(flags)}\n\n{fn['name']} matches "
+                                               "with them (found by comparing its compilers in decompdecomp).")
+                            break
+                finally:
+                    if kept is None:
+                        with self._build_locks[proj["id"]]:
+                            console.set_file_compiler(fp, unit.source, own)
+                            if own_flags is not None:
+                                console.set_file_flags(fp, unit.source, own_flags)
+                        self._build_unit(proj, fp, unit)  # the file's object is its own compiler's again
+        finally:
+            if held is not None:
+                with self.net.store.tx() as db:
+                    db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (held, agent.id))
+        rows.sort(key=lambda r: (not r["exact"], r["score"] is None or bool(r["breaks"]), r["score"] or 0))
+        return {"function": fn["name"], "file": unit.source, "own": f"{own} {shown(own_flags)}".strip(),
+                "kept": f"{kept[0]} {shown(kept[1])}".strip() if kept else None, "rows": rows,
+                "tried": len(rows), "of": len(combos)}
 
     def takes_file_flags(self, slug: str) -> bool:
         """Whether this project's build gives a source file flags of its own (Console.file_flags: games started from
