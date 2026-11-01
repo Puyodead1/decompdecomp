@@ -939,3 +939,15 @@ def test_a_guest_hears_what_is_left_as_the_hosts_own_agents_do(built, tmp_path):
     assert "1 you said no C makes: func_80000808" in said and "Stop working on this project" in said, said
     told = host.store.all("SELECT detail FROM events WHERE kind='not_c'")
     assert len(told) == 1 and told[0]["detail"].startswith("func_80000808: waiting for you")
+
+
+def test_a_members_agents_with_long_names_stay_apart_on_the_host():
+    """A laptop's opencode-deepseek-v4.1-flash-high-3 and -high-4 were one agent on the host (names cut to 24
+    characters): one claim between them, so each was handed the other's function back."""
+    from decompnet.app.collab import MEMBER_LABEL, member_label
+
+    a, b = member_label("opencode-deepseek-v4.1-flash-high-3"), member_label("opencode-deepseek-v4.1-flash-high-4")
+    assert a != b and a == "opencode-deepseek-v41-flash-high-3"
+    assert member_label("claude-1") == "claude-1" and member_label("") == "agent"
+    long = [member_label("x" * 60 + str(n)) for n in (1, 2)]
+    assert long[0] != long[1] and all(len(x) == MEMBER_LABEL for x in long)
