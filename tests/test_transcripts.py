@@ -3,6 +3,7 @@
 import json
 
 from decompnet.app import agents, tools, transcripts
+
 from .test_agents import URL, Quick, _FakeClaude, _game, _no_agent_settings
 
 

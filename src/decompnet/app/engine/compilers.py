@@ -294,6 +294,13 @@ class CompilerMixin:
         proj = self._project(slug)
         cfg = self.cfg(proj)
         tc, flag_list, check = None, [], None
+        if flags.strip() and (fork := self.fork_slug(slug)) and self.forks.takes_file_flags(fork):
+            # flags with a compiler went to the file-compiler check, which reads no flags: a PC game's agent suggested
+            # MSVC/7.0 with "/O2 /W3 /GX /MT /Oy-" to drop a file's /GS, heard "already the project's compiler", and
+            # noted that it had filed the suggestion
+            raise NetworkError("this project builds each file with flags of its own: search_flags(function) tries "
+                               "them and keeps the ones its C matches with, so flags aren't suggested by hand. Another "
+                               "compiler: try_compiler(function, compiler) switches the file when its C matches")
         if compiler and self.filecompilers.applies(slug):  # its files each have one: a range is checked on files
             return self.filecompilers.suggest(agent, slug, text, compiler, function, ranges)
         if (fork := self.fork_slug(slug)) and not compiler and self.forks.takes_file_flags(fork):
