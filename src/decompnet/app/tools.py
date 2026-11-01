@@ -295,7 +295,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         _claim(net, agent, slug, function, strategy, count),
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
-    "last_diff": lambda net, agent, slug, function, context=2: net.last_diff(agent, function, slug, context),
+    "last_diff": lambda net, agent, slug, function, context=2, start=0: net.last_diff(agent, function, slug, context,
+                                                                                    start),
     "release_function": lambda net, agent, slug, function, notes, needs="", not_c=False:
         net.release_function(agent, function, notes, slug, needs or "", bool(not_c)),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
@@ -478,10 +479,11 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "compile_and_diff", function=function, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def last_diff(ctx: Context, function: str, context: int = 2) -> str:
+    async def last_diff(ctx: Context, function: str, context: int = 2, start: int = 0) -> str:
         """Every differing row of your last compile_and_diff of `function`, where its result was cut ("more rows
-        not shown"). Costs no compile and counts for nothing. `context`: equal rows shown around each difference."""
-        return await run(ctx, "last_diff", function=function, context=context)
+        not shown"). Costs no compile and counts for nothing. `context`: equal rows shown around each difference.
+        A long diff comes 400 rows at a time: `start` is the row to begin at (its answer says the next one)."""
+        return await run(ctx, "last_diff", function=function, context=context, start=start)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def release_function(ctx: Context, function: str, notes: str, needs: str = "", not_c: bool = False) -> str:
