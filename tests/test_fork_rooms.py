@@ -177,3 +177,13 @@ def test_reconnecting_keeps_the_place_in_the_tree(room):
     assert head == _git(Path(host.project_row(slug)["root"]), "rev-parse", "HEAD")
     assert collab.join_room(guest, link, "alex", b"", log=lambda *_: None, client=client, start=False) == gslug
     assert guest.links[gslug].head == head
+
+
+def test_a_file_that_isnt_an_xbox_program_isnt_the_xboxs_to_name(tmp_path):
+    """Rooms ask every console which game a file is: the Xbox's raised on a PC game's .exe, and its member couldn't
+    join."""
+    from decompnet import consoles
+
+    exe = tmp_path / "game.exe"
+    exe.write_bytes(b"MZ" + bytes(500))
+    assert consoles.get("xbox").identity(exe) is None

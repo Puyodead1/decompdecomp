@@ -89,10 +89,16 @@ class Xbox(WindowsPC):
         return scratch.game_info(game)
 
     def identity(self, path: Path) -> str | None:
-        """The PE view's SHA-1: a disc image and the default.xbe out of it are the same game."""
+        """The PE view's SHA-1: a disc image and the default.xbe out of it are the same game. None for a file that
+        isn't an Xbox program: rooms ask every console in turn, and a PC game's member couldn't join."""
+        from ...forks.project import ForkError
         from . import scratch
 
-        return hashlib.sha1(scratch.pe_view(scratch.program_bytes(path))).hexdigest()
+        try:
+            data = scratch.program_bytes(path)
+        except (ForkError, OSError):
+            return None
+        return hashlib.sha1(scratch.pe_view(data)).hexdigest()
 
     def create_project(self, root: Path, game: Path, *, compiler: str | None = None, ltcg: bool | None = None,
                        log=print) -> dict:
