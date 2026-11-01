@@ -359,6 +359,7 @@ class Session:
     usd: float = 0.0  # what the agent's provider charged, as the agent reports it
     tokens: int = 0
     usage: dict = field(default_factory=_fresh_usage)  # this session's counts (helper_sessions)
+    record: object = field(default=None, repr=False)  # its running session's transcript (Transcripts.append), or None
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
     auth_failed: bool = False  # its sign-in failed (an expired session): tried a few times, then a new sign-in
     throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
@@ -370,6 +371,8 @@ class Session:
         return str(self.options.get("model") or "")
 
     def push(self, kind: str, text: str) -> None:
+        if self.record is not None and kind != "tool":  # (a tool call goes in whole, with its answer: record_tool)
+            self.record(kind, text)
         self.seq += 1
         self.feed.append({"seq": self.seq, "t": time.time(), "type": kind, "text": text[:FEED_TEXT]})
         if kind == "text":
@@ -531,6 +534,9 @@ class Manager:
             # their end: they read as running for ever
             db.execute("UPDATE helper_sessions SET ended_at=?, outcome='interrupted' WHERE ended_at IS NULL",
                        (time.time(),))
+        from .transcripts import Transcripts  # (its table reads helper_sessions, made above)
+
+        self.transcripts = Transcripts(net.store)
         self._restore()
         self.refresh_detected()
 
@@ -1163,11 +1169,14 @@ class Manager:
             began = time.time()
             before = self._progress(agent.id)
             row = self._session_begin(s)
+            secrets = (s.options.get("api_key"), token)
+            s.record = lambda kind, value, row=row, secrets=secrets: self.transcripts.append(row, kind, value, secrets)
             kind = agents.get(s.kind)
             try:
                 ok = self._run_cli(s, token, workdir) if kind.command else kind.run(self, s, agent)
             except Fatal as e:  # needs the user first: retrying can't help
                 self._session_end(s, row, agent, began, "paused")
+                s.record = None
                 s.error = str(e)
                 self._pause(s, str(e))
                 break
@@ -1182,6 +1191,7 @@ class Manager:
                 ok = False
             self._session_end(s, row, agent, began, "stopped" if s.stop.is_set() else "ok" if ok else
                               "limit" if s.limited else "signin" if s.auth_failed else "failed")
+            s.record = None
             if s.stop.is_set():
                 break
             if s.signed_out:
@@ -1306,6 +1316,27 @@ class Manager:
                      "claim_function without a function follows it; one you name still comes.\n")
         return text
 
+    def session_prompt(self, s: Session) -> str:
+        """A session's prompt (prompt), kept in its transcript."""
+        text = self.prompt(s)
+        if s.record is not None:
+            s.record("prompt", text)
+        return text
+
+    def record_tool(self, agent, slug: str, name: str, args: dict, said: str) -> None:
+        """A tool a helper called and what it answered, in its running session's transcript (tools.OBSERVERS)."""
+        s = next((x for x in list(self.sessions.values())
+                  if x.agent_name == agent.name and x.slug == slug and x.record is not None), None)
+        if s is not None:
+            s.record("call", {"tool": name, "arguments": args})
+            s.record("result", said)
+
+    def transcript(self, sid: str, session: int = 0, after: int = 0) -> dict:
+        s = self.sessions.get(sid)
+        if s is None:
+            raise ValueError("that helper is gone: refresh the list")
+        return self.transcripts.read(s.slug, s.id, session, after)
+
     def _prompt(self, s: Session) -> str:
         from types import SimpleNamespace
 
@@ -1364,7 +1395,7 @@ class Manager:
         # other agent leaves prompt_file at None and keeps getting the prompt on stdin. Written before the command:
         # a prompt zcode cannot attach fails the session before its settings file exists, and pauses the helper
         # instead of retrying a prompt only the user can shorten.
-        prompt = self.prompt(s)
+        prompt = self.session_prompt(s)
         try:
             prompt_file = k.prompt_file(workdir, prompt)
         except ValueError as e:
