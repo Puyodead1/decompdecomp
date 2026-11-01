@@ -637,23 +637,36 @@ class Manager:
             self._launch(s)
 
     def resume(self) -> list[str]:
-        """Helpers the app stopped by quitting carry on, as their options are now (options_now)."""
-        ids = []
+        """Helpers the app stopped by quitting carry on, as their options are now (options_now).
+
+        Each project is prepared once, outside the lock: holding it through twenty helpers' twins, permuter and
+        file checks on a large PC game kept every agents request (the page, a helper's start or stop) waiting."""
         with self._lock:
-            for s in list(self.sessions.values()):
-                if s.state != "stopped" or s.stopped_by != BY_QUIT:
-                    continue
+            pending = [s for s in self.sessions.values() if s.state == "stopped" and s.stopped_by == BY_QUIT]
+        ids, ready = [], {}
+        for s in pending:
+            if self._down:
+                break
+            if s.slug not in ready:
                 try:
                     self.net.project_row(s.slug)
+                    ready[s.slug] = True
                 except NetworkError:
+                    ready[s.slug] = False
+            if not ready[s.slug]:
+                continue
+            options = self.options_now(s.kind, dict(s.options))
+            if options is not None and ready[s.slug] is True:
+                self._prepare(s.slug)
+                ready[s.slug] = "prepared"
+            with self._lock:
+                if self._down or s.state != "stopped" or s.stopped_by != BY_QUIT:  # (started or stopped meanwhile)
                     continue
-                options = self.options_now(s.kind, dict(s.options))
                 if options is None:
                     s.stopped_by, s.why = BY_ITSELF, "its API endpoint was removed"
                     self._save(s)
                     continue
                 s.options = options
-                self._prepare(s.slug)
                 self._launch(s)
                 ids.append(s.id)
         return ids
@@ -671,13 +684,16 @@ class Manager:
         with self._lock:
             if slug in self._prep:
                 return
-            try:
-                if not self.net.fork_slug(slug):
-                    return
-                _, fp, cfg = self.net.forks.get(slug)
-                if not (self.net.forks.uncovered(slug) or {}).get("functions") or not fp.linkable():
-                    return
-            except Exception:  # agents work on what has files
+        try:  # (outside the lock: uncovered reads the whole project)
+            if not self.net.fork_slug(slug):
+                return
+            _, fp, cfg = self.net.forks.get(slug)
+            if not (self.net.forks.uncovered(slug) or {}).get("functions") or not fp.linkable():
+                return
+        except Exception:  # agents work on what has files
+            return
+        with self._lock:
+            if slug in self._prep:
                 return
             done = self._prep[slug] = threading.Event()
 
