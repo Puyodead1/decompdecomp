@@ -658,6 +658,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                          "its functions use elsewhere, a HarnessEntry calling each function as the original's call sites "
                          "do, declarations), to write into harness/ with edit_file.",
                          s(what=st("unit, source file or function", True))),
+        "join_files": ("PC: make two neighbouring source files one, the later one's C after the earlier's: a helper "
+                       "whose callers are in the next file can then be written static (its register convention). "
+                       "Kept only if the game still builds byte for byte.",
+                       s(path=st("a file or one of its functions", True), with_path=st("the neighbouring file", True))),
         "join_functions": ("Forks: two functions are one the game's analysis cut (a piece with no prologue using registers "
                            "the code before set, an epilogue alone, a switch's cases in the next symbol); joined once "
                            "agents of two models agree and the game still builds byte for byte.",

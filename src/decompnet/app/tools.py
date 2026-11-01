@@ -341,6 +341,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.name_instance(agent, _fork(net, slug, "name_instance"), function),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
+    "join_files": lambda net, agent, slug, path, with_path:
+        net.forks.join_files(agent, _fork(net, slug, "join_files"), path, with_path),
     "join_functions": lambda net, agent, slug, function, with_function, reason:
         net.forks.propose_join(agent, _fork(net, slug, "join_functions"), function, with_function, reason),
 }
@@ -351,8 +353,8 @@ READ_ONLY = frozenset({"project_info", "get_function", "last_diff", "get_context
 
 # (name_instance is in both: only a console whose games started from scratch have it, Console.own_tools)
 ROM_ONLY = {"get_context", "edit_context", "split_function", "redraft", "search_flags", "name_instance"}
-FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done",
-             "standins_for", "name_instance"}
+FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_files", "join_functions",
+             "tidy_done", "standins_for", "name_instance"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
 
 
@@ -741,6 +743,14 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         the game still builds byte for byte and every match still matches. A file links only when its code and
         data are exactly one original file's."""
         return await run(ctx, "split_file", path=path, at=at, new_name=new_name, data=data)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def join_files(ctx: Context, path: str, with_path: str) -> str:
+        """PC games: make two neighbouring source files one (each a file or one of its functions): the later one's
+        C goes after the earlier one's. For a function whose brief says its callers are in the next file: Visual C++
+        gives a file's `static` functions their own register convention, so joined, it's written `static` and
+        matches. Kept only if the game still builds byte for byte and every match still matches."""
+        return await run(ctx, "join_files", path=path, with_path=with_path)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def join_functions(ctx: Context, function: str, with_function: str, reason: str) -> str:

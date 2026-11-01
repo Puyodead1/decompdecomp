@@ -1075,6 +1075,7 @@ class ForkEngine:
         registers = console.register_args(fp, version)  # an argument in a register no C declaration passes one in
         statics = console.static_register_args(fp, version)  # ... or a static function's, which C makes
         static_calls = console.static_callees(fp, version)  # (and who calls those)
+        joinable = console.joinable_register_args(fp, version)  # (or its callers are one file over: join_files)
         copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
@@ -1134,6 +1135,8 @@ class ForkEngine:
                     meta["static_register_arg"] = statics[sym]
                 if sym in static_calls:
                     meta["static_callees"] = static_calls[sym]
+                if sym in joinable:
+                    meta["join_for_static"] = joinable[sym]
                 if sym in generated and not meta.get("reopened"):  # set aside as assembly is, whatever the scope
                     meta["asm_code"] = generated[sym]
                 if sym in aside:  # code the project says isn't the game's own (library code, middleware)
@@ -1781,6 +1784,97 @@ class ForkEngine:
         return (f"✅ {rel} is divided: {new} now holds {fn['name']} and what follows it ({moved} function "
                 "definitions moved with them), with the file's compiler (try_compiler switches the new file's); the "
                 "game still builds as it did and every match still matches.")
+
+    def join_files(self, agent: Agent | None, slug: str, path: str, with_path: str) -> str:
+        """Make two neighbouring source files one (Console.join_sources): the later one's C after the earlier one's,
+        its functions the earlier file's. Kept only if the game still builds as it did (byte for byte, where the
+        console checks) and every match holds. Visual C++ 7 gives a file's static functions a convention of their own
+        (an argument in edx, edi...): a helper and its callers, cut into two files by the project's 4 KiB files, could
+        never match until they were one file again (a 2003 PC game had 51 such helpers one file from their callers)."""
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        if not console.splits_sources:
+            raise NetworkError("this project's files are its build's own: join_files works where decompdecomp made it")
+        if slug in self.net.links:
+            raise NetworkError("in a room, the host's project is the one to join files in: say it in a note")
+        version = (fp.manifest or {}).get("version") or cfg.get("version")
+
+        def source_of(what: str) -> str:
+            rel = what.strip().lstrip("./")
+            if fp.units_for(rel):
+                return rel
+            try:  # a function: its file
+                return fp.unit(self._fn(slug, what)["unit"]).source or ""
+            except (NetworkError, ForkError):
+                raise NetworkError(f"{what} isn't a source file (or a function) of this project") from None
+        a, b = source_of(path), source_of(with_path)
+        if a == b:
+            raise NetworkError(f"{a} is one file already")
+        order = [u.source for u in fp.units()]
+        first, second = sorted((a, b), key=lambda s_: order.index(s_) if s_ in order else -1)
+        units = [u for u in fp.units() if u.source in (first, second)]
+        texts = {p_: (fp.root / p_).read_text(errors="replace", encoding="utf-8") if (fp.root / p_).exists() else ""
+                 for p_ in (first, second)}
+        protected = set()
+        for u in units:
+            protected |= {n for n, pct in (self._baseline(proj, fp, u, texts[u.source])[0] or {}).items()
+                          if pct is not None and pct >= 100}
+        # the later file's C after the earlier one's; what both include is said once
+        seen = {ln.strip() for ln in texts[first].splitlines() if ln.strip().startswith("#include")}
+        rest = "\n".join(ln for ln in texts[second].splitlines()
+                         if not (ln.strip().startswith("#include") and ln.strip() in seen))
+        joined = texts[first].rstrip("\n") + f"\n\n/* the functions of {Path(second).name}, joined to this file */\n" + rest + "\n"
+        checks = consoles.REBUILD_CHECK in console.features
+        # files built with different flags (search_flags gave one /GS): the joined file tries each file's in turn,
+        # and keeps the first under which every match holds (Visual C++ 7 makes /GS's cookie only for local arrays)
+        own = [console.file_flags(fp, p_) for p_ in (first, second)]
+        choices = [None] if own[0] == own[1] else [f for f in own if f is not None]
+        why = ""
+        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+            before = (fp.manifest or {}).get("rebuild") or {}
+            for flags in choices:
+                saved = {fp.root / p_: t for p_, t in texts.items()}
+                try:
+                    saved.update(console.join_sources(fp, version, first, second, flags))
+                    (fp.root / first).write_text(joined, encoding="utf-8")
+                    (fp.root / second).unlink(missing_ok=True)
+                    for cmd in fp.setup_commands(version):
+                        ok, out = fp.run(cmd, log=lambda *_: None)
+                        if not ok:
+                            raise ForkError("the project didn't build with the files joined (two definitions of one "
+                                            f"type or name? make them agree with edit_file first):\n{_tail(out)}")
+                    if checks and before.get("identical") and not console.check_rebuild(fp, version).get("identical"):
+                        raise ForkError("the game no longer rebuilt byte for byte with the files joined")
+                    unit = next(u for u in fp.units() if u.source == first)
+                    built, log_ = fp.build_unit(unit)
+                    if not built:
+                        raise ForkError(f"{first} doesn't compile with the files joined (two definitions of one type "
+                                        f"or name? make them agree with edit_file first):\n{_tail(log_)}")
+                    now = fp.diff(unit, None).unit_scores
+                    if lost := sorted(n for n in protected if (now.get(n) or 0) < 100):
+                        raise ForkError(f"these functions would stop matching"
+                                        f"{f' with {' '.join(flags)}' if flags else ''}: {', '.join(lost[:8])}")
+                except (ForkError, RomError, ObjdiffError, OSError, ValueError) as e:
+                    for p_, old in saved.items():
+                        p_.write_text(old, encoding="utf-8")
+                    for cmd in fp.setup_commands(version):
+                        fp.run(cmd, log=lambda *_: None)
+                    why = str(e)
+                    continue
+                self._commit_paths(proj, fp, [str(p_.relative_to(fp.root)) for p_ in saved],
+                                   f"Join {Path(second).name} to {Path(first).name}\n\nJoined by "
+                                   f"{agent.name if agent else 'decompdecomp'} with decompdecomp; the game still builds "
+                                   "as it did and every match still matches.")
+                break
+            else:
+                raise NetworkError(f"not joined, nothing changed: {why}")
+        self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+        self.sync(slug, log=lambda *_: None)
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], agent.id if agent else None, "join_files", f"{second} → {first}")
+        return (f"✅ {second} is part of {first} now, its C after the file's own: a helper only its callers there use "
+                "can be written `static` (Visual C++ then gives it the register convention its code shows); the game "
+                "still builds as it did and every match still matches.")
 
     SOURCE_SUFFIXES = (".c", ".h", ".cpp", ".hpp", ".cp", ".cc", ".inc")
 
@@ -2743,6 +2837,12 @@ class ForkEngine:
                          f"registers it picks): write it `static`, with ordinary parameters, above its callers in the "
                          f"file, and call it plainly; never __fastcall with an unused argument (its callers then set "
                          f"ecx, which the game's don't)")
+        if (beside := meta.get("join_for_static")) and fn["status"] != "matched":
+            lines.append(f"its code reads {meta.get('register_arg') or 'a register'} before it sets it, and every call "
+                         f"to it is in {beside}, the file next to its own: the game's file was one, cut in two by the "
+                         f"project. Visual C++ gives a static function a convention of its own (arguments in registers "
+                         f"it picks), so call join_files(\"{fn['name']}\", \"{beside}\") first, then write it `static`, "
+                         f"with ordinary parameters, above its callers")
         if (callees := meta.get("static_callees")) and fn["status"] != "matched":
             shown = ", ".join(c.lstrip("_@").split("@")[0] for c in callees)
             lines.append(f"it calls {shown}, which take{'s' * (len(callees) == 1)} an argument in a register from "
@@ -2750,7 +2850,7 @@ class ForkEngine:
                          f"{'it' if len(callees) == 1 else 'them'} `static` above this function in the file, with "
                          f"ordinary parameters, and call {'it' if len(callees) == 1 else 'them'} plainly: this "
                          f"function's own calls then load the registers the game's do")
-        if (reg := meta.get("register_arg")) and fn["status"] != "matched":
+        if (reg := meta.get("register_arg")) and fn["status"] != "matched" and not meta.get("join_for_static"):
             lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, a convention link-time code "
                          f"generation (/GL /LTCG) gives functions whose callers it all sees. No C declaration of one "
                          f"file passes an argument in {reg}: once your C's body matches and only its entry and exit "

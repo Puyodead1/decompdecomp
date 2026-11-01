@@ -3713,3 +3713,57 @@ def test_a_funclets_pop_ecx_tail_ghidra_cut_off_is_a_stub_too():
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
     assert scratch_pe.eh_stub(md, bytes.fromhex("59 c3 55 8bec"), 0x401000) is None  # (a tail, then a real function)
+
+
+def test_two_neighbouring_files_join_with_the_same_compiler_and_flags(tmp_path):
+    """join_units, the inverse of split_unit: the later file's functions after the earlier one's, its own lines in the
+    compiler and flags maps gone; only neighbours, and only when built the same way."""
+    root = tmp_path
+    conf = root / "config" / "game"
+    conf.mkdir(parents=True)
+    (root / "src" / "auto").mkdir(parents=True)
+    fn = lambda a: {"name": f"_func_{a:08X}", "addr": a, "size": 4, "relocs": []}  # noqa: E731
+    units = {"text_00401000": [fn(0x401000)], "text_00401004": [fn(0x401004)], "text_00401008": [fn(0x401008)]}
+    (conf / "functions.json").write_text(json.dumps({"exe": "orig/game.exe", "units": units}))
+    for u in units:
+        (root / "src" / "auto" / f"{u}.cpp").write_text("")
+    first, second, third = (f"src/auto/{u}.cpp" for u in units)
+    scratch_pe.set_file_flags(root, "game", second, ["/Oy-"])
+    with pytest.raises(ForkError, match="different flags"):
+        scratch_pe.join_units(root, "game", first, second)
+    with pytest.raises(ForkError, match="right after"):
+        scratch_pe.join_units(root, "game", first, third)
+    scratch_pe.set_file_flags(root, "game", second, [])
+    saved = scratch_pe.join_units(root, "game", first, second)
+    got = json.loads((conf / "functions.json").read_text())["units"]
+    assert list(got) == ["text_00401000", "text_00401008"]
+    assert [f["name"] for f in got["text_00401000"]] == ["_func_00401000", "_func_00401004"]
+    assert conf / "functions.json" in saved
+
+
+@needs_tools
+def test_agents_join_two_files_and_every_match_holds(pc):
+    """join_files on a PC game: two neighbouring files become one, the game still rebuilds byte for byte, every
+    match holds, and the functions are the first file's."""
+    net, slug = pc
+    agent, _ = net.local_agent("pc-joiner")
+    root = Path(net.project_row(slug)["root"])
+    fp = net.forks.get(slug)[1]
+    files = [u.source for u in fp.units() if u.source and not scratch_pe.unit_module(u.name)]
+    if len(files) < 2:  # (alone, the demo is one file: divide it first, then join the two back)
+        net.forks.split_file(agent, slug, files[0], f"_func_{_map()['_clamp_s32']:08X}")
+        files = [u.source for u in net.forks.get(slug)[1].units() if u.source and not scratch_pe.unit_module(u.name)]
+    own, flags = scratch_pe.file_compilers(root, "demoquest"), scratch_pe.file_flags(root, "demoquest")
+    pairs = [(a, b) for a, b in zip(files, files[1:]) if own.get(a) == own.get(b) and flags.get(a) == flags.get(b)]
+    assert pairs, (files, own, flags)
+    first, second = pairs[0]
+    matched = {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")}
+    moved = {r["name"] for r in net.store.all("SELECT name FROM functions WHERE unit=?", Path(second).stem)}
+    said = net.forks.join_files(agent, slug, first, second)
+    assert said.startswith("✅"), said
+    assert not (root / second).exists() and net.overview(slug)["rebuild"]["identical"]
+    assert {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")} >= matched
+    assert {r["unit"] for r in net.store.all("SELECT unit FROM functions WHERE name IN (%s)" % ",".join("?" * len(moved)),
+                                                   *moved)} == {Path(first).stem}
+    log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=root, capture_output=True, text=True).stdout
+    assert log.startswith(f"Join {Path(second).name} to {Path(first).name}")

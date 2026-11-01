@@ -500,6 +500,11 @@ class Console:
         in its file, as its own C's convention depends on theirs."""
         return {}
 
+    def joinable_register_args(self, fp, version: str) -> dict[str, str]:
+        """The register-argument functions whose callers are all in one neighbouring source file -> that file: joined
+        to it (join_files), the function is static, and C makes its convention. Their briefs say so."""
+        return {}
+
     def static_register_args(self, fp, version: str) -> dict[str, str]:
         """The functions taking an argument in a register whose callers are all in their own source file -> that
         register: a static function's convention (PC: Visual C++ 7.0 on passes a static function's arguments in
@@ -516,6 +521,12 @@ class Console:
         with what it held before (to take it back)."""
         raise RomError(f"{self.name} projects divide their source files in their own way")
 
+
+    def join_sources(self, fp, version: str, first: str, second: str, flags: list[str] | None = None) -> dict:
+        """PROJECT mode, a console whose source files are units of its config (`splits_sources`): `second`, the file
+        right after `first`, becomes part of it (join_files), built with `flags` (its own when the two agree; else
+        one of theirs). Returns each config file changed, with what it held."""
+        raise RomError(f"{self.name} projects can't join source files yet")
     def join_functions(self, fp, first: str, last: str, keep: set[str], log=print) -> str:
         """Make one function of `first` to `last` in the project's config (agents agreed the analysis cut it:
         ForkEngine.propose_join, which checks the rebuild); returns what changed, as a sentence. Not for matched
