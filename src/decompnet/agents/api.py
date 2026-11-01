@@ -123,7 +123,7 @@ class Api(Agent):
         used_tool, start, done = False, len(messages), 0
         with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=API_CONNECT_TIMEOUT)) as client, \
                 (anthropic_client(s.options) if claude else contextlib.nullcontext()) as sdk:
-            window = context_window(client, base, s.options)
+            window = anthropic_window(sdk, s.options) if claude else context_window(client, base, s.options)
             s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
             budget = int(window * API_CONTEXT_SHARE) - _tokens(schema)  # room for the reply and the tools' definitions
             for _step in range(int(s.options.get("max_steps", API_STEPS))):
@@ -406,6 +406,27 @@ def anthropic_models(options: dict) -> list[dict]:
         return [{"id": m.id, "name": m.display_name or m.id} for m in client.models.list()]
 
 
+_WINDOWS: dict[str, int] = {}  # a model's context, as the Models API said it (anthropic_window)
+
+
+def anthropic_window(client, options: dict) -> int:
+    """An Anthropic model's context in tokens: what the user set on the endpoint, else what the Models API says
+    (max_input_tokens: a million for Opus 5.5). The 128K every remote API was given cut a 2,182-instruction
+    function's brief and diff out of the conversation each step, so the helper saw only its latest answer."""
+    try:
+        if int(options.get("context_tokens") or 0) >= MIN_CONTEXT:
+            return int(options["context_tokens"])
+    except (TypeError, ValueError):
+        pass
+    model = options.get("model") or ""
+    if model not in _WINDOWS:
+        try:
+            _WINDOWS[model] = int(client.models.retrieve(model).max_input_tokens or REMOTE_CONTEXT)
+        except Exception:  # (the SDK's errors, an old model without the field): what other remote APIs get
+            return REMOTE_CONTEXT
+    return _WINDOWS[model]
+
+
 def anthropic_request(model: str, messages: list[dict], schema: list[dict], effort: str | None) -> dict:
     """The loop's conversation (OpenAI-shaped: what fold and fit work on) as a Messages API request. The system prompt
     and the tools come first and stay the same, and the whole request is cached up to its end each step, so each step
@@ -565,7 +586,9 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
         "last_diff": ("Every differing row of your last compile_and_diff of a function (its result cuts long diffs). "
-                      "Costs no compile.", s(function=st("function", True), context=it("equal rows around each difference"))),
+                      "Costs no compile. A long diff comes 400 rows at a time.",
+                      s(function=st("function", True), context=it("equal rows around each difference"),
+                        start=it("the row to begin at (the answer names the next)"))),
         "release_function": ("Give up a function with notes for the next agent, once compile_and_diff says to move "
                              "on (before that it answers once with what to try; call again to release anyway).",
                              s(function=st("function", True), notes=st("what you tried, what is left", True),
