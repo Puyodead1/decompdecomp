@@ -70,8 +70,12 @@ def layout(disc: Path | bytes | BinaryIO) -> str | None:
 
 
 def is_xbox_disc(disc: Path | bytes | BinaryIO) -> bool:
-    """An original Xbox disc image, in either dump layout."""
-    return layout(disc) is not None
+    """An original Xbox disc image, in either dump layout. A folder or a file that can't be read isn't one: consoles
+    are asked in turn, and a V.Flash disc's folder of files reached the Xbox first and stopped the import."""
+    try:
+        return layout(disc) is not None
+    except OSError:
+        return False
 
 
 def _walk(f: BinaryIO, base: int, sector: int, size: int, prefix: str, out: list[Entry], depth: int = 0) -> None:
