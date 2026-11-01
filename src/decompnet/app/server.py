@@ -124,7 +124,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return now
     manager.options_now = options_now
     threading.Thread(target=settings.learn_efforts, daemon=True, name="endpoint-efforts").start()  # (a model's may change)
-    manager.resume()  # helpers that were working when the app last stopped carry on (their records say which)
+
+    def resume() -> None:  # helpers that were working when the app last stopped carry on (their records say which)
+        try:  # (in the background: preparing their projects took the window minutes to open on a large PC game)
+            manager.resume()
+        except Exception:
+            jobs.logger.exception("helpers couldn't resume")
+    threading.Thread(target=resume, daemon=True, name="resume-helpers").start()
 
     mcp = tools.build_mcp(net, agent_of)
 
