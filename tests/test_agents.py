@@ -1340,3 +1340,89 @@ def test_sessions_the_app_was_running_when_it_stopped_end_as_interrupted(tmp_pat
 
 def test_an_oauth_refresh_the_provider_no_longer_takes_is_a_failed_sign_in():
     assert agents.AUTH_FAILED.search('{"error":"invalid_grant","error_description":"Invalid refresh token"}')
+
+
+class _FakeClaude:
+    """The anthropic SDK's client, answering from a list: what each request asked for is kept."""
+
+    def __init__(self, replies):
+        self.replies, self.sent = list(replies), []
+        self.beta = self.messages = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def create(self, **request):
+        self.sent.append(json.loads(json.dumps(request)))
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return type("Reply", (), {"to_dict": lambda self, r=reply: r})()
+
+
+def _claude_reply(name, args, n):
+    return {"content": [{"type": "thinking", "thinking": f"plan {n}", "signature": f"sig{n}"},
+                        {"type": "tool_use", "id": f"toolu_{n}", "name": name, "input": args}],
+            "stop_reason": "tool_use", "model": "claude-opus-5-5",
+            "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 900,
+                      "cache_creation_input_tokens": 50}}
+
+
+def test_an_api_helper_works_on_anthropics_own_api(tmp_path, monkeypatch):
+    """An Anthropic API key's credits, apart from a Claude Code subscription: the API helper speaks the Messages API.
+    Its thinking goes back as it came, tool results go back as one user turn, the request is cached to its end, and
+    a fold (which changes the history the thinking was made in) asks the API to drop those blocks, not refuse."""
+    from decompnet.agents import api
+
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path, functions=1)
+    m = agents.Manager(net, tmp_path, URL)
+    m.prompt = lambda s: "task"
+    s = m._record("game", "api", "api-claude-opus-5-5-1", "Anthropic #1",
+                  {"provider": "anthropic", "base_url": "https://api.anthropic.com", "model": "claude-opus-5-5",
+                   "api_key": "sk-ant-x", "per_session": 1, "effort": "minimal"})
+    s.stop = Quick()
+
+    def call(net, agent, slug, name, args):
+        if name == "claim_function":
+            return f"## CLAIMED: game/{net.claim_row(agent, slug)['name']}"
+        with net.store.tx() as db:
+            db.execute("UPDATE functions SET status='matched' WHERE name=?", (args["function"],))
+            db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
+        return f"✅ MATCH! {args['function']} is byte-identical"
+    monkeypatch.setattr(agents.tools, "call", call)
+    fake = _FakeClaude([_claude_reply("claim_function", {}, 1),
+                        _claude_reply("compile_and_diff", {"function": "f0", "source": "int f;"}, 2)])
+    monkeypatch.setattr(api, "anthropic_client", lambda options: fake)
+    m._run(s)
+    first, second = fake.sent
+    assert first["model"] == "claude-opus-5-5" and first["system"] and first["messages"][0] == {"role": "user", "content": "task"}
+    assert {t["name"] for t in first["tools"]} >= {"claim_function", "compile_and_diff"}
+    assert all("input_schema" in t for t in first["tools"]) and first["cache_control"] == {"type": "ephemeral"}
+    assert first["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    assert first["betas"] == api.ANTHROPIC_BETAS and first["output_config"] == {"effort": "low"}
+    assistant, results = second["messages"][1:3]
+    assert assistant["content"][0] == {"type": "thinking", "thinking": "plan 1", "signature": "sig1"}
+    assert results == {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1",
+                                                    "content": "## CLAIMED: game/f0"}]}
+    row = net.store.one("SELECT * FROM helper_sessions WHERE helper_id=?", s.id)
+    assert (row["input_tokens"], row["cache_read_tokens"], row["cache_write_tokens"]) == (200, 1800, 100)
+    assert row["usd"] == pytest.approx((200 * 4 + 40 * 20 + 1800 * 0.2 + 100 * 4 * 1.25) / 1e6)  # (the budget counts it)
+    assert net.store.one("SELECT status FROM functions WHERE name='f0'")["status"] == "matched"
+
+
+def test_an_anthropic_rate_limit_waits_like_any_servers():
+    import anthropic
+    import httpx2
+
+    from decompnet.agents import api
+
+    response = httpx2.Response(429, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"),
+                               json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}},
+                               headers={"retry-after": "30"})
+    fake = _FakeClaude([anthropic.RateLimitError("slow down", response=response, body=None)])
+    r = api.anthropic_post(fake, "claude-opus-5-5", [{"role": "user", "content": "task"}], [], None)
+    assert r.status_code == 429 and "slow down" in r.text and api._retry_after(r)

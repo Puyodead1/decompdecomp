@@ -16,6 +16,7 @@ from decompnet.hostenv import NO_WINDOW
 
 from ... import agents as kinds
 from ... import hostenv, toolchains
+from ...agents import api as api_agent
 from ...network import NetworkError
 from .. import agents
 from ..support import session_options, spread_sessions
@@ -106,7 +107,13 @@ def register(app: App) -> None:
         entry = settings.endpoint(request.query_params.get("id", ""))
         if entry is None:
             return fail(ValueError("that API endpoint is no longer saved; choose it again"))
-        headers = {"Authorization": f"Bearer {entry['api_key']}"} if entry.get("api_key") else {}
+        if api_agent.is_anthropic(entry):  # (its own API: its key goes in its own header, its list is paged)
+            try:
+                models = await call(lambda: api_agent.anthropic_models(entry))
+                return JSONResponse({"models": models[:MAX_ENDPOINT_MODELS]})
+            except Exception:  # (the SDK's errors: a wrong key, no connection)
+                return JSONResponse({"models": [], "unavailable": True})
+        headers = api_agent.key_headers(entry)
         try:
             response = await call(lambda: httpx.get(entry["base_url"].rstrip("/") + "/models", headers=headers,
                                                     timeout=10))
