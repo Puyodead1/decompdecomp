@@ -170,6 +170,11 @@ async function showSettingsPage() {
   $("setAgents").innerHTML = `
     <label class="field"><span>Functions per agent session (a fresh session keeps the agent's context small)</span><input id="perSession" type="number" min="1" max="20" value="${st.settings.per_session}"></label>
     <label class="field"><span>Budget: stop helper agents when a project's agents have spent this much (US dollars, as the agents report it; 0 = no limit)</span><input id="budgetSet" type="number" min="0" step="0.5" value="${st.settings.budget_usd || 0}"></label>
+    <h3>Permuter</h3>
+    <p class="small muted">It rewrites the C of near misses (within 6% of a match) on spare CPU, at no agent cost. Bigger functions take longer to judge each try. A change applies from its next turn; raising the turns gives functions it gave up on more of them.</p>
+    <label class="field"><span>Biggest function it takes (instructions)</span><input id="permuterMaxInsns" type="number" min="1" max="100000" value="${st.settings.permuter_max_insns}"></label>
+    <label class="field"><span>Seconds per function per turn</span><input id="permuterSeconds" type="number" min="1" max="3600" value="${st.settings.permuter_seconds}"></label>
+    <label class="field"><span>Turns per function</span><input id="permuterMaxTurns" type="number" min="1" max="1000" value="${st.settings.permuter_max_turns}"></label>
     <label class="check"><input type="checkbox" id="autopilotSet" ${st.settings.autopilot !== false ? "checked" : ""}><span><b>Autopilot after each import</b>: try every function's machine draft first, so free matches cost no agent time.</span></label>`;
   const theme = savedTheme();
   $("setComputer").innerHTML = `
@@ -218,6 +223,9 @@ async function showSettingsPage() {
   };
   $("perSession").onchange = () => save({ per_session: Number($("perSession").value) }, "Saved.");
   $("autopilotSet").onchange = () => save({ autopilot: $("autopilotSet").checked }, "Saved.");
+  for (const [id, key] of [["permuterMaxInsns", "permuter_max_insns"], ["permuterSeconds", "permuter_seconds"], ["permuterMaxTurns", "permuter_max_turns"]]) {
+    $(id).onchange = () => save({ [key]: Number($(id).value) }, "Saved.");
+  }
   $("budgetSet").onchange = () => save({ budget_usd: Number($("budgetSet").value) || 0 }, "Budget saved.");
   renderBrowsers();
 }

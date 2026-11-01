@@ -18,7 +18,7 @@ from ... import agents as kinds
 from ... import hostenv, linuxvm, toolchains
 from ...agents import api as api_agent
 from ...network import NetworkError
-from .. import agents
+from .. import agents, permute
 from ..support import session_options, spread_sessions
 from . import App
 
@@ -291,6 +291,11 @@ def register(app: App) -> None:
             settings.data["autopilot"] = bool(data["autopilot"])
         if "budget_usd" in data:
             settings.data["budget_usd"] = max(0.0, float(data["budget_usd"] or 0))
+        if any(k in data for k in permute.LIMITS):
+            for k in permute.LIMITS:
+                if k in data:
+                    settings.data[k] = permute.limit(data, k)
+            net.permuter.configure(settings.data)
         if "auto_update" in data:
             settings.data["auto_update"] = bool(data["auto_update"])
         if "check_updates" in data:
