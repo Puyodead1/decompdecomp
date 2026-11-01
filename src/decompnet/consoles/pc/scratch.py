@@ -1131,6 +1131,14 @@ def eh_stub(md, code: bytes, addr: int) -> str | None:
     if _checked_handler(list(_disasm(md, code[:EH_HANDLER_BYTES], addr))):
         return "handler"
     ins = list(_disasm(md, code[:EH_STUB_BYTES], addr))
+    # a funclet's tail Ghidra cut at its call (`mov eax, [ebp-N]; push eax; call free`, then this `pop ecx; ret`,
+    # which takes the call's argument off): alone, or with the next stub, a handler, after it in the same function.
+    # A 2003 PC game's run had 101 of them that agents could do nothing with
+    if len(ins) >= 2 and (ins[0].id, ins[1].id) == (x86.X86_INS_POP, x86.X86_INS_RET) \
+            and ins[0].operands[0].reg == x86.X86_REG_ECX:
+        if len(ins) == 2:
+            return "funclet"
+        return eh_stub(md, code[ins[2].address - addr:], ins[2].address)
     if len(ins) >= 2 and ins[0].id == x86.X86_INS_MOV and ins[1].id == x86.X86_INS_JMP \
             and ins[0].operands[1].type == x86.X86_OP_IMM and ins[0].operands[0].reg in (x86.X86_REG_EAX, x86.X86_REG_ECX):
         return "handler" if ins[0].operands[0].reg == x86.X86_REG_EAX else "funclet"
