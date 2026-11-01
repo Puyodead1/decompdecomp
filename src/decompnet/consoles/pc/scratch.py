@@ -1772,6 +1772,43 @@ def split_unit(root: Path, version: str, source: str, at: str, new: str) -> dict
     return saved
 
 
+def join_units(root: Path, version: str, first: str, second: str, flags: list[str] | None = None) -> dict:
+    """Make `second`'s unit in functions.json part of `first`'s, the unit right before it in the same program: its
+    functions after `first`'s, its own compiler and flags gone (they must be the same). The inverse of split_unit.
+    Returns each config file changed, with what it held before. Visual C++ 7 gives a file's static functions a
+    convention of their own (arguments in edx, edi...), so a helper and its callers cut into two of the project's
+    files could never match; one file, it's `static` and does."""
+    path = root / "config" / version / "functions.json"
+    text = path.read_text(encoding="utf-8")
+    info = json.loads(text)
+    by_source = {_source(root, u): u for u in info["units"]}
+    a, b = by_source.get(first), by_source.get(second)
+    if a is None or b is None:
+        raise ForkError(f"{first if a is None else second} isn't one of the project's source files")
+    order = list(info["units"])
+    if order.index(b) != order.index(a) + 1 or unit_module(a) != unit_module(b):
+        raise ForkError(f"{second} doesn't come right after {first} in the program: only neighbouring files join")
+    own = file_compilers(root, version)
+    if own.get(first) != own.get(second):
+        raise ForkError(f"{first} and {second} are built with different compilers: give them the same one first")
+    own_flags = file_flags(root, version)
+    if own_flags.get(first) != own_flags.get(second) and flags is None:
+        raise ForkError(f"{first} and {second} are built with different flags: give them the same ones first")
+    units = {u: (fns + info["units"][b] if u == a else fns) for u, fns in info["units"].items() if u != b}
+    path.write_text(json.dumps({**info, "units": units}, indent=1), encoding="utf-8")
+    saved = {path: text}
+    if second in own:
+        compilers = compilers_file(root, version)
+        saved[compilers] = compilers.read_text(encoding="utf-8")
+        _write_compilers(compilers, {k: v for k, v in own.items() if k != second})
+    if second in own_flags or (flags is not None and flags != own_flags.get(first, [])):
+        saved[flags_file(root, version)] = flags_file(root, version).read_text(encoding="utf-8")
+        set_file_flags(root, version, second, [])
+        if flags is not None:  # (the joined file's: one of the two files' flags, join_files tries each)
+            set_file_flags(root, version, first, flags)
+    return saved
+
+
 def compilers_file(root: Path, version: str) -> Path:
     return root / "config" / version / "file_compilers.json"
 

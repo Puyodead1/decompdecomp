@@ -390,6 +390,11 @@ class WindowsPC(Console):
 
         return scratch.split_unit(fp.root, version, source, at, new)
 
+    def join_sources(self, fp, version: str, first: str, second: str, flags: list[str] | None = None) -> dict:
+        from . import scratch
+
+        return scratch.join_units(fp.root, version, first, second, flags)
+
     # Each source file can have its own Visual C++ (config/<version>/file_compilers.json, which tools/configure.py
     # reads): a game's Rich header often counts objects of two versions (6.0 and 7.1), as DS games mix CodeWarrior's
     def file_compiler(self, fp, source: str) -> str | None:
@@ -666,7 +671,7 @@ class WindowsPC(Console):
         code, each calling such a helper of its file, said link-time code generation and gave up."""
         return self._register_args(fp, version)[2]
 
-    def _register_args(self, fp, version: str) -> tuple[dict[str, str], dict[str, str], dict[str, list[str]]]:
+    def _register_args(self, fp, version: str) -> tuple:
         from ...arch import x86
         from . import scratch
 
@@ -674,15 +679,15 @@ class WindowsPC(Console):
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
-            return {}, {}, {}
+            return {}, {}, {}, {}
         if (kept := _REGISTER_ARGS.get(str(path))) is None or kept[0] != mtime:
             info = _functions_json(fp, version)
             try:
                 if scratch.missing(fp.root, version):  # (the user's copies of the programs aren't in the project)
-                    return {}, {}, {}
+                    return {}, {}, {}, {}
                 pes = scratch.programs(fp.root, info)
             except (OSError, ValueError, KeyError):  # (a config without them: an older project's, a test's)
-                return {}, {}, {}
+                return {}, {}, {}, {}
             users: dict[str, set[str]] = {}  # a function -> the source files whose code refers to it
             callers: dict[str, set[str]] = {}  # ... and the functions
             for unit, fns in info.get("units", {}).items():
@@ -703,8 +708,26 @@ class WindowsPC(Console):
                 for caller in callers.get(callee, ()):
                     if caller != callee:
                         calls.setdefault(caller, []).append(callee)
-            kept = _REGISTER_ARGS[str(path)] = (mtime, (found, static, calls))
+            # a register-argument function whose callers are in the file right before or after its own (and maybe its
+            # own): the project's 4 KiB files cut the game's file between them, and joined, it's static (join_files)
+            order = list(info.get("units", {}))
+            near: dict[str, str] = {}
+            for unit, fns in info.get("units", {}).items():
+                k = order.index(unit)
+                beside = {order[j] for j in (k - 1, k + 1) if 0 <= j < len(order)
+                          and scratch.unit_module(order[j]) == scratch.unit_module(unit)}
+                for fn in fns:
+                    others = users.get(fn["name"], set()) - {unit}
+                    if fn["name"] in found and len(others) == 1 and others <= beside:
+                        near[fn["name"]] = scratch._source(fp.root, next(iter(others)))
+            kept = _REGISTER_ARGS[str(path)] = (mtime, (found, static, calls, near))
         return kept[1]
+
+    def joinable_register_args(self, fp, version: str) -> dict[str, str]:
+        """The register-argument functions whose callers are all in one neighbouring file: {function: that file}.
+        Joined to it (join_files), the function is static, and C makes its convention."""
+        got = self._register_args(fp, version)
+        return got[3] if len(got) > 3 else {}
 
     def rename_pattern(self, old: str) -> str:
         """func_0041B470 however a source spells it (a report's _func_0041B470@8 is func_0041B470 there, a method's
