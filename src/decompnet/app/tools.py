@@ -721,6 +721,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         ones its callers keep alive."""
         return await run(ctx, "standins_for", what=what)
 
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def name_instance(ctx: Context, function: str) -> str:
         """PC games: the function is a template's code the game used (the STL's: std::map's erase, a vector's
         insert), not the game's own. Don't rewrite it by hand: make its source file compile the instance (include

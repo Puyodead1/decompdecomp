@@ -246,6 +246,7 @@ async function identifyXboxDisc(file) {
       return { title: file.name.replace(/\.[^.]*$/, ""), size: file.size, platform: "xbox", order: "Xbox disc image" };
   }
   return null;
+}
 
 /* A V.Flash game's file (consoles/vflash/disc.is_vflash): BOOT.BIN (the vboot loader, then FA), a VFF program, or a
    disc image whose root folder holds 0SYSTEM and 0ID_<product>. */
