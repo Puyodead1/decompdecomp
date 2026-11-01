@@ -431,6 +431,43 @@ class CompilerMixin:
     def set_auto_adjust(self, slug: str, on: bool) -> None:
         self._update_cfg(slug, lambda cfg: cfg.__setitem__("auto_compiler", bool(on)))
 
+    def compare_compilers(self, slug: str, function: str, log=lambda line: None, check=lambda: None) -> dict:
+        """A function's best C built with each installed compiler of its console and each of its flag variants
+        (flag_variants), ranked by score: which compiler and flags come closest, at a glance. Recorded nowhere: one that
+        matches is the user's to suggest or apply (a range covers more than one function). Projects where each source
+        file has its own compiler compare there (ForkEngine.compare_compilers)."""
+        if self.fork_slug(slug):
+            return self.forks.compare_compilers(slug, function, log, check)
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        fn = self._function(function, slug)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} already matches")
+        source = self._source_of(fn)
+        if not source:
+            raise NetworkError(f"{fn['name']} has no attempt yet: compare once an agent or a draft has written its C")
+        own = compiler_for(cfg, fn["vram"])
+        own_key = (own["toolchain"], list(own["flags"]))
+        combos = []
+        for c in consoles.of(cfg).compilers:
+            if toolchains.installed(c.id) is None or toolchains.runtime_error(c.id):
+                continue
+            base = list(own["flags"]) if c.id == own["toolchain"] else consoles.default_flags(cfg, c.id)
+            combos += [(c.id, list(f)) for f in self.flag_variants(c.id, base)]
+        combos.sort(key=lambda t: (t != own_key, t[0] != own["toolchain"]))
+        rows = []
+        for k, (tc, flags) in enumerate(combos, 1):
+            check()
+            ok, d, _ = self._judge_with(proj, fn, tc, flags, source)
+            rows.append({"compiler": tc, "flags": " ".join(flags), "score": d.score if d else None,
+                         "percent": d.percent if d else None, "exact": bool(ok), "own": (tc, flags) == own_key,
+                         "breaks": []})
+            log(f"{k}/{len(combos)} {consoles.compiler_name(tc)} {' '.join(flags)}: "
+                + ("MATCH" if ok else "doesn't build" if d is None else f"score {d.score}"))
+        rows.sort(key=lambda r: (not r["exact"], r["score"] is None, r["score"] or 0))
+        return {"function": fn["name"], "file": "", "own": f"{own['toolchain']} {' '.join(own['flags'])}",
+                "kept": None, "rows": rows, "tried": len(rows), "of": len(combos)}
+
     def _toolchain_named(self, cfg: dict, compiler: str) -> str:
         names = [c.id for c in consoles.of(cfg).compilers]
         tc = next((t for t in names if compiler.strip().lower() in (t, consoles.compiler_name(t).lower())), None)

@@ -66,6 +66,9 @@ async function refreshFn(first) {
     $("fnName").textContent = d.name;
     fnBadge(d);
     $("fnSetAside").hidden = d.status !== "open";
+    $("fnCompare").hidden = d.status !== "open";
+    if (S.compareFor !== d.name) { $("fnCompareBox").hidden = true; $("fnCompareOut").innerHTML = ""; }
+    $("fnCompare").onclick = () => compareCompilers(d.name);
     $("fnSetAside").onclick = async () => {
       const why = prompt(`Why does no C make ${d.name}? (optional: agents and you read it on its page)`, "hand-written assembly");
       if (why === null) return;
@@ -391,3 +394,25 @@ function renderProgress() {
   svg.innerHTML = `<path class="area" d="${line}V44H0Z"/><path class="line" d="${line}"/>`;
 }
 
+
+/* Compare compilers: the function's best C with each compiler and flag variant, ranked (compare_compilers). */
+async function compareCompilers(name) {
+  const box = $("fnCompareBox"), log = $("fnCompareLog"), out = $("fnCompareOut"), button = $("fnCompare");
+  S.compareFor = name;
+  box.hidden = false;
+  out.innerHTML = "";
+  showJobError(log, "");
+  const finish = beginWork(log, "Comparing compilers", [button], "Compared.");
+  try {
+    const { job } = await api("/api/compare", { method: "POST", body: { slug: S.slug, name } });
+    const r = await followJob(job, log);
+    if (S.compareFor !== name) return;
+    const pct = (x) => (x == null ? "—" : `${(Math.floor(x * 10) / 10).toFixed(1)}%`);
+    out.innerHTML = `<p class="small">${r.kept ? `<b class="ok">It matches with ${esc(r.kept)}</b>: ${r.file ? `${esc(r.file)} is built with them from now on.` : "suggest it for its range."}` : `Its own: ${esc(r.own)}. ${r.tried} of ${r.of} tried.`}</p>
+      <table class="compare-table"><thead><tr><th>Compiler</th><th>Flags</th><th>Score</th><th>Match</th></tr></thead><tbody>
+      ${r.rows.map((x) => `<tr${x.own ? ' class="own"' : ""}><td class="mono">${esc(x.compiler)}</td><td class="mono">${esc(x.flags || "")}</td>
+        <td>${x.exact ? '<b class="ok">match</b>' : x.score == null ? "doesn't build" : x.score}</td><td>${x.breaks.length ? `breaks ${esc(x.breaks.slice(0, 3).join(", "))}` : pct(x.percent)}${x.own ? " (its own)" : ""}</td></tr>`).join("")}
+      </tbody></table>`;
+    if (r.kept) { await refreshFn(false); await refreshMap(true); }
+  } catch (e) { showJobError(log, e.message); } finally { finish(); }
+}
