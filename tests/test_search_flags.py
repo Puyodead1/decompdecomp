@@ -49,6 +49,10 @@ def test_where_files_take_flags_of_their_own_a_suggestion_in_words_is_refused(mo
     agent, _ = net.local_agent("claude-sonnet-1")
     with pytest.raises(Exception, match="search_flags"):
         net.suggest(agent, "game", "these look like -O0 output: build the file at -O0")
+    # with a compiler too: the file-compiler check reads no flags, and said only "already the project's compiler"
+    with pytest.raises(Exception, match="search_flags.*try_compiler"):
+        net.suggest(agent, "game", "the file has no /GS cookie: drop /GS", compiler="MSVC/7.0",
+                    flags="/O2 /W3 /GX /MT /Oy-")
     monkeypatch.setattr(net.forks, "takes_file_flags", lambda slug: False)  # a public decomp's: words are all it has
     monkeypatch.setattr(net, "_update_cfg", lambda slug, change: change({}))
     assert net.suggest(agent, "game", "the build's map file is out of date").startswith("Suggested")
