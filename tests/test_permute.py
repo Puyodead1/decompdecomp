@@ -335,3 +335,38 @@ def test_settings_let_the_permuter_take_bigger_functions(tmp_path):
     p.configure({"permuter_max_insns": 2000, "permuter_seconds": "x", "permuter_max_turns": 10**9})
     assert [r["name"] for r in p.candidates(proj)] == ["big"]
     assert (p.seconds, p.max_turns) == (permute.SECONDS, 1000)
+
+
+def test_a_pc_near_miss_gets_its_files_flags_tried_once_per_best_attempt(tmp_path, monkeypatch):
+    """C right but for its file's flags (/Oy-, /O1, /GS on a PC game) waited for an agent to think of search_flags:
+    the permuter tries them itself after its turn, once for each best attempt."""
+    from types import SimpleNamespace
+
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES('pc','G','','x86',0,?,'{}')",
+                   (str(tmp_path),))
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,unit,best_source,best_score) "
+                   "VALUES(1,'f',8,20,'open','a','int f(void) { return 1; }',10)")
+    calls = []
+
+    def search_flags(agent, slug, function, source=""):
+        calls.append(source)
+        if len(calls) == 2:
+            with net.store.tx() as db:
+                db.execute("UPDATE functions SET status='matched' WHERE name=?", (function,))
+        return "/Oy-: MATCH"
+    monkeypatch.setattr(net, "fork_slug", lambda slug: slug)
+    monkeypatch.setattr(net, "_forks", SimpleNamespace(search_flags=search_flags), raising=False)
+    monkeypatch.setattr(type(net), "forks", property(lambda self: self._forks), raising=False)
+    p, st = permute.Permuter(net), permute.State()
+    fn, proj = net.store.one("SELECT * FROM functions"), net.project_row("pc")
+    p._try_flags(None, proj, fn, st)
+    p._try_flags(None, proj, fn, st)  # the same best attempt: not again
+    assert calls == ["int f(void) { return 1; }"]
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_source='int f(void) { return 2; }'")
+    p._try_flags(None, proj, fn, st)
+    assert len(calls) == 2 and st.matched == 1

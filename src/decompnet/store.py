@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS functions(
   matched_source TEXT, matched_agent_id INTEGER, matched_at REAL,
   attempts INTEGER NOT NULL DEFAULT 0, abandons INTEGER NOT NULL DEFAULT 0,
   UNIQUE(project_id, name));
+CREATE TABLE IF NOT EXISTS flag_probes(
+  function_id INTEGER NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(function_id, digest));
 CREATE TABLE IF NOT EXISTS agent_selection(
   project TEXT NOT NULL, agent TEXT NOT NULL, policy TEXT NOT NULL, PRIMARY KEY(project, agent));
 CREATE TABLE IF NOT EXISTS claims(
