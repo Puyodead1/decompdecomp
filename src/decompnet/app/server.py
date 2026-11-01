@@ -133,6 +133,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             jobs.logger.exception("helpers couldn't resume")
     threading.Thread(target=resume, daemon=True, name="resume-helpers").start()
 
+    tools.OBSERVERS[:] = [manager.record_tool]  # each tool call and its answer in its helper's transcript
     mcp = tools.build_mcp(net, agent_of)
 
     # Each helper sees only the work tools for its project's kind (fewer tool definitions in every request, nothing

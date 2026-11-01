@@ -813,6 +813,11 @@ function logLine(f, fresh) {
 }
 function renderLog() {
   const s = (S.sessions || []).find((x) => x.id === S.logFor);
+  if (!s || S.transcriptFor !== s.id) S.transcriptFor = null;
+  $("helperTranscript").hidden = !s;
+  $("helperTranscript").textContent = S.transcriptFor ? "Live log" : "Full transcript";
+  $("transcript").hidden = !S.transcriptFor;
+  if (S.transcriptFor) { $("activity").hidden = $("thoughts").hidden = true; $("helperLogClose").hidden = false; return; }
   $("activity").hidden = !!s; $("thoughts").hidden = !s; $("helperLogClose").hidden = !s;
   $("feedTitle").textContent = s ? `What ${s.label} said and did` : "What's happening";
   $("feedHint").textContent = s ? "its own words, its thinking and the tools it called, newest first" : "every agent's work on this game, newest first";
@@ -838,3 +843,40 @@ function addThoughts(sessions, first) {
   }
   if (first) renderLog();
 }
+
+/* A helper's full transcript (app/transcripts.py): its sessions, each one's prompt, words, thinking, tool calls and
+   answers, a page at a time, oldest first. */
+const TRANSCRIPT_NAMES = { prompt: "prompt", call: "tool call", result: "tool answer", text: "said", think: "thought", info: "", error: "error" };
+async function showTranscript(session = 0, after = 0) {
+  const sid = S.transcriptFor;
+  if (!sid) return;
+  try {
+    const r = await api(`/api/agents/transcript?id=${encodeURIComponent(sid)}&session=${session}&after=${after}`);
+    if (S.transcriptFor !== sid) return;
+    const pick = $("transcriptSession");
+    pick.innerHTML = r.sessions.map((x) => `<option value="${x.id}" ${x.id === r.session ? "selected" : ""}>${hhmm(x.started_at)} · ${esc(x.model || "")} · ${x.ended_at ? esc(x.outcome || "ended") : "running"} · ${plural(x.compiles || 0, "compile")}${x.matches ? `, ${x.matches} matched` : ""} · ${plural(x.entries, "entry")}</option>`).join("") || `<option>No sessions yet</option>`;
+    pick.onchange = () => { $("transcriptList").innerHTML = ""; showTranscript(Number(pick.value)); };
+    const list = $("transcriptList");
+    if (!after) list.innerHTML = r.entries.length ? "" : `<li class="placeholder"><span class="muted">Nothing kept for this session (sessions from before transcripts were kept, or older than two weeks).</span></li>`;
+    for (const e of r.entries) {
+      const li = document.createElement("li");
+      const time = document.createElement("time"); time.textContent = clock(e.created_at);
+      const body = document.createElement("span"); body.className = "t-" + (e.kind === "call" ? "tool" : e.kind === "result" ? "info" : e.kind);
+      const label = TRANSCRIPT_NAMES[e.kind] ?? e.kind;
+      if (e.text.length > 600 || e.kind === "prompt") {
+        const d = document.createElement("details"), sum = document.createElement("summary"), pre = document.createElement("pre");
+        sum.textContent = `${label}: ${e.text.slice(0, 120).replace(/\s+/g, " ")}…`; pre.textContent = e.text; pre.className = "joblog tall";
+        d.append(sum, pre); body.append(d);
+      } else body.textContent = label ? `${label}: ${e.text}` : e.text;
+      li.append(time, body); list.append(li);
+    }
+    const more = $("transcriptMore");
+    more.hidden = !r.more;
+    more.onclick = () => showTranscript(r.session, r.entries.length ? r.entries[r.entries.length - 1].id : after);
+  } catch (e) { toast(esc(e.message), "err"); }
+}
+$("helperTranscript").onclick = () => {
+  S.transcriptFor = S.transcriptFor ? null : S.logFor;
+  renderLog();
+  if (S.transcriptFor) { $("transcriptList").innerHTML = ""; showTranscript(); }
+};
