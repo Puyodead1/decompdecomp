@@ -189,6 +189,18 @@ def test_stats_say_who_matched_what_and_how_fast(net):
     assert all("matched_by" in r for r in net.function_map("demo-quest-64"))
 
 
+def test_stats_cover_every_helper_not_only_the_first_24(net):
+    """The agents page reads each helper's card from these: the 25th and later showed zeros."""
+    fid = net.store.one("SELECT id FROM functions LIMIT 1")["id"]
+    for i in range(30):
+        agent, _ = net.local_agent(f"crowd{i}")
+        with net.store.tx() as db:
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,created_at) VALUES(?,?,?,1,0)",
+                       (fid, agent.id, 5))
+    names = {r["agent"] for r in net.stats("demo-quest-64")["agents"]}
+    assert {f"crowd{i}" for i in range(30)} <= names
+
+
 def test_a_project_can_be_renamed(net):
     """A disc's title is often only its serial (GTA San Andreas imports as SLES-52541): the user names it. The slug
     stays, so links, folders and history keep working."""
