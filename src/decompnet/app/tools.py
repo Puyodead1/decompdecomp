@@ -284,7 +284,7 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
     try:
         return net.claim(agent, slug, function or None, strategy)
     except NetworkError as e:
-        if not function or not re.search(r"already matched|is set aside|is claimed by", str(e)):
+        if not function or not re.search(r"already matched|is set aside|is claimed by|your work selection", str(e)):
             raise
         return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
 
@@ -509,7 +509,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         Args:
             function: optional name or address (0x80001234) of a specific function
             strategy: finish (forks' default: the files closest to being linked first), easiest (fewest
-                instructions; ROM projects' default), closest (nearly matched already), hardest, untried
+                instructions; ROM projects' default), closest (nearly matched already), least_tried, hardest, untried
                 (functions nobody has compiled yet, then the smallest), random. If the project's owner
                 chose an order helpers take first, claiming without a function follows theirs, whatever
                 you pass here; a function you name still comes.
