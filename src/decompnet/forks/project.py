@@ -417,11 +417,11 @@ class ForkProject:
         timer.daemon = True
         timer.start()
         try:
-            return self._read_build(proc, log, failed, expired)
+            return self._read_build(proc, log, failed, expired, executable)
         finally:
             timer.cancel()
 
-    def _read_build(self, proc, log, failed, expired) -> tuple[bool, str]:
+    def _read_build(self, proc, log, failed, expired, executable: str) -> tuple[bool, str]:
         out, seen, quiet = [], collections.Counter(), 0
         for line in proc.stdout:
             line = line.rstrip()
