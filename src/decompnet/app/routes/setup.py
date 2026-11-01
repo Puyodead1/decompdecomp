@@ -218,6 +218,17 @@ def register(app: App) -> None:
         settings.save()
         return JSONResponse({"started": ids})
 
+    @mcp.custom_route("/api/agents/transcript", methods=["GET"])
+    async def api_agents_transcript(request: Request) -> Response:
+        """A helper's sessions and one session's transcript, a page at a time (`id`, `session`, `after`)."""
+        if (bad := guard(request)):
+            return bad
+        q = request.query_params
+        try:
+            return JSONResponse(manager.transcript(q.get("id", ""), int(q.get("session") or 0), int(q.get("after") or 0)))
+        except ValueError as e:
+            return fail(e)
+
     @mcp.custom_route("/api/agents/selection", methods=["POST"])
     async def api_agents_selection(request: Request) -> Response:
         """A helper's work selection (`id`, `selection`: strategy, match_below, max_tries, stall_compiles)."""

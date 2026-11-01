@@ -378,12 +378,29 @@ def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
     return args
 
 
+# who wants to know each tool call and its answer (the helpers' transcripts: Manager.record_tool)
+OBSERVERS: list[Callable] = []
+
+
+def _observed(agent: Agent, slug: str, name: str, args: dict, said: str) -> None:
+    for observe in list(OBSERVERS):
+        try:
+            observe(agent, slug, name, args, said)
+        except Exception:  # noqa: BLE001  a record that failed never stands in the tool's way
+            pass
+
+
 def _invoke(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str:
     """Every helper sees pulled changes before acting; only tools that write work need a second synchronization."""
-    net.progress.sync(slug, force=True)
-    result = HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
-    if name not in READ_ONLY:
+    try:
         net.progress.sync(slug, force=True)
+        result = HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
+        if name not in READ_ONLY:
+            net.progress.sync(slug, force=True)
+    except Exception as e:
+        _observed(agent, slug, name, args, f"error: {e}")
+        raise
+    _observed(agent, slug, name, args, result)
     return result
 
 
