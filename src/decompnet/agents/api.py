@@ -1,7 +1,8 @@
 """The API helper: decompdecomp's own agent loop for any OpenAI-compatible API (DeepSeek, OpenRouter,
-OpenAI, a local llama.cpp, Ollama or LM Studio). No program to install: the app sends the conversation to the model's
-chat-completions endpoint and calls the tools the model asks for directly (app/tools.py `call`), with the same tools
-the CLI agents get over MCP.
+OpenAI, a local llama.cpp, Ollama or LM Studio), and for Anthropic's own Messages API (`provider` "anthropic", through
+the anthropic SDK: an API key's credits, apart from a Claude Code subscription). No program to install: the app sends
+the conversation to the model and calls the tools the model asks for directly (app/tools.py `call`), with the same
+tools the CLI agents get over MCP.
 
 Its model, address and key come from an API endpoint the user saved in Agents & models (`endpoint_entry`; the
 settings keep them, app/support.py), never from its record. The conversation stays small: once the helper is done
@@ -11,6 +12,7 @@ trimmed (`fit`).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -26,6 +28,7 @@ API_PRESETS = {
     "lmstudio": {"name": "LM Studio (local)", "base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "key": False},
     "llamacpp": {"name": "llama.cpp (local)", "base_url": "http://127.0.0.1:8080/v1", "model": "local", "key": False},
     "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5", "key": True},
+    "anthropic": {"name": "Anthropic", "base_url": "https://api.anthropic.com", "model": "claude-opus-5-5", "key": True},
     "custom": {"name": "Custom", "base_url": "", "model": "", "key": True},
 }
 
@@ -53,12 +56,29 @@ API_RETRIES, API_RETRY_WAIT = 3, 10  # a dropped request or a gateway's 5xx, ask
 # a function is done with when the helper compiled it to a match or released it: its work then folds into a line
 FINISHING = ("compile_and_diff", "release_function")
 FOLDED = 2  # messages a fold leaves: one call and its result
+# Anthropic's Messages API (provider "anthropic"). A reply's tokens: well within a non-streamed request's time. Its
+# efforts (OpenAI's "minimal" is its "low"). Thinking blocks go back as they came (their reasoning carries on between
+# tool calls), and folding a finished function's work or trimming old tool output changes the history they were made
+# in: the API would refuse every request after that ("bound to a different conversation"), so it's asked to drop
+# those blocks instead (thinking-binding-controls).
+ANTHROPIC_MAX_TOKENS = 16000
+ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ANTHROPIC_BETAS = ["thinking-binding-controls-2026-08-01"]
+ANTHROPIC_RETRIES = 3
+# Dollars per million tokens (input, output, cache read) of Anthropic's models, so the budget in Settings stops an
+# Anthropic key's helpers too (the API says tokens, not dollars). A cache write costs 1.25 times the input (its 5-minute
+# cache). A model missing here counts its tokens only. Prices as of 2026-10.
+ANTHROPIC_PRICES = {"claude-fable-5-1": (10, 50, 0.25), "claude-fable-5": (10, 50, 1), "claude-opus-5-5": (4, 20, 0.2),
+                    "claude-opus-5": (5, 25, 0.5), "claude-opus-4-8": (5, 25, 0.5), "claude-opus-4-7": (5, 25, 0.5),
+                    "claude-opus-4-6": (5, 25, 0.5), "claude-sonnet-5-5": (2, 10, 0.2), "claude-sonnet-5": (2, 10, 0.2),
+                    "claude-sonnet-4-6": (3, 15, 0.3), "claude-haiku-5-5": (0.1, 0.5, 0.01), "claude-haiku-4-5": (1, 5, 0.1)}
+CACHE_WRITE_PRICE = 1.25
 
 
 class Api(Agent):
     id = "api"
     name = "API key"
-    vendor = "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API"
+    vendor = "DeepSeek, OpenRouter, Ollama, Anthropic, any OpenAI-compatible API"
     docs = "https://api-docs.deepseek.com"
     recommended = True  # decompdecomp runs its whole loop, and no other program's update can break it
     uses_endpoints = True
@@ -91,15 +111,15 @@ class Api(Agent):
         model = s.options.get("model") or ""
         if not base or not model:
             raise RuntimeError("set the API address and model first")
-        headers = {"Content-Type": "application/json"}
-        if s.options.get("api_key"):
-            headers["Authorization"] = f"Bearer {s.options['api_key']}"
+        claude = is_anthropic(s.options)
+        headers = {"Content-Type": "application/json", **({} if claude else key_headers(s.options))}
         schema = api_tool_schemas(fork=bool(net.fork_slug(s.slug)), names=tools.project_tools(net, s.slug))
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
                     {"role": "user", "content": manager.prompt(s)}]
         count = int(s.options.get("per_session", PER_SESSION))
         used_tool, start, done = False, len(messages), 0
-        with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=API_CONNECT_TIMEOUT)) as client:
+        with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=API_CONNECT_TIMEOUT)) as client, \
+                (anthropic_client(s.options) if claude else contextlib.nullcontext()) as sdk:
             window = context_window(client, base, s.options)
             s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
             budget = int(window * API_CONTEXT_SHARE) - _tokens(schema)  # room for the reply and the tools' definitions
@@ -108,10 +128,13 @@ class Api(Agent):
                     return True
                 for _attempt in range(API_TRIM_RETRIES):
                     fit(messages, budget, keep=start)
-                    request = {"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"}
-                    if s.options.get("effort"):
-                        request["reasoning_effort"] = s.options["effort"]
-                    r = _post(client, f"{base}/chat/completions", headers, request, s.stop)
+                    if claude:
+                        r = anthropic_post(sdk, model, messages, schema, s.options.get("effort"))
+                    else:
+                        request = {"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"}
+                        if s.options.get("effort"):
+                            request["reasoning_effort"] = s.options["effort"]
+                        r = _post(client, f"{base}/chat/completions", headers, request, s.stop)
                     if r.status_code == 200 or not _too_long(r):
                         break
                     budget = int(budget * API_TRIM_FACTOR)  # the server counts differently, or knows better: trim more
@@ -138,7 +161,7 @@ class Api(Agent):
                     s.push("error", s.error)
                     return False
                 if isinstance(reply.get("usage"), dict):
-                    manager.account(s, api_usage(reply["usage"]))
+                    manager.account(s, reply["usage"] if claude else api_usage(reply["usage"]))
                 if msg.get("reasoning_content"):
                     s.push("think", msg["reasoning_content"][:REASONING_SHOWN])
                 if msg.get("content"):
@@ -147,7 +170,8 @@ class Api(Agent):
                 # its reasoning goes back with the calls it made: DeepSeek's thinking mode refuses the next request
                 # without it ("The reasoning_content in the thinking mode must be passed back to the API": 106 times
                 # in a day, each a 5-10 minute wait); servers that don't send one get none back
-                messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "reasoning_content")}
+                messages.append({k: v for k, v in msg.items()
+                                 if k in ("role", "content", "tool_calls", "reasoning_content", "anthropic_content")}
                                 | {"role": "assistant"})
                 if not calls:
                     if not used_tool:  # a model that can't call tools answers in words, and never starts
@@ -353,13 +377,142 @@ def fit(messages: list[dict], budget: int, keep: int = 2) -> int:
     return total
 
 
+def is_anthropic(options: dict) -> bool:
+    """An endpoint (or a session's options) on Anthropic's own API."""
+    return options.get("provider") == "anthropic"
+
+
+def key_headers(options: dict) -> dict:
+    """An OpenAI-compatible endpoint's key, as its requests carry it."""
+    return {"Authorization": f"Bearer {options['api_key']}"} if options.get("api_key") else {}
+
+
+def anthropic_client(options: dict):
+    """The anthropic SDK's client for an endpoint: its key, and its address (Anthropic's, or a proxy of it)."""
+    import anthropic  # (here: only Anthropic endpoints need it)
+
+    return anthropic.Anthropic(api_key=options.get("api_key") or None, base_url=options.get("base_url") or None,
+                               timeout=anthropic.Timeout(API_TIMEOUT, connect=API_CONNECT_TIMEOUT),
+                               max_retries=ANTHROPIC_RETRIES)
+
+
+def anthropic_models(options: dict) -> list[dict]:
+    """The models an Anthropic key can use, newest first, as the launcher lists them."""
+    with anthropic_client(options) as client:
+        return [{"id": m.id, "name": m.display_name or m.id} for m in client.models.list()]
+
+
+def anthropic_request(model: str, messages: list[dict], schema: list[dict], effort: str | None) -> dict:
+    """The loop's conversation (OpenAI-shaped: what fold and fit work on) as a Messages API request. The system prompt
+    and the tools come first and stay the same, and the whole request is cached up to its end each step, so each step
+    reads the conversation so far from the cache. An assistant turn goes back as the API sent it (its thinking with
+    it); one the loop made itself (a fold) as its text and tool calls. Each run of tool results is one user turn."""
+    out: list[dict] = []
+    results: list[dict] = []
+
+    def flush() -> None:
+        if results:
+            out.append({"role": "user", "content": list(results)})
+            results.clear()
+    for m in messages:
+        if m["role"] == "system":
+            continue
+        if m["role"] == "tool":
+            results.append({"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m.get("content") or "(no output)"})
+            continue
+        flush()
+        if m["role"] == "assistant":
+            out.append({"role": "assistant", "content": m.get("anthropic_content") or _anthropic_blocks(m)})
+        else:
+            out.append({"role": "user", "content": m.get("content") or ""})
+    flush()
+    request = {"model": model, "max_tokens": ANTHROPIC_MAX_TOKENS, "messages": out,
+               "system": "\n\n".join(m["content"] for m in messages if m["role"] == "system"),
+               "tools": [{"name": t["function"]["name"], "description": t["function"]["description"],
+                          "input_schema": t["function"]["parameters"]} for t in schema],
+               "tool_choice": {"type": "auto"}, "cache_control": {"type": "ephemeral"},
+               "thinking": {"type": "adaptive", "display": "summarized",
+                            "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
+               "betas": ANTHROPIC_BETAS}
+    if effort:
+        request["output_config"] = {"effort": effort if effort in ANTHROPIC_EFFORTS else "low"}
+    return request
+
+
+def _anthropic_blocks(m: dict) -> list[dict]:
+    blocks = [{"type": "text", "text": m["content"]}] if m.get("content") else []
+    for c in m.get("tool_calls") or []:
+        try:
+            given = json.loads(c["function"].get("arguments") or "{}")
+        except ValueError:
+            given = {}
+        blocks.append({"type": "tool_use", "id": c["id"], "name": c["function"]["name"], "input": given})
+    return blocks or [{"type": "text", "text": "(nothing)"}]
+
+
+def anthropic_message(reply: dict) -> dict:
+    """A Messages API reply as the loop's assistant message: its text, its tool calls, its thinking's summary for the
+    feed, and the reply's blocks as they are, to send back."""
+    blocks = reply["content"]
+    text = "\n".join(b["text"] for b in blocks if b.get("type") == "text" and b.get("text"))
+    if reply.get("stop_reason") == "refusal":
+        why = (reply.get("stop_details") or {}).get("category") or "no reason given"
+        text = (text + "\n" if text else "") + f"(the model declined to go on: {why})"
+    msg = {"role": "assistant", "content": text or None, "anthropic_content": blocks}
+    thought = "\n".join(b.get("thinking") or "" for b in blocks if b.get("type") == "thinking").strip()
+    if thought:
+        msg["reasoning_content"] = thought
+    calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {})}}
+             for b in blocks if b.get("type") == "tool_use"]
+    if calls:
+        msg["tool_calls"] = calls
+    return msg
+
+
+def anthropic_usage(usage: dict, model: str = "") -> dict:
+    """A Messages API reply's usage as `usage` items count it (its input tokens leave out the cached ones), with what
+    it cost when the model's price is known."""
+    out = {"input": number(usage, "input_tokens"), "output": number(usage, "output_tokens"),
+           "cache_read": number(usage, "cache_read_input_tokens"),
+           "cache_write": number(usage, "cache_creation_input_tokens"), "turns": 1}
+    if (price := ANTHROPIC_PRICES.get(model)) is not None:
+        given, made, read = price
+        out["usd"] = (out["input"] * given + out["output"] * made + out["cache_read"] * read
+                      + out["cache_write"] * given * CACHE_WRITE_PRICE) / 1e6
+    return out
+
+
+class _Answered:
+    """A Messages API reply in the shape the loop reads an OpenAI-compatible one in (status 200, `json()`)."""
+    status_code, text = 200, ""
+
+    def __init__(self, reply: dict):
+        self.reply = reply
+
+    def json(self) -> dict:
+        return {"choices": [{"message": anthropic_message(self.reply)}],
+                "usage": anthropic_usage(self.reply.get("usage") or {}, self.reply.get("model") or "")}
+
+
+def anthropic_post(client, model: str, messages: list[dict], schema: list[dict], effort: str | None):
+    """One step on Anthropic's API: the reply, or the error response the loop reads like any server's (its status and
+    text: a usage limit, no credit, a context too small). A dropped connection the SDK retried is raised."""
+    import anthropic
+
+    try:
+        return _Answered(client.beta.messages.create(**anthropic_request(model, messages, schema, effort)).to_dict())
+    except anthropic.APIStatusError as e:
+        return e.response
+
+
 def model_efforts(entry: dict) -> list[str]:
     """The efforts an endpoint's provider lists for its model in /models, in our order (DeepSeek: `"effort":
     {"supported_levels": ["low", "high", "max"]}`); [] when it lists none, or can't be asked. DeepSeek takes the
     others without a word ("minimal", "medium"), so the launcher offering all six said nothing of what it runs."""
-    headers = {"Authorization": f"Bearer {entry['api_key']}"} if entry.get("api_key") else {}
+    if is_anthropic(entry):
+        return list(ANTHROPIC_EFFORTS)
     try:
-        r = httpx.get(entry["base_url"].rstrip("/") + "/models", headers=headers, timeout=PROPS_TIMEOUT)
+        r = httpx.get(entry["base_url"].rstrip("/") + "/models", headers=key_headers(entry), timeout=PROPS_TIMEOUT)
         models = r.json().get("data") if r.status_code == 200 else None
     except (httpx.HTTPError, ValueError, AttributeError, KeyError):
         return []

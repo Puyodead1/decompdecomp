@@ -212,6 +212,14 @@ Where to start on a gap:
   pack imported, matched and refused wrong C) and, per pack, byte for byte against the pack's own object
   (`tests/test_kits.py`); PSP's packs weren't on the machine it was checked on. GameCube, Wii and DS: see "Your
   own compiler for GameCube, Wii and DS".
+- **Anthropic's API for the API helper.** An Anthropic endpoint (Agents & models) runs Claude models through the
+  built-in agent loop on an API key's credits, apart from a Claude Code subscription's helpers: the Messages API
+  through the anthropic SDK, its thinking sent back as it came (asked to be dropped, not refused, once a fold changes
+  the history), the request cached to its end each step, and its spend priced so the budget stops it.
+- **Fixes seen in another fork (RetroReversing's).** The agents page counts every helper (it stopped at 24); a
+  project build that hangs stops at its timeout with the compiler under it; helpers resume in the background with
+  each project prepared once, outside the manager's lock; a fast sign-in failure is read in full, `invalid_grant` is a
+  failed sign-in, and sessions a restart cut short end as interrupted.
 - **Answering a suggestion ends its range check.** A dismissed suggestion's check went on sending agents to try its
   compiler on the next function in line (a 2003 PC game's, Visual C++ 6.0 on a 1,096-instruction function): applying
   or dismissing it now stops the check and takes its task out of the line, and checks of suggestions answered before
