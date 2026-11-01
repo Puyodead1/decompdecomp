@@ -3190,3 +3190,20 @@ def test_a_destructors_pop_ecx_after_its_call_is_a_piece():
     # the C runtime's __EH_epilog starts with `pop ecx` and goes on: a function of its own
     assert x86.piece(body, bytes.fromhex("5964890d00000000")) is None
     assert x86.piece(body + bytes.fromhex("c3"), bytes.fromhex("59c3")) is None  # (after a ret: its own)
+
+
+def test_a_funclets_pop_ecx_tail_ghidra_cut_off_is_a_stub_too():
+    """A 2003 game's .text$x run kept 101 functions agents could do nothing with: each unwind funclet `mov eax,
+    [ebp-N]; push eax; call free` was cut at the call, leaving its `pop ecx; ret` alone or in front of the next
+    handler (`mov eax, <FuncInfo>; jmp __CxxFrameHandler`). Both are stubs; the same tail in the main body isn't."""
+    funclet = bytes.fromhex("8b45ec 50 e800000000")  # mov eax, [ebp-0x14]; push eax; call free
+    import capstone
+
+    tail, tail_handler = bytes.fromhex("59 c3"), bytes.fromhex("59 c3 b810204000 e900000000")
+    main = [FRAME_FUNCTION, tail] + [FRAME_FUNCTION] * (scratch_pe.EH_STUB_GAP + 1)
+    run = [funclet, tail, EH_STUBS[0], funclet, tail_handler, EH_STUBS[1]]
+    data, extents = _tiny_pe(main + run)
+    assert scratch_pe.exception_stubs(scratch_pe.read_pe(data), extents) == {a for a, _ in extents[-len(run):]}
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    assert scratch_pe.eh_stub(md, bytes.fromhex("59 c3 55 8bec"), 0x401000) is None  # (a tail, then a real function)

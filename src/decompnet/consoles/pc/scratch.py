@@ -1086,6 +1086,14 @@ def eh_stub(md, code: bytes, addr: int) -> str | None:
     destroys a global: `mov ecx, <global>; jmp <destructor>`), or None. A real function that builds its frame through
     __EH_prolog (`mov eax, <handler>; call __EH_prolog`) calls before it uses ebp: not a stub."""
     ins = list(_disasm(md, code[:EH_STUB_BYTES], addr))
+    # a funclet's tail Ghidra cut at its call (`mov eax, [ebp-N]; push eax; call free`, then this `pop ecx; ret`,
+    # which takes the call's argument off): alone, or with the next stub, a handler, after it in the same function.
+    # A 2003 PC game's run had 101 of them that agents could do nothing with
+    if len(ins) >= 2 and (ins[0].id, ins[1].id) == (x86.X86_INS_POP, x86.X86_INS_RET) \
+            and ins[0].operands[0].reg == x86.X86_REG_ECX:
+        if len(ins) == 2:
+            return "funclet"
+        return eh_stub(md, code[ins[2].address - addr:], ins[2].address)
     if len(ins) >= 2 and ins[0].id == x86.X86_INS_MOV and ins[1].id == x86.X86_INS_JMP \
             and ins[0].operands[1].type == x86.X86_OP_IMM and ins[0].operands[0].reg in (x86.X86_REG_EAX, x86.X86_REG_ECX):
         return "handler" if ins[0].operands[0].reg == x86.X86_REG_EAX else "funclet"
@@ -2371,7 +2379,7 @@ def own_symbols(functions: list[Function], taken: set[str]) -> None:
 LIBRARY_WHY = "Visual C++'s runtime library ({what}), recognised by Ghidra's Function ID: not the game's own code"
 LIBRARY_HELPER_WHY = "Visual C++'s runtime library, a helper of {what}: only its functions refer to it"
 LIBRARY_OWN = "Visual C++'s runtime library"  # how set_library_aside's entries begin
-IMPORT_ANALYSIS = 20  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
+IMPORT_ANALYSIS = 21  # the analysis an import does: WindowsPC.ANALYSIS (a test keeps them the same)
 SHORTEST = 16  # (runtime.SHORTEST: what Function ID knows shorter isn't taken either)
 # what the runtime's startup calls is the game's: WinMain, main (a 2003 game's whole code was taken as its "helpers")
 STARTUP = re.compile(r"CRTStartup|^_?_?(w?main|w?WinMain|initterm|cinit)", re.I)

@@ -102,7 +102,7 @@ class WindowsPC(Console):
     # allocators, each cut at the operator delete of its catch(...)).
     # Its build tools have a version of their own (the manifest's "tools": scratch.tools_version), so each change to
     # them reaches it
-    ANALYSIS = 20
+    ANALYSIS = 21
 
     def sniff(self, head: bytes, file) -> bool:
         """Any Windows program, 64-bit ones too: the import says exactly why one it can't start can't start."""
@@ -306,7 +306,8 @@ class WindowsPC(Console):
                  7: (stubs, True), 8: (pieces, False), 9: (purges, True), 10: (int3s, False),
                  11: (gs, True), 12: (merged, False), 13: (merged, False), 14: (library, True),
                  15: (runtime_code, True), 16: (runtime_code, True), 17: (runtime_flag, False),
-                 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False)}  # (20: `pop ecx` pieces)
+                 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False),  # (20: `pop ecx` pieces)
+                 21: (stubs, True)}  # (21: funclets' `pop ecx; ret` tails)
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
