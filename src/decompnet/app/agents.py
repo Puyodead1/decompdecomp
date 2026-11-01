@@ -162,7 +162,7 @@ _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenti
 # more times, then the helper asks for a new sign-in.
 AUTH_FAILED = re.compile(r"failed to authenticate|oauth (?:session|token)[^.\n]{0,40}(?:expired|revoked|invalid)|"
                          r"authentication_(?:failed|error)|could not be refreshed|\b401\b[^\n]{0,80}unauthori[sz]ed|"
-                         r"token (?:has )?expired", re.I)
+                         r"token (?:has )?expired|invalid_grant", re.I)  # (OAuth's word for a refresh token it no longer takes)
 AUTH_RETRIES = 3  # failed sign-ins in a row before the helper pauses and asks for a new one
 AUTH_WAIT = 60  # seconds before the first try again, doubling
 # what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
@@ -515,6 +515,10 @@ class Manager:
                            "json_extract(h.options, '$.task') END FROM helpers h "
                            "WHERE h.id=helper_sessions.helper_id AND h.project=helper_sessions.project "
                            "AND h.name=helper_sessions.agent), '')")
+            # sessions the app was running when it stopped (it quit, crashed or the computer went down) never got
+            # their end: they read as running for ever
+            db.execute("UPDATE helper_sessions SET ended_at=?, outcome='interrupted' WHERE ended_at IS NULL",
+                       (time.time(),))
         self._restore()
         self.refresh_detected()
 
@@ -1230,7 +1234,8 @@ class Manager:
                     if k.limit_hangs and LIMIT.search(text):  # (it would retry the limit for hours: see Agent)
                         _terminate(proc)
         threading.Thread(target=feed_prompt, daemon=True).start()
-        threading.Thread(target=drain_err, daemon=True).start()
+        err_reader = threading.Thread(target=drain_err, daemon=True)
+        err_reader.start()
         saw_tool = False
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
@@ -1252,6 +1257,9 @@ class Manager:
                 _terminate(proc)
                 break
         code = proc.wait()
+        # what it said last on stderr before it exited: a CLI that fails its sign-in at once exits before the reader
+        # took the line in, and the failure read as a plain one
+        err_reader.join(timeout=1)
         _close_windows_job(proc.pid)
         s.proc = None
         if s.stop.is_set():

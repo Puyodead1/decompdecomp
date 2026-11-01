@@ -1323,3 +1323,18 @@ def test_codex_lists_the_models_its_own_picker_offers():
     rows = kinds.get("codex").read_models(json.dumps(catalog, indent=1).splitlines())
     assert [(r["id"], r["name"]) for r in rows] == [("gpt-6.1-sol", "GPT-6.1-Sol"), ("gpt-6-sol", "GPT-6-Sol")]
     assert kinds.get("codex").read_models(["not json"]) == []
+
+
+def test_sessions_the_app_was_running_when_it_stopped_end_as_interrupted(tmp_path, quiet):
+    """A session ends when its run does; one the app was in when it quit or crashed kept no end and read as running."""
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    s = m._record("game", "opencode", "opencode-1", "opencode-1", {})
+    m._session_begin(s)
+    agents.Manager(net, tmp_path, URL)  # the app starts again
+    row = net.store.one("SELECT ended_at, outcome FROM helper_sessions WHERE helper_id=?", s.id)
+    assert row["ended_at"] and row["outcome"] == "interrupted"
+
+
+def test_an_oauth_refresh_the_provider_no_longer_takes_is_a_failed_sign_in():
+    assert agents.AUTH_FAILED.search('{"error":"invalid_grant","error_description":"Invalid refresh token"}')
