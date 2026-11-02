@@ -110,11 +110,15 @@ class EditMixin:
         or data, not code anyone wrote. Changing the function list is the user's call, so it waits for them on the
         project page (resolve_boundary); approved, the function is cut there and the rest set aside. A project
         decompdecomp made (PC) cuts it once agents agree instead (ForkEngine.report_boundary)."""
+        if (link := self._link(slug)) is not None:  # the host's project is cut, its agents' reports counted with these
+            text = link.call("/collab/boundary", agent, function=self._function(function, slug)["name"], end=str(end),
+                             reason=reason)
+            if text.startswith("With yours"):  # (cut there: this copy follows)
+                link.sync()
+            return text
         if (fork := self.fork_slug(slug)):
             return self.forks.report_boundary(agent, fork, function, end, reason)
         self._rom_only(slug, "report_boundary")
-        if self._link(slug) is not None:
-            raise NetworkError("in a team room the host's project decides where functions end: tell the host (add_note)")
         fn = self._function(function, slug)
         proj = self._project(slug)
         console = self.console(proj)

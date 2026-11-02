@@ -4156,9 +4156,9 @@ class ForkEngine:
         rest is always set aside, and the user sees the words it leaves out; here the rebuild check stands behind it."""
         if not reason.strip():
             raise NetworkError("say what follows the end (data, leftovers, another function) and how you can tell")
+        if slug in self.net.links:  # a room's member: the host counts it (engine.request_boundary forwards it)
+            return self.net.request_boundary(agent, slug, function, end, reason)
         proj, fp, cfg = self.get(slug)
-        if slug in self.net.links:
-            raise NetworkError("in a room, the host's project is the one to cut functions in: say it in a note")
         console = consoles.get(cfg.get("platform"))
         fn = self._fn(slug, function)
         symbol = self._meta(fn).get("symbol") or fn["name"]
