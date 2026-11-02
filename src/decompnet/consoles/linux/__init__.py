@@ -7,6 +7,10 @@ Files:
 - split.py: the program's functions, globals and PLT imports, by its symbol table.
 - debuginfo.py: the STABS GCC 2.95 and egcs wrote with -g (source files, prototypes, locals, types), read by the PS2
   console's STABS reader.
+- drafts.py: Ghidra's machine drafts (m2c reads no x86) made C that GCC 2.95 compiles, for autopilot and redraft.
+- export.py, export_build.py: the rebuildable tree, and its build.py (each function rebuilt where it lies in a copy
+  of the program).
+- guides/linux.md: matching GCC 2.95 on i386, given to every helper before its first claim.
 
 The compiler is the distribution's own (toolchains.toml, gcc-2.95.3-linux: Slackware 8.0's GCC 2.95.3 and binutils,
 with glibc 2.2.3's headers), run on the pinned 32-bit runtime."""
@@ -36,7 +40,8 @@ class Linux(Console):
     layout = "elf"
     compilers = (Compiler("gcc-2.95.3-linux", "GCC 2.95.3 (Slackware 8.0)", "Linux programs of 2001-2002",
                           "GCC: (GNU) 2.95.3 20010315 (release)"),)
-    guides = ("x86",)
+    guides = ("linux",)  # (not the PC's x86 guide: its conventions are Visual C++'s)
+    compiler_guide = "linux"  # (guides/linux.md: GCC 2.95's habits on i386, given every helper before its first claim)
     ram = (0x08048000, 0x10000000)
     demo = "demo-linux"
     demo_tools = ("gcc-2.95.3-linux",)
