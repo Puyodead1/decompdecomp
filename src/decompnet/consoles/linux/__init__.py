@@ -37,6 +37,8 @@ class Linux(Console):
                           "GCC: (GNU) 2.95.3 20010315 (release)"),)
     guides = ("x86",)
     ram = (0x08048000, 0x10000000)
+    demo = "demo-linux"
+    demo_tools = ("gcc-2.95.3-linux",)
     # ROM mode's export (not written for Linux programs yet: ROADMAP): the GNU assembler's flags and the program's
     as_flags = ("--32",)
     image_ext = ".elf"
