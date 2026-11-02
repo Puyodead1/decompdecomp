@@ -165,3 +165,148 @@ def info(data: bytes, name: str) -> dict:
     stem = Path(name or "program").stem or "program"
     return {"title": stem, "game_code": "", "region": "", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),
             "compiler_guess": compiler_of(data)}
+
+
+# ----------------------------------------------------------------------------- a function's row, cut, found or joined
+# (the engine's split_function, report_boundary and saves: engine/editing.py, saves.py)
+
+def function_from_row(row) -> LinuxFunction:
+    """A stored function row as the splitter's function object: its bytes, assembly and references."""
+    import json
+
+    row = dict(row)
+    code = row.get("target") or b""
+    return LinuxFunction(row["name"], row["vram"], row.get("rom_offset") or 0, code, row.get("asm") or "",
+                         row.get("n_insns") or 1, [tuple(r) for r in json.loads(row.get("relocs") or "[]")],
+                         row.get("unit") or UNIT)
+
+
+def boundaries(code: bytes, vram: int) -> list[int]:
+    """The offsets where the function's instructions start (x86's are 1 to 15 bytes: a cut must fall on one)."""
+    return [ins.address - vram for ins in _md().disasm(code, vram)]
+
+
+def _asm_from(text: str, start: int, end: int) -> str:
+    """The lines of a function's assembly (each `/* ADDRESS */ ...`) from `start` up to `end`."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"/\* ([0-9A-F]{8}) \*/", line)
+        if m and start <= int(m.group(1), 16) < end:
+            out.append(line)
+    return "\n".join(out)
+
+
+def split_function(row, at: int, new_name: str) -> tuple[LinuxFunction, LinuxFunction]:
+    """Cut a stored function at `at`, an instruction's start inside it: the head keeps its name, the tail is
+    `new_name`, each with its own assembly lines and references."""
+    fn = function_from_row(row)
+    off = at - fn.vram
+    starts = boundaries(fn.code, fn.vram)
+    if not 0 < off < len(fn.code) or off not in starts:
+        raise ValueError(f"0x{at:08X} isn't the start of an instruction inside {fn.name} (0x{fn.vram:08X}, "
+                         f"{len(fn.code)} bytes)")
+    end = fn.vram + len(fn.code)
+    head = LinuxFunction(fn.name, fn.vram, fn.rom, fn.code[:off], _asm_from(fn.asm, fn.vram, at),
+                         sum(1 for s in starts if s < off), [r for r in fn.refs if r[0] < off], fn.segment)
+    tail = LinuxFunction(new_name, at, fn.rom + off, fn.code[off:], _asm_from(fn.asm, at, end),
+                         sum(1 for s in starts if s >= off), [(o - off, k, a) for o, k, a in fn.refs if o >= off],
+                         fn.segment)
+    return head, tail
+
+
+def _segments(program: bytes) -> list[tuple[int, int, int]]:
+    """The program's loaded executable parts: (address, file offset, size)."""
+    try:
+        elf = ELFFile(BytesIO(program))
+    except Exception:  # noqa: BLE001
+        return []
+    return [(s["p_vaddr"], s["p_offset"], s["p_filesz"]) for s in elf.iter_segments()
+            if s["p_type"] == "PT_LOAD" and s["p_flags"] & 1]
+
+
+def extent(code: bytes, vram: int) -> int:
+    """How long the function at the start of `code` is: up to the ret (or jmp) after which none of its own jumps
+    land, so a function whose branches jump past a ret in its middle runs on to its real end."""
+    furthest = vram
+    for ins in _md().disasm(code, vram):
+        groups = set(ins.groups)
+        if cs_x86.X86_GRP_JUMP in groups and ins.operands and ins.operands[0].type == cs_x86.X86_OP_IMM:
+            dest = ins.operands[0].imm & 0xFFFFFFFF
+            if vram <= dest < vram + len(code):
+                furthest = max(furthest, dest)
+        end = ins.address + ins.size
+        if (cs_x86.X86_GRP_RET in groups or ins.mnemonic == "jmp") and end > furthest:
+            return end - vram
+        if ins.mnemonic in ("hlt", "int3"):
+            return end - vram
+    return 0
+
+
+def function_at(program: bytes, addr: int, limit: int, name: str, label=None) -> LinuxFunction | None:
+    """A function the symbol table doesn't have, at `addr` (code an agent found past another's end): its code up
+    to its last return, never past `limit` (the next function)."""
+    seg = next(((v, o, n) for v, o, n in _segments(program) if v <= addr < v + n), None)
+    if seg is None:
+        return None
+    v, o, n = seg
+    at = o + addr - v
+    code = program[at:o + n][:max(0, limit - addr)]
+    size = extent(code, addr)
+    if not size and limit - addr <= len(code):  # (it ends in a call that doesn't return, exit's: up to the next one)
+        starts = boundaries(code, addr)
+        size = next((s for s in starts if padding(code[s:], addr + s)), len(code))
+        if starts and size == len(code) and sum(ins.size for ins in _md().disasm(code, addr)) != len(code):
+            size = 0  # (not code all the way)
+    if not size:
+        return None
+    code = code[:size]
+    asm, count, refs = disassemble(code, addr, label or (lambda a, exact=False: None if exact else f"0x{a:08X}"))
+    return LinuxFunction(name, addr, at, code, asm, count, refs)
+
+
+# what gas fills a function's end with (.p2align): nop, and the long nops that do nothing (mov esi,esi, lea esi,
+# [esi+0], lea edi,[edi+0])
+FILL = re.compile(r"(nop|int3|mov (e[sd]i), \2|lea (e[sd]i), \[\3( \+ 0)?\])$")
+
+
+def padding(data: bytes, vram: int) -> bool:
+    """Whether bytes between functions are only fill: zeros, or instructions that do nothing."""
+    if not data.strip(b"\0"):
+        return True
+    done = 0
+    for ins in _md().disasm(data, vram):
+        if not FILL.match(f"{ins.mnemonic} {ins.op_str}".strip()):
+            return False
+        done += ins.size
+    return done == len(data)
+
+
+def join_saved_functions(rows: list[dict], start: int, end: int, read) -> LinuxFunction:
+    """Saved pieces joined back into the first one: their bytes in order, gaps filled from the game only when
+    they're padding (the bytes GCC and the linker fill between functions: zeros, nop, int3 and lea esi,[esi])."""
+    import json
+
+    rows = [dict(r) for r in rows]
+    first = function_from_row(rows[0])
+    pieces, refs, asm, pos = [], [], [], start
+
+    def gap(at: int, n: int) -> bytes:
+        data = read(at, n)
+        if data is None or not padding(data, at):
+            raise ValueError("the saved layout crosses a gap in this analysis")
+        return data
+
+    for row in rows:
+        code = row.get("target") or b""
+        if row["vram"] > pos:
+            pieces.append(gap(pos, row["vram"] - pos))
+        base = row["vram"] - start
+        refs += [(int(o) + base, int(k), int(a)) for o, k, a in json.loads(row.get("relocs") or "[]")]
+        asm.append(row.get("asm") or "")
+        pieces.append(code)
+        pos = row["vram"] + len(code)
+    if pos < end:
+        pieces.append(gap(pos, end - pos))
+    code = b"".join(pieces)
+    return LinuxFunction(first.name, start, first.rom, code, "\n".join(a for a in asm if a),
+                         len(boundaries(code, start)) or 1, refs, first.segment)
