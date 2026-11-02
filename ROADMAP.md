@@ -133,8 +133,15 @@ reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.9
 2001 game: 1,590 functions imported with their 79 source files and its 1,787 types in the shared header (headers the
 linker wrote once are put back in each unit, debuginfo.entries), and C judged byte-identical through compile_and_diff.
 Left to do:
-- A demo program built with the toolchain (projects/demo-linux) and the feature table's column, each row run.
-- split_function, join and boundary reports (the console's x86 versions of the ROM parts), the rebuildable export.
+The demo program (projects/demo-linux: Demo Quest and zlib at -O2 -g, unstripped, STABS) ran each row of the
+table's Linux column. Left to do:
+- split_function, join and boundary reports (`report_boundary`; the console's x86 versions of the ROM parts), the
+  rebuildable export.
+- Machine drafts: m2c has no x86, so a Linux function needs Ghidra's decompiler as a ROM-mode drafter (the PC's
+  scratch path has one); autopilot and `redraft` follow from it.
+- The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
+  than one GCC.
+- Twins across games and rooms: not run on Linux yet.
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.
 
 ## Recently done

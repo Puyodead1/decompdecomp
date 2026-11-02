@@ -104,7 +104,8 @@ def split(path: Path, units: dict[int, str] | None = None, log=print) -> SplitRe
     raw: list[tuple[str, int, int, str, int]] = []  # (name, address, size, type, section index)
     for sym in elf.get_section_by_name(".symtab").iter_symbols():
         if sym.name and sym["st_info"]["type"] in ("STT_FUNC", "STT_OBJECT") and sym["st_value"]:
-            raw.append((sym.name.split("@")[0], sym["st_value"], sym["st_size"], sym["st_info"]["type"],
+            # (GCC names a function's static local `mark.21`: a C name, mark_21, for agents and saves)
+            raw.append((re.sub(r"\W", "_", sym.name.split("@")[0]), sym["st_value"], sym["st_size"], sym["st_info"]["type"],
                         sym["st_shndx"] if isinstance(sym["st_shndx"], int) else 0))
     text_idx = sections.index(text)
     by_addr = {}

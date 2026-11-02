@@ -1,8 +1,11 @@
 """Linux (32-bit x86) programs: what the console recognises, its STABS reader and its judge's placement rule. A
 real game's run (Slackware 8.0's GCC 2.95.3 reproducing its functions byte for byte) needs the game, so the end to end
-check is for a demo program built with the same toolchain (planned: projects/demo-linux)."""
+check is the demo program built with the same toolchain (projects/demo-linux, and tests/test_consoles.py)."""
 
+import re
 import struct
+
+import pytest
 
 from decompnet import consoles
 from decompnet.arch import x86_link
@@ -82,3 +85,30 @@ def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
                                      (0x80, "Bar:T(1,3)=s4f:(1,1),0,32;;", 0)])
     text = cheader.Header([source]).text()
     assert "struct Foo {" in text and "x; /* 0x0 */" in text and "Foo f; /* 0x0 */" in text
+
+
+def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_identifiers(tmp_path):
+    """Demo Quest built -g: guess_struct answers with the STABS prototype's type, field for field, and GCC's static
+    locals (`mark.21`) get C names an agent can write and a save can store."""
+    import json
+    import subprocess
+    import sys
+
+    from decompnet.app.engine import RomNetwork
+
+    from .test_consoles import ROOT, _missing
+
+    console = consoles.get("linux")
+    if (missing := _missing(console)):
+        pytest.skip(f"{console.name}'s demo needs {', '.join(missing)}")
+    folder = ROOT / "projects" / console.demo
+    if not (folder / "build" / "demo.json").exists():
+        subprocess.run([sys.executable, str(folder / "build.py")], check=True)
+    built = json.loads((folder / "build" / "demo.json").read_text())
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    slug = net.import_rom(folder / "build" / built["game"], confirmed=True, log=lambda *_: None)
+    text = net.guess_struct(slug, "entity_update_physics", "arg0")
+    assert "`void entity_update_physics(Entity *e)`" in text and "int hp; /* 0x18 */" in text
+    pid = net.project_row(slug)["id"]
+    names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=?", pid)]
+    assert names and all(re.fullmatch(r"[A-Za-z_]\w*", n) for n in names)
