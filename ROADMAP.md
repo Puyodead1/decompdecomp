@@ -132,17 +132,19 @@ information's STABS read for source files, prototypes and locals (consoles/linux
 reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
 2001 game: 1,590 functions imported with their 79 source files and its 1,787 types in the shared header (headers the
 linker wrote once are put back in each unit, debuginfo.entries), and C judged byte-identical through compile_and_diff.
-Left to do:
 The demo program (projects/demo-linux: Demo Quest and zlib at -O2 -g, unstripped, STABS) ran each row of the
-table's Linux column. Left to do:
-- split_function, join and boundary reports (`report_boundary`; the console's x86 versions of the ROM parts), the
-  rebuildable export.
-- Machine drafts: m2c has no x86, so a Linux function needs Ghidra's decompiler as a ROM-mode drafter (the PC's
-  scratch path has one); autopilot and `redraft` follow from it.
+table's Linux column; split_function, report_boundary, the rebuildable export (each function rebuilt where it lies in
+a copy of the program, consoles/linux/export.py), Ghidra's drafts for briefs, autopilot and redraft
+(consoles/linux/drafts.py) and rooms work. On the 2001 game, autopilot matched 574 of its 1,590 functions from
+Ghidra's drafts before any agent started. Left to do:
+- Ghidra's drafts with the program's own types: its STABS read into Ghidra (now the drafts treat a struct global as
+  words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
   than one GCC.
-- Twins across games and rooms: not run on Linux yet.
-- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.
+- A whole relink in the export (the program's dynamic sections, PLT and GOT as the 2001 linker laid them out), for
+  when all of a program's code is C.
+- Pieces of functions joined to their function (no ROM console has it yet).
+- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 
 ## Recently done
 

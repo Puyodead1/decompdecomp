@@ -242,6 +242,14 @@ def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():
     assert drafts.compilable(draft.replace("param_1);", "in_EAX);"), "f", "") is None
     assert drafts.compilable(draft.replace("g_player", "in_count"), "f", "") is not None  # (a variable named in_...)
 
+    # a file's static the header doesn't declare (only a struct's field of that name) is declared by its size
+    static = "int g(void)\n\n{\n  return (*(undefined4 *)((char *)&timer + 8)) + _DAT_080a9ee8 + (int)lv;\n}\n"
+    made = drafts.compilable(static, "g", "struct clock {\n    int timer;\n};\n", {"timer": 1932, "lv": 8})
+    assert "extern undefined1 timer[1932];" in made and "extern undefined8 lv;" in made
+    assert "D_080A9EE8" in made and "_DAT_" not in made
+    assert "extern" not in drafts.compilable(static, "g", "extern int timer[483];\nextern long long lv;\n"
+                                             "extern int D_080A9EE8;\n", {"timer": 1932, "lv": 8})
+
 
 def test_autopilot_matches_functions_from_ghidras_drafts(demo):
     """m2c reads no x86: a Linux program's drafts are Ghidra's, of the whole program at once, and autopilot judges

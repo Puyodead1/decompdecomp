@@ -174,7 +174,8 @@ class BriefMixin:
         seed = self._own_seed(fn, proj, self.console(proj), False)
         if not seed:
             return None
-        return self.console(proj).draft_source(seed.removeprefix(OWN_DRAFT_NOTE).lstrip("\n"), fn["name"], header)
+        data = {s.name: s.size for s in self.symbols(proj["id"]).by_name.values() if s.kind != "func"}
+        return self.console(proj).draft_source(seed.removeprefix(OWN_DRAFT_NOTE).lstrip("\n"), fn["name"], header, data)
 
     def stale_drafts(self, proj) -> list[int]:
         """Open functions whose machine draft is missing or was made from something that changed since, smallest
