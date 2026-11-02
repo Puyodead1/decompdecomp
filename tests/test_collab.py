@@ -402,6 +402,20 @@ def test_guest_edits_go_through_the_host(room):
     assert [k["status"] for k in host.knowledge.listing(slug)["items"]] == ["proposed"]
 
 
+
+def test_a_guests_boundary_report_reaches_the_host(room):
+    """A member's agent says a function ends early: the host's project holds the report (its user decides, in a ROM
+    project), not refused on the member's side (before: "say it in a note", so no report ever counted)."""
+    host, slug, guest, gslug, client, code, link = room
+    agent, _ = guest.local_agent("claude-3")
+    pid = host.project_row(slug)["id"]
+    fn = host.store.one("SELECT name, vram, size FROM functions WHERE project_id=? AND status='open' AND size>=16 "
+                        "ORDER BY vram LIMIT 1", pid)
+    out = guest.request_boundary(agent, gslug, fn["name"], f"0x{fn['vram'] + 8:08X}", "the rest is padding: nops")
+    assert out.startswith("Reported"), out
+    [item] = [b for b in host.cfg(host.project_row(slug)).get("boundaries", []) if b["function"] == fn["name"]]
+    assert item["agent"] == "alex.claude-3" and item["end"] == fn["vram"] + 8
+
 ABS = "s32 func_800007F4(s32 v) { return v < 0 ? -v : v; }"
 
 
