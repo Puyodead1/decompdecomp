@@ -31,6 +31,7 @@ GHIDRA_TYPES = [
     ("ulonglong", "typedef unsigned long long ulonglong;"),
     ("qword", "typedef unsigned long long qword;"),
     ("float10", "typedef long double float10;"),
+    ("longdouble", "typedef long double longdouble;"),
     ("code", "typedef int code();"),
     ("bool", "typedef unsigned char bool;"),
 ]
@@ -57,7 +58,9 @@ MACROS = """#define true 1
 _UNWRITABLE = re.compile(r"\b(unaff_\w+|in_stack_\w+|extraout_\w+|in_[A-Z]\w*|stack0x\w+|in_GS_OFFSET|halt_baddata|"
                          r"CARRY\d|SCARRY\d|SBORROW\d|POPCOUNT|LOCK|UNLOCK|WARNING|swi)\b|\.\_\d+_\d+_")
 _PART = re.compile(r"\b([A-Za-z_]\w*)\._(\d+)_([1248])_")
-_AUTO = re.compile(r"\b(DAT|FUN|PTR_DAT|LAB)_([0-9a-fA-F]{8})\b")
+# (`_DAT_080a9ee8`: Ghidra's underscores when a global overlaps smaller ones at its address)
+_AUTO = re.compile(r"\b_*(DAT|FUN|PTR_DAT|LAB)_([0-9a-fA-F]{8})\b")
+_WIDTH = {1: "undefined1", 2: "undefined2", 4: "undefined4", 8: "undefined8"}
 
 
 def _head(text: str, name: str):
@@ -80,16 +83,25 @@ def _split(params: str) -> list[str]:
     return [p for p in out if p != "void"]
 
 
+def _declares(header: str, name: str) -> bool:
+    """Whether the header declares `name` itself (a global, a function, a type, an enumerator), not only a struct's
+    field of that name (`timer` in a struct, and a file's static `timer` the header doesn't have)."""
+    return re.search(rf"^\S[^\n;]*\b{name}\b", header, re.M) is not None \
+        or re.search(rf"\benum\b[^;]*\{{[^}}]*\b{name}\b", header) is not None
+
+
 def _declares_type(header: str, name: str) -> bool:
     return re.search(rf"\btypedef\b[^;]*\b{name}\s*(\)\s*\([^;]*\))?\s*;", header) is not None \
         or re.search(rf"\b(struct|union|enum)\s+{name}\b", header) is not None
 
 
-def compilable(draft: str, name: str, header: str) -> str | None:
+def compilable(draft: str, name: str, header: str, data: dict[str, int] | None = None) -> str | None:
     """Ghidra's draft of `name` as C that compiles after the program's header (`header`: what context.h holds), or
     None when it reads what no C names. Its signature stays Ghidra's: its body reads a struct through a parameter by
     byte offsets (`*(int *)(param_1 + 0x1c)`), which the debug information's `z_streamp strm` would scale by the
-    struct's size (on the demo program, 25 of its drafts matched with Ghidra's signatures, 16 with the STABS ones)."""
+    struct's size (on the demo program, 25 of its drafts matched with Ghidra's signatures, 16 with the STABS ones).
+    `data`: the program's globals by name, with their sizes, for those its header doesn't declare (a file's statics,
+    which GCC 2.95's STABS leave out of the shared header)."""
     text = re.sub(r"/\*.*?\*/", "", draft, flags=re.S)
     # a part of a variable Ghidra has no field for (`g_player._32_2_`: 2 bytes at +32) is that part, read through a
     # pointer of its size
@@ -111,12 +123,19 @@ def compilable(draft: str, name: str, header: str) -> str | None:
         if new == name or re.search(rf"\b{new}\b", header):
             continue
         declared[new] = f"int {new}();" if kind == "FUN" else f"extern undefined4 {new};"
+    for other in sorted(set(re.findall(r"(?<![\w.>])([A-Za-z_]\w*)\b(?!\s*\()", body)) & set(data or {})):
+        if other != name and other not in declared and not _declares(header, other) and \
+                not re.search(rf"^\s*[\w ]+[\s*]{other}\s*(\[[^\]]*\])?;", body, re.M):  # (not a local of its own)
+            size = (data or {})[other]
+            declared[other] = (f"extern {_WIDTH[size]} {other};" if size in _WIDTH
+                               else f"extern undefined1 {other}[{size or 1}];")
     body = _AUTO.sub(lambda m: f"func_{m.group(2).upper()}" if m.group(1) == "FUN"
                      else f"D_{m.group(2).upper()}", body)
     typedefs = [t for n, t in GHIDRA_TYPES if re.search(rf"\b{n}\b", f"{ret} {' '.join(params)} {body}")
                 and not _declares_type(header, n)]
-    if any(t.endswith("undefined4;") for t in declared.values()) and not _declares_type(header, "undefined4"):
-        typedefs.append(dict(GHIDRA_TYPES)["undefined4"])
+    for width in sorted({w for d in declared.values() for w in re.findall(r"\b(undefined\d?)\b", d)}):
+        if not _declares_type(header, width):
+            typedefs.append(dict(GHIDRA_TYPES)[width])
     lines = list(dict.fromkeys(typedefs)) + list(declared.values())
     used = [line for line in MACROS.splitlines() if line.startswith("#define ")
             and re.search(rf"\b{line.split()[1].split('(')[0]}\b", body)]

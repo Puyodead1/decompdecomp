@@ -20,9 +20,9 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | ✓ an i386 ELF program with its symbol table | fork by address |
 | Judge | link · compare | link · compare | link · compare | link · compare | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | link · compare | objdiff |
-| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | — | ✓ | ✓ (m2c `gba-gcc-c`) | ✓ | ✓ Ghidra | ✓ Ghidra | — | — | by architecture |
-| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | twins only | ✓ | ✓ (demo: 34 matches) | ✓ | ✓ exact drafts of tiny shapes; Ghidra's made compilable | ✓ as PC | — | — | — |
-| Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | ✓ | — | ✓ | ✓ (m2c and `redraft`) | — | ✓ Ghidra's | ✓ Ghidra's | — | — | — |
+| Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | — | ✓ | ✓ (m2c `gba-gcc-c`) | ✓ | ✓ Ghidra | ✓ Ghidra | — | ✓ Ghidra (the whole program at once) | by architecture |
+| Autopilot: free matches from drafts | ✓ | ✓ | ✓ | twins only | ✓ | ✓ (demo: 34 matches) | ✓ | ✓ exact drafts of tiny shapes; Ghidra's made compilable | ✓ as PC | — | ✓ Ghidra's made compilable (demo: 25 of 96) | — |
+| Drafts follow the header, made in the background; `redraft` | ✓ | ✓ | ✓ | — | ✓ | ✓ (m2c and `redraft`) | — | ✓ Ghidra's | ✓ Ghidra's | — | ✓ Ghidra's, in the background; `redraft` | — |
 | C++ methods drafted as `Class::method` | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ (RTTI, and classes from the vtables constructors store) | ✓ (RTTI, vtables) | — | — | — |
 | Twins: free matches from identical code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (ran; no pairs in demo) | ✓ | ✓ | ✓ | ✓ | ✓ (ran; no pairs in demo) | ✓ |
 | Permuter on near misses | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ (demo: 200 → 10) | ✓ |
@@ -31,7 +31,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Agents' verdict "no C makes this" (3 agents of 2 models: set aside, red in the map) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | ✓ import stubs (NIDs) and `sc` calls | set aside, named by library and NID | set aside (BIOS calls) | — | ✓ import thunks | ✓ import thunks, named from the kernel export list | — | library calls by their PLT stubs' names | — |
-| Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (2-byte boundaries) | — | ✓ (agents agree, the rebuild checks) | ✓ | — | — | — |
+| Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (2-byte boundaries) | — | ✓ (agents agree, the rebuild checks) | ✓ | — | ✓ (approved on the project page; a cut on an instruction's start) | — |
 | Your own compiler (Setup: another build of one it has) | ✓ | ✓ | ✓ | ✓ your SDK | ✓ | ✓ | — | ✓ your Visual C++ | ✓ your XDK | — | — | the project's own build |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | per source file (`try_compiler`, Settings) | ✓ (`try_compiler`, suggestions) | the project's build |
 | Flag search (`search_flags`) | ✓ | ✓ | ✓ | ✓ | ✓ | — | the project's build | per source file (/Oy-, /O1, /Ob1) | per source file | the project's build | ✓ | the project's build |
@@ -40,7 +40,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ (named by RTTI where the program has it) | ✓ (RTTI where the program has it) | — | ✓ (x86 reader; the demo is C) | — |
 | Struct layouts from loads and stores (`guess_struct`) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ | ✓ | — | ✓ (and the STABS prototypes) | — |
 | The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS, DWARF 1; the compiler of each object file | names (types and prototypes: —) | ✓ symbol table, DWARF 1 | — | — | ✓ PDB (Visual C++ 6.0's PDB 2.0, MSF 7.00), linker map, COFF symbols | — (an XBE has none) | — | ✓ symbol table, STABS: source files, types, prototypes, locals | — |
-| Twins across your games | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ (between PC projects) | ✓ (as PC's; not run on two Xbox games yet) | — | not run yet | — |
+| Twins across your games | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ (between PC projects) | ✓ (as PC's; not run on two Xbox games yet) | — | ran (a game's programs shared only functions under 32 bytes) | — |
 | Shared knowledge (two models agree) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Tidy each source file once it's polished (shared types in one header, names, dead declarations) | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Polish matched code (still matching) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -48,11 +48,11 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | — | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (each function rebuilt where it lies in a copy of the program) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Find a game in a local library by declared SHA-1 | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and exact-file splat; — dtk, configure and whole-disc PS |
-| Rooms: decompile together | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | not run yet | ✓ |
+| Rooms: decompile together | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Where to start on a gap:
 - **Public project build prerequisite hints** run in `ForkProject.run` for public checkouts. The other columns
@@ -108,17 +108,19 @@ information's STABS read for source files, prototypes and locals (consoles/linux
 reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
 2001 game: 1,590 functions imported with their 79 source files and its 1,787 types in the shared header (headers the
 linker wrote once are put back in each unit, debuginfo.entries), and C judged byte-identical through compile_and_diff.
-Left to do:
 The demo program (projects/demo-linux: Demo Quest and zlib at -O2 -g, unstripped, STABS) ran each row of the
-table's Linux column. Left to do:
-- split_function, join and boundary reports (`report_boundary`; the console's x86 versions of the ROM parts), the
-  rebuildable export.
-- Machine drafts: m2c has no x86, so a Linux function needs Ghidra's decompiler as a ROM-mode drafter (the PC's
-  scratch path has one); autopilot and `redraft` follow from it.
+table's Linux column; split_function, report_boundary, the rebuildable export (each function rebuilt where it lies in
+a copy of the program, consoles/linux/export.py), Ghidra's drafts for briefs, autopilot and redraft
+(consoles/linux/drafts.py) and rooms work. On the 2001 game, autopilot matched 574 of its 1,590 functions from
+Ghidra's drafts before any agent started. Left to do:
+- Ghidra's drafts with the program's own types: its STABS read into Ghidra (now the drafts treat a struct global as
+  words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
   than one GCC.
-- Twins across games and rooms: not run on Linux yet.
-- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.
+- A whole relink in the export (the program's dynamic sections, PLT and GOT as the 2001 linker laid them out), for
+  when all of a program's code is C.
+- Pieces of functions joined to their function (no ROM console has it yet).
+- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 
 ## Recently done
 
