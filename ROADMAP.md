@@ -185,13 +185,9 @@ A console for Linux programs of 2000-2002 (an i386 ELF executable from the user'
 the program's own symbol table, judged by linking the agents' C at its address (arch/x86_link.py), the debug
 information's STABS read for source files, prototypes and locals (consoles/linux/debuginfo.py, through the PS2's
 reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
-2001 game: 1,590 functions imported with their 79 source files, and C judged byte-identical through compile_and_diff.
+2001 game: 1,590 functions imported with their 79 source files and its 1,787 types in the shared header (headers the
+linker wrote once are put back in each unit, debuginfo.entries), and C judged byte-identical through compile_and_diff.
 Left to do:
-- The types header: headers written once (N_BINCL/N_EXCL) are put back in each unit with their types numbered
-  program-wide (consoles/linux/debuginfo.entries: on a 2001 game, 141,455 references without a definition became
-  30). 64 fields still have an incomplete type: a typedef of an anonymous struct (`__mbstate_t:t(13,1)=(13,2)=s8`)
-  is declared but its body isn't written by the header writer (ps2/cheader.py), so the header still goes to
-  debug_types.h.
 - A demo program built with the toolchain (projects/demo-linux) and the feature table's column, each row run.
 - split_function, join and boundary reports (the console's x86 versions of the ROM parts), the rebuildable export.
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.

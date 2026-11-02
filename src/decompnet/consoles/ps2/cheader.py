@@ -71,13 +71,18 @@ class Header:
         self._forward: set[tuple[str, str]] = set()
         self._aligns: dict[int, int] = {}
         self._signatures: dict[tuple[int, str], str] = {}
-        for source in sources:  # `typedef struct { ... } Foo;` comes as an anonymous struct and a Foo of it
+        named: dict[int, list[Type]] = {}  # (the anonymous structs a typedef names, written with their source's types)
+        for k, source in enumerate(sources):  # `typedef struct { ... } Foo;` comes as an anonymous struct and a Foo of it
             for t in source.types:
                 target = t.target
                 if t.kind == "alias" and t.typedef and target is not None and target.kind in TAGGED and not target.tag:
                     target.tag = t.typedef
-        for source in sources:
-            for t in source.types:
+                    # GCC 2.95 for i386 numbers the struct apart from the typedef (`Foo:t(13,1)=(13,2)=s8`), so it isn't
+                    # one of the source's types: unwritten, a Linux game's 64 fields of such types were incomplete
+                    if not any(other is target for other in source.types):
+                        named.setdefault(k, []).append(target)
+        for k, source in enumerate(sources):
+            for t in [*named.get(k, ()), *source.types]:
                 if t.kind == "enum" and not t.tag:  # by its typedef's name, so its enumerators are checked like others'
                     t.tag = t.typedef or ANONYMOUS_ENUM
                 if t.kind in TAGGED and t.tag and id(t) not in self.tags:

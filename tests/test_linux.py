@@ -70,3 +70,15 @@ def test_a_header_written_once_is_put_back_in_each_unit_with_its_types_numbered_
     assert any(t == defined for _, t, _ in b)  # h.h's types are back in b.c ...
     # ... and b.c's file 2 (after its own g.h) is h.h there, by the same number
     assert number != "2" and (0x20, f"v:G({number},1)", 0) in b and (0x20, "w:G(0,1)", 0) in b
+
+
+def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
+    """GCC 2.95 for i386 writes `typedef struct { ... } Foo;` as Foo:t(1,1)=(1,2)=s...: the struct isn't one of its
+    file's named types, and the header declared it without its body (64 fields of a 2001 Linux game incomplete)."""
+    from decompnet.consoles.ps2 import cheader, stabs
+
+    source = stabs.read_file("a.c", [(0x80, "int:t(0,1)=r(0,1);-2147483648;2147483647;", 0),
+                                     (0x80, "Foo:t(1,1)=(1,2)=s4x:(0,1),0,32;;", 0),
+                                     (0x80, "Bar:T(1,3)=s4f:(1,1),0,32;;", 0)])
+    text = cheader.Header([source]).text()
+    assert "struct Foo {" in text and "x; /* 0x0 */" in text and "Foo f; /* 0x0 */" in text
