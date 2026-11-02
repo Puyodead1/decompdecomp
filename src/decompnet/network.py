@@ -1114,8 +1114,10 @@ class Network:
                               f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
                               f"start from this", "```c", fn["best_source"].strip(), "```"]
             elif fn["seed"]:
-                lines += ["", "### Machine draft (m2c): its control flow and arithmetic are usually right, its types "
-                              "and names usually wrong. Start from it and fix those", "```c", fn["seed"].strip(), "```"]
+                maker = "Ghidra" if "by Ghidra" in fn["seed"][:80] else "m2c"
+                lines += ["", f"### Machine draft ({maker}): its control flow and arithmetic are usually right, its "
+                              "types and names usually wrong. Start from it and fix those", "```c", fn["seed"].strip(),
+                          "```"]
         notes = self.notes_for_brief(fn)
         if notes:
             lines += ["", "### Notes from previous agents on this function", *notes]

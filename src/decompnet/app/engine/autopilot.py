@@ -184,14 +184,21 @@ class AutopilotMixin:
                 ctx = self._context(proj["id"], fn["unit"])
                 _, toolchain, context = self._draft_plan(fn, proj, ctx=ctx)
                 own = compiler_for(self.cfg(proj), fn["vram"])
-                data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
-                draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], toolchain, context,
-                                                data_asm, valid=True)
-                if not draft:
-                    return "fail"
-                # (its compiler named in it: the same draft is worth judging again with another compiler)
-                source = (f"/* machine draft (m2c) for {toolchain} {' '.join(own.get('flags', []))}, tried by autopilot */\n"
-                          f"{seeds.M2C_MACROS}\n{draft}\n")
+                if self.console(proj).rom_drafts and not seeds.m2c_target(toolchain):  # its own (Linux: Ghidra's)
+                    made = self._own_draft_source(fn, proj, ctx["header"])
+                    if not made:
+                        return "fail"
+                    source = (f"/* machine draft (Ghidra) for {toolchain} {' '.join(own.get('flags', []))}, tried by "
+                              f"autopilot */\n{made}")
+                else:
+                    data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
+                    draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], toolchain, context,
+                                                    data_asm, valid=True)
+                    if not draft:
+                        return "fail"
+                    # (its compiler named in it: the same draft is worth judging again with another compiler)
+                    source = (f"/* machine draft (m2c) for {toolchain} {' '.join(own.get('flags', []))}, tried by "
+                              f"autopilot */\n{seeds.M2C_MACROS}\n{draft}\n")
                 if self.store.one("SELECT 1 FROM attempts WHERE function_id=? AND agent_id=? AND context_version=? "
                                   "AND source=?", fid, agent.id, ctx["version"], source):
                     return "skip"
