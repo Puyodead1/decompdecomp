@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ...arch import BOUNDARIES
 from ...rom import Picked, RomError
-from .. import BETA, ROM, Compiler, Console
+from .. import BETA, EXPORT, ROM, Compiler, Console
 
 ELF_MAGIC = b"\x7fELF"
 EM_386 = 3
@@ -39,10 +40,11 @@ class Linux(Console):
     ram = (0x08048000, 0x10000000)
     demo = "demo-linux"
     demo_tools = ("gcc-2.95.3-linux",)
-    # ROM mode's export (not written for Linux programs yet: ROADMAP): the GNU assembler's flags and the program's
+    # (the export assembles nothing: export.py builds each function's C into a copy of the program)
     as_flags = ("--32",)
     image_ext = ".elf"
-    asm_preamble = ".intel_syntax noprefix\n.text\n"
+    # cutting a function (split.split_function, at an instruction's start); the export (export.py)
+    own_features = frozenset({BOUNDARIES, EXPORT})
 
     def sniff(self, head: bytes, file) -> bool:
         """A 32-bit x86 ELF executable (an i386 Linux program): ELF class 1, little-endian, e_machine 3."""
@@ -86,6 +88,32 @@ class Linux(Console):
     def instruction_size(self, fn) -> int:
         return 1  # (x86 instructions are 1 to 15 bytes: none is a fixed size)
 
+    def function_from_row(self, row: dict):
+        from . import split
+
+        return split.function_from_row(row)
+
+    def parse_function(self, name: str, text: str, segment: str):
+        """(a row's bytes are what the splitter's function needs: text alone has no code)"""
+        from . import split
+
+        return split.LinuxFunction(name, 0, 0, b"", text, max(1, len(text.splitlines())), [], segment)
+
+    def split_function(self, fn: dict, at: int, new_name: str):
+        from . import split
+
+        return split.split_function(fn, at, new_name)
+
+    def function_at(self, rom: bytes, addr: int, limit: int, name: str):
+        from . import split
+
+        return split.function_at(rom, addr, limit, name)
+
+    def join_saved_functions(self, rows: list[dict], start: int, end: int, read):
+        from . import split
+
+        return split.join_saved_functions(rows, start, end, read)
+
     def target_from_split(self, fn, resolve, big_endian: bool, gp: int):
         from ...arch.x86_link import X86Target
 
@@ -109,6 +137,11 @@ class Linux(Console):
         from ...arch import x86_link
 
         return x86_link.link(obj, name, target, symbols, read)
+
+    def export_project(self, net, slug: str, out: Path, log=print) -> dict:
+        from .export import export_linux
+
+        return export_linux(net, slug, out, self, log=log)
 
     def compile_prelude(self, vram: int) -> str:
         """The function at its game offset modulo 16 in its object: GCC 2.95 pads its loops by that offset."""
