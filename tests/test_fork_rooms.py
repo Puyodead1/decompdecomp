@@ -53,7 +53,7 @@ def room(tmp_path_factory):
     slug = host.import_rom(EXE, confirmed=True, log=lambda *_: None)
     host.rooms[slug] = collab.Room(host, slug)
     code = host.rooms[slug].open_invite()
-    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com")
+    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com", headers={collab.VERSION_HEADER: collab.__version__})
     g = tmp_path_factory.mktemp("guest")
     guest = RomNetwork(g / "d.db", g)
     link = f"https://abc.trycloudflare.com/join/{code}#room={slug}"
