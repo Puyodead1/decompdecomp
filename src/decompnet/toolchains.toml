@@ -33,6 +33,36 @@ sha256 = "d3b984867db9cac65d89b75c75f64347964e2837eb53e7782b4349a6c2a5eaaa"
 subdir = "usr/lib32"
 platforms = ["wsl-x86_64"]
 
+["gcc-2.95.3-linux"]
+name = "GCC 2.95.3 for Linux (Slackware 8.0)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-2.0"
+source = "Slackware 8.0's own packages: d1/gcc.tgz, d1/binutils.tgz, d1/glibc.tgz (its headers)"
+description = "The GCC 2.95.3 (20010315) and binutils 2.11.90 Slackware 8.0 shipped, with glibc 2.2.3's headers: what Linux programs of 2001-2002 were built with. Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc-lib/i386-slackware-linux/2.95.3"; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc-2.95.3" -B"$g/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+[["gcc-2.95.3-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-8.0/slakware/d1/gcc.tgz"
+sha256 = "82d8f62f51b29214a789cc48a38517505a6669815ccd8cd791352d90334adaf5"
+file = "slackware-8.0-gcc.tgz"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-2.95.3-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-8.0/slakware/d1/binutils.tgz"
+sha256 = "92b05492fd67e8526fc585bf15c2813a4acdbdeb2d9626d81536626fbfd72cbc"
+file = "slackware-8.0-binutils.tgz"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-2.95.3-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-8.0/slakware/d1/glibc.tgz"
+sha256 = "2b2870d8efb2fe3510d54ea979aa6f21c4b1c411ab34d802e32b096d11975fef"
+file = "slackware-8.0-glibc.tgz"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"

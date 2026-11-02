@@ -179,6 +179,20 @@ Where to start on a gap:
   (`Twins._across_projects`, PC so far: GameCube, Wii and DS projects of two games would work the same way but
   weren't tried); what's missing is opening a save's best attempts in a new copy of the project.
 
+## Linux (32-bit x86) programs (in progress, branch feat/linux)
+
+A console for Linux programs of 2000-2002 (an i386 ELF executable from the user's copy), ROM mode: functions split by
+the program's own symbol table, judged by linking the agents' C at its address (arch/x86_link.py), the debug
+information's STABS read for source files, prototypes and locals (consoles/linux/debuginfo.py, through the PS2's
+reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
+2001 game: 1,590 functions imported with their 79 source files, and C judged byte-identical through compile_and_diff.
+Left to do:
+- The types header: GCC on Linux writes a header's types once (N_BINCL), later files refer to them (N_EXCL); the
+  STABS reader reads each file alone, so they're left incomplete and the header goes to debug_types.h.
+- A demo program built with the toolchain (projects/demo-linux) and the feature table's column, each row run.
+- split_function, join and boundary reports (the console's x86 versions of the ROM parts), the rebuildable export.
+- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.
+
 ## Recently done
 
 - **Games built with Visual C++ 2017 (and 2015, 2019 and newer, with it).** The import's block for 2017 and newer is

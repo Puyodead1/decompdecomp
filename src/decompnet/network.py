@@ -599,7 +599,19 @@ class Network:
         cfg = json.loads(proj["config"])
         if fn is not None and cfg.get("compiler_ranges"):
             cfg = {**cfg, "compiler": compiler_for(cfg, fn["vram"])}
-        return compile_source(compiler_config(Path(proj["root"]), cfg), header, source)
+        return compile_source(self._placed(compiler_config(Path(proj["root"]), cfg), proj, fn), header, source)
+
+    @staticmethod
+    def _placed(config, proj, fn):
+        """The compiler set up for a function at its address: its console's prelude for it (Console.compile_prelude:
+        Linux puts it at its game offset modulo 16, which GCC 2.95's loop padding depends on)."""
+        import dataclasses
+
+        from . import consoles
+
+        vram = fn["vram"] if fn is not None else None
+        extra = consoles.of(json.loads(proj["config"])).compile_prelude(vram) if vram is not None else ""
+        return dataclasses.replace(config, prelude=config.prelude + extra) if extra else config
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
