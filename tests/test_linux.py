@@ -4,6 +4,7 @@ check is the demo program built with the same toolchain (projects/demo-linux, an
 
 import re
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -87,14 +88,13 @@ def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
     assert "struct Foo {" in text and "x; /* 0x0 */" in text and "Foo f; /* 0x0 */" in text
 
 
-def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_identifiers(tmp_path):
-    """Demo Quest built -g: guess_struct answers with the STABS prototype's type, field for field, and GCC's static
-    locals (`mark.21`) get C names an agent can write and a save can store."""
+
+@pytest.fixture(scope="module")
+def demo(tmp_path_factory):
+    """Demo Quest built -g with the pinned GCC 2.95.3 (projects/demo-linux), imported."""
     import json
     import subprocess
     import sys
-
-    from decompnet.app.engine import RomNetwork
 
     from .test_consoles import ROOT, _missing
 
@@ -105,10 +105,122 @@ def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_ident
     if not (folder / "build" / "demo.json").exists():
         subprocess.run([sys.executable, str(folder / "build.py")], check=True)
     built = json.loads((folder / "build" / "demo.json").read_text())
-    net = RomNetwork(tmp_path / "app.db", tmp_path)
-    slug = net.import_rom(folder / "build" / built["game"], confirmed=True, log=lambda *_: None)
+    return folder / "build" / built["game"], tmp_path_factory
+
+
+def _imported(demo, name):
+    from decompnet.app.engine import RomNetwork
+
+    program, factory = demo
+    work = factory.mktemp(name)
+    net = RomNetwork(work / "app.db", work)
+    return net, net.import_rom(program, confirmed=True, log=lambda *_: None)
+
+
+def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_identifiers(demo):
+    """Demo Quest built -g: guess_struct answers with the STABS prototype's type, field for field, and GCC's static
+    locals (`mark.21`) get C names an agent can write and a save can store."""
+    net, slug = _imported(demo, "structs")
     text = net.guess_struct(slug, "entity_update_physics", "arg0")
     assert "`void entity_update_physics(Entity *e)`" in text and "int hp; /* 0x18 */" in text
     pid = net.project_row(slug)["id"]
     names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=?", pid)]
     assert names and all(re.fullmatch(r"[A-Za-z_]\w*", n) for n in names)
+
+
+def test_a_function_is_split_at_an_instruction_and_cut_where_agents_say_it_ends_and_a_save_keeps_it(demo, tmp_path):
+    """split_function and report_boundary on a Linux program (x86: a cut falls on an instruction's start), and the
+    layout they leave comes back from a save."""
+    from decompnet.app import saves
+    from decompnet.consoles.linux import split
+    from decompnet.network import NetworkError
+
+    net, slug = _imported(demo, "cuts")
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    fn = net._function("game_tick", slug)
+    starts = split.boundaries(fn["target"], fn["vram"])
+    at = fn["vram"] + starts[len(starts) // 2]
+    with pytest.raises(NetworkError, match="start of an instruction"):
+        net.split_function(agent, slug, "game_tick", f"0x{at + 1:08X}")
+    assert net.split_function(agent, slug, "game_tick", f"0x{at:08X}").startswith("✅ split")
+    head, tail = net._function("game_tick", slug), net._function(f"func_{at:08X}", slug)
+    assert head["target"] + tail["target"] == fn["target"] and tail["vram"] == at
+    assert f"/* {at:08X} */" in tail["asm"] and f"/* {at:08X} */" not in head["asm"]
+
+    other = net._function("entity_update_physics", slug)
+    cut = other["vram"] + split.boundaries(other["target"], other["vram"])[-2]
+    assert net.request_boundary(agent, slug, "entity_update_physics", f"0x{cut:08X}", "the rest is padding").startswith(
+        "Reported")
+    [rid] = [r["id"] for r in net.cfg(net._project(slug))["boundaries"]]
+    net.resolve_boundary(slug, rid, True)
+    assert net._function(f"pad_{cut:08X}", slug)["status"] == "asm"
+    assert net._function("entity_update_physics", slug)["size"] == cut - other["vram"]
+
+    saves.save(net, slug, tmp_path / "save")
+    from decompnet.app.engine import RomNetwork
+
+    (tmp_path / "two").mkdir()
+    fresh = RomNetwork(tmp_path / "two" / "app.db", tmp_path / "two")
+    out = saves.restore(fresh, str(tmp_path / "save"), demo[0], log=lambda *_: None)
+    assert fresh._function(f"func_{at:08X}", out["slug"])["target"] == tail["target"]
+    assert fresh._function("entity_update_physics", out["slug"])["size"] == cut - other["vram"]
+
+
+def test_a_function_the_symbols_miss_is_found_to_its_return_or_to_the_next_one():
+    """function_at: up to the return no jump of its own lands past (a branch over a ret in its middle runs on),
+    and a function that ends in a call to exit runs to the next one, its padding left out."""
+    from decompnet.consoles.linux import split
+
+    body = bytes.fromhex("5589e57403c9c3" "90c9c3")  # push ebp; mov ebp,esp; je +3; leave; ret; nop; leave; ret
+    noreturn = bytes.fromhex("5589e56aff" "e8fcffffff") + bytes.fromhex("8d7600")  # ...; call exit; lea esi,[esi]
+    assert split.extent(body, 0x100) == len(body)
+    program = _program(body + bytes(6) + noreturn, 0x08048100)
+    assert split.function_at(program, 0x08048100, 0x08048200, "f").size == len(body)
+    found = split.function_at(program, 0x08048110, 0x08048110 + len(noreturn), "g")
+    assert found.size == len(noreturn) - 3
+    assert split.padding(bytes.fromhex("8db42600000000"), 0) and not split.padding(bytes.fromhex("5589e5"), 0)
+
+
+def _program(code: bytes, vram: int) -> bytes:
+    """A minimal i386 executable: its header, one executable PT_LOAD holding `code` at `vram`."""
+    phoff, at = 52, 52 + 32
+    head = (b"\x7fELF\x01\x01\x01" + bytes(9) + struct.pack("<HHIIIIIHHHHHH", 2, 3, 1, vram, phoff, 0, 0, 52, 32, 1,
+                                                                 40, 0, 0))
+    phdr = struct.pack("<IIIIIIII", 1, at, vram, vram, len(code), len(code), 5, 0x1000)
+    return head + phdr + code
+
+
+GAME_DEFINES = "#define GRAVITY 2\n#define MAX_FALL_SPEED 24\n#define FLOOR_Y 448\n#define ENTITY_FLAG_GROUNDED 0x2\n"
+
+
+def _match(net, slug, name: str) -> dict:
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.claim(agent, slug, name)
+    return net.attempt(agent, name, GAME_DEFINES + csource.get(DEMO_GAME.read_text(), name), slug)
+
+
+def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_program_keeps_it(demo):
+    """A switch's jump table is the function's own .rodata, its words relocations into the function's code: the
+    judge places them at the function's address (they were compared unrelocated: 99.9%, never a match), and the
+    exported tree's build links the table where the program has it and rebuilds the program byte for byte."""
+    import subprocess
+    import sys
+
+    net, slug = _imported(demo, "export")
+    assert _match(net, slug, "entity_default_hp")["matched"]
+    assert _match(net, slug, "clamp_s32")["matched"]
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"] and res["matched"] == 2, res["log"]
+    out = Path(res["path"])
+    assert "(2 of" in res["log"] and (out / "build" / "program").read_bytes() == demo[0].read_bytes()
+    assert ".own0" in (out / "build" / "obj" / "entity_default_hp.ld").read_text()
+
+    # a function written in the tree is checked against the original; a wrong one is refused
+    [src] = (out / "src").glob("*/clamp_s32.c")
+    src.write_text(src.read_text().replace("return v;", "return v + 1;"))
+    bad = subprocess.run([sys.executable, "build.py", "check", "clamp_s32"], cwd=out, capture_output=True, text=True)
+    assert bad.returncode != 0 and "differs from the original" in bad.stderr

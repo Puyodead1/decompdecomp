@@ -326,10 +326,13 @@ def link(obj: bytes, name: str, target: ArmTarget, symbols, read) -> LinkResult:
 
 
 def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, target: ArmTarget, symbols,
-                read, own: dict, problem) -> None:
+                read, own: dict, problem, abs32: int = R_ARM_ABS32, thumb: bool = True) -> None:
     """The data the candidate defines itself must be the original's: placed where the original's code points, each
     datum compared up to the next one (after every place is known), pointers inside it (a table of strings)
-    followed to where the original's pointers point."""
+    followed to where the original's pointers point. `abs32` is the processor's absolute address relocation (x86's
+    R_386_32 is 1; its 2 is a relative call); `thumb`: an address's low bit says Thumb, not part of it (an x86
+    switch's jump table points at odd addresses)."""
+    low = ~1 if thumb else ~0
     data_relocs: dict[int, list] = {}
 
     def relocs_in(sec_idx: int) -> list:
@@ -357,7 +360,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
             return (None if base is None else (base + value) & 0xFFFFFFFF), None
         in_sec = value + (0 if s["st_info"]["type"] == "STT_SECTION" else s["st_value"])
         if s["st_shndx"] == fn_shndx:
-            return (target.vram + (in_sec & ~1) - fn_start) & 0xFFFFFFFF, None
+            return (target.vram + (in_sec & low) - fn_start) & 0xFFFFFFFF, None
         return None, (s["st_shndx"], in_sec)
 
     def in_rom(sec_idx: int) -> bool:
@@ -370,7 +373,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
             continue
         addr, length, data = own[(sec_idx, off)], extent(sec_idx, off), elf.get_section(sec_idx).data()
         for at, rtype, s in relocs_in(sec_idx):
-            if rtype != R_ARM_ABS32 or not off <= at <= off + length - 4:
+            if rtype != abs32 or not off <= at <= off + length - 4:
                 continue
             _, key = pointee(s, int.from_bytes(data[at:at + 4], "little"))
             if key is None or key in own or (word := read(addr + at - off, 4)) is None:
@@ -393,7 +396,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
         unplaced = False
         for at, rtype, s in relocs_in(sec_idx):
             at -= off
-            if rtype != R_ARM_ABS32 or not 0 <= at <= length - 4:
+            if rtype != abs32 or not 0 <= at <= length - 4:
                 continue
             dest, key = pointee(s, int.from_bytes(mine[at:at + 4], "little"))
             if key is not None:
@@ -403,7 +406,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
                 unplaced = True
                 break
             word = read(addr + at, 4)
-            if word is not None and (int.from_bytes(word, "little") & ~1) == (dest & ~1):
+            if thumb and word is not None and (int.from_bytes(word, "little") & ~1) == (dest & ~1):
                 dest = int.from_bytes(word, "little")  # a Thumb function's address has its low bit set
             mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, "little")
         if unplaced:

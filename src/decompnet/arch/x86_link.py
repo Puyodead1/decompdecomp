@@ -128,7 +128,8 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
             else:
                 problem(f"relocation type {rtype} isn't supported yet")
 
-    _verify_own(elf, elf.get_section_by_name(".symtab"), name, shndx, start, target, symbols, read, own, problem)
+    _verify_own(elf, elf.get_section_by_name(".symtab"), name, shndx, start, target, symbols, read, own, problem,
+                abs32=R_386_32, thumb=False)
     placements: dict[str, dict[int, int]] = {}
     for (sec_idx, offset), original in own.items():
         placements.setdefault(elf.get_section(sec_idx).name, {})[offset] = original
