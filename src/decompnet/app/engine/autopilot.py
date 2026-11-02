@@ -37,11 +37,14 @@ class AutopilotMixin:
                 ids = self.forks.autopilot_prepare(fork)
                 try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
             else:
-                if not seeds.available():
-                    raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
                 proj = self._project(slug)
                 tc = self.cfg(proj)["compiler"]["toolchain"]
-                if not seeds.m2c_target(tc):
+                if self.console(proj).rom_drafts and not seeds.m2c_target(tc):  # its own drafts (Linux: Ghidra's)
+                    if not self.can_draft(proj):
+                        raise NetworkError("autopilot's drafts of this game are Ghidra's: install Ghidra in Setup")
+                elif not seeds.available():
+                    raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
+                elif not seeds.m2c_target(tc):
                     raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
                 ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
                                                        "ORDER BY n_insns, vram", proj["id"])]
