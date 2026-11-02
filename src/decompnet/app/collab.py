@@ -34,7 +34,7 @@ from starlette.routing import Route
 
 from decompnet.hostenv import NO_WINDOW
 
-from .. import toolchains
+from .. import __version__, toolchains
 from ..network import Agent, NetworkError, hash_token
 from ..rom.symbols import AUTO_NAME
 from . import forkroom
@@ -65,6 +65,24 @@ def _check_name(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------------- host
+
+# Every computer in a room runs the same decompdecomp: the host and its members each judge, build and sync work, and a
+# fix one side has and the other hasn't broke rooms quietly (a laptop's helpers, named by an older host, shared one
+# claim). The member sends its version with every request, and the host says its own: any difference is refused.
+VERSION_HEADER = "x-decomp-version"
+
+
+def _auth(token: str, room: str) -> dict:
+    """A member's request headers: its token, the room, and its version."""
+    return {"authorization": f"Bearer {token}", "x-room": room, VERSION_HEADER: __version__}
+
+
+def same_version(host: str | None, member: str | None) -> str:
+    """Why a room refused: the host and the member run different versions."""
+    return (f"this room's host runs decompdecomp {host or 'an older version'} and this computer "
+            f"{member or 'an older version'}: everyone in a room runs the same version. Update the one that's behind, "
+            "then join again")
+
 
 MEMBER_LABEL = 48  # characters of a member's agent's name kept on the host; a longer one ends in a digest of all of it
 
@@ -240,6 +258,8 @@ class Room:
         return token, name
 
     def member(self, request: Request) -> Agent:
+        if (theirs := request.headers.get(VERSION_HEADER)) != __version__:
+            raise NetworkError(same_version(__version__, theirs))
         token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         try:
             agent = self.net.authenticate(token or None)
@@ -399,9 +419,9 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         cfg = room.cfg
         ov = net.overview(room.slug)
         if room.fork:
-            return {"room": room.slug, **forkroom.hello(net, room.slug), "functions": ov["functions"],
+            return {"room": room.slug, "app_version": __version__, **forkroom.hello(net, room.slug), "functions": ov["functions"],
                     "matched": ov["matched"], "members": len(room.members()), **room.settings}
-        return {"room": room.slug, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
+        return {"room": room.slug, "app_version": __version__, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
                 "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"],
                 "functions": ov["functions"], "matched": ov["matched"], "members": len(room.members()),
                 **room.settings}
@@ -409,6 +429,8 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
     def join(room, member, d):
         if not room.invite_ok(str(d.get("invite", ""))):
             raise NetworkError("this invite link is no longer valid")
+        if (theirs := d.get("version")) != __version__:
+            raise NetworkError(same_version(__version__, theirs))
         token, name = room.join(str(d.get("name", "")), str(d.get("sha1", "")))
         return {"token": token, "room": room.slug, "name": name, "waiting": room.settings["approve"]}
 
@@ -688,7 +710,7 @@ class Link:
     # -- transport
 
     def _req(self, method: str, path: str, data: dict | None = None) -> dict:
-        headers = {"authorization": f"Bearer {self.token}", "x-room": self.room}
+        headers = _auth(self.token, self.room)
         try:
             if method == "GET":
                 r = self.client.get(f"{self.url}{path}", params={**(data or {}), "room": self.room}, headers=headers)
@@ -704,7 +726,7 @@ class Link:
         return out
 
     def _raw(self, path: str, params: dict) -> bytes:
-        headers = {"authorization": f"Bearer {self.token}", "x-room": self.room}
+        headers = _auth(self.token, self.room)
         try:
             r = self.client.get(f"{self.url}{path}", params={**params, "room": self.room}, headers=headers,
                                 timeout=httpx.Timeout(600, connect=15))
@@ -879,7 +901,7 @@ class Link:
                     # whoami authenticates (refreshing the host's last_seen) without sending or applying work.
                     # Keep its result separate: a live connection must not erase a failed sync or a refusal.
                     r = self.client.get(f"{self.url}/collab/whoami", params={"room": self.room},
-                                        headers={"authorization": f"Bearer {self.token}", "x-room": self.room},
+                                        headers=_auth(self.token, self.room),
                                         timeout=httpx.Timeout(HEARTBEAT_TIMEOUT, connect=5))
                     if r.status_code != 200:
                         raise NetworkError(f"host answered {r.status_code}")
@@ -933,6 +955,8 @@ def _hello(http: httpx.Client, link: str) -> tuple[str, str, dict]:
     hello = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     if r.status_code != 200:
         raise NetworkError(hello.get("error", "the invite didn't work"))
+    if (theirs := hello.get("app_version")) != __version__:
+        raise NetworkError(same_version(theirs, __version__))
     return url, code, hello
 
 
@@ -1066,7 +1090,7 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
     info = dict(cfg.get("link") or {})
     if info.get("token"):
         r = http.get(f"{url}/collab/whoami", params={"room": hello["room"]},
-                     headers={"authorization": f"Bearer {info['token']}", "x-room": hello["room"]})
+                     headers=_auth(info['token'], hello["room"]))
         if r.status_code == 200:
             old = net.links.pop(slug, None)
             if old is not None:
@@ -1076,7 +1100,7 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
             log(f"reconnected to {hello['title']} as {r.json()['name']}")
             return slug
     name = info.get("member") or "friend"
-    r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"]})
+    r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__})
     joined = r.json()
     if r.status_code != 200:
         raise NetworkError(joined.get("error", "couldn't join"))
@@ -1138,7 +1162,7 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
         # error must not leave a member on the host and an imported project here (#80).
         candidates = _saved_progress(net, slug=slug)
         best_comparable = json.loads(net.project_row(slug)["config"]).get("compiler") == hello["compiler"]
-        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"]})
+        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__})
         joined = r.json()
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
@@ -1203,13 +1227,13 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
         candidates = _saved_progress(net, identity=hello.get("sha1"), room=hello["room"], url=url) \
             if hello.get("sha1") else []
         log(f"joining {hello['title']} ({hello['functions']} functions, {hello['matched']} matched)")
-        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or ""})
+        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or "", "version": __version__})
         joined = r.json()
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
         if joined["name"].lower() != name.lower():
             log(f"the name {name} was taken in this room: you're {joined['name']}")
-        headers = {"authorization": f"Bearer {joined['token']}", "x-room": hello["room"]}
+        headers = _auth(joined['token'], hello["room"])
         if joined.get("waiting"):  # the host's files come only to members it let in
             log("waiting for the host to let you in")
             _wait_to_be_let_in(http, url, hello["room"], headers)

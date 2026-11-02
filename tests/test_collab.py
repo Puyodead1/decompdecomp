@@ -4,6 +4,7 @@ import json
 import re
 from contextlib import contextmanager
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
@@ -24,7 +25,7 @@ def room(built, tmp_path_factory):  # noqa: F811
     slug = host.import_rom(built, confirmed=True, log=lambda *_: None)
     host.rooms[slug] = collab.Room(host, slug)
     code = host.rooms[slug].open_invite()
-    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com")
+    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com", headers={collab.VERSION_HEADER: collab.__version__})
     g = tmp_path_factory.mktemp("guest")
     guest = RomNetwork(g / "d.db", g)
     link = f"https://abc.trycloudflare.com/join/{code}#room={slug}"
@@ -100,7 +101,7 @@ def test_join_shares_stronger_saved_progress(built, tmp_path, monkeypatch):  # n
     host.split_function(host_agent, slug, "func_800007C4", "0x800007D0")
     host.rooms[slug] = collab.Room(host, slug)
     code = host.rooms[slug].open_invite()
-    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com")
+    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com", headers={collab.VERSION_HEADER: collab.__version__})
     link = f"https://abc.trycloudflare.com/join/{code}#room={slug}"
 
     guest = RomNetwork(tmp_path / "saved.db", tmp_path)
@@ -426,7 +427,7 @@ def test_reconnect_after_the_host_restarts(room, built):  # noqa: F811
     host, slug, guest, gslug, client, code, link = room
     host.rooms[slug].close()  # the host quits: the tunnel and its address are gone
     new_code = host.rooms[slug].open_invite()  # ...and shares again from a new address
-    new_client = TestClient(collab.host_app(host, host.rooms), base_url="https://new-address.trycloudflare.com")
+    new_client = TestClient(collab.host_app(host, host.rooms), base_url="https://new-address.trycloudflare.com", headers={collab.VERSION_HEADER: collab.__version__})
     new_link = f"https://new-address.trycloudflare.com/join/{new_code}#room={slug}"
     before = sorted(m["name"] for m in host.rooms[slug].members())
     again = collab.join_room(guest, new_link, "alex", b"", log=lambda *_: None, client=new_client, start=False)
@@ -453,7 +454,7 @@ def _host(built, tmp_path, **settings):  # noqa: F811
     room.configure(**settings)
     host.rooms[slug] = room
     code = room.open_invite()
-    client = TestClient(collab.host_app(host, host.rooms), base_url="http://192.168.1.20:6481")
+    client = TestClient(collab.host_app(host, host.rooms), base_url="http://192.168.1.20:6481", headers={collab.VERSION_HEADER: collab.__version__})
     return host, slug, room, code, client
 
 
@@ -469,7 +470,7 @@ def test_a_join_that_never_connected_takes_over_its_empty_member(built, tmp_path
     sha1 = json.loads(host.project_row(slug)["config"])["rom"]["sha1"]
     old_token, old_name = room.join("tiredunc", sha1)
     assert old_name == "tiredunc"
-    answer = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "TiredUnc", "sha1": sha1})
+    answer = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "TiredUnc", "sha1": sha1, "version": collab.__version__})
     assert answer.status_code == 200
     joined = answer.json()
     assert joined["name"] == "tiredunc" and joined["token"] != old_token
@@ -485,7 +486,7 @@ def test_a_member_that_has_connected_still_gets_a_number(built, tmp_path):  # no
     sha1 = json.loads(host.project_row(slug)["config"])["rom"]["sha1"]
     token, _ = room.join("kim", sha1)
     assert client.get(f"/collab/whoami?room={slug}", headers={"authorization": f"Bearer {token}"}).status_code == 200
-    joined = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1}).json()
+    joined = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1, "version": collab.__version__}).json()
     assert joined["name"] == "kim2"
     assert [m["name"] for m in room._members_now()] == ["kim", "kim2"]
 
@@ -499,7 +500,7 @@ def test_a_member_that_left_the_room_still_gets_a_number(built, tmp_path, left):
         room.remove("kim")
     else:
         room.approve("kim", False)
-    joined = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1}).json()
+    joined = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1, "version": collab.__version__}).json()
     assert joined["name"] == "kim2" and joined["token"] != token
 
 
@@ -508,7 +509,7 @@ def test_a_taken_over_member_waits_for_the_host_again(built, tmp_path):  # noqa:
     sha1 = json.loads(host.project_row(slug)["config"])["rom"]["sha1"]
     old_token, _ = room.join("kim", sha1)
     assert [p["name"] for p in room.pending()] == ["kim"]
-    answer = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1})
+    answer = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kim", "sha1": sha1, "version": collab.__version__})
     assert answer.status_code == 200
     joined = answer.json()
     assert joined["name"] == "kim" and joined["waiting"] is True and joined["token"] != old_token
@@ -703,7 +704,7 @@ def test_a_git_projects_join_waits_to_be_let_in(built, tmp_path, monkeypatch):  
     sha1 = json.loads(host.project_row(slug)["config"])["rom"]["sha1"]
 
     def ask(name):
-        token = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": name, "sha1": sha1}).json()["token"]
+        token = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": name, "sha1": sha1, "version": collab.__version__}).json()["token"]
         return {"authorization": f"Bearer {token}", "x-room": slug}
 
     threading.Timer(0.2, room.approve, ("kim",)).start()
@@ -778,3 +779,22 @@ def test_a_members_agents_with_long_names_stay_apart_on_the_host():
     assert member_label("claude-1") == "claude-1" and member_label("") == "agent"
     long = [member_label("x" * 60 + str(n)) for n in (1, 2)]
     assert long[0] != long[1] and all(len(x) == MEMBER_LABEL for x in long)
+
+
+def test_everyone_in_a_room_runs_the_same_version(room):
+    """A fix one computer had and the other hadn't broke rooms quietly (a member's helpers, named by an older host,
+    shared one claim): a join from another version is refused, and so is any member request without this one."""
+    host, slug, guest, gslug, client, _, link = room
+    code = host.rooms[slug].open_invite()
+    sha1 = json.loads(host._project(slug)["config"])["rom"]["sha1"]
+    old = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "oldie", "sha1": sha1, "version": "0.9"})
+    assert old.status_code == 400 and "same version" in old.json()["error"] and "0.9" in old.json()["error"]
+    tok = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "newbie", "sha1": sha1,
+                                                        "version": collab.__version__}).json()["token"]
+    plain = TestClient(client.app, base_url="https://abc.trycloudflare.com")  # (an older member: no version header)
+    refused = plain.get(f"/collab/whoami?room={slug}", headers={"authorization": f"Bearer {tok}"})
+    assert refused.status_code == 400 and "an older version" in refused.json()["error"]
+    # a host of another version is refused here before anything is sent
+    older = httpx.MockTransport(lambda request: httpx.Response(200, json={"room": slug, "app_version": "0.9"}))
+    with httpx.Client(transport=older) as http, pytest.raises(NetworkError, match="same version"):
+        collab._hello(http, link)
