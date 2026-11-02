@@ -21,11 +21,13 @@ ERROR_LINE = "AGY_ERROR:"  # how agy starts a structured error on stderr
 TEXT_STEPS = ("agent_response", "thinking", "planner_response")
 # agy's own tools ask permission (its shell, files outside the folder, the web), and a background run can't: agy
 # then ends the whole session at once, as a success. Gemini Flash helpers reached for `git status` or grep after a
-# compile and paused after five sessions of that ("ended without compiling anything"); the prompt says so up front
+# compile and paused after five sessions of that ("ended without compiling anything"); the prompt says so up front.
+# On a Linux game they reached for a command to decode doubles read_data showed only as floats: it shows them now
 NO_OWN_TOOLS = ("\n\nAntigravity: you have no shell, terminal, file or web tools of your own here. Using one "
                 "(run_command, view_file, grep...) ends your whole session at once, with the work unfinished. Use "
-                "decompdecomp's tools only: read_file, search_code and file_status read the project, compile_and_diff "
-                "builds it.")
+                "decompdecomp's tools only: read_file, search_code and file_status read the project, read_data "
+                "shows a constant's bytes as text, floats and doubles (no need to decode them yourself), "
+                "compile_and_diff builds it.")
 
 
 def agy_settings() -> Path:
