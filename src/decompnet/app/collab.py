@@ -477,6 +477,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.split_function(agent, room.slug, str(d.get("function", "")), str(d.get("at", "")),
                                            str(d.get("new_name", "")))}
 
+    def boundary(room, member, d):
+        """A member's agent says a function runs on past its end: counted with the host's agents' reports, and cut
+        here once enough agree (a ROM project's report waits for the host's user instead)."""
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.request_boundary(agent, room.slug, str(d.get("function", "")), str(d.get("end", "")),
+                                             str(d.get("reason", "")))}
+
     def note(room, member, d):
         """A note on a function; one on no function is knowledge for every agent, so it needs two models' agreement
         like any agent's (knowledge.py), a member's agents included."""
@@ -543,6 +550,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
+        Route("/collab/boundary", endpoint(boundary), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),
