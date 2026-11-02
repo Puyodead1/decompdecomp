@@ -426,7 +426,8 @@ class ImportMixin:
         def matches(job) -> bool:
             tc, (fn, source) = job
             settings = {"toolchain": tc, "flags": consoles.default_flags(cfg, tc), "timeout": 20}
-            result = compile_source(compiler_config(Path(proj["root"]), {"compiler": settings}), header, source)
+            result = compile_source(self._placed(compiler_config(Path(proj["root"]), {"compiler": settings}), proj, fn),
+                                    header, source)
             if not result.ok:
                 return False
             cand, verdict, _ = self._evaluate(fn, proj, result.obj)

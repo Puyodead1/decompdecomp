@@ -1,0 +1,52 @@
+"""Linux (32-bit x86) programs: what the console recognises, its STABS reader and its judge's placement rule. A
+real game's run (Slackware 8.0's GCC 2.95.3 reproducing its functions byte for byte) needs the game, so the end to end
+check is for a demo program built with the same toolchain (planned: projects/demo-linux)."""
+
+import struct
+
+from decompnet import consoles
+from decompnet.arch import x86_link
+from decompnet.consoles.linux import debuginfo
+
+
+def _elf_head(machine: int, kind: int = 2, klass: int = 1) -> bytes:
+    head = bytearray(64)
+    head[:4], head[4], head[5] = b"\x7fELF", klass, 1
+    struct.pack_into("<HH", head, 16, kind, machine)
+    return bytes(head)
+
+
+def test_a_32_bit_x86_executable_is_a_linux_program_and_nothing_else_is():
+    linux = consoles.get("linux")
+    assert linux.sniff(_elf_head(3), b"")
+    assert not linux.sniff(_elf_head(8), b"")  # (a MIPS ELF: the PS2's)
+    assert not linux.sniff(_elf_head(3, kind=1), b"")  # (an object, not a program)
+    assert not linux.sniff(_elf_head(62, klass=2), b"")  # (64-bit)
+    assert not linux.sniff(b"MZ" + bytes(62), b"")  # (a Windows program)
+
+
+def _stab(strx: int, code: int, value: int, desc: int = 0) -> bytes:
+    return struct.pack("<IBBhI", strx, code, 0, desc, value)
+
+
+def test_stabs_are_read_a_compile_unit_at_a_time_with_continued_strings_joined():
+    """Each unit's strings start where the last ended (its N_UNDF entry says how many); GCC continues a long
+    string in the next entry, the first ending in a backslash."""
+    first = b"\0a.c\0f:F(0,1)\0int:t(0,1)=r(0,1);\\\0-2147483648;2147483647;\0"
+    second = b"\0b.c\0g:F(0,1)\0"
+    stab = (_stab(0, 0, len(first)) + _stab(1, 0x64, 0) + _stab(5, 0x24, 0x8048100)
+            + _stab(14, 0x80, 0) + _stab(34, 0x80, 0)
+            + _stab(0, 0, len(second)) + _stab(1, 0x64, 0) + _stab(5, 0x24, 0x8048200))
+    units = debuginfo.entries(stab, first + second)
+    assert [name for name, _ in units] == ["a.c", "b.c"]
+    assert units[0][1] == [(0x24, "f:F(0,1)", 0x8048100), (0x80, "int:t(0,1)=r(0,1);-2147483648;2147483647;", 0)]
+    assert units[1][1] == [(0x24, "g:F(0,1)", 0x8048200)]
+    assert debuginfo.x86_register(6) == "esi" and debuginfo.x86_register(12) == "st(0)"
+
+
+def test_a_function_is_compiled_at_its_address_modulo_16():
+    """GCC 2.95 pads a loop's start only when that costs at most 7 bytes, from the start of the object: on a 2001
+    Linux game, the same C placed at offset 0 instead of 4 got a 3-byte lea for padding the game hasn't."""
+    assert x86_link.prelude(0x8068F64) == '__asm__(".text\\n\\t.space 4\\n");\n'
+    assert x86_link.prelude(0x8064D60) == ""
+    assert consoles.get("linux").compile_prelude(0x8068F64) == x86_link.prelude(0x8068F64)

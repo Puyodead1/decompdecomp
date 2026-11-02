@@ -241,6 +241,11 @@ class Console:
 
         return split.function_asm(fn)
 
+    def compile_prelude(self, vram: int) -> str:
+        """ROM mode: C a function's compile starts with, for its address (Linux: padding that puts it at its game
+        offset modulo 16 in its object, where GCC 2.95's loop alignment depends on it). None by default."""
+        return ""
+
     def function_insns(self, fn) -> int:
         """ROM mode: how many instructions a just-split function has."""
         return len(fn.lines)
@@ -634,6 +639,7 @@ class Console:
 def _registry() -> list[Console]:
     from .gba import GBA
     from .gc_wii import GAMECUBE, WII
+    from .linux import LINUX
     from .n64 import N64
     from .nds import NDS
     from .pc import PC
@@ -649,7 +655,7 @@ def _registry() -> list[Console]:
     # the PS1's before the PS2, whose sniff takes any ISO 9660 disc and any MIPS ELF; the Xbox before them all: a full
     # Xbox disc dump starts with a DVD video partition; the PS3 before the PS2 too, though the PS2 takes only 32-bit
     # MIPS ELFs)
-    return [N64, XBOX, PSP, VFLASH, PS1, PS3, PS2, GBA, GAMECUBE, WII, PC, NDS, *PUBLIC_ONLY]
+    return [N64, XBOX, PSP, VFLASH, PS1, PS3, PS2, GBA, GAMECUBE, WII, PC, NDS, LINUX, *PUBLIC_ONLY]
 
 
 CONSOLES: list[Console] = _registry()

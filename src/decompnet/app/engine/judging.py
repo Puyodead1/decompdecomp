@@ -343,7 +343,8 @@ class JudgeMixin:
 
         header = self._context(proj["id"], fn["unit"])["header"]
         settings = {"toolchain": toolchain, "flags": flags, "timeout": 20}
-        result = compile_source(compiler_config(Path(proj["root"]), {"compiler": settings}), header, source)
+        result = compile_source(self._placed(compiler_config(Path(proj["root"]), {"compiler": settings}), proj, fn),
+                                header, source)
         if not result.ok:
             return False, None, result.log
         cand, verdict, _ = self._evaluate(fn, proj, result.obj)
