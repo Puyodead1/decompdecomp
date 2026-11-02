@@ -130,6 +130,33 @@ def decompile_object(obj: Path, cache_dir: Path, timeout: float = 900) -> dict[s
         return result
 
 
+def decompile_program(program: Path, cache_dir: Path, wait: bool = True, timeout: float = 4 * 3600) -> dict[int, str] | None:
+    """address -> decompiled C for every function of a whole program (a Linux game's executable: its functions are
+    where they run, so each draft is found by its address, whatever Ghidra named it), cached by the program's
+    content. Without `wait`, None while it isn't made yet (a brief doesn't wait the minutes a program takes: the
+    background drafter makes it)."""
+    key = hashlib.sha1(program.read_bytes()).hexdigest()[:16]
+    cache = cache_dir / f"{program.name}-{key}.json"
+    lock = _OBJECTS[str(cache)]
+    if not wait and not cache.exists():
+        return None
+    with lock:
+        if cache.exists():
+            return {int(k): v for k, v in json.loads(cache.read_text(encoding="utf-8")).items()}
+        if not available():
+            return {}
+        try:
+            with _RUNS:
+                rows = _run_script(program, "DecompWtfExport.java", timeout)
+        except ForkError:  # optional: none this time, and nothing cached, so it's tried again
+            return {}
+        result = {int(row["entry"]): row["c"] for row in rows if "entry" in row}
+        if rows:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(result), encoding="utf-8")
+        return result
+
+
 def functions(program: Path, timeout: float = 3600) -> list[dict]:
     """Every function Ghidra's analysis finds in a whole program (a Windows .exe: Ghidra reads its imports, exports and
     the C runtime's functions too): {"entry", "end", "name", "source", "purge", "convention", "params", "thunk"}."""

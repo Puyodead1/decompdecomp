@@ -606,6 +606,20 @@ class Console:
         when it can't be."""
         return None
 
+    # ROM mode's drafts where m2c can't read the code (Linux: Ghidra's of the whole program, consoles/linux/drafts.py):
+    # the background drafter, briefs, autopilot and redraft use these (engine/briefs.py, engine/autopilot.py)
+    rom_drafts = False
+
+    def program_drafts(self, program: Path, cache: Path, wait: bool = True) -> dict[int, str] | None:
+        """address -> a machine draft of each function of the program, made once (cached in `cache`); without `wait`,
+        None while they aren't made yet."""
+        return None
+
+    def draft_source(self, draft: str, name: str, header: str) -> str | None:
+        """A ROM mode draft of its own as C that compiles after the shared header, for autopilot and redraft; None
+        when it can't be."""
+        return None
+
     def installable_compilers(self) -> list[str]:
         """Its compilers the app installs itself, one toolchain each, that can run here (ROM mode's: "install them
         all" lets the import's compiler test try every one). A project console's come in its pack (`packs`)."""
