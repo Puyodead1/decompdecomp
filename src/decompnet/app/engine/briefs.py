@@ -593,7 +593,5 @@ class BriefMixin:
         ptrs = [f"+0x{4 * i:X}: {syms.label(w)}" for i, w in enumerate(words) if low <= w < high]
         if ptrs:
             out.append("words that look like addresses: " + ", ".join(ptrs[:16]))
-        floats = [struct.unpack(e + "f", struct.pack(e + "I", w))[0] for w in words[:8]]
-        if any(1e-6 < abs(f) < 1e7 for f in floats):
-            out.append("as f32: " + ", ".join(f"{f:g}" for f in floats))
+        out += arch.float_lines(data, e == ">")
         return "\n".join(out)
