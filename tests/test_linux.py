@@ -50,3 +50,23 @@ def test_a_function_is_compiled_at_its_address_modulo_16():
     assert x86_link.prelude(0x8068F64) == '__asm__(".text\\n\\t.space 4\\n");\n'
     assert x86_link.prelude(0x8064D60) == ""
     assert consoles.get("linux").compile_prelude(0x8068F64) == x86_link.prelude(0x8068F64)
+
+
+def test_a_header_written_once_is_put_back_in_each_unit_with_its_types_numbered_program_wide():
+    """GCC on Linux numbers a type by (file, index), the file counted in its unit; the linker keeps a header's entries
+    in the first unit that included it (N_BINCL ... N_EINCL) and leaves later units an N_EXCL. On a 2001 game 141,455
+    of 376,351 type references found no definition in their unit, and the types header didn't compile."""
+    strings = b"\0a.c\0h.h\0T:t(1,1)=s4x:(0,1),0,32;;\0b.c\0g.h\0v:G(2,1)\0w:G(0,1)\0"
+    at = {name: strings.index(name.encode() + b"\0") for name in ("a.c", "h.h", "b.c", "g.h", "v:G(2,1)", "w:G(0,1)")}
+    at["T"] = strings.index(b"T:t(")
+    stab = (_stab(0, 0, len(strings))
+            + _stab(at["a.c"], 0x64, 0) + _stab(at["h.h"], 0x82, 77) + _stab(at["T"], 0x80, 0) + _stab(0, 0xA2, 0)
+            + _stab(at["b.c"], 0x64, 0) + _stab(at["g.h"], 0x82, 5) + _stab(0, 0xA2, 0)  # (g.h: file 1 in b.c)
+            + _stab(at["h.h"], 0xC2, 77) + _stab(at["v:G(2,1)"], 0x20, 0) + _stab(at["w:G(0,1)"], 0x20, 0))
+    (_, a), (_, b) = debuginfo.entries(stab, strings)
+    defined = next(t for _, t, _ in a if t.startswith("T:t"))
+    number = defined[defined.index("(") + 1:defined.index(",")]
+    assert defined.startswith(f"T:t({number},1)=s4x:(0,1)")  # (built-in types keep file 0)
+    assert any(t == defined for _, t, _ in b)  # h.h's types are back in b.c ...
+    # ... and b.c's file 2 (after its own g.h) is h.h there, by the same number
+    assert number != "2" and (0x20, f"v:G({number},1)", 0) in b and (0x20, "w:G(0,1)", 0) in b
