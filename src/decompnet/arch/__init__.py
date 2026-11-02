@@ -78,3 +78,28 @@ def reloc_masks() -> dict[tuple[str, int], tuple[int, int, int]]:
 def capstone_modes() -> dict[tuple[str, bool], tuple[int, int]]:
     """(arch, big-endian) -> capstone's (architecture, mode), for every processor."""
     return {(a.id, big): mode for a in ARCHES for big, mode in a.capstone.items()}
+
+
+PLAUSIBLE = (1e-6, 1e9)  # a value data probably means as a float: not a pointer's or a small integer's bits
+
+
+def float_lines(data: bytes, big_endian: bool, shown: int = 8) -> list[str]:
+    """read_data's lines on what the bytes are as floating point: 4-byte floats, and 8-byte doubles where those make
+    sense (`00 00 00 00 00 00 59 40` is 100.0; shown only as floats it read as 0 and 3.4, and a model on a Linux game
+    stopped to decode it with a command of its own, which its CLI ended the session for)."""
+    import struct
+
+    e = ">" if big_endian else "<"
+    low, high = PLAUSIBLE
+    out = []
+    floats = [f for (f,) in struct.iter_unpack(e + "f", data[:len(data) // 4 * 4])][:shown]
+    if any(low < abs(x) < high for x in floats):
+        out.append("as f32: " + ", ".join(f"{x:g}" for x in floats))
+    # doubles where the bytes make no sense as floats (a double's low half reads as a denormal or a huge float)
+    # and do as doubles: every one zero or of a plausible size
+    doubles = [d for (d,) in struct.iter_unpack(e + "d", data[:len(data) // 8 * 8])][:shown]
+    nonsense = any(x != 0 and not low < abs(x) < high for x in floats)
+    if doubles and nonsense and any(low < abs(x) < high for x in doubles) and \
+            all(x == 0 or low < abs(x) < high for x in doubles):
+        out.append("as f64 (double): " + ", ".join(f"{x:g}" for x in doubles))
+    return out

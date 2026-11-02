@@ -21,4 +21,5 @@ Data you define yourself
 
 Floats
 - `lui $at, 0x3F80` + `mtc1 $at, $f0` is the constant 1.0f built in registers; a `lwc1` from
-  `D_...` is a constant stored in .rodata. `read_data` shows it "as f32".
+  `D_...` is a constant stored in .rodata. `read_data` shows it "as f32", and "as f64 (double)" when the
+  bytes are doubles (x86's `fld qword`, a `double` constant).

@@ -4356,9 +4356,8 @@ class ForkEngine:
                     out.append("pointers in it: " + ", ".join(f"+0x{at:X} -> {t}" for at, t in sorted(ptrs)[:24]))
                 e = ">" if not elf.little_endian else "<"
                 words = [w for (w,) in struct.iter_unpack(e + "I", data[:len(data) // 4 * 4])]
-                floats = [struct.unpack(e + "f", struct.pack(e + "I", w))[0] for w in words[:8]]
-                if words and any(1e-6 < abs(x) < 1e7 for x in floats):
-                    out.append("as f32: " + ", ".join(f"{x:g}" for x in floats))
+                if words:
+                    out += arch.float_lines(data, e == ">")
                 text = data.split(b"\0", 1)[0]
                 if len(text) >= 3 and all(32 <= c < 127 or c in (9, 10) for c in text):
                     out.append(f"as a string: {json.dumps(text.decode('ascii'))}")

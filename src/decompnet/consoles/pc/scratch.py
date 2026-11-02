@@ -46,7 +46,7 @@ from capstone import x86
 
 from decompnet.hostenv import NO_WINDOW
 
-from ... import kits, toolchains
+from ... import arch, kits, toolchains
 from ...arch import x86 as x86_arch
 from ...forks.project import ForkError, ForkProject
 from . import debuginfo
@@ -191,7 +191,6 @@ RICH_ENTRIES_AT, RICH_ENTRY_BYTES = 16, 8  # after "DanS" and its padding: (prod
 READ_DEFAULT_BYTES, READ_MIN_BYTES, READ_MAX_BYTES = 64, 4, 512
 HEX_ROW_BYTES = 16
 POINTERS_SHOWN, FLOATS_SHOWN = 24, 8
-PLAUSIBLE_FLOAT = (1e-6, 1e7)  # magnitudes a float in game data has; other words aren't floats
 MIN_STRING_CHARS = 3
 PRINTABLE = range(32, 127)
 # exception_stubs: C++ built with /GX (as games of the time were) puts the code that destroys a function's local objects
@@ -2424,10 +2423,8 @@ def read_data(root: Path, manifest: dict, name: str, length: int = READ_DEFAULT_
     ptrs = [(4 * i, w) for i, w in enumerate(words) if pe.contains(w)]
     if ptrs:
         out.append("pointers in it: " + ", ".join(f"+0x{at:X} -> 0x{w:08X}" for at, w in ptrs[:POINTERS_SHOWN]))
-    floats = [struct.unpack("<f", struct.pack("<I", w))[0] for w in words[:FLOATS_SHOWN]]
-    smallest, biggest = PLAUSIBLE_FLOAT
-    if words and any(smallest < abs(x) < biggest for x in floats):
-        out.append("as f32: " + ", ".join(f"{x:g}" for x in floats))
+    if words:
+        out += arch.float_lines(data, False, FLOATS_SHOWN)
     text = data.split(b"\0", 1)[0]
     if len(text) >= MIN_STRING_CHARS and all(c in PRINTABLE or c in b"\t\n" for c in text) and not (ptrs and ptrs[0][0] == 0):
         out.append(f"as a string: {json.dumps(text.decode('latin-1'))}")
