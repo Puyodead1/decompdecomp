@@ -33,6 +33,7 @@ class Core(Network):
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
         self._xrefs: dict[int, dict] = {}
         self._draft_locks: dict[int, threading.Lock] = {}  # function id -> held while its machine draft is made
+        self._recheck_locks: dict[str, threading.Lock] = {}  # project -> held while recheck looks at it
         self._headers: dict[tuple, object] = {}  # (project id, header version, for m2c) -> its declarations
         self._asm_names: dict[int, dict] = {}  # project id -> {function id: (size, the names its assembly mentions)}
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
@@ -126,9 +127,22 @@ class Core(Network):
         (checked by this version already, or a room member's copy: its host checks)."""
         from ... import __version__
 
+        # (a member's copy by its stored link too: helpers starting after an update came before the room's links
+        # were back, and a member's copy of a PC game was analysed again, 447 functions given back and taken back)
         row = self.project_row(slug)
-        if slug in self.links or (only_if_updated and self.cfg(row).get("checked") == __version__):
+        if slug in self.links or self.cfg(row).get("link"):
             return None
+        # one check at a time: four helpers starting together each began the after-update one before the first
+        # recorded it, and the project was analysed twice over
+        with self._recheck_locks.setdefault(slug, threading.Lock()):
+            row = self.project_row(slug)
+            if only_if_updated and self.cfg(row).get("checked") == __version__:
+                return None
+            return self._recheck(slug, row, log)
+
+    def _recheck(self, slug: str, row, log) -> str:
+        from ... import __version__
+
         if self.is_rom(row):
             self.rangechecks.reopen(slug)
         last = self.store.one("SELECT COALESCE(MAX(id), 0) AS id FROM events WHERE project_id=?", row["id"])["id"]

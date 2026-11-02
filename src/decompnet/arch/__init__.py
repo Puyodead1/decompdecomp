@@ -95,11 +95,12 @@ def float_lines(data: bytes, big_endian: bool, shown: int = 8) -> list[str]:
     floats = [f for (f,) in struct.iter_unpack(e + "f", data[:len(data) // 4 * 4])][:shown]
     if any(low < abs(x) < high for x in floats):
         out.append("as f32: " + ", ".join(f"{x:g}" for x in floats))
-    # doubles where the bytes make no sense as floats (a double's low half reads as a denormal or a huge float)
-    # and do as doubles: every one zero or of a plausible size
+    # doubles where the bytes make no sense as floats (a double's low half reads as a denormal or a huge float), slot
+    # by slot: a game's constants mix doubles with floats and padding (`· ` where a slot isn't a sensible double)
     doubles = [d for (d,) in struct.iter_unpack(e + "d", data[:len(data) // 8 * 8])][:shown]
     nonsense = any(x != 0 and not low < abs(x) < high for x in floats)
-    if doubles and nonsense and any(low < abs(x) < high for x in doubles) and \
-            all(x == 0 or low < abs(x) < high for x in doubles):
-        out.append("as f64 (double): " + ", ".join(f"{x:g}" for x in doubles))
+    sensible = [low < abs(x) < high for x in doubles]
+    if nonsense and sum(sensible) >= max(1, sum(x != 0 for x in doubles) // 2):
+        out.append("as f64 (double), each 8 bytes: " + ", ".join(f"{x:g}" if ok else "·" if x else "0"
+                                                                 for x, ok in zip(doubles, sensible)))
     return out
