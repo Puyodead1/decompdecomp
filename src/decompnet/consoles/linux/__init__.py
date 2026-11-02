@@ -138,6 +138,18 @@ class Linux(Console):
 
         return x86_link.link(obj, name, target, symbols, read)
 
+    rom_drafts = True  # (Ghidra's: m2c reads no x86)
+
+    def program_drafts(self, program: Path, cache: Path, wait: bool = True) -> dict[int, str] | None:
+        from ...forks import ghidra
+
+        return ghidra.decompile_program(program, cache, wait=wait) if ghidra.available() else None
+
+    def draft_source(self, draft: str, name: str, header: str) -> str | None:
+        from . import drafts
+
+        return drafts.compilable(draft, name, header)
+
     def export_project(self, net, slug: str, out: Path, log=print) -> dict:
         from .export import export_linux
 

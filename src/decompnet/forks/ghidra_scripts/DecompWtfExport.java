@@ -40,7 +40,8 @@ public class DecompWtfExport extends GhidraScript {
                 if (f.isExternal() || f.isThunk()) continue;
                 DecompileResults r = ifc.decompileFunction(f, 60, monitor);
                 if (r == null || !r.decompileCompleted() || r.getDecompiledFunction() == null) continue;
-                w.println("{\"name\": " + quote(f.getName()) + ", \"c\": " + quote(r.getDecompiledFunction().getC()) + "}");
+                w.println("{\"name\": " + quote(f.getName()) + ", \"entry\": " + f.getEntryPoint().getOffset()
+                          + ", \"c\": " + quote(r.getDecompiledFunction().getC()) + "}");
             }
         } finally {
             ifc.dispose();
