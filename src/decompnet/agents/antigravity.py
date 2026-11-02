@@ -113,8 +113,12 @@ class Antigravity(Agent):
                                      "(only decompdecomp's tools; shell, files and the web keep asking)."))
             own = sorted({str(d.get("display_name") or d.get("action")) for d in denied if d.get("action") != "mcp"})
             if own:
-                out.append(("error", f"Antigravity ended the session when the model used its own {', '.join(own)}: a "
-                                     "background run can't allow that (decompdecomp's tools do the same work)"))
+                # what it tried, in its transcript: a helper whose sessions all ended this way said nothing of why
+                tried = "; ".join(dict.fromkeys(args_brief({k: v for k, v in d.items() if k not in (
+                    "action", "display_name")}) for d in denied if d.get("action") != "mcp"))
+                out.append(("error", f"Antigravity ended the session when the model used its own {', '.join(own)}"
+                                     f"{f' ({tried[:300]})' if tried.strip('{}() ') else ''}: a background run can't "
+                                     "allow that (decompdecomp's tools do the same work)"))
             if res.get("status") not in (None, "SUCCESS"):
                 out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:SAID_CHARS]))
             else:

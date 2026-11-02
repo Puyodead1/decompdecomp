@@ -286,6 +286,6 @@ def test_read_data_shows_doubles_where_the_bytes_are_doubles():
     from decompnet import arch
 
     doubles = struct.pack("<3d", 100.0, 1 / 6, 6.0)
-    assert "as f64 (double): 100, 0.166667, 6" in arch.float_lines(doubles, False)
+    assert "as f64 (double), each 8 bytes: 100, 0.166667, 6" in arch.float_lines(doubles, False)
     assert arch.float_lines(struct.pack("<4f", 1, 2, 3, 4), False) == ["as f32: 1, 2, 3, 4"]
-    assert "as f64 (double): 0.1" in arch.float_lines(struct.pack(">d", 0.1), True)  # (a round one, -2.5, is two floats too)
+    assert "as f64 (double), each 8 bytes: 0.1" in arch.float_lines(struct.pack(">d", 0.1), True)  # (a round one, -2.5, is two floats too)

@@ -60,6 +60,12 @@ def test_antigravity_ending_a_session_over_its_own_shell_says_so():
     errors = [t for k, t in kinds.get("antigravity").parse_line(line, {}) if k == "error"]
     assert errors and "its own RunCommand" in errors[0]
     assert "no shell" in kinds.get("antigravity").stdin("work")
+    # what it tried is in the transcript, when agy says (sessions that all ended this way said nothing of why)
+    line = json.dumps({"event": "result", "result": {"status": "SUCCESS", "denied_actions": [
+        {"action": "command", "display_name": "RunCommand", "command": "python3 -c 'print(1/6)'"}]}})
+    [error] = [t for k, t in kinds.get("antigravity").parse_line(line, {}) if k == "error"]
+    assert "its own RunCommand" in error and "print(1/6)" in error
+    assert "read_data" in kinds.get("antigravity").stdin("work") and "doubles" in kinds.get("antigravity").stdin("work")
 
 
 def test_opencode_errors_say_what_failed():

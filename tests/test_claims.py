@@ -301,6 +301,32 @@ def test_check_again_looks_at_a_project_with_what_this_version_knows(tmp_path, m
     assert net.recheck("game") == "nothing new"
 
 
+def test_a_room_members_copy_is_never_checked_and_helpers_starting_together_check_once(tmp_path, monkeypatch):
+    """After an update, a room member's copy of a PC game was analysed again before the room's link was back (447
+    functions given back, then taken back), twice over as four helpers started together. A member's copy is known by
+    its stored link; and the check after an update runs once, however many helpers start at once."""
+    import threading
+    import time
+
+    net = _one_function_game(tmp_path)
+    console = type(net.console(net.project_row("game")))
+    ran = []
+
+    def on_start(self, net, slug, log=print):
+        ran.append(slug)
+        time.sleep(0.2)
+    monkeypatch.setattr(console, "on_start", on_start)
+    threads = [threading.Thread(target=net.recheck, args=("game",), kwargs={"only_if_updated": True}) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert ran == ["game"]
+
+    net._update_cfg("game", lambda cfg: cfg.update(link={"url": "https://abc.trycloudflare.com", "room": "game"}))
+    assert "game" not in net.links and net.recheck("game") is None and ran == ["game"]
+
+
 def test_agents_notes_that_agree_no_c_makes_a_function_set_it_aside(tmp_path):
     """Before release_function took a verdict, agents said so in notes: on a DS game six agents in turn wrote that a
     runtime helper with `clz` was hand-written assembly. Check again reads them: three agents of two models agreeing
