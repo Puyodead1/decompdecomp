@@ -651,9 +651,9 @@ class Console:
         None while they aren't made yet."""
         return None
 
-    def draft_source(self, draft: str, name: str, header: str) -> str | None:
+    def draft_source(self, draft: str, name: str, header: str, data: dict[str, int] | None = None) -> str | None:
         """A ROM mode draft of its own as C that compiles after the shared header, for autopilot and redraft; None
-        when it can't be."""
+        when it can't be. `data`: the game's globals by name, with their sizes."""
         return None
 
     def installable_compilers(self) -> list[str]:
