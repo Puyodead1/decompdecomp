@@ -484,6 +484,21 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.request_boundary(agent, room.slug, str(d.get("function", "")), str(d.get("end", "")),
                                              str(d.get("reason", "")))}
 
+    def join_functions(room, member, d):
+        """A member's agent says two functions are one: counted with the host's agents' proposals, joined here once
+        enough agree (ForkEngine.propose_join)."""
+        if not room.fork:
+            raise NetworkError("this room's project has no functions to join")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.propose_join(agent, room.slug, str(d.get("function", "")),
+                                               str(d.get("with_function", "")), str(d.get("reason", "")))}
+
+    def join_files(room, member, d):
+        if not room.fork:
+            raise NetworkError("this room's project has no files to join")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.join_files(agent, room.slug, str(d.get("path", "")), str(d.get("with_path", "")))}
+
     def note(room, member, d):
         """A note on a function; one on no function is knowledge for every agent, so it needs two models' agreement
         like any agent's (knowledge.py), a member's agents included."""
@@ -551,6 +566,8 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/split", endpoint(split), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
         Route("/collab/boundary", endpoint(boundary), methods=["POST"]),
+        Route("/collab/join_functions", endpoint(join_functions), methods=["POST"]),
+        Route("/collab/join_files", endpoint(join_files), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),

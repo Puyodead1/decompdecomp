@@ -693,6 +693,14 @@ def test_a_public_decomp_together(tmp_path):
     guest.links[gslug].sync()
     assert head(groot) == head(hroot)
 
+    # a guest's join proposal is counted on the host, with its own agents' (it was refused: "say it in a note")
+    a, b = [r["name"] for r in host.store.all("SELECT name FROM functions WHERE project_id=? AND status='open' "
+                                              "ORDER BY name LIMIT 2", host.project_row(slug)["id"])]
+    said = guest.forks.propose_join(gagent, gslug, a, b, "one function: the jump lands in it")
+    assert said.startswith("Your proposal is counted (1 of"), said
+    voted = json.loads(host._function(a, slug)["meta"] or "{}") | json.loads(host._function(b, slug)["meta"] or "{}")
+    assert "alex.claude-1" in json.dumps(voted)
+
 
 def test_a_projects_own_words_on_ai_come_before_forking(tmp_path):
     """#21: every project decides about AI for itself. What its README, CONTRIBUTING and agent files say is read
