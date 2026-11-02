@@ -258,15 +258,21 @@ def test_autopilot_matches_functions_from_ghidras_drafts(demo):
 
     if not ghidra.available():
         pytest.skip("needs Ghidra")
+    import time
+
     net, slug = _imported(demo, "drafts")
     proj = net._project(slug)
     assert net.can_draft(proj)
-    agent, _ = net.local_agent("autopilot")
-    outcomes = []
     for fid in net.stale_drafts(proj):
         net._seed_for(net.store.one("SELECT * FROM functions WHERE id=?", fid), proj, wait=True)
-        outcomes.append(net._autopilot_one(agent, proj, fid))
-    assert outcomes.count("match") >= 20
+    # the app's own way in (Autopilot on the project page, and after an import): it ran only the twins before, as if
+    # no drafts existed ("m2c can't read this project's code")
+    state = net.start_autopilot(slug)
+    deadline = time.time() + 600
+    while state["state"] == "running" and time.time() < deadline:
+        time.sleep(0.5)
+    assert not state["no_drafts"], state["no_drafts"]
+    assert state["matched"] - state["twins"] >= 20, state
     brief = net.claim(net.local_agent("claude-opus-5.5-1")[0], slug, "entity_update_physics")
     assert "### Machine draft (Ghidra)" in brief or "### Best attempt so far" in brief
     fn = net._function("entity_update_physics", slug)
