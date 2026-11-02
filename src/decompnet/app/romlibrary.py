@@ -18,6 +18,7 @@ MAX_SECONDS = 30
 ARCHIVES = {'.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz'}
 # Windows ctime is creation time and may not change after a same-size overwrite.
 CACHE_HASHES = os.name != 'nt'
+RACY_NS = 2_000_000_000
 
 
 @lru_cache(maxsize=10000)
@@ -39,7 +40,10 @@ def fingerprint(path: Path, platform: str) -> str | None:
         stat = path.stat()
         if not path.is_file():
             return None
-        hasher = _hash if CACHE_HASHES else _hash.__wrapped__
+        # A file changed in the last moments isn't served from the cache: the kernel stamps a file at its clock's
+        # tick (milliseconds), so a same-size rewrite within one tick keeps size, mtime and ctime (git's "racy" rule).
+        racy = time.time_ns() - max(stat.st_mtime_ns, stat.st_ctime_ns) < RACY_NS
+        hasher = _hash if CACHE_HASHES and not racy else _hash.__wrapped__
         value = hasher(str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, platform)
         after = path.stat()
         if (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
