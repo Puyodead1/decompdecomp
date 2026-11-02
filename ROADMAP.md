@@ -100,7 +100,7 @@ Where to start on a gap:
   (`Twins._across_projects`, PC so far: GameCube, Wii and DS projects of two games would work the same way but
   weren't tried); what's missing is opening a save's best attempts in a new copy of the project.
 
-## Linux (32-bit x86) programs (in progress, branch feat/linux)
+## Linux (32-bit x86) programs (beta)
 
 A console for Linux programs of 2000-2002 (an i386 ELF executable from the user's copy), ROM mode: functions split by
 the program's own symbol table, judged by linking the agents' C at its address (arch/x86_link.py), the debug
