@@ -356,8 +356,10 @@ def _name_type(t: Type, name: str, tag: bool, typedef: bool) -> None:
             t.typedef = name
 
 
-def read_file(name: str, stabs: list[tuple[int, str, int]]) -> SourceInfo:
-    """What one source file's STABS entries (code, string, value) say."""
+def read_file(name: str, stabs: list[tuple[int, str, int]], registers=None) -> SourceInfo:
+    """What one source file's STABS entries (code, string, value) say. `registers`: how its processor's registers
+    are named from their numbers (the MIPS's by default: register)."""
+    registers = registers or register
     info = SourceInfo(name)
     table: dict = {}
     current: Function | None = None
@@ -392,13 +394,13 @@ def read_file(name: str, stabs: list[tuple[int, str, int]]) -> SourceInfo:
                 info.functions.append(current)
                 continue
             elif letter in "pPRv" and current is not None:
-                where = _frame(value) if letter in "pv" else register(value)
+                where = _frame(value) if letter in "pv" else registers(value)
                 variable = Variable(name, reader.type(), where)
                 if all(p.name != name for p in current.params):  # GCC can say a parameter twice
                     current.params.append(variable)
                 continue
             elif letter == "r" and current is not None:
-                current.locals.append(Variable(name, reader.type(), register(value)))
+                current.locals.append(Variable(name, reader.type(), registers(value)))
                 continue
             elif letter == "V" and current is not None:
                 current.locals.append(Variable(name, reader.type(), "static", value))
