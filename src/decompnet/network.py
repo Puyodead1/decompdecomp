@@ -599,7 +599,19 @@ class Network:
         cfg = json.loads(proj["config"])
         if fn is not None and cfg.get("compiler_ranges"):
             cfg = {**cfg, "compiler": compiler_for(cfg, fn["vram"])}
-        return compile_source(compiler_config(Path(proj["root"]), cfg), header, source)
+        return compile_source(self._placed(compiler_config(Path(proj["root"]), cfg), proj, fn), header, source)
+
+    @staticmethod
+    def _placed(config, proj, fn):
+        """The compiler set up for a function at its address: its console's prelude for it (Console.compile_prelude:
+        Linux puts it at its game offset modulo 16, which GCC 2.95's loop padding depends on)."""
+        import dataclasses
+
+        from . import consoles
+
+        vram = fn["vram"] if fn is not None else None
+        extra = consoles.of(json.loads(proj["config"])).compile_prelude(vram) if vram is not None else ""
+        return dataclasses.replace(config, prelude=config.prelude + extra) if extra else config
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
@@ -1102,8 +1114,10 @@ class Network:
                               f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
                               f"start from this", "```c", fn["best_source"].strip(), "```"]
             elif fn["seed"]:
-                lines += ["", "### Machine draft (m2c): its control flow and arithmetic are usually right, its types "
-                              "and names usually wrong. Start from it and fix those", "```c", fn["seed"].strip(), "```"]
+                maker = "Ghidra" if "by Ghidra" in fn["seed"][:80] else "m2c"
+                lines += ["", f"### Machine draft ({maker}): its control flow and arithmetic are usually right, its "
+                              "types and names usually wrong. Start from it and fix those", "```c", fn["seed"].strip(),
+                          "```"]
         notes = self.notes_for_brief(fn)
         if notes:
             lines += ["", "### Notes from previous agents on this function", *notes]

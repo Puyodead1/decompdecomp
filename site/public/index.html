@@ -78,6 +78,7 @@
     <label><input type="radio" name="platform" value="xbox"><span>Xbox</span></label>
     <label><input type="radio" name="platform" value="nds"><span>Nintendo DS</span></label>
     <label><input type="radio" name="platform" value="gba"><span>Game Boy Advance</span></label>
+    <label><input type="radio" name="platform" value="linux"><span>Linux (x86)</span></label>
   </fieldset>
   <output class="answer js-only" id="answer" for="platform" aria-live="polite" hidden></output>
 
@@ -190,6 +191,16 @@
         <li><small>Built by</small><b>agbcc</b><span>the community's free GCC-based compiler (GPL), or your own build; C</span></li>
         <li><small>Judged by</small><b>Linking</b><span>at the function's real address, compared byte for byte</span></li>
         <li><small>You get</small><b>A rebuildable project</b><span>that builds your ROM again, byte for byte</span></li>
+      </ol>
+    </article>
+    <article class="pipeline" data-platform="linux" data-file="game">
+      <h3><span class="pl-name">Linux (x86)</span> <span class="status beta">Beta</span></h3>
+      <ol class="stations">
+        <li><small>Your file</small><b>Program</b><span>a 32-bit x86 ELF executable with its symbol table, as games of 2000-2002 shipped</span></li>
+        <li><small>Split by</small><b>Its own symbols</b><span>and its STABS debug information: source files, types, prototypes; drafts by Ghidra</span></li>
+        <li><small>Built by</small><b>GCC 2.95.3</b><span>Slackware 8.0's, with its binutils and glibc 2.2.3's headers; C</span></li>
+        <li><small>Judged by</small><b>Linking</b><span>at the function's real address, compared byte for byte</span></li>
+        <li><small>You get</small><b>A rebuildable project</b><span>that rebuilds each decompiled function into your copy, checked byte for byte</span></li>
       </ol>
     </article>
   </div>

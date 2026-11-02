@@ -105,7 +105,7 @@ class Drafter:
             if fork:
                 self.net.forks.background_draft(proj, fn)
             else:
-                self.net._seed_for(fn, proj)
+                self.net._seed_for(fn, proj, wait=True)
             st.made += 1
             if proj["slug"] not in self.net.links and self.net.store.one(
                     "SELECT 1 FROM attempts WHERE function_id=? AND agent_id=?", fid, agent.id):
