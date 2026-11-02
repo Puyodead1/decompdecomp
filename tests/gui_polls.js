@@ -245,6 +245,16 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       return { good: good && [good.platform, good.order, good.entry], self: identifyHead(self, { name: "EBOOT.BIN", size: 0x9400 }),
                said: notSupported(self, { name: "EBOOT.BIN", size: 0x9400 }) };
     })(),
+    // a Linux program: a 32-bit little-endian x86 ELF executable (consoles/linux sniff); a 64-bit one isn't
+    linux: (() => {
+      const h = new Uint8Array(0x200), dv = new DataView(h.buffer);
+      [..."\x7fELF"].forEach((c, i) => { h[i] = c.charCodeAt(0); });
+      h[4] = 1; h[5] = 1;
+      dv.setUint16(16, 2, true); dv.setUint16(18, 3, true); dv.setUint32(24, 0x08048a20, true);
+      const good = identifyHead(h, { name: "trek", size: 0x200 });
+      h[4] = 2; dv.setUint16(18, 62, true);
+      return { good: good && [good.platform, good.order, good.entry], wide: identifyHead(h, { name: "a.out", size: 0x200 }) };
+    })(),
     // tests/test_ds.py's header, whose checksum (0xB4DE) the server's crc16 computed: the page agrees on what's a DS ROM
     nds: (() => {
       const h = new Uint8Array(0x200), dv = new DataView(h.buffer);

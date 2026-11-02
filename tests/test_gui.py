@@ -251,3 +251,10 @@ def test_the_drop_zone_knows_the_visual_cpp_ids_the_import_knows():
     assert js == {v: {*compilers, *glued} for v, compilers, glued in scratch.RICH_COMPILERS}
     linkers = re.search(r"const RICH_LINKERS = \[(.*?)\];", text, re.S).group(1)
     assert {int(x, 16) for x in re.findall(r"0x[0-9a-f]+", linkers)} == scratch.RICH_LINKERS
+
+
+def test_a_linux_program_is_taken_by_the_page(gui):
+    """The page reads a file's header before sending it: a 32-bit x86 ELF executable is a Linux program (it said
+    "isn't a game file decompdecomp can start from" before, and the server never saw it)."""
+    linux = gui["checks"]["linux"]
+    assert linux["good"] == ["linux", "Linux program (i386 ELF)", 0x08048A20] and linux["wide"] is None
