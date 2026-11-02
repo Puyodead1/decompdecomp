@@ -187,8 +187,11 @@ information's STABS read for source files, prototypes and locals (consoles/linux
 reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
 2001 game: 1,590 functions imported with their 79 source files, and C judged byte-identical through compile_and_diff.
 Left to do:
-- The types header: GCC on Linux writes a header's types once (N_BINCL), later files refer to them (N_EXCL); the
-  STABS reader reads each file alone, so they're left incomplete and the header goes to debug_types.h.
+- The types header: headers written once (N_BINCL/N_EXCL) are put back in each unit with their types numbered
+  program-wide (consoles/linux/debuginfo.entries: on a 2001 game, 141,455 references without a definition became
+  30). 64 fields still have an incomplete type: a typedef of an anonymous struct (`__mbstate_t:t(13,1)=(13,2)=s8`)
+  is declared but its body isn't written by the header writer (ps2/cheader.py), so the header still goes to
+  debug_types.h.
 - A demo program built with the toolchain (projects/demo-linux) and the feature table's column, each row run.
 - split_function, join and boundary reports (the console's x86 versions of the ROM parts), the rebuildable export.
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs.
