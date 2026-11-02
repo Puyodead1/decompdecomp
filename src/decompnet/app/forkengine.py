@@ -1791,12 +1791,15 @@ class ForkEngine:
         console checks) and every match holds. Visual C++ 7 gives a file's static functions a convention of their own
         (an argument in edx, edi...): a helper and its callers, cut into two files by the project's 4 KiB files, could
         never match until they were one file again (a 2003 PC game had 51 such helpers one file from their callers)."""
+        if agent is not None and (link := self.net.links.get(slug)) is not None:  # the host joins them; this copy follows
+            text = link.call("/collab/join_files", agent, path=path, with_path=with_path)
+            if text.startswith("✅"):
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         if not console.splits_sources:
             raise NetworkError("this project's files are its build's own: join_files works where decompdecomp made it")
-        if slug in self.net.links:
-            raise NetworkError("in a room, the host's project is the one to join files in: say it in a note")
         version = (fp.manifest or {}).get("version") or cfg.get("version")
 
         def source_of(what: str) -> str:
@@ -4099,9 +4102,13 @@ class ForkEngine:
         so it isn't proposed again. What agents joined stays: Check again only ever joins, never splits."""
         if not reason.strip():
             raise NetworkError("say why they're one function (what the code shows): the next agents read it")
+        if (link := self.net.links.get(slug)) is not None:  # a room's member: the host counts it with its own agents'
+            text = link.call("/collab/join_functions", agent, function=self._fn(slug, function)["name"],
+                             with_function=self._fn(slug, with_function)["name"], reason=reason)
+            if text.startswith("With yours"):  # (joined there: this copy follows)
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
-        if slug in self.net.links:
-            raise NetworkError("in a room, the host's project is the one to join functions in: say it in a note")
         a, b = self._fn(slug, function), self._fn(slug, with_function)
         if a["id"] == b["id"]:
             raise NetworkError("name two different functions")
