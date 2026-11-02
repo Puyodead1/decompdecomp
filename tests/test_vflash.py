@@ -21,9 +21,25 @@ from decompnet.forks.project import ForkError
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "src" / "decompnet" / "consoles" / "vflash" / "project_template" / "tools"
-sys.path.insert(0, str(TOOLS))
-import delink  # noqa: E402
-import names  # noqa: E402
+# (the PC's template has a delink.py, a names.py and a rebuild.py too, which another test may have imported by these
+# names first: V.Flash's own are loaded from their folder, each with the names beside it, and the names given back)
+CLASHING = ("delink", "names", "rebuild")
+
+
+def _tool(name: str):
+    others = {n: sys.modules.pop(n) for n in CLASHING if n in sys.modules}
+    sys.path.insert(0, str(TOOLS))
+    try:
+        return importlib.import_module(name)
+    finally:
+        sys.path.remove(str(TOOLS))
+        for n in CLASHING:
+            sys.modules.pop(n, None)
+        sys.modules.update(others)
+
+
+delink = _tool("delink")
+names = _tool("names")
 
 _spec = importlib.util.spec_from_file_location("demo_vflash", ROOT / "projects" / "demo-vflash" / "build.py")
 demo = importlib.util.module_from_spec(_spec)
@@ -556,7 +572,7 @@ def test_an_import_takes_the_modules_chosen_and_the_rest_later(tmp_path, monkeyp
 def test_a_rebuild_takes_matched_code_and_tells_a_wrong_name(tmp_path, monkeypatch):
     """tools/rebuild.py puts a matched function's compiled code at its place, its relocations resolved by name: the
     same names make the same program; a call naming another function (which objdiff doesn't tell) doesn't."""
-    import rebuild
+    rebuild = _tool("rebuild")
 
     fns, code = _analysed()
     prog = disc.Image("FA", "vfF0", 0, BASE, BASE + 0x100, 0, 0, 0, [(BASE, code + bytes(0x100 - len(code)))])
