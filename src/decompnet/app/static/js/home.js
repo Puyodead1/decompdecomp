@@ -286,6 +286,9 @@ function identifyHead(head, file) {
   if (text(0, 8) === "MComprHD") return { ...base, platform: "playstation", order: "CHD disc image" };
   // which PlayStation's disc a CSO holds is inside its compressed blocks: the server reads them
   if (isPspCiso(head)) return { ...base, platform: "playstation", order: "CSO disc image" };
+  // a Linux program: a 32-bit little-endian x86 ELF executable (consoles/linux sniff)
+  if (text(0, 4) === "\x7fELF" && head[4] === 1 && head[5] === 1 && head.length >= 0x20 && dv.getUint16(16, true) === 2 && dv.getUint16(18, true) === 3)
+    return { ...base, platform: "linux", order: "Linux program (i386 ELF)", entry: dv.getUint32(24, true) };
   if (text(0, 4) === "\x7fELF" && head[5] === 1 && dv.getUint16(18, true) === 8) {
     const prx = dv.getUint16(16, true) === ELF_TYPE_PSP_PRX, psp = prx || (dv.getUint32(36, true) & ELF_MACH_BITS) === ELF_MACH_ALLEGREX;
     return { ...base, platform: psp ? "psp" : "ps2", order: prx ? "PRX module" : "ELF program", entry: dv.getUint32(24, true) };

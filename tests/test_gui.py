@@ -286,3 +286,10 @@ def test_linux_vm_setup_shows_readiness_and_uses_progress():
         pytest.skip('needs node to run GUI scripts')
     subprocess.run([NODE, str(Path(__file__).with_name('gui_linuxvm.js'))], check=True,
                    capture_output=True, text=True, encoding='utf-8', timeout=GUI_TIMEOUT_SECONDS)
+
+
+def test_a_linux_program_is_taken_by_the_page(gui):
+    """The page reads a file's header before sending it: a 32-bit x86 ELF executable is a Linux program (it said
+    "isn't a game file decompdecomp can start from" before, and the server never saw it)."""
+    linux = gui["checks"]["linux"]
+    assert linux["good"] == ["linux", "Linux program (i386 ELF)", 0x08048A20] and linux["wide"] is None
