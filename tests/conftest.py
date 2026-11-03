@@ -20,3 +20,10 @@ def pytest_sessionfinish(session, exitstatus):
     import shutil
 
     shutil.rmtree(os.environ["DECOMP_HOME"], ignore_errors=True)
+
+
+def pytest_configure(config):
+    # a compiler change judges the open functions again in the background: in a test, in place, before it returns
+    from decompnet.app.engine.compilers import CompilerMixin
+
+    CompilerMixin.rejudge_background = False
