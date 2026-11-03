@@ -369,6 +369,45 @@ def stall_budget_text() -> str:
 
 
 ASM_PAGE = 400  # assembly lines get_function shows at once
+CONTEXT_PAGE = 1000  # header lines get_context shows at once
+SEARCH_LIMIT = 60_000  # characters of matching declarations get_context(search=...) returns
+
+
+def _declarations(header: str) -> list[tuple[int, str]]:
+    """The header cut into its top-level declarations (a struct with its fields, a typedef, a prototype, a
+    preprocessor line), each with its first line's number."""
+    out, cur, depth, first = [], [], 0, 1
+    for n, line in enumerate(header.splitlines(), 1):
+        if not cur:
+            first = n
+        cur.append(line)
+        depth += line.count("{") - line.count("}")
+        text = line.strip()
+        if depth <= 0 and (not text or text.endswith((";", "}", "*/")) or text.startswith("#")):
+            out.append((first, "\n".join(cur)))
+            cur, depth = [], 0
+    if cur:
+        out.append((first, "\n".join(cur)))
+    return out
+
+
+def header_search(header: str, pattern: str) -> str:
+    """The header's declarations that match a regular expression, whole (a struct with every field)."""
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        raise NetworkError(f"search isn't a regular expression Python reads: {e}") from None
+    found = [(n, d) for n, d in _declarations(header) if d.strip() and rx.search(d)]
+    if not found:
+        return f"// nothing in the header matches {pattern!r}"
+    out, size = [], 0
+    for n, d in found:
+        if size + len(d) > SEARCH_LIMIT:
+            out.append(f"// ... {len(found) - len(out)} more declarations match: narrow the search")
+            break
+        out.append(f"// line {n}\n{d}")
+        size += len(d)
+    return f"// {len(found)} declarations match {pattern!r}\n" + "\n".join(out)
 
 
 def asm_page(asm: list[str], part: int, function: str) -> tuple[list[str], str]:
@@ -678,9 +717,11 @@ class Network:
 
     # ---------------------------------------------------------------- projects
 
-    def get_context(self, project: str | None, function: str | None = None) -> str:
+    def get_context(self, project: str | None, function: str | None = None, search: str = "", start: int = 0) -> str:
         """The shared header a function compiles with, as agents read it (a project with one header per source
-        file needs the function)."""
+        file needs the function). A long one comes in parts (`start`, a line), or as the declarations that match
+        `search` (header_search): a Linux game's header from its debug info is 13,000 lines (412 KB), which Claude
+        Code saves to a file the app's agents may not read, and other CLIs cut."""
         if function:
             fn = self._function(function, project)
             proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -691,8 +732,19 @@ class Network:
                 raise NetworkError(f"{proj['slug']} has one header per source file: pass `function` to get the "
                                    f"header that function compiles against")
             ctx = self._context(proj["id"])
-        return (f"// context.h for {proj['slug']} — version {ctx['version']} "
-                f"(prepended to every compile as #include \"context.h\")\n{ctx['header']}")
+        head = (f"// context.h for {proj['slug']} — version {ctx['version']} "
+                f"(prepended to every compile as #include \"context.h\")")
+        if search:
+            return f"{head}\n{header_search(ctx['header'], search)}"
+        lines = ctx["header"].splitlines()
+        if len(lines) <= CONTEXT_PAGE and not start:
+            return f"{head}\n{ctx['header']}"
+        first = min(max(1, start or 1), len(lines))
+        shown = lines[first - 1:first - 1 + CONTEXT_PAGE]
+        last = first + len(shown) - 1
+        more = (f"get_context(start={last + 1}) shows the next part" if last < len(lines) else "this is the last part")
+        return (f"{head}\n// lines {first}-{last} of {len(lines)}: {more}. get_context(search=\"TPlayer|Tokens\") "
+                f"returns just the declarations that match a regular expression, whole.\n" + "\n".join(shown))
 
     # ------------------------------------------------------------------ claims
 
