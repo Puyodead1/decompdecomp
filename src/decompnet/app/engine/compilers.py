@@ -34,6 +34,7 @@ class CompilerMixin:
     # Settings: auto-adjust compiler. A suggested compiler is applied without asking once it's proven (a function's
     # C matches with it) or three agents agree on it (see suggest)
     auto_compiler = False
+    rejudge_background = True  # a whole game judged again after its compiler changed (tests: in place)
 
     AGREE = 3
 
@@ -645,26 +646,64 @@ class CompilerMixin:
         if toolchain:
             self._judge_again(proj, ranges)
 
-    def _judge_again(self, proj, ranges: list[list[int]]) -> int:
-        """The open functions in ranges that just got their compiler, judged again on their best C: a suggestion's
-        check had proved one matches with it, and it stayed open (a Linux game's function whose C matched with its
-        range's flags, the range applied by the user). Matched as its best attempt's author's; how many matched."""
+    REJUDGE_ATTEMPTS = 8  # a function's attempts judged again when its compiler changes: its best and its latest
+
+    def _judge_again(self, proj, ranges: list[list[int]] | None = None) -> int:
+        """The open functions whose compiler just changed (in `ranges`, or the whole game: None), their attempts
+        judged again with it: a score is the compiler's it was judged with. On a Linux game the project's flags were
+        wrong for three hours; when they were right again, a function with an attempt that matched with them stayed
+        open, its "best" the attempt that came closest with the wrong ones, and agents gave up on it. Its best C and
+        its latest few (REJUDGE_ATTEMPTS each), each once; a match is its author's, a closer one its best. How many
+        matched."""
         done = 0
-        rows = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' AND "
-                                          "best_source IS NOT NULL AND best_agent_id IS NOT NULL", proj["id"])
-                if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
+        rows = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open'", proj["id"])
+                if ranges is None or any(a <= (f["vram"] or -1) < b for a, b in ranges)]
+        cfg = self.cfg(proj)
         for fn in rows:
-            row = self.store.one("SELECT * FROM agents WHERE id=?", fn["best_agent_id"])
-            if row is None:
+            tries = self.store.all(
+                "SELECT * FROM (SELECT agent_id, source FROM attempts WHERE function_id=? AND source IS NOT NULL "
+                "ORDER BY score IS NULL, score LIMIT ?) UNION SELECT * FROM (SELECT agent_id, source FROM attempts "
+                "WHERE function_id=? AND source IS NOT NULL ORDER BY id DESC LIMIT ?)",
+                fn["id"], self.REJUDGE_ATTEMPTS, fn["id"], self.REJUDGE_ATTEMPTS)
+            if fn["best_source"] and fn["best_agent_id"]:
+                tries = [{"agent_id": fn["best_agent_id"], "source": fn["best_source"]}, *tries]
+            own = compiler_for(cfg, fn["vram"])
+            best, seen = None, set()
+            for tried in tries:
+                if tried["source"] in seen:
+                    continue
+                seen.add(tried["source"])
+                ok, d, _ = self._judge_with(proj, fn, own["toolchain"], list(own["flags"]), tried["source"])
+                if d is not None and (best is None or d.score < best[0]):
+                    best = (0 if ok else d.score, tried)
+                if ok:
+                    break
+            if best is None:
                 continue
-            own = compiler_for(self.cfg(proj), fn["vram"])
-            ok, _, _ = self._judge_with(proj, fn, own["toolchain"], list(own["flags"]), fn["best_source"])
-            if ok:
-                agent = Agent(row["id"], row["name"], row["owner"])
-                self._record(fn, agent, 0, fn["best_source"], self._context(proj["id"], fn["unit"])["version"],
-                             matched=True)
+            score, tried = best
+            row = self.store.one("SELECT * FROM agents WHERE id=?", tried["agent_id"])
+            if score == 0 and row is not None:
+                self._record(fn, Agent(row["id"], row["name"], row["owner"]), 0, tried["source"],
+                             self._context(proj["id"], fn["unit"])["version"], matched=True)
                 done += 1
+            else:  # (what it scores with the compiler it has: the next agent starts from the closest)
+                with self.store.tx() as db:
+                    db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=? AND "
+                               "status='open'", (score, tried["source"], tried["agent_id"], fn["id"]))
         return done
+
+    def _judge_again_later(self, proj) -> None:
+        """_judge_again over the whole game, in the background (a game's open functions take minutes)."""
+        if not self.rejudge_background:
+            self._judge_again(proj)
+            return
+
+        def run():
+            try:
+                self._judge_again(proj)
+            except Exception:  # noqa: BLE001  (a background pass: the next compiler change runs it again)
+                logging.getLogger("decompdecomp").exception("judging again after a compiler change failed")
+        threading.Thread(target=run, daemon=True, name=f"rejudge-{proj['slug']}").start()
 
     def _reopen(self, proj, names: list[str], why: str) -> None:
         """Matched functions open again: their matching C becomes their best attempt, scored with the compiler they're
@@ -705,3 +744,4 @@ class CompilerMixin:
             self._update_cfg(slug, lambda c: c.__setitem__("compiler", before))
             raise NetworkError(f"{len(broken)} matched function(s) wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])})")
+        self._judge_again_later(self._project(slug))

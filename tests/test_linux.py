@@ -320,3 +320,17 @@ def test_an_applied_range_judges_its_open_functions_again(demo):
     net.set_compiler_ranges(slug, span, tc, ["-O2"])
     fn = net._function("clamp_s32", slug)
     assert fn["status"] == "matched" and fn["matched_agent_id"] == net.local_agent("claude-opus-5.5-1")[0].id
+
+
+def test_a_compiler_change_judges_the_open_functions_attempts_again(demo):
+    """A Linux game's flags were wrong for three hours: when they were right again, a function with an attempt that
+    matched with them stayed open, its best the attempt closest with the wrong flags, and agents gave up on it."""
+    net, slug = _imported(demo, "rejudge")
+    tc = net.cfg(net._project(slug))["compiler"]["toolchain"]
+    net.set_compiler(slug, tc, ["-O0"])
+    assert not _match(net, slug, "clamp_s32")["matched"]  # (the right C, judged with the wrong flags)
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.attempt(agent, "clamp_s32", "int clamp_s32(int v, int lo, int hi) { return v; }", slug)  # (and a wrong one)
+    net.set_compiler(slug, tc, ["-O2"])
+    fn = net._function("clamp_s32", slug)
+    assert fn["status"] == "matched" and fn["matched_agent_id"] == agent.id
