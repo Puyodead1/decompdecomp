@@ -33,3 +33,10 @@ def pytest_sessionfinish(session, exitstatus):
 
         wine.stop(Path(WINE_PREFIX))
         shutil.rmtree(WINE_PREFIX, ignore_errors=True)
+
+
+def pytest_configure(config):
+    # a compiler change judges the open functions again in the background: in a test, in place, before it returns
+    from decompnet.app.engine.compilers import CompilerMixin
+
+    CompilerMixin.rejudge_background = False
