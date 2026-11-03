@@ -53,6 +53,7 @@ from ..network import (
     Agent,
     Network,
     NetworkError,
+    asm_page,
     model_of,
     move_on_brief,
     set_aside,
@@ -2877,10 +2878,9 @@ class ForkEngine:
             pct = ("not in your build yet" if d.match_percent is None else
                    d.why_not() if d.literals else
                    f"{percent_text(d.match_percent)} match")
-            asm = d.target_asm().splitlines()
-            if len(asm) > 500:
-                asm = asm[:500] + [f"... ({len(asm) - 500} more instructions)"]
-            lines += [f"current state: {pct}", "", "### Target assembly", "```asm", *asm, "```"]
+            asm, said = asm_page(d.target_asm().splitlines(), 1, fn["name"])
+            lines += [f"current state: {pct}", "", "### Target assembly", *([said] if said else []), "```asm", *asm,
+                      "```"]
             if cfg.get("origin") == "scratch":
                 lines += self._data_used(proj, d.refs)
             if d.literals:
@@ -3242,6 +3242,14 @@ class ForkEngine:
 
     def get_function(self, agent: Agent | None, slug: str, function: str) -> str:
         return self.brief(self._fn(slug, function), agent, "VIEW")
+
+    def asm_part(self, fn, part: int) -> str:
+        """get_function's later parts of a long function's assembly (network.asm_page)."""
+        proj = self.net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        _, fp, _ = self.get(proj["slug"])
+        d = fp.diff(fp.unit(fn["unit"]), self._meta(fn).get("symbol") or fn["name"])
+        shown, said = asm_page(d.target_asm().splitlines(), part, fn["name"])
+        return "\n".join([f"## {fn['name']}: {said or 'its whole assembly'}", "```asm", *shown, "```"])
 
     def list_functions(self, slug: str, status: str = "open", limit: int = 40) -> str:
         proj, _, _ = self.get(slug)
