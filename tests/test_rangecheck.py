@@ -129,7 +129,7 @@ class FakeNet:
 def functions(n):
     code = struct.pack("<20I", *[0] * 20)  # 20 instructions: long enough to test
     return [{"id": i + 1, "name": f"f{i}", "vram": 0x100000 + i * 0x80, "size": 0x50, "n_insns": 20, "status": "open",
-             "matched_source": None, "target": code, "unit": ""} for i in range(n)]
+             "matched_source": None, "target": code, "unit": "", "source": None} for i in range(n)]
 
 
 def start(net, origin="f4", label=CW):
@@ -160,6 +160,26 @@ def test_neighbours_built_by_the_games_compiler_on_both_sides_make_it_a_quirk():
     assert check["status"] == "quirk" and not net.applied
     assert net.cfg(net.proj)["suggestions"][0]["status"] == "dismissed"
     assert any(fn == "f4" and "Look for C that matches with the project's compiler" in t for fn, t in net.notes)
+
+
+def test_a_file_of_its_own_is_judged_by_its_own_functions_not_the_other_files_next_to_it():
+    """A Linux game's ps_math_3d_0.c: one function built -O0 between two -O2 files. Its C matched only with -O0, the
+    matched functions on both sides (other files, other flags) dismissed the suggestion four times as a quirk. The
+    game's debug info names each function's file, and an object file is one compiler: its own functions decide."""
+    rows = functions(9)
+    for r in rows:
+        r["source"] = "a.c" if r["id"] <= 4 else "b.c" if r["id"] == 5 else "c.c"
+        if r["name"] in ("f3", "f5"):
+            r.update(status="matched", matched_source=r["name"])
+    net = FakeNet(rows, {"f4": {CW[0]}, "f3": {GCC[0]}, "f5": {GCC[0]}})
+    _, check = start(net)
+    assert check["status"] == "confirmed" and check["range"] == [0x100200, 0x100250]
+    assert net.applied == [([[0x100200, 0x100250]], CW[0])]
+    # a file of two functions: the second one decides, and the files around it still don't
+    rows[3]["source"] = rows[2]["source"] = "b.c"
+    net = FakeNet(rows, {"f4": {CW[0]}, "f3": {GCC[0]}, "f5": {GCC[0]}})
+    _, check = start(net)
+    assert check["status"] == "quirk"
 
 
 def test_c_that_matches_with_both_compilers_is_no_evidence():
