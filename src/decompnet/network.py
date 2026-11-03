@@ -368,6 +368,25 @@ def stall_budget_text() -> str:
             "every compile_and_diff result shows where you stand, as in \"no better in 2/6 compiles (move on at 6)\"")
 
 
+ASM_PAGE = 400  # assembly lines get_function shows at once
+
+
+def asm_page(asm: list[str], part: int, function: str) -> tuple[list[str], str]:
+    """One part of a long function's assembly, and what to call for the next. An agent's CLI cuts a long tool answer
+    (a Linux game's 1,962-instruction behaviour interpreter: 2,292 lines, cut at 1,426, so the tail of its switch and
+    the notes after it never arrived), and the fork brief kept its first 500 instructions only."""
+    parts = max(1, -(-len(asm) // ASM_PAGE))
+    if parts == 1:
+        return asm, ""
+    part = min(max(1, part), parts)
+    first = (part - 1) * ASM_PAGE
+    shown = asm[first:first + ASM_PAGE]
+    more = (f"get_function(\"{function}\", part={part + 1}) shows lines {first + ASM_PAGE + 1}-"
+            f"{min(len(asm), first + 2 * ASM_PAGE)}" if part < parts else "this is the last part")
+    return shown, (f"assembly part {part} of {parts} (lines {first + 1}-{first + len(shown)} of {len(asm)}, shown in "
+                   f"parts so none of it is cut off): {more}")
+
+
 def move_on_brief(fn, after: int | None = None) -> str:
     """The brief's line naming the function's own move-on number (the one compile_and_diff counts against): by its
     size, or the helper's own (`after`, its work selection)."""
@@ -1115,8 +1134,18 @@ class Network:
                                                "you", *MACHINE_AGENTS)]
         return self.release_stopped(ids, why)
 
-    def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
-        return self._brief(self._function(function, project), agent, header="VIEW")
+    def get_function(self, function: str, project: str | None = None, agent: Agent | None = None,
+                     part: int = 1) -> str:
+        fn = self._function(function, project)
+        if part > 1:
+            return self._asm_part(fn, part)
+        return self._brief(fn, agent, header="VIEW")
+
+    def _asm_part(self, fn, part: int) -> str:
+        """get_function's later parts of a long function's assembly (asm_page)."""
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        shown, said = asm_page(scoring.compact_asm(self._asm_text(fn, proj)).splitlines(), part, fn["name"])
+        return "\n".join([f"## {fn['name']}: {said or 'its whole assembly'}", "```asm", *shown, "```"])
 
     def _brief(self, fn, agent: Agent | None, header: str) -> str:
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -1139,7 +1168,12 @@ class Network:
         if fn["status"] == "matched":
             lines += [f"MATCHED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
                       "```c", fn["matched_source"].strip(), "```"]
-        lines += ["", "### Target assembly", "```asm", scoring.compact_asm(self._asm_text(fn, proj)), "```"]
+        shown, said = asm_page(scoring.compact_asm(self._asm_text(fn, proj)).splitlines(), 1, fn["name"])
+        asm = ["", "### Target assembly", *([said] if said else []), "```asm", *shown, "```"]
+        if said:  # long: the notes and the best attempt come first, so a cut answer loses only assembly
+            lines.append(said)
+        else:
+            lines += asm
         lines += self._extra_brief(fn, proj)
         if fn["status"] != "matched":
             if fn["best_source"]:
@@ -1157,6 +1191,8 @@ class Network:
         lines += self.dependency_brief(fn)
         if fn["unit"] and fn["unit"] in self._unit_contexts(proj["id"]):
             lines.insert(2, f"source unit {fn['unit']}: call get_context with function=\"{fn['name']}\" for its header")
+        if said:
+            lines += asm
         if header == "CLAIMED":
             lines += ["", self._next_step(proj, ctx)]
         return "\n".join(lines)

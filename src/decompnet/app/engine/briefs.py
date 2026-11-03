@@ -289,6 +289,11 @@ class BriefMixin:
         self._rom_only(project, "get_context")
         return super().get_context(project, function)
 
+    def _asm_part(self, fn, part: int) -> str:
+        if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
+            return self.forks.asm_part(fn, part)
+        return super()._asm_part(fn, part)
+
     def _brief(self, fn, agent, header):
         if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
             return self.forks.brief(fn, agent, header)

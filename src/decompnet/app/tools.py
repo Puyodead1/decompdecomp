@@ -293,7 +293,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
         _claim(net, agent, slug, function, strategy, count),
-    "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
+    "get_function": lambda net, agent, slug, function, part=1: net.get_function(function, slug, agent, int(part or 1)),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "last_diff": lambda net, agent, slug, function, context=2, start=0: net.last_diff(agent, function, slug, context,
                                                                                     start),
@@ -464,10 +464,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "claim_function", function=function, strategy=strategy, count=count)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def get_function(ctx: Context, function: str) -> str:
+    async def get_function(ctx: Context, function: str, part: int = 1) -> str:
         """Show any function (by name or address): assembly, status, best attempt, notes. Read matched
-        functions to learn how this codebase is written."""
-        return await run(ctx, "get_function", function=function)
+        functions to learn how this codebase is written.
+
+        Args:
+            function: name or address
+            part: a long function's assembly comes in parts of 400 lines; part 2, 3, ... shows the next ones
+        """
+        return await run(ctx, "get_function", function=function, part=part)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
