@@ -282,3 +282,18 @@ def test_a_note_is_found_by_its_function_and_text_from_an_index(tmp_path):
     store = Store(tmp_path / "s.db")
     plan = store.all("EXPLAIN QUERY PLAN SELECT 1 FROM notes WHERE project_id=? AND text=? AND function_id IS ?", 1, "x", 5)
     assert "idx_notes_lookup" in " ".join(str(r[3]) for r in plan)
+
+
+def test_a_long_header_comes_in_parts_and_its_declarations_by_search(net, monkeypatch):
+    """A Linux game's header from its debug info is 13,000 lines: Claude Code saved get_context's answer to a file
+    its agent may not read, and the agent gave up reading it. Search returns whole declarations; paging the rest."""
+    from decompnet import network
+
+    found = net.get_context("demo", search=r"\bhp\b|struct Entity")
+    assert "declarations match" in found and found.count("// line ") >= 1
+    assert "typedef struct Entity {" in found and "s32 hp;\n} Entity;" in found  # the struct whole, every field
+    assert "nothing in the header matches" in net.get_context("demo", search="no_such_name_here")
+    monkeypatch.setattr(network, "CONTEXT_PAGE", 5)
+    first = net.get_context("demo")
+    assert "lines 1-5 of" in first and "get_context(start=6)" in first and len(first.splitlines()) == 7
+    assert "lines 6-10 of" in net.get_context("demo", start=6)

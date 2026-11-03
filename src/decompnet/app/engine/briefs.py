@@ -285,9 +285,9 @@ class BriefMixin:
                 out.append(f".word .L{w:08X}" if fn["vram"] <= w < fn["vram"] + fn["size"] else f".word 0x{w:08X}")
         return out
 
-    def get_context(self, project: str | None, function: str | None = None) -> str:
+    def get_context(self, project: str | None, function: str | None = None, search: str = "", start: int = 0) -> str:
         self._rom_only(project, "get_context")
-        return super().get_context(project, function)
+        return super().get_context(project, function, search, start)
 
     def _asm_part(self, fn, part: int) -> str:
         if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
