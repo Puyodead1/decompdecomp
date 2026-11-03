@@ -509,6 +509,28 @@ class WindowsPC(Console):
                 counted.setdefault(name, [compiler, 0, name, installed])[1] += n
         return sorted((tuple(row) for row in counted.values()), key=lambda row: -row[1])
 
+    def program_rules_out(self, fp, compiler: str) -> str | None:
+        """The Rich header counts the files each Visual C++ compiled, the game's libraries' too: a version it doesn't
+        name compiled none of them. On a 7.0 game (324 files, all 7.0), agents switched two files to 7.1 and asked for
+        6.0 for eight more: C that matched only with them was shaped to their habits, and kept them from the 7.0 C."""
+        from . import scratch
+
+        manifest = fp.manifest or {}
+        path = fp.root / manifest.get("game", {}).get("path", f"orig/{manifest.get('version')}.exe")
+        paths = [path, *(fp.root / m["exe"] for m in _functions_json(fp, manifest.get("version", "")).get("modules", []))]
+        named: dict[str, int] = {}
+        for p in paths:
+            if p.is_file():
+                for version, n in scratch.program_versions(p.read_bytes()).items():
+                    named[version] = named.get(version, 0) + n
+        version = scratch.compiler_version(compiler)
+        if not named or version is None or version in named:
+            return None
+        said = ", ".join(f"{n} by Visual C++ {v}" for v, n in sorted(named.items(), key=lambda vn: -vn[1]))
+        return (f"the program's Rich header counts the files each Visual C++ compiled ({said}): none by {version}, so "
+                f"C that matches only with it is shaped to its habits, not the game's source. Write it so the "
+                f"program's compiler makes the same code")
+
     def set_own_compiler(self, fp, compiler: str, sources: list[str]) -> list[str]:
         from . import scratch
 

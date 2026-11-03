@@ -2892,6 +2892,42 @@ def test_the_survey_confirms_another_visual_cpp_and_its_neighbouring_file_applie
     assert answer["checks"][0]["status"] == "confirmed" and answer["survey"]["confirmed"] == 1
 
 
+def test_the_rich_headers_versions_are_what_files_may_be_built_with():
+    """The Rich header counts each Visual C++'s files: 2005's RTM and SP1 share a version (and a build), so either
+    builds a 2005 game's file; 2017's packs are 14.1 as the header says it."""
+    vc70 = _windows_program(rich=[(0x1C, 9466, 264), (0x1D, 9466, 59), (0x1C, 9178, 1), (0x01, 0, 228)])
+    assert scratch_pe.program_versions(vc70) == {"7.0": 324}  # (the imports' count isn't a compiler's)
+    assert scratch_pe.program_versions(_windows_program(rich=[])) == {}
+    assert [scratch_pe.compiler_version(c) for c in ("MSVC/6.0", "MSVC/7.1", "MSVC/8.0", "MSVC/8.0SP1", "MSVC/14.16",
+                                                     "MSVC/14.16-x64")] == ["6.0", "7.1", "8.0", "8.0", "14.1", "14.1"]
+
+
+def test_agents_keep_to_the_visual_cpp_the_rich_header_names(tmp_path, monkeypatch):
+    """A 7.0 game (its Rich header: 324 files, every one 7.0): agents moved two files to 7.1 with try_compiler, where
+    a one-function file's C happened to match, and suggested 6.0 for eight more; the survey then tried 7.1
+    everywhere, since a file had it. A version the header doesn't name compiled none of the game's files."""
+    net, root, switched = _file_compiler_project(tmp_path, monkeypatch, _only_with("00401020"))
+    monkeypatch.setattr(scratch_pe, "program_versions", lambda data: {"6.0": 148})
+    agent = net.local_agent("claude-sonnet-5-5-1")[0]
+    with pytest.raises(NetworkError, match=r"none by 7.1, so C that matches only with it is shaped to its habits"):
+        net.suggest(agent, "p", "7.1 built this file", compiler="MSVC/7.1", function="_func_00401020")
+    assert net.cfg(net.project_row("p")).get("suggestions", []) == []
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_source='int f(void);' WHERE project_id=?", (net.project_row("p")["id"],))
+    with pytest.raises(NetworkError, match=r"src/auto/text_00401020.cpp stays with MSVC/6.0: .*148 by Visual C\+\+ 6.0"):
+        net.forks.try_compiler(agent, "p", "_func_00401020", "MSVC/7.1")
+    # a file moved to 7.1 before this doesn't make the survey try it on the rest
+    scratch_pe.compilers_file(root, "game").write_text(json.dumps({"src/auto/text_00401040.cpp": "7.1"}))
+    assert net.filecompilers.candidates("p") == ["MSVC/6.0"]
+    assert net.filecompilers.survey("p")["confirmed"] == 0
+    # a 2005 game's file may be built with RTM or SP1 (one version, one build in the header)
+    monkeypatch.setattr(scratch_pe, "program_versions", lambda data: {"8.0": 500})
+    fp = net.forks.get("p")[1]
+    assert consoles.get("pc").program_rules_out(fp, "MSVC/8.0") is None
+    assert consoles.get("pc").program_rules_out(fp, "MSVC/8.0SP1") is None
+    assert "none by 9.0" in consoles.get("pc").program_rules_out(fp, "MSVC/9.0")
+
+
 def test_a_suggested_file_compiler_both_neighbours_refute_is_a_quirk(tmp_path, monkeypatch):
     """An agent's suggestion for a file whose function matches with 7.1, between two files whose matches need 6.0:
     dismissed, with a note on the function to find C that matches with its file's compiler."""

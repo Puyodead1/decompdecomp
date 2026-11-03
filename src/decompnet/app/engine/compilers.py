@@ -642,6 +642,29 @@ class CompilerMixin:
             where = ", ".join(f"0x{a:X}-0x{b:X}" for a, b in ranges)
             self._event(db, proj["id"], None, "compiler", f"{consoles.compiler_name(toolchain)} {' '.join(flags)} for {where}"
                         if toolchain else f"the project's compiler again for {where}")
+        if toolchain:
+            self._judge_again(proj, ranges)
+
+    def _judge_again(self, proj, ranges: list[list[int]]) -> int:
+        """The open functions in ranges that just got their compiler, judged again on their best C: a suggestion's
+        check had proved one matches with it, and it stayed open (a Linux game's function whose C matched with its
+        range's flags, the range applied by the user). Matched as its best attempt's author's; how many matched."""
+        done = 0
+        rows = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' AND "
+                                          "best_source IS NOT NULL AND best_agent_id IS NOT NULL", proj["id"])
+                if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
+        for fn in rows:
+            row = self.store.one("SELECT * FROM agents WHERE id=?", fn["best_agent_id"])
+            if row is None:
+                continue
+            own = compiler_for(self.cfg(proj), fn["vram"])
+            ok, _, _ = self._judge_with(proj, fn, own["toolchain"], list(own["flags"]), fn["best_source"])
+            if ok:
+                agent = Agent(row["id"], row["name"], row["owner"])
+                self._record(fn, agent, 0, fn["best_source"], self._context(proj["id"], fn["unit"])["version"],
+                             matched=True)
+                done += 1
+        return done
 
     def _reopen(self, proj, names: list[str], why: str) -> None:
         """Matched functions open again: their matching C becomes their best attempt, scored with the compiler they're

@@ -514,6 +514,30 @@ def describe(data: bytes) -> Build:
                  sum(files.values()), wrapper, own_copy(version, number))
 
 
+def program_versions(data: bytes) -> dict[str, int]:
+    """{Visual C++ version, as the Rich header says it ("7.0", "8.0", "14.1"): how many of the program's files it
+    compiled}; {} when the header says nothing (stripped, or no header)."""
+    out: dict[str, int] = {}
+    for product, number, n in rich_builds(data):
+        for version, compilers, glued in RICH_COMPILERS:
+            if product in compilers or product in glued:
+                if version == "14":
+                    version = next(v for first, v in VC14_BUILDS if number >= first)
+                out[version] = out.get(version, 0) + n
+    return out
+
+
+def compiler_version(compiler: str) -> str | None:
+    """The Visual C++ version (the Rich header's) a compiler id builds as: "MSVC/8.0SP1" is 8.0, "MSVC/14.16" 14.1, a
+    copy of the user's its build's; None when that isn't known (a copy whose build couldn't be read)."""
+    version = compiler.removeprefix("MSVC/")
+    if (m := re.fullmatch(r"(\d+)\.(\d+)(SP\d+)?(-x64)?", version)):
+        major, minor = int(m.group(1)), m.group(2)
+        return f"14.{minor[0]}" if major == 14 else f"{major}.{minor}"
+    own = next((c for c in kits.compilers((KIT,)) if c.version == version), None)
+    return rich_version(own.build)[0] if own is not None and own.build else None
+
+
 def program_compilers(data: bytes) -> list[tuple[str, int, str, bool]]:
     """The Visual C++ builds the Rich header says compiled the program's files: (the packs' version that builds them,
     as the console names it, how many files, "Visual C++ 6.0 SP5 (build 8966)", whether its pack is installed),

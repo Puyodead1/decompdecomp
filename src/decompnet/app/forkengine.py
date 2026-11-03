@@ -3574,10 +3574,14 @@ class ForkEngine:
         known = [c.id for c in console.project_compilers(fp)]  # (a 32-bit game's: never a 64-bit compiler)
         if compiler.strip().lower() == "all":
             wanted = sorted(known, key=lambda c: abs(known.index(c) - known.index(own))) if own in known else known
+            # (the program's own word on what compiled it: "all" tries only those)
+            wanted = [c for c in wanted if c == own or console.program_rules_out(fp, c) is None]
         else:
             wanted = [compiler.strip()]
         if wanted[0] not in known:
             raise NetworkError(f"{wanted[0]!r} isn't one of this project's compilers: {', '.join(known)}")
+        if wanted[0] != own and (why := console.program_rules_out(fp, wanted[0])):
+            raise NetworkError(f"{unit.source} stays with {own}: {why}")
         if wanted == [own]:
             raise NetworkError(f"{unit.source} is built with {own} already")
         source = source.strip() or self.net._source_of(fn) or ""
