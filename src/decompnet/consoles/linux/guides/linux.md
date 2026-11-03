@@ -13,6 +13,9 @@ What the compiler writes, never the C
 - Loop alignment: `.p2align 4,,7` pads a loop's start with `nop`, `lea esi, [esi]` or `lea esi, [esi+0]` (up to 7
   bytes). The padding depends on where the function sits; the judge compiles your function at its game address
   modulo 16, so the padding comes out as the game's when the code before it is the same. Never write it.
+- A jump the game encodes long (`e9`, 5 bytes) where 2 reach: gas made it so assembling the whole file. When your C
+  is that close, the judge also tries it where the earlier code of its file put it, and it matches if the rest is
+  right. If every instruction matches and only an encoding still differs, say so in a note and release it.
 
 Reading the code for the C
 - A parameter's real type: the debug information (the brief's prototype) gives a short or char parameter its

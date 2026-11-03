@@ -334,3 +334,55 @@ def test_a_compiler_change_judges_the_open_functions_attempts_again(demo):
     net.set_compiler(slug, tc, ["-O2"])
     fn = net._function("clamp_s32", slug)
     assert fn["status"] == "matched" and fn["matched_agent_id"] == agent.id
+
+
+LAYOUT_C = """extern int g(int *);
+int f(int x, int *p, int *q) {
+  int i;
+  if (x) { p[1] = 0; p[2] = 0; }
+  else {
+    p[8] = x + 0; p[9] = x + 1; p[10] = x + 2; p[11] = x + 3;
+    for (i = 0; i < p[0]; i++) p[i] += q[i];
+    p[40] = 0; p[41] = 1; p[42] = 2; p[43] = 3; p[44] = 4; p[45] = 5;
+    for (i = 0; i < p[3]; i++) q[i] -= p[i];
+  }
+  return g(p);
+}"""
+
+
+def test_a_jump_its_file_made_long_matches_where_the_code_before_it_grew():
+    """A Linux game's 188-instruction function, every instruction right, missed by one jmp: the game's is 5 bytes
+    though 2 reach, because gas assembled its whole file, whose earlier jumps grew while it relaxed them and widened
+    the loop padding the jmp jumps over on the way. A narrow miss is tried again after code that grows."""
+    import json
+    from types import SimpleNamespace
+
+    from decompnet.compiler import compile_source
+    from decompnet.elfobj import extract_function
+    from decompnet.network import Network
+    from decompnet.project import compiler_config
+
+    from .test_consoles import _missing
+
+    if (missing := _missing(consoles.get("linux"))):
+        pytest.skip(f"needs {', '.join(missing)}")
+    config = compiler_config(Path("."), {"compiler": {"toolchain": "gcc-2.95.3-linux", "flags": ["-O2"]}})
+    fn = {"name": "f", "vram": 0x8048100}
+    proj = {"config": json.dumps({"platform": "linux"})}
+    code = lambda prelude: extract_function(compile_source(Network._placed(config, proj, fn, prelude), "",  # noqa: E731
+                                                           LAYOUT_C, trusted=True).obj, "f")
+    plain = code(None)
+    layout, grown = next((lay, c) for lay in x86_link.layouts(fn["vram"]) if (c := code(lay)).code != plain.code)
+    assert b"\xe9" in grown.code and b"\xe9" not in plain.code  # (the long jmp)
+
+    def judged(game):
+        net = SimpleNamespace(_placed=Network._placed, NEAR_PERCENT=Network.NEAR_PERCENT,
+                              _target_obj=lambda fn, proj: game,
+                              _evaluate=lambda fn, proj, obj: (c := extract_function(obj, "f"), c.code == game.code, []))
+        net._judged_exact = lambda *a, **k: Network._judged_exact(net, *a, **k)
+        return Network._compile_placed(net, config, proj, fn, "", LAYOUT_C)
+
+    res = judged(grown)  # (the game's function: the jump long)
+    assert extract_function(res.obj, "f").code == grown.code and res.layout == layout
+    res = judged(plain)
+    assert extract_function(res.obj, "f").code == plain.code and res.layout == ""

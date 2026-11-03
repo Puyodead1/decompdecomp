@@ -166,5 +166,10 @@ class Linux(Console):
 
         return prelude(vram)
 
+    def compile_layouts(self, vram: int) -> list[str]:
+        from ...arch.x86_link import layouts
+
+        return layouts(vram)
+
 
 LINUX = Linux()
