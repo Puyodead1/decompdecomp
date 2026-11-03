@@ -50,6 +50,8 @@ VERDICTS_KEPT = 4096  # judge verdicts remembered: the same C with the same comp
 # What a check reads of every function, once per run. Never the assembly: GTA San Andreas's is 73 MB, and reading
 # every column (`SELECT *`) for each of the 62 checks was 14 of the 17 seconds.
 ROW_COLUMNS = "id, name, vram, size, n_insns, status"
+# the source file the game's debug info names (a Linux game's stabs): one object file, so the walk stops where it ends
+ROW_COLUMNS += ", CASE WHEN json_valid(meta) THEN json_extract(meta, '$.debug.source') END AS source"
 # what the judge needs, read only for the few neighbours a check gives a verdict
 JUDGE_COLUMNS = "id, project_id, name, unit, vram, size, n_insns, status, target, relocs, matched_source, best_source"
 # why checks were dismissed when the suggested compiler's flags didn't count (RangeChecks.reopen)
@@ -64,14 +66,18 @@ class Step:
     verdict: str  # confirmed | refuted | neutral | unknown | origin
 
 
-def evaluate(left: list[Step], origin: Step, right: list[Step]) -> tuple[str, int, int, Step | None]:
+def evaluate(left: list[Step], origin: Step, right: list[Step],
+             ends: tuple[bool, bool] = (False, False)) -> tuple[str, int, int, Step | None]:
     """(status, start, end, next to test) from the verdicts walking out from the origin (left: nearest first).
     status: confirmed | quirk | checking. start-end: the range the evidence supports (confirmed functions and what
-    lies between them, up to the first refuted one on each side)."""
+    lies between them, up to the first refuted one on each side). ends: each side's walk reached the end of the
+    origin's object file (the game's debug info names the files): past it is another object, no evidence either way,
+    so a side with nothing left to test in the file is a wall."""
     start, end, confirmed, walls = origin.vram, origin.end, 1 if origin.verdict in ("origin", "confirmed") else 0, 0
     unknown: list[tuple[int, int, Step]] = []  # (distance, side, step): the nearest one is tested next
     for n, side in enumerate((left, right)):
         reach = None
+        walls += ends[n] and all(s.verdict == "neutral" for s in side)
         for i, step in enumerate(side):
             if step.verdict == "refuted":
                 walls += step is next((s for s in side if s.verdict != "neutral"), None)
@@ -86,6 +92,11 @@ def evaluate(left: list[Step], origin: Step, right: list[Step]) -> tuple[str, in
             start, end = min(start, reach.vram), max(end, reach.end)
     if confirmed >= 2:
         return "confirmed", start, end, None
+    # a Linux game's file of one function, built -O0 between two -O2 files: its neighbours are other objects, built
+    # with other flags, and say nothing (trek's ps_math_3d_0.c was dismissed four times as a quirk). The file is one
+    # compiler: its functions all confirming, none refuting or unknown, is the proof the module docstring asks for.
+    if all(ends) and origin.verdict == "confirmed" and all(s.verdict in ("confirmed", "neutral") for s in left + right):
+        return "confirmed", min([origin.vram] + [s.vram for s in left]), max([origin.end] + [s.end for s in right]), None
     if walls == 2 and confirmed <= 1:
         return "quirk", origin.vram, origin.end, None
     return "checking", origin.vram, origin.end, min(unknown, key=lambda u: u[:2])[2] if unknown else None
@@ -291,14 +302,21 @@ class RangeChecks:
                                     f"{origin['name']}'s C matches the game with today's compiler too: it says nothing "
                                     "about the compiler")
             first = Step(origin["vram"], origin["vram"] + origin["size"],
-                         "neutral" if v == "neutral" else "origin" if v != "refuted" else "refuted")
+                         "neutral" if v == "neutral" else "refuted" if v == "refuted" else
+                         "confirmed" if v == "confirmed" and not short else "origin")
         else:
             first = Step(origin["vram"], origin["vram"] + origin["size"], verdict(origin))
 
-        def walk(rng) -> list[Step]:
+        file = origin["source"]
+        ends = [False, False]  # each side: the walk reached the end of the origin's object file
+
+        def walk(rng, side: int) -> list[Step]:
             out, outside = [], 0
             for i in rng:
                 r = rows[i]
+                if file and r["source"] and r["source"] != file:  # another object file: built on its own
+                    ends[side] = True
+                    break
                 if not inside(r):
                     outside += (r["n_insns"] or 0) >= MIN_INSNS
                     if outside > REACH:
@@ -307,8 +325,11 @@ class RangeChecks:
                 if out[-1].verdict in ("refuted", "unknown"):
                     break
             return out
-        left, right = walk(range(o - 1, -1, -1)), walk(range(o + 1, len(rows)))
-        status, start, end, nxt = evaluate(left, first, right)
+        left, right = walk(range(o - 1, -1, -1), 0), walk(range(o + 1, len(rows)), 1)
+        if file:  # (the game's first and last functions end their files too)
+            ends = [ends[0] or not left or left[-1].vram == rows[0]["vram"],
+                    ends[1] or not right or right[-1].vram == rows[-1]["vram"]]
+        status, start, end, nxt = evaluate(left, first, right, (ends[0], ends[1]))
         c["evidence"] = evidence
         if status == "confirmed":  # replicated: the suggested ranges stand, cut back only where a neighbour refutes them
             start, end = min([start] + [a for a, _ in c["spans"]]), max([end] + [b for _, b in c["spans"]])
@@ -354,12 +375,12 @@ class RangeChecks:
         agent, _ = self.net.local_agent("autopilot")
         confirmed = sum(v == "confirmed" for v in evidence.values()) + (c["origin"] is not None)
         if c.get("audit"):
-            text = (f"confirmed by {confirmed} functions" if status == "confirmed" else
+            text = (f"confirmed by {confirmed} function{'s' * (confirmed != 1)}" if status == "confirmed" else
                     f"looks like a quirk ({why or 'the functions on both sides are built by the game’s compiler'}): "
                     f"the user can remove the range")
             self._save(proj, c, text)
         elif status == "confirmed":
-            text = f"confirmed by {confirmed} functions: 0x{start:X}-0x{end:X} is built by {short}"
+            text = f"confirmed by {confirmed} function{'s' * (confirmed != 1)}: 0x{start:X}-0x{end:X} is built by {short}"
             applied = ""
             if self.net.auto_adjusts(proj):
                 try:
