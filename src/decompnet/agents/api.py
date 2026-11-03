@@ -597,7 +597,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                                not_c=bo("true when you're sure no C makes its code (hand-written assembly); say why in notes"),
                                needs=st("optional: another function this one needs done first (a callee or inlined "
                                         "helper): it then goes first and is handed to you"))),
-        "get_context": ("The shared header included in every compile.", s()),
+        "get_context": ("The shared header included in every compile. A long one comes 1,000 lines at a time "
+                        "(start); search returns only the declarations matching a regular expression, whole.",
+                        s(function=st("the function whose header"), search=st("regular expression"),
+                          start=it("line to start from"))),
         "edit_context": ("Replace `old` (exactly once) with `new` in the shared header, or append when old is empty.",
                          s(old=st("text to replace, or empty", True), new=st("replacement", True),
                            message=st("why", True))),

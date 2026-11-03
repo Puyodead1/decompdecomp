@@ -59,7 +59,7 @@ one claim; one function back is normal.)
    usually right, its types and names usually wrong: start from it and fix those. redraft(function, context)
    makes it again with a struct or prototype you worked out.
 2. get_context() shows the shared header every compile includes (when it's big, the brief has the
-   declarations the function uses).
+   declarations the function uses; get_context(search="TPlayer|g_Players") finds any other, whole).
 3. Write the C functions (same names as the assembly) and judge them: compile_and_diff(function="a, b, c",
    source=all the definitions) for a batch, one name for one. Read the diff: '<' '>' missing/extra
    instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure first, registers last.
@@ -299,7 +299,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
                                                                                     start),
     "release_function": lambda net, agent, slug, function, notes, needs="", not_c=False:
         net.release_function(agent, function, notes, slug, needs or "", bool(not_c)),
-    "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
+    "get_context": lambda net, agent, slug, function="", search="", start=0: net.get_context(
+        slug, function or None, search or "", int(start or 0)),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
@@ -510,9 +511,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "release_function", function=function, notes=notes, needs=needs, not_c=not_c)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def get_context(ctx: Context, function: str = "") -> str:
-        """The shared header (types, structs, prototypes) included before every compile."""
-        return await run(ctx, "get_context", function=function)
+    async def get_context(ctx: Context, function: str = "", search: str = "", start: int = 0) -> str:
+        """The shared header (types, structs, prototypes) included before every compile.
+
+        Args:
+            function: the function whose header (a project with one header per source file needs it)
+            search: a regular expression: only the declarations that match, whole (a struct with its fields).
+                The quick way through a long header: search="TPlayer|g_Players"
+            start: a long header comes 1,000 lines at a time: the line to start from
+        """
+        return await run(ctx, "get_context", function=function, search=search, start=start)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def edit_context(ctx: Context, old: str, new: str, message: str, function: str = "") -> str:
