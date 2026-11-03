@@ -577,7 +577,9 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | least_tried | hardest | random"),
                              count=it("up to 6 small functions at once"))),
-        "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
+        "get_function": ("Show any function by name or address. A long function's assembly comes in parts of 400 "
+                         "lines: part 2, 3, ... shows the next.",
+                         s(function=st("name or address", True), part=it("which part of a long function's assembly"))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),

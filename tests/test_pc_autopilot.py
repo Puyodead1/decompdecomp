@@ -277,6 +277,13 @@ def test_pc_drafts_are_made_in_the_background_and_follow_the_headers(demo):
         db.execute("UPDATE functions SET best_source=NULL, best_score=NULL WHERE id=?", (fn["id"],))
     brief = net.forks.get_function(agent, slug, fn["name"])
     assert "Machine draft (Ghidra's, made to compile here" in brief and '#include "ghidra.h"' in brief
+    from decompnet import network  # a long function's assembly comes in parts in fork mode too
+    page, network.ASM_PAGE = network.ASM_PAGE, 2
+    try:
+        assert f'get_function("{fn["name"]}", part=2)' in net.get_function(fn["name"], slug)
+        assert "part 2 of" in net.get_function(fn["name"], slug, part=2)
+    finally:
+        network.ASM_PAGE = page
     name = fn["name"].lstrip("_@").split("@")[0]
     net.forks.edit_file(agent, slug, "include/hero.h", "", f"struct Hero {{ int {name}(int); }};\n", "a class")
     assert net.draft_mark(proj) != mark  # the drafter looks again, and autopilot tries what changed

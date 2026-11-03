@@ -292,3 +292,21 @@ def test_only_a_few_autopilots_compile_at_once_across_projects(tmp_path, monkeyp
     while states["c"]["state"] == "running" and time.time() < deadline:
         time.sleep(0.01)
     assert states["c"]["state"] == "done" and "c" in tried and "d" not in tried
+
+
+def test_a_long_functions_assembly_comes_in_parts(net, monkeypatch):
+    """A Linux game's 1,962-instruction interpreter: its brief was 2,292 lines and the agent's CLI cut it at 1,426,
+    so the tail of the assembly and the notes after it never arrived. A long one comes in parts, the notes first."""
+    from decompnet import network
+
+    assert network.asm_page(["a"] * 3, 1, "f") == (["a"] * 3, "")
+    shown, said = network.asm_page([str(i) for i in range(900)], 3, "f")
+    assert shown == [str(i) for i in range(800, 900)] and "part 3 of 3" in said and "last part" in said
+    monkeypatch.setattr(network, "ASM_PAGE", 4)
+    agent, _ = net.local_agent("tester4")
+    net.add_note(agent, "demo-quest-64", "remember this", "func_80000A0C")
+    brief = net.get_function("func_80000A0C", "demo-quest-64")
+    assert 'get_function("func_80000A0C", part=2)' in brief
+    assert brief.index("remember this") < brief.index("### Target assembly")
+    second = net.get_function("func_80000A0C", "demo-quest-64", part=2)
+    assert "part 2 of" in second and "remember this" not in second and second.count("\n") < 12
