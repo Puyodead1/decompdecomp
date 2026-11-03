@@ -48,16 +48,19 @@ _FORBIDDEN = [
     (re.compile(r"(#\s*pragma|\b_Pragma)\b"), "pragmas are not allowed (ask the project admin to whitelist one)"),
     (re.compile(r"#\s*include\s*<"), "system includes are not allowed; everything you need is in context.h"),
 ]
-_INCLUDE = re.compile(r'#\s*include\s*"([^"]+)"')
+_SYSTEM_INCLUDE = _FORBIDDEN[-1][0]
+_INCLUDE = re.compile(r'#\s*include\s*["<]([^">]+)[">]')
 
 
 class SourceRejected(ValueError):
     pass
 
 
-def check_source(source: str) -> None:
+def check_source(source: str, system_headers: bool = False) -> None:
     """Refuse C that could match without being C (inline asm, asm-include macros, pragmas) or reach outside the
-    sandbox (absolute or `..` includes): what the judge accepts must come from a compiler."""
+    sandbox (absolute or `..` includes): what the judge accepts must come from a compiler. `system_headers`: the
+    compiler ships its system's own headers (Toolchain.system_headers), which the C may include: their inline asm
+    is the system's, pinned, not the agent's."""
     if len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
     for inc in _INCLUDE.findall(source):
@@ -65,8 +68,21 @@ def check_source(source: str) -> None:
             raise SourceRejected(f"include path not allowed: {inc}")
     code = _COMMENTS_AND_STRINGS.sub(" ", source)
     for pattern, why in _FORBIDDEN:
-        if pattern.search(code):
+        if pattern.search(code) and not (system_headers and pattern is _SYSTEM_INCLUDE):
             raise SourceRejected(why)
+
+
+def added_asm(old: str, new: str) -> str | None:
+    """Why `new`, replacing `old` in a shared header, brings code no compiler wrote (inline asm, asm-include macros,
+    .incbin, section or naked functions), else None. The header is compiled with every function, unchecked: on a
+    Linux game agents put x87 instructions in it as inline functions their C then called. The asm a header already
+    has stays (an edit that keeps it adds none); the system's own, where its compiler ships it, is included instead
+    (Toolchain.system_headers)."""
+    before, after = _COMMENTS_AND_STRINGS.sub(" ", old), _COMMENTS_AND_STRINGS.sub(" ", new)
+    for pattern, why in _FORBIDDEN[:4]:
+        if len(pattern.findall(after)) > len(pattern.findall(before)):
+            return why
+    return None
 
 
 @dataclass
@@ -80,6 +96,7 @@ class CompilerConfig:
     wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
     prelude: str = ""  # the toolchain's prelude (Toolchain.prelude)
     cplusplus: bool = False  # it compiles C++ too: what doesn't compile as C is tried as C++ (Toolchain.cplusplus)
+    system_headers: bool = False  # its system's headers may be included (Toolchain.system_headers)
 
 
 @dataclass
@@ -174,7 +191,7 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
     both."""
     if not trusted:
         try:
-            check_source(source)
+            check_source(source, cfg.system_headers)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
 

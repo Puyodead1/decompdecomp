@@ -525,6 +525,12 @@ class Console:
         doesn't say. The compiler map shows it, and its survey tries these (app/filecompilers.py)."""
         return []
 
+    def program_rules_out(self, fp, compiler: str) -> str | None:
+        """Why the game's program itself says `compiler` built none of its files (PC: its Rich header), as a sentence
+        for the agent; None where it doesn't say or the compiler may have. try_compiler, compiler suggestions and
+        the survey keep to the compilers it doesn't rule out."""
+        return None
+
     def file_flags(self, fp, source: str) -> list[str] | None:
         """The flags a source file is built with on top of the project's, where each file can have its own (PC:
         /Oy-), else None: search_flags tries their variants (flag_variants) there."""

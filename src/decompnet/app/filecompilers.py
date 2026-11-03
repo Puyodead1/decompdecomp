@@ -77,8 +77,12 @@ class FileCompilers:
     def candidates(self, slug: str) -> list[str]:
         """The compilers the survey tries: what the program says built it (installed), and the files' own."""
         _, fp, cfg = self.net.forks.get(slug)
-        said = [c for c, _, _, installed in consoles.get(cfg.get("platform")).program_compilers(fp) if installed]
-        return list(dict.fromkeys([*said, *(own for *_, own in self._files(slug))]))
+        console = consoles.get(cfg.get("platform"))
+        said = [c for c, _, _, installed in console.program_compilers(fp) if installed]
+        # (a file an agent once moved to a compiler the program rules out isn't evidence for trying it on the rest:
+        # on a 7.0 game, one such file had the survey try 7.1 everywhere, and its one "match" became a suggestion)
+        return [c for c in dict.fromkeys([*said, *(own for *_, own in self._files(slug))])
+                if c == console.file_compiler(fp, "") or console.program_rules_out(fp, c) is None]
 
     # ------------------------------------------------------------------ the map
 
@@ -264,6 +268,8 @@ class FileCompilers:
         if tc is None:
             raise NetworkError(f"no compiler {compiler!r} for this game; its platform's: "
                                f"{', '.join(c.id for c in console.compilers)}")
+        if (why := console.program_rules_out(fp, tc)):
+            raise NetworkError(f"not suggested: {why}")
         spans = parse_ranges(ranges)
         if not spans and function:  # the file the function is in
             fn = self.net.forks._fn(slug, function)

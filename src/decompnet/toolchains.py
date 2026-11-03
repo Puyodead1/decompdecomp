@@ -68,6 +68,9 @@ class Toolchain:
     requires_java: int = 0  # minimum Java version (Ghidra)
     prelude: str = ""  # C put before every file it compiles: works around a compiler's own bugs (see toolchains.toml)
     cplusplus: bool = False  # it compiles C++ too (by the file's extension: .cpp)
+    # it ships its system's own headers, pinned with it (a Linux distribution's glibc): agents' C may include them,
+    # inline asm and all, as the game's files did (`#include <sys/io.h>` for outb)
+    system_headers: bool = False
     wine: bool = False  # Windows programs wibo can't run: through wine on Linux and macOS (wine.py)
     # toolchains whose Include folder a pack's compilers search after their own, in order: a Windows SDK several packs
     # share, downloaded once (installed first, like `requires`; INCLUDES says where in each version's folder)

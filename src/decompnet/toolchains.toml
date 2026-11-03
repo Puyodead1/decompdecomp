@@ -42,6 +42,7 @@ description = "The GCC 2.95.3 (20010315) and binutils 2.11.90 Slackware 8.0 ship
 requires = ["runtime-i386"]
 cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc-lib/i386-slackware-linux/2.95.3"; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc-2.95.3" -B"$g/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
 flags = ["-O2"]
+system_headers = true
 [["gcc-2.95.3-linux".parts]]
 url = "https://slackware.uk/slackware/slackware-8.0/slakware/d1/gcc.tgz"
 sha256 = "82d8f62f51b29214a789cc48a38517505a6669815ccd8cd791352d90334adaf5"

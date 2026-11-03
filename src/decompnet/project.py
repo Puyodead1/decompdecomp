@@ -39,13 +39,13 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     ro_paths = [str((root / p).resolve()) for p in c.get("ro_paths", [])]
     runtime32 = None
     linux = False
-    prelude, cplusplus = "", False
+    prelude, cplusplus, system_headers = "", False, False
     if "toolchain" in c:
         try:
             tc = toolchains.get(own.like if own else c["toolchain"])  # (a copy of the user's runs as its pack does)
         except toolchains.ToolchainError:
             raise toolchains.ToolchainError(unknown_compiler_message(c["toolchain"])) from None
-        prelude, cplusplus = tc.prelude, tc.cplusplus
+        prelude, cplusplus, system_headers = tc.prelude, tc.cplusplus, tc.system_headers
         linux = tc.via_wsl  # Windows: a Linux toolchain, run inside WSL 2
         if linux and not (ok := wsl.status())[0]:
             raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
@@ -85,6 +85,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         wsl=linux,
         prelude=prelude,
         cplusplus=cplusplus,
+        system_headers=system_headers,
     )
 
 

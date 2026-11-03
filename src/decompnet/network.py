@@ -1402,6 +1402,11 @@ class Network:
             unit = ""
         if not message.strip():
             raise NetworkError("give a short commit message explaining the change")
+        from .compiler import added_asm
+
+        if (why := added_asm(old, new)):
+            raise NetworkError(f"not in the header either: {why}. Where the compiler ships its system's headers "
+                               "(a Linux game's glibc), include the one the game used in the function's C")
         for _ in range(3):
             ctx = self._context(proj["id"], unit)
             header = ctx["header"]
