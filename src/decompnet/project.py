@@ -40,13 +40,13 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     runtime32 = None
     linux = False
     vm = False
-    prelude, cplusplus = "", False
+    prelude, cplusplus, system_headers = "", False, False
     if "toolchain" in c:
         try:
             tc = toolchains.get(own.like if own else c["toolchain"])  # (a copy of the user's runs as its pack does)
         except toolchains.ToolchainError:
             raise toolchains.ToolchainError(unknown_compiler_message(c["toolchain"])) from None
-        prelude, cplusplus = tc.prelude, tc.cplusplus
+        prelude, cplusplus, system_headers = tc.prelude, tc.cplusplus, tc.system_headers
         vm = tc.via_vm
         linux = tc.via_wsl  # Windows: a Linux toolchain, run inside WSL 2
         if own and vm:
@@ -93,6 +93,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         linux_vm=vm,
         prelude=prelude,
         cplusplus=cplusplus,
+        system_headers=system_headers,
     )
 
 

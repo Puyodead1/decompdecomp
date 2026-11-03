@@ -44,6 +44,30 @@ def test_check_source_blocks_cheats():
     check_source('// this used to be asm\nint f(void) { const char *s = "asm"; return 0; }')
 
 
+def test_a_compiler_with_its_systems_headers_lets_c_include_them():
+    """A Linux game's outb() came from glibc's <sys/io.h> (inline asm, the system's): its compiler ships those
+    headers, pinned, so C may include them. Its own asm, and paths out of the sandbox, stay refused."""
+    from decompnet import toolchains
+
+    check_source("#include <sys/io.h>\nvoid f(void) { outb(1, 0x37c); }", system_headers=True)
+    for bad in ['void f(void){ __asm__("out %al, %dx"); }', "#include <../../etc/passwd>"]:
+        with pytest.raises(SourceRejected):
+            check_source(bad, system_headers=True)
+    assert toolchains.get("gcc-2.95.3-linux").system_headers and not toolchains.get("gcc-2.7.2-kmc").system_headers
+
+
+def test_the_shared_header_takes_no_new_asm(net, agents):
+    """Agents on a Linux game put x87 instructions in the header as inline functions their C called: the header is
+    compiled unchecked with every function, so an edit may not add asm (keeping what it has is fine)."""
+    alice, _ = agents
+    with pytest.raises(NetworkError, match="inline assembly is not allowed"):
+        net.edit_context(alice, "demo", "", 'static inline double q(double x) { __asm__("fsqrt" : "+t"(x)); return x; }',
+                         "fast sqrt")
+    from decompnet.compiler import added_asm
+
+    assert added_asm('__asm__("frndint" : "+t"(v)); int a;', '__asm__("frndint" : "+t"(v)); int b;') is None
+
+
 def test_every_solution_matches(net, agents):
     alice, _ = agents
     for name, src in SOLUTIONS.items():

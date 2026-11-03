@@ -289,3 +289,34 @@ def test_read_data_shows_doubles_where_the_bytes_are_doubles():
     assert "as f64 (double), each 8 bytes: 100, 0.166667, 6" in arch.float_lines(doubles, False)
     assert arch.float_lines(struct.pack("<4f", 1, 2, 3, 4), False) == ["as f32: 1, 2, 3, 4"]
     assert "as f64 (double), each 8 bytes: 0.1" in arch.float_lines(struct.pack(">d", 0.1), True)  # (a round one, -2.5, is two floats too)
+
+
+def test_the_c_may_include_glibcs_headers_and_their_inline_asm(demo, tmp_path):
+    """A Linux game's port I/O (`out dx, al`) was <sys/io.h>'s outb(): agents found every C rejected ("system
+    includes are not allowed") and set the function aside. The pinned GCC's own glibc headers build it."""
+    from decompnet.compiler import compile_source
+    from decompnet.project import compiler_config
+
+    cfg = compiler_config(tmp_path, {"compiler": {"toolchain": "gcc-2.95.3-linux", "flags": ["-O2"]}})
+    res = compile_source(cfg, "", "#include <sys/io.h>\nvoid put(unsigned char v, int port) { outb(v, port); }\n")
+    assert res.ok, res.log
+    from io import BytesIO
+
+    from elftools.elf.elffile import ELFFile
+
+    assert b"\xee" in ELFFile(BytesIO(res.obj)).get_section_by_name(".text").data()  # out dx, al
+    assert "inline assembly" in compile_source(cfg, "", 'void f(void) { __asm__("rdtsc"); }\n').log
+
+
+def test_an_applied_range_judges_its_open_functions_again(demo):
+    """On a Linux game two functions whose C matched with a suggested range's flags stayed open after the user
+    applied it: nothing judged them again. Applying a range judges its open functions' best C."""
+    net, slug = _imported(demo, "range")
+    fn = net._function("clamp_s32", slug)
+    span = [[fn["vram"], fn["vram"] + fn["size"]]]
+    tc = net.cfg(net._project(slug))["compiler"]["toolchain"]
+    net.set_compiler_ranges(slug, span, tc, ["-O0"])
+    assert not _match(net, slug, "clamp_s32")["matched"]  # (its C, judged with the wrong flags)
+    net.set_compiler_ranges(slug, span, tc, ["-O2"])
+    fn = net._function("clamp_s32", slug)
+    assert fn["status"] == "matched" and fn["matched_agent_id"] == net.local_agent("claude-opus-5.5-1")[0].id

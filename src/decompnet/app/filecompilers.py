@@ -82,7 +82,10 @@ class FileCompilers:
         _, fp, cfg = self.net.forks.get(slug)
         console = consoles.get(cfg.get("platform"))
         said = [c for c, _, _, installed in console.program_compilers(fp) if installed]
-        own = [own for *_, own in self._files(slug)]
+        # (a file an agent once moved to a compiler the program rules out isn't evidence for trying it on the rest:
+        # on a 7.0 game, one such file had the survey try 7.1 everywhere, and its one "match" became a suggestion)
+        own = [own for *_, own in self._files(slug)
+               if own == console.file_compiler(fp, "") or console.program_rules_out(fp, own) is None]
         if said:
             return list(dict.fromkeys([*said, *own]))
         known = [c.id for c in console.project_compilers(fp)]
@@ -279,6 +282,8 @@ class FileCompilers:
         tc = next((c.id for c in ours if compiler.strip().lower() in (c.id.lower(), c.name.lower())), None)
         if tc is None:
             raise NetworkError(f"no compiler {compiler!r} for this game; its own: {', '.join(c.id for c in ours)}")
+        if (why := console.program_rules_out(fp, tc)):
+            raise NetworkError(f"not suggested: {why}")
         spans = parse_ranges(ranges)
         if not spans and function:  # the file the function is in
             fn = self.net.forks._fn(slug, function)

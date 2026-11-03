@@ -23,8 +23,14 @@ Reading the code for the C
   program keeps it. The cases' values and order must be the game's.
 - Floats are x87: `fld dword` a float, `fld qword` a double. A float argument without a prototype is passed as a
   double: declare the callee.
-- Library calls go through the PLT (`call printf`): glibc 2.2.3's headers are there, `#include <stdio.h>`,
-  `<string.h>`, `<math.h>` and the like give the real prototypes.
+- Library calls go through the PLT (`call printf`). glibc 2.2.3's own headers come with the compiler: your C may
+  `#include <stdio.h>`, `<string.h>`, `<math.h>` and the like, as the game's files did (the shared header may
+  already declare what you need; where an include clashes with it, declare only what the function uses).
+- What glibc's headers inline is the game's C, not assembly: `out dx, al` / `in al, dx` are `<sys/io.h>`'s
+  `outb(value, port)` / `inb(port)`; a bare `fsqrt`, `fsin` or `frndint` where the call to `sqrt`, `sin` or `rint`
+  would be is `<math.h>`'s inline under `-ffast-math` (bits/mathinline.h): include the header, never write asm
+  (the judge and the shared header refuse it). Only an instruction no header gives (`rdtsc`) is the
+  program's own inline asm: set it aside.
 - A file's static function or global is in the program's symbol table under its own name: use it.
 
 Things to try when registers or order differ
