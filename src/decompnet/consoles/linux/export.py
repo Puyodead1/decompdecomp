@@ -83,6 +83,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         compiler = compiler_for(cfg, row["vram"])
         f.update({"c": src.relative_to(out).as_posix(), "toolchain": compiler["toolchain"],
                   "flags": list(compiler.get("flags") or [])})
+        if compiled.layout:  # it matches where the code before it in its file put it (x86_link.layouts)
+            f["prelude"] = compiled.layout
 
     names = {f["name"] for f in functions if f.get("c")}
     symbols = {s.name: s.address for s in syms.by_name.values() if s.name not in names and s.address}

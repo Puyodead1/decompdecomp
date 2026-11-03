@@ -61,7 +61,8 @@ def config(fn: dict, work: Path):
 
     cfg = compiler_config(work, {"compiler": {"toolchain": toolchain(fn), "flags": fn.get("flags") or ["-O2"]}})
     pad = fn["vram"] % ALIGN
-    placed = f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else ""
+    # (or where the code before it in its file put it, after code that grew as gas relaxed it: build.json says)
+    placed = fn.get("prelude") or (f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else "")
     return dataclasses.replace(cfg, prelude=cfg.prelude + placed, include_dirs=(*cfg.include_dirs, str(ROOT / "include")))
 
 
@@ -113,7 +114,8 @@ def build_function(fn: dict, data: bytes) -> bytes:
     elf = ELFFile(BytesIO(res.obj))
     defined = {s.name for s in elf.get_section_by_name(".symtab").iter_symbols()
                if s.name and s["st_shndx"] != "SHN_UNDEF"}
-    pad = fn["vram"] % ALIGN
+    # where the function sits in its .text: its offset modulo 16, after the code its prelude puts before it
+    pad = next(s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == fn["name"])
     own = "".join(f"  .own{i} 0x{addr:X} : {{ {obj.name}({section}) }}\n"
                   for i, (section, addr) in enumerate(own_data(elf, data, fn, pad).items()))
     symbols = "".join(f"{name} = 0x{addr:X};\n" for name, addr in B["symbols"].items() if name not in defined)

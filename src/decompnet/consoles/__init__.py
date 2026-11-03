@@ -256,6 +256,12 @@ class Console:
         offset modulo 16 in its object, where GCC 2.95's loop alignment depends on it). None by default."""
         return ""
 
+    def compile_layouts(self, vram: int) -> list[str]:
+        """ROM mode: other preludes a narrowly missed compile is tried with, the function where the code around it in
+        its object file put it (Linux: after code that grew while gas relaxed it, arch/x86_link.layouts). None by
+        default."""
+        return []
+
     def function_insns(self, fn) -> int:
         """ROM mode: how many instructions a just-split function has."""
         return len(fn.lines)

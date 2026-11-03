@@ -48,10 +48,27 @@ def canonical_target(target: X86Target):
     return FunctionObj(target.name, "x86", False, target.code, [])
 
 
-def prelude(vram: int) -> str:
-    """What a function's C starts with so that it sits at its game offset modulo ALIGN in the object."""
+def prelude(vram: int, grown: int = 0) -> str:
+    """What a function's C starts with so that it sits at its game offset modulo ALIGN in the object. `grown`: the
+    code before it also grows by that many bytes while gas relaxes it (see layouts)."""
     pad = vram % ALIGN
-    return f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else ""
+    if not grown:
+        return f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else ""
+    # a jne over 140 bytes: gas starts it short (2 bytes) and grows it to 6 on its first pass, as an earlier
+    # function's jumps did in the game's object file. 146 bytes each in the end, then padding to the function's place.
+    n = grown // 4
+    jumps = "".join(f"\\tjne .Ldd_grown{i}\\n\\t.space 140\\n.Ldd_grown{i}:\\n" for i in range(n))
+    k = (pad - 146 * n) % ALIGN
+    return f'__asm__(".text\\n{jumps}' + (f"\\t.space {k}\\n" if k else "") + '");\n'
+
+
+def layouts(vram: int) -> list[str]:
+    """The function placed after code that grows while gas relaxes it. Gas starts every jump short and grows the ones
+    that don't reach, a pass at a time, and a jump never shrinks again: a jump in a function that came out long when
+    its file was assembled whole (the code before it hadn't grown yet, so the loop padding between the jump and its
+    target was wider) is short when the function is assembled alone. A Linux game's 188-instruction function with
+    every instruction right missed by one jmp's encoding: after one such jne it's byte for byte the game's."""
+    return [prelude(vram, grown) for grown in (4, 8, 12)]
 
 
 def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
