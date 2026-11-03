@@ -599,18 +599,51 @@ class Network:
         cfg = json.loads(proj["config"])
         if fn is not None and cfg.get("compiler_ranges"):
             cfg = {**cfg, "compiler": compiler_for(cfg, fn["vram"])}
-        return compile_source(self._placed(compiler_config(Path(proj["root"]), cfg), proj, fn), header, source)
+        return self._compile_placed(compiler_config(Path(proj["root"]), cfg), proj, fn, header, source)
+
+    NEAR_PERCENT = 95  # a miss this close is tried in the console's other layouts (Console.compile_layouts)
+
+    def _compile_placed(self, config, proj, fn, header: str, source: str):
+        """Compiled at the function's place (_placed). A narrow miss is compiled again in each of the console's
+        other layouts, and the first that matches is the result (CompileResult.layout says which): the same C, the
+        same compiler and assembler, the function where the code before it in its object file put it."""
+        import dataclasses
+
+        from . import consoles
+
+        result = compile_source(self._placed(config, proj, fn), header, source)
+        vram = fn["vram"] if fn is not None else None
+        layouts = consoles.of(json.loads(proj["config"])).compile_layouts(vram) if vram is not None else []
+        if not result.ok or not layouts or self._judged_exact(proj, fn, result.obj) is not False:
+            return result
+        for layout in layouts:
+            again = compile_source(self._placed(config, proj, fn, layout), header, source)
+            if again.ok and self._judged_exact(proj, fn, again.obj, near=False):
+                return dataclasses.replace(again, layout=layout)
+        return result
+
+    def _judged_exact(self, proj, fn, obj: bytes, near: bool = True) -> bool | None:
+        """Whether a compiled function is the game's: True, False for a narrow miss (`near`: worth another layout,
+        or any miss without it), None for anything further off."""
+        cand, verdict, _ = self._evaluate(fn, proj, obj)
+        if cand is None:
+            return None
+        d = scoring.diff(self._target_obj(fn, proj), cand)
+        if (verdict if verdict is not None else d.bytes_match):
+            return True
+        return False if not near or d.percent >= self.NEAR_PERCENT else None
 
     @staticmethod
-    def _placed(config, proj, fn):
+    def _placed(config, proj, fn, layout: str | None = None):
         """The compiler set up for a function at its address: its console's prelude for it (Console.compile_prelude:
-        Linux puts it at its game offset modulo 16, which GCC 2.95's loop padding depends on)."""
+        Linux puts it at its game offset modulo 16, which GCC 2.95's loop padding depends on), or `layout`."""
         import dataclasses
 
         from . import consoles
 
         vram = fn["vram"] if fn is not None else None
-        extra = consoles.of(json.loads(proj["config"])).compile_prelude(vram) if vram is not None else ""
+        extra = layout if layout is not None else \
+            consoles.of(json.loads(proj["config"])).compile_prelude(vram) if vram is not None else ""
         return dataclasses.replace(config, prelude=config.prelude + extra) if extra else config
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:

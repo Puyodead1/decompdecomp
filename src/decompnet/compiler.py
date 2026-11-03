@@ -105,6 +105,7 @@ class CompileResult:
     obj: bytes | None
     log: str
     language: str = "c"  # "c++" when it compiled only as C++ (see compile_source)
+    layout: str = ""  # the console's other prelude it matched with (Console.compile_layouts), "" for its usual one
 
 
 def _sandbox_mode(cfg: CompilerConfig) -> str:
