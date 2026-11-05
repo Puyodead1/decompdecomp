@@ -9,8 +9,10 @@ Two uses:
 - its headers for every compile (Network._compile, project.compiler_config's `library_includes`): mounted read-only
   in the sandbox and searched after the game's own header, never copied (boost's are thousands of files), so C can
   `#include <boost/shared_ptr.hpp>` as the game's did;
-- match_libraries: every source file compiled with the game's compiler (and its flags, or a library's own in
-  libs/<name>/decompdecomp-flags.txt), and every function it defines linked at the game's address by the judge: one
+- match_libraries: every source file compiled with the game's compiler, with the builds the library may have had
+  (its own configure's flags first, from libs/<name>/decompdecomp-flags.txt, then the console's guesses: a 2008
+  program's libtheora was its configure's -O3 -fomit-frame-pointer...), and every function it defines linked at the
+  game's address by the judge: one
   that comes out byte for byte is the library's code, set aside as such (as a PC game's runtime library is), with
   the file that proved it. Its C isn't the game's to write: it's the library's, the same file every game uses.
 """
@@ -29,7 +31,7 @@ FRUITLESS = 2  # flag sets tried on a file, after one worked for its library, th
 # files of a library each tried with every flag set while none has worked: then only the first set (a library the
 # game uses little of, as one it loads as a shared library: 391 of Ogre's files took over an hour)
 EXPLORED = 6
-FLAGS_FILE = "decompdecomp-flags.txt"  # a library's own flags (and -D defines), one line, replacing the game's
+FLAGS_FILE = "decompdecomp-flags.txt"  # a library's own build's flags (and -D defines), one line: tried first
 SOURCES = (".c", ".cc", ".cpp", ".cxx")
 HEADERS = (".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp")
 INCLUDE_NAMES = ("include", "includes", "inc", "src")  # where a library keeps the headers its users include
@@ -132,7 +134,8 @@ class LibraryMixin:
             own_flags = (library / FLAGS_FILE).read_text(encoding="utf-8").split() \
                 if (library / FLAGS_FILE).is_file() else None
             # a library's own build had flags of its own: each set is tried, the ones that make its functions first
-            variants = [own_flags] if own_flags is not None else console.library_flags(cfg["compiler"]["flags"])
+            variants = [own_flags] if own_flags is not None else []  # (the library's own build first, if known)
+            variants += [v for v in console.library_flags(cfg["compiler"]["flags"]) if v not in variants]
             wins = {i: 0 for i in range(len(variants))}
             files = library_sources(library)
             own = [str(d.resolve()) for d in include_dirs(library)]

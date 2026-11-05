@@ -214,6 +214,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   every compile. On Demo Quest of 2008, zlib's source set aside 56 of its 57 functions. Left: a whole-file compile
   puts a function's strings beside its file's others, so a function with strings (zlibVersion) isn't taken; header-
   only template code (boost, the C++ library) instantiated in the game's own files isn't matched from its source yet.
+  On a 2008 C++ program: 5,245 functions (Ogre's and boost's code in its files, luabind, Lua, OIS, TinyXML, libogg,
+  libvorbis, libtheora, libpng, zlib), each library tried with its own builds (-O0 -march=amdfam10 in its tree, its
+  configure's flags in decompdecomp-flags.txt). Left: position-independent code (-fPIC: a library's objects for a
+  shared library, 143 functions there, libpng's), whose GOT relocations the x86 judge doesn't link yet.
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.
