@@ -5,6 +5,8 @@ license, ../zlib-n64), compiled the way Linux games of
 keeps its symbol table and debug information, as such games shipped.
 
     uv run python projects/demo-linux/build.py    ->  build/demoquest (+ build/demo.json for tests/test_consoles.py)
+    uv run python projects/demo-linux/build.py gcc-4.3.2-linux   ->  build-gcc-4.3.2-linux/demoquest: the same game as
+        a program of 2008 (Debian 5.0's GCC 4.3.2 at -O2 -g, DWARF), for tests/test_linux.py
 
 Needs the pinned gcc-2.95.3-linux toolchain and its 32-bit runtime; they install on first use (free software). The
 compiler runs in the app's sandbox, with that runtime, as every compile of the app does.
@@ -31,8 +33,8 @@ TOOLCHAIN = "gcc-2.95.3-linux"
 PROGRAM = "demoquest"
 
 
-def run(cfg, argv: list[str]) -> None:
-    res = compiler.run_in(cfg, BUILD, argv, timeout=300)
+def run(cfg, argv: list[str], build: Path = BUILD) -> None:
+    res = compiler.run_in(cfg, build, argv, timeout=300)
     if res.returncode != 0:
         sys.exit(f"failed: {' '.join(argv)}\n{res.stdout}{res.stderr}")
 
@@ -46,33 +48,34 @@ def write_key(build: Path, program: Path) -> None:
     (build / "demo.json").write_text(json.dumps({"game": program.name, "symbols": symbols}, indent=1), encoding="utf-8")
 
 
-def main() -> None:
+def main(toolchain: str = TOOLCHAIN) -> None:
+    build = BUILD if toolchain == TOOLCHAIN else HERE / f"build-{toolchain}"
     missing = [str(p) for p in (DEMO / "main.c", DEMO / "libc.c", GAME / "game.c", GAME / "game.h") if not p.exists()]
     if missing:
         sys.exit("missing demo sources: " + ", ".join(missing))
-    if BUILD.exists():
-        shutil.rmtree(BUILD)
-    BUILD.mkdir()
+    if build.exists():
+        shutil.rmtree(build)
+    build.mkdir()
     for src in (DEMO / "main.c", DEMO / "libc.c", GAME / "game.c", GAME / "game.h"):
-        shutil.copy(src, BUILD / src.name)
+        shutil.copy(src, build / src.name)
     for folder in (ZLIB / "original", ZLIB / "sysinclude"):  # (zlib's own headers, and the few system ones it takes)
         for src in folder.glob("*.[ch]"):
-            if not (BUILD / src.name).exists():
-                shutil.copy(src, BUILD / src.name)
+            if not (build / src.name).exists():
+                shutil.copy(src, build / src.name)
     toolchains.ensure("runtime-i386", log=print)
-    tc = toolchains.ensure(TOOLCHAIN, log=print)
-    cfg = compiler_config(BUILD, {"compiler": {"toolchain": TOOLCHAIN, "flags": ["-O2", "-g"]}})
+    tc = toolchains.ensure(toolchain, log=print)
+    cfg = compiler_config(build, {"compiler": {"toolchain": toolchain, "flags": ["-O2", "-g"]}})
     objs = []
     for stem in ("main", "libc", "game", *ZLIB_UNITS):
         argv = [a.replace("{src}", f"{stem}.c").replace("{obj}", f"{stem}.o").replace("{include}", ".") for a in cfg.cmd]
-        run(cfg, argv)
+        run(cfg, argv, build)
         objs.append(f"{stem}.o")
     # no C runtime: the demo's main is its entry, as the N64 and GBA builds' are; the symbol table and STABS stay
     run(cfg, ["/bin/sh", "-c", f'LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" exec "{tc}/binutils/usr/bin/ld" '
-                               f'-m elf_i386 -e main -o {PROGRAM} {" ".join(objs)}'])
-    write_key(BUILD, BUILD / PROGRAM)
-    print(f"built build/{PROGRAM} ({(BUILD / PROGRAM).stat().st_size} bytes)")
+                               f'-m elf_i386 -e main -o {PROGRAM} {" ".join(objs)}'], build)
+    write_key(build, build / PROGRAM)
+    print(f"built {build.name}/{PROGRAM} ({(build / PROGRAM).stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
-    main()
+    main(*sys.argv[1:2])

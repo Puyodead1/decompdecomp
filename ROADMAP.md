@@ -44,7 +44,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ over source files | ✓ | — | — | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ (named by RTTI where the program has it) | ✓ (RTTI where the program has it) | — | ✓ (x86 reader; the demo is C) | — |
 | Struct layouts from loads and stores (`guess_struct`) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ | ✓ | — | ✓ (and the STABS prototypes) | — |
-| The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS, DWARF 1; the compiler of each object file | names (types and prototypes: —) | ✓ symbol table, DWARF 1 | — | — | ✓ PDB (Visual C++ 6.0's PDB 2.0, MSF 7.00), linker map, COFF symbols | — (an XBE has none) | — | ✓ symbol table, STABS: source files, types, prototypes, locals | — |
+| The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS, DWARF 1; the compiler of each object file | names (types and prototypes: —) | ✓ symbol table, DWARF 1 | — | — | ✓ PDB (Visual C++ 6.0's PDB 2.0, MSF 7.00), linker map, COFF symbols | — (an XBE has none) | — | ✓ symbol table, STABS or DWARF 2+: source files, types, prototypes, locals | — |
 | Twins across your games | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ (between PC projects) | ✓ (as PC's; not run on two Xbox games yet) | — | ran (a game's programs shared only functions under 32 bytes) | — |
 | Shared knowledge (two models agree) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Tidy each source file once it's polished (shared types in one header, names, dead declarations) | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
@@ -181,7 +181,7 @@ Where to start on a gap:
 
 ## Linux (32-bit x86) programs (beta)
 
-A console for Linux programs of 2000-2002 (an i386 ELF executable from the user's copy), ROM mode: functions split by
+A console for Linux programs of 2000-2009 (an i386 ELF executable from the user's copy), ROM mode: functions split by
 the program's own symbol table, judged by linking the agents' C at its address (arch/x86_link.py), the debug
 information's STABS read for source files, prototypes and locals (consoles/linux/debuginfo.py, through the PS2's
 reader), Slackware 8.0's GCC 2.95.3 and binutils as the pinned compiler (gcc-2.95.3-linux, on runtime-i386). On a
@@ -191,7 +191,18 @@ The demo program (projects/demo-linux: Demo Quest and zlib at -O2 -g, unstripped
 table's Linux column; split_function, report_boundary, the rebuildable export (each function rebuilt where it lies in
 a copy of the program, consoles/linux/export.py), Ghidra's drafts for briefs, autopilot and redraft
 (consoles/linux/drafts.py) and rooms work. On the 2001 game, autopilot matched 574 of its 1,590 functions from
-Ghidra's drafts before any agent started. Left to do:
+Ghidra's drafts before any agent started.
+
+Programs of 2008-2009: Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's headers (gcc-4.3.2-linux, its
+distribution's own packages, pinned and checked against Debian's index), picked by the GCC version the program's
+.comment names (Debian's, Ubuntu's or GCC's own build of it). GCC 3 and newer write DWARF, not STABS: the DWARF 2+
+reader (consoles/ps2/dwarf2.py, on pyelftools) gives the same source files, types, prototypes and locals, following a
+function GCC also inlined to the abstract entry that has its name and parameters. Demo Quest built with it
+(projects/demo-linux/build.py gcc-4.3.2-linux, -O2 -g) imports with its header from DWARF, every game function
+matches from its C (the three that inline the file's earlier functions, with those in the C as the game's file had
+them), and the export rebuilds it byte for byte. Left to do:
+- DWARF for the other consoles that read debug information (a PS2 game built by a later GCC is told its DWARF isn't
+  read: consoles/ps2/debuginfo.py UNREAD_SECTIONS), with their processor's register numbers.
 - Ghidra's drafts with the program's own types: its STABS read into Ghidra (now the drafts treat a struct global as
   words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more

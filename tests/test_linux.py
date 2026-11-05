@@ -386,3 +386,91 @@ def test_a_jump_its_file_made_long_matches_where_the_code_before_it_grew():
     assert extract_function(res.obj, "f").code == grown.code and res.layout == layout
     res = judged(plain)
     assert extract_function(res.obj, "f").code == plain.code and res.layout == ""
+
+
+# ---------------------------------------------------------------------------------------------- GCC 4.3.2 and DWARF
+
+GCC43 = "gcc-4.3.2-linux"
+
+
+def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
+    """A program's .comment names its GCC as its distribution built it: Debian's, Ubuntu's or GCC's own release.
+    The version picks the compiler (an exact match of the string took only Debian's); one none is falls back."""
+    linux = consoles.get("linux")
+    for said in ("GCC: (Debian 4.3.2-1.1) 4.3.2", "GCC: (Ubuntu 4.3.2-1ubuntu12) 4.3.2", "GCC: (GNU) 4.3.2"):
+        assert linux.default_compiler({"compiler_guess": said}, "") == GCC43
+    assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 2.95.3 20010315 (release)"}, "") == "gcc-2.95.3-linux"
+    assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 3.3.6"}, "") == "gcc-2.95.3-linux"
+    assert linux.default_compiler({}, "") == "gcc-2.95.3-linux"
+
+
+@pytest.fixture(scope="module")
+def demo43(tmp_path_factory):
+    """Demo Quest built -g (DWARF) with Debian 5.0's GCC 4.3.2 (projects/demo-linux/build.py gcc-4.3.2-linux)."""
+    import json
+    import subprocess
+    import sys
+
+    from decompnet import toolchains
+
+    from .test_consoles import ROOT, ZLIB
+
+    if toolchains.installed(GCC43) is None or not ZLIB.exists():
+        pytest.skip(f"needs {GCC43} and zlib (projects/zlib-n64/prepare.py)")
+    folder = ROOT / "projects" / "demo-linux"
+    build = folder / f"build-{GCC43}"
+    if not (build / "demo.json").exists():
+        subprocess.run([sys.executable, str(folder / "build.py"), GCC43], check=True)
+    return build / json.loads((build / "demo.json").read_text())["game"], tmp_path_factory
+
+
+def test_a_programs_dwarf_gives_its_header_prototypes_and_locals(demo43):
+    """GCC 4.3 writes DWARF with -g, not STABS: its import read only the symbol table, and agents saw no types. The
+    DWARF reader gives the same as STABS do: the structs and enums, each function's prototype (a function GCC also
+    inlined has its name and parameters in the abstract entry its copy points to), where its parameters and locals
+    live, and the line it starts on."""
+    info = debuginfo.read(demo43[0].read_bytes(), set())
+    assert not info.unread and "game.c" in info.sources
+    assert "struct Entity { /* 0x1C bytes */" in info.header and "s32 hp; /* 0x18 */" in info.header
+    assert "ENTITY_DRAGON = 4," in info.header
+    by_name = {f["prototype"].split("(")[0].split()[-1].lstrip("*"): f for f in info.functions.values()}
+    assert by_name["abs_s32"]["prototype"] == "s32 abs_s32(s32 v)"  # (inlined too: its abstract entry's)
+    assert by_name["entity_spawn"]["prototype"] == "Entity *entity_spawn(s16 type, s32 x, s32 y)"
+    assert "x in the stack, frame offset +0xc" in by_name["entity_spawn"]["params"]
+    assert by_name["checksum_save"]["locals"] == ["u32 sum (ebx)", "s32 i (ecx)"]
+    assert by_name["lerp"]["line"] > 0 and by_name["lerp"]["source"] == "game.c"
+
+
+def test_a_program_gcc_4_3_built_matches_from_its_c_and_rebuilds(demo43):
+    """Demo Quest as a program of 2008: the import takes GCC 4.3.2 by the .comment and the header from DWARF, every
+    function of the game matches from its own C (the #defines no debug information keeps given, and for the three
+    that inline the functions before them in the file, those functions in the C too, as the game's file had them),
+    and the rebuildable export makes the program again byte for byte (a C file's other functions and globals are
+    linked at the program's addresses, as the judge links them)."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    program, factory = demo43
+    work = factory.mktemp("gcc43")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    assert net.cfg(net._project(slug))["compiler"]["toolchain"] == GCC43
+    game = DEMO_GAME.read_text()
+    defines = "".join(f"{line}\n" for line in (DEMO_GAME.parent / "game.h").read_text().splitlines()
+                      if line.startswith("#define"))
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    names = ("abs_s32", "rng_next", "lerp", "add_score", "count_alive_entities", "clamp_s32", "player_take_damage",
+             "entity_update_physics", "checksum_save", "entity_default_hp", "entity_collides", "entity_spawn",
+             "game_tick")
+    for name in names:
+        src = csource.get(game, name)
+        if name in ("entity_collides", "entity_spawn", "game_tick"):  # (GCC 4.3 inlines what the file has before)
+            before = game[:game.index(src.strip().splitlines()[0])]
+            src = re.sub(r"#include [^\n]*\n", "", before) + src
+        net.claim(agent, slug, name)
+        out = net.attempt(agent, name, defines + src, slug)
+        assert out["matched"], (name, out["text"][:600])
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"] and res["matched"] == len(names), res["log"][-2000:]

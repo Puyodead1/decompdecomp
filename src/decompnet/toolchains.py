@@ -371,7 +371,10 @@ def _extract(archive: Path, dest: Path, subdir: str | None, keep: dict[str, str]
         if archive.name.endswith(".deb"):
             with tempfile.TemporaryDirectory(dir=dest.parent) as raw:
                 with tarfile.open(_deb_data(archive, Path(raw))) as t:
-                    t.extractall(tmp, filter="data")
+                    # (a distribution's package links into the system it installs to, /lib/libgcc_s.so.1: outside the
+                    # toolchain, of no use in the sandbox, and refused by the "data" filter, so left out)
+                    t.extractall(tmp, members=[m for m in t.getmembers() if take(m.name.removeprefix("./"))
+                                               and not (m.issym() and m.linkname.startswith("/"))], filter="data")
         elif archive.name.endswith(".zip"):
             import zipfile
 

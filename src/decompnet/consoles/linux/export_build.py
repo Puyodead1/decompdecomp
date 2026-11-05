@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
+FUNCTIONS = {f["name"]: f["vram"] for f in B["functions"]}  # (the program's functions, where it has them)
 ALIGN = 16  # (GCC 2.95 aligns an object's .text, its loops' .p2align 4: a function sits at its address modulo 16)
 
 try:
@@ -112,13 +113,15 @@ def build_function(fn: dict, data: bytes) -> bytes:
     obj = work / f"{fn['name']}.o"
     obj.write_bytes(res.obj)
     elf = ELFFile(BytesIO(res.obj))
-    defined = {s.name for s in elf.get_section_by_name(".symtab").iter_symbols()
-               if s.name and s["st_shndx"] != "SHN_UNDEF"}
     # where the function sits in its .text: its offset modulo 16, after the code its prelude puts before it
     pad = next(s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == fn["name"])
     own = "".join(f"  .own{i} 0x{addr:X} : {{ {obj.name}({section}) }}\n"
                   for i, (section, addr) in enumerate(own_data(elf, data, fn, pad).items()))
-    symbols = "".join(f"{name} = 0x{addr:X};\n" for name, addr in B["symbols"].items() if name not in defined)
+    # every name but the function's own at the program's address, those the C defines too: a C file that defines the
+    # functions and globals before it (GCC 4.3 inlines them, as the game's file did) calls and reads the program's,
+    # as the judge links it (a static the C defines is local to its object: the assignment doesn't touch it)
+    program = {**B["symbols"], **FUNCTIONS}
+    symbols = "".join(f"{name} = 0x{addr:X};\n" for name, addr in program.items() if name != fn["name"])
     (work / f"{fn['name']}.ld").write_text(
         f"SECTIONS {{\n  .text 0x{fn['vram'] - pad:X} : {{ {obj.name}(.text) }}\n{own}"
         f"  .rest 0x70000000 : {{ *(.rodata) *(.data) *(.bss) *(COMMON) }}\n"
