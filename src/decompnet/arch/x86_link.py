@@ -145,6 +145,7 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
             else:
                 problem(f"relocation type {rtype} isn't supported yet")
 
+    _local_calls(elf, shndx, start, code, tcode, target, symbols, name, problem)
     _verify_own(elf, elf.get_section_by_name(".symtab"), name, shndx, start, target, symbols, read, own, problem,
                 abs32=R_386_32, thumb=False)
     placements: dict[str, dict[int, int]] = {}
@@ -154,3 +155,43 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
     exact = not problems and linked == tcode
     # (its references are the game's own addresses now, checked above: the diff shows them as the original's)
     return LinkResult(FunctionObj(name, "x86", False, linked, []), exact, problems, placements)
+
+
+CALL_REL32, JMP_REL32 = 0xE8, 0xE9
+
+
+def _local_calls(elf, shndx: int, start: int, code: bytearray, tcode: bytes, target: X86Target, symbols, name: str,
+                 problem) -> None:
+    """A call (or a tail jump) to another function of the same object's code carries no relocation: the assembler
+    resolved it by their distance in the object, which isn't theirs in the game. Linked as the linker would have
+    placed them, it goes to the game's function of that name: where the original's goes there too, its bytes are
+    the original's. (A library's file compiled whole had every call to its static helpers wrong: Lua's f_Ccall.)"""
+    import capstone
+
+    symtab = elf.get_section_by_name(".symtab")
+    if symtab is None:
+        return
+    functions = {sym["st_value"]: sym.name for sym in symtab.iter_symbols()
+                 if sym["st_shndx"] == shndx and sym["st_info"]["type"] == "STT_FUNC" and sym.name}
+    relocated = set()
+    for rsec in elf.iter_sections():
+        if isinstance(rsec, RelocationSection) and rsec["sh_info"] == shndx:
+            relocated.update(rel["r_offset"] - start for rel in rsec.iter_relocations())
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    for ins in md.disasm(bytes(code), 0):
+        at = ins.address
+        if ins.size != 5 or code[at] not in (CALL_REL32, JMP_REL32) or at + 1 in relocated or at + 5 > len(tcode):
+            continue
+        inner = start + at + 5 + int.from_bytes(code[at + 1:at + 5], "little", signed=True)
+        callee = functions.get(inner)
+        if callee is None or callee == name:  # (its own code: a loop's jump, or a call of itself, is as it is)
+            continue
+        base = symbols.resolve(callee)
+        dest = (target.vram + at + 5 + int.from_bytes(tcode[at + 1:at + 5], "little", signed=True)) & 0xFFFFFFFF
+        if base is None:
+            problem(f"`{callee}` is not a known function. Call it by the name the game has (its symbol), or give "
+                    f"that address this name first with rename_symbol.")
+        elif base != dest:
+            problem(f"you call {callee} where the original calls {symbols.label(dest)}")
+        else:
+            code[at + 1:at + 5] = tcode[at + 1:at + 5]

@@ -19,7 +19,7 @@ from .common import parse_ranges
 # Flag search (search_flags): the flags of each compiler family worth trying, at most MAX_FLAG_VARIANTS compiles
 FLAG_FAMILIES = (("ido", "ido"), ("mwcps2", "mwcps2"), ("mwccpsp", "mwcps2"), ("ee-gcc", "ee"), ("gcc", "gcc"),
                  ("psp-gcc", "gcc"), ("pspsnc", "snc"))
-FLAG_LEVELS = {"gcc": ("-O1", "-O2", "-O3", "-Os"), "ee": ("-O1", "-O2", "-O3", "-Os"),
+FLAG_LEVELS = {"gcc": ("-O0", "-O1", "-O2", "-O3", "-Os"),  # (-O0: a debug build's files, as a 2008 program's -g ones) "ee": ("-O1", "-O2", "-O3", "-Os"),
                "ido": ("-O1", "-O2", "-O3", "-g"), "mwcps2": ("-O1", "-O2", "-O3", "-O4"),
                "snc": ("-O0", "-O1", "-O2", "-O4")}  # SNC: -O3 builds as -O2 and -O5 as -O4; it has no -Os
 FLAG_EXTRAS = {"gcc": ("-fno-strength-reduce", "-fno-schedule-insns"),

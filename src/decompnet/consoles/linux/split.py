@@ -114,6 +114,13 @@ def split(path: Path, units: dict[int, str] | None = None, log=print) -> SplitRe
         if shndx == 0 and kind == "STT_FUNC":  # an import: its PLT stub
             named.setdefault(name, addr)
         by_addr.setdefault(addr, name)
+    # the imports the symbol table gives no address: the linker writes a stub's address only for a function whose
+    # address the program takes (385 of a 2008 program's 1,448), so the others (strlen, called from Lua) were
+    # unknown and no call to them matched. Each .rel.plt entry is one stub, in order after PLT0.
+    for name, addr in plt_stubs(elf).items():
+        if name not in named:
+            named[name] = addr
+            by_addr.setdefault(addr, name)
 
     def label(addr: int, exact: bool = False) -> str | None:
         if addr in by_addr:
@@ -147,6 +154,23 @@ def split(path: Path, units: dict[int, str] | None = None, log=print) -> SplitRe
     log(f"found {len(functions)} functions and {len(found)} globals by the program's own symbols; "
         f"{len(named)} library functions it calls through the PLT")
     return SplitResult(functions, found, segments, named, path.parent / "symbols.txt", "", "", "linux", 0, path.name)
+
+
+PLT_ENTRY = 16  # i386: an entry of the PLT (and PLT0 before them), 16 bytes
+
+
+def plt_stubs(elf) -> dict[str, int]:
+    """Every import's PLT stub by its name: the n-th R_386_JUMP_SLOT of .rel.plt is the n-th entry after PLT0."""
+    rel, plt = elf.get_section_by_name(".rel.plt"), elf.get_section_by_name(".plt")
+    if rel is None or plt is None or not hasattr(rel, "iter_relocations"):
+        return {}
+    symbols = elf.get_section(rel["sh_link"])
+    out: dict[str, int] = {}
+    for n, r in enumerate(rel.iter_relocations()):
+        sym = symbols.get_symbol(r["r_info_sym"])
+        if sym is not None and sym.name:
+            out.setdefault(re.sub(r"\W", "_", sym.name.split("@")[0]), plt["sh_addr"] + PLT_ENTRY * (n + 1))
+    return out
 
 
 def compiler_of(data: bytes) -> str:

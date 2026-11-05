@@ -73,3 +73,7 @@ Libraries the program has built in (Lua, boost...)
   library code already, and its headers are in every compile: `#include <boost/shared_ptr.hpp>` works. The shared
   header has the program's types too, so in C a library header that defines the same ones (`typedef ... Byte`)
   clashes with it: include one only for what the shared header lacks, or in C++.
+- A program's files weren't all built alike. A debug build's files (often those with debug information) are -O0:
+  every use of a parameter reloads it from its stack slot (`mov eax, [ebp+8]` again and again) and nothing stays in
+  esi or edi. Code like that won't match at -O2: call search_flags, which tries -O0 and the build machine's processor
+  (-march=amdfam10, k8, core2), and suggest the file's range with the flags that match.

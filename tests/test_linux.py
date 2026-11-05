@@ -620,3 +620,54 @@ def test_a_librarys_own_source_sets_its_functions_aside_and_its_headers_are_in_e
     net.claim(agent, slug, "abs_s32")
     out = net.attempt(agent, "abs_s32", "#include <zdemo.h>\ns32 abs_s32(s32 v) { return ZDEMO_SIGN(v); }\n", slug)
     assert out["matched"], out["text"][:500]
+    # a reimport replaces the project's folder: the library sources the user put in it stay
+    net.reimport_rom(slug, program, confirmed=True, name=program.name, log=lambda *_: None)
+    assert (lib / "zlib.h").is_file() and net.scan_libraries(slug)["libraries"] == ["zlib-1.1.4"]
+
+
+def test_a_call_to_a_static_helper_of_the_same_object_goes_to_the_games_function_of_that_name(tmp_path):
+    """A call to a static function the same object defines carries no relocation: the assembler resolved it by the
+    two functions' distance in the object, never theirs in the game, so C with its helper beside it (a library's
+    file compiled whole) couldn't match. The judge links it as the linker would: to the game's function of that
+    name, and only there."""
+    import types
+
+    from decompnet import toolchains
+    from decompnet.compiler import compile_source
+    from decompnet.elfobj import _function_symbols
+    from decompnet.project import compiler_config
+
+    if toolchains.installed(GCC43) is None:
+        pytest.skip(f"needs {GCC43}")
+    cfg = compiler_config(tmp_path, {"compiler": {"toolchain": GCC43, "flags": ["-O0"]}})
+    res = compile_source(cfg, "", "static int helper(int v) { return v * 3; }\nint outer(int v) { return helper(v) + 1; }\n")
+    assert res.ok, res.log
+    from elftools.elf.elffile import ELFFile
+
+    elf = ELFFile(__import__("io").BytesIO(res.obj))
+    shndx, start, size = _function_symbols(elf)["outer"]
+    code = bytearray(elf.get_section(shndx).data()[start:start + size])
+    at = code.index(0xE8)
+    vram, helper = 0x8050000, 0x8061230  # where the game has them
+    game = bytearray(code)
+    game[at + 1:at + 5] = (helper - (vram + at + 5)).to_bytes(4, "little", signed=True)
+    symbols = types.SimpleNamespace(resolve=lambda n: {"helper": helper, "outer": vram}.get(n),
+                                    label=lambda a: f"0x{a:08X}")
+    linked = x86_link.link(res.obj, "outer", x86_link.X86Target("outer", vram, bytes(game)), symbols, lambda *a: None)
+    assert linked.exact, linked.problems
+    elsewhere = types.SimpleNamespace(resolve=lambda n: {"helper": helper + 0x40}.get(n), label=lambda a: hex(a))
+    wrong = x86_link.link(res.obj, "outer", x86_link.X86Target("outer", vram, bytes(game)), elsewhere, lambda *a: None)
+    assert not wrong.exact and any("you call helper" in p for p in wrong.problems)
+
+
+def test_flags_a_debug_build_or_another_machine_used_are_tried():
+    """A 2008 program's Lua was built -O0 for the build machine's AMD processor, its TinyXML -O0, its libogg -O2:
+    library matching tries each library's possible builds (the game's flags first), and search_flags tries -O0 and
+    the build machine's -march for an agent's C."""
+    from decompnet.app.engine.compilers import CompilerMixin
+
+    linux = consoles.get("linux")
+    variants = linux.library_flags(["-O2"])
+    assert variants[0] == ["-O2"] and ["-O0", "-march=amdfam10"] in variants and ["-O0"] in variants
+    tried = CompilerMixin.flag_variants(None, "gcc-4.3.2-redhat-linux", ["-O2"], linux.flag_extras)
+    assert ["-O0"] in tried and ["-O2", "-march=amdfam10"] in tried
