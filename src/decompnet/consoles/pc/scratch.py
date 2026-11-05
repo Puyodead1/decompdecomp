@@ -124,6 +124,9 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # (`call [__imp__strncpy]`). 2015 on: vcruntime140 and the Universal CRT (ucrtbase, through api-ms-win-crt-*)
 C_RUNTIME_DLL = re.compile(r"(msvcrt|msvc[rp]\d*(_\w+)?|vcruntime\d+(_\d+)?|ucrtbase|api-ms-win-crt-[\w-]+)\.dll", re.I)
 NORETURN_TRAP_FROM = (14, 0)  # Visual C++ 2015 on puts an int3 after a call that never returns, in the function
+# ... and so did 7.0 and 8.0 (three games of theirs: 78 functions ending in a call before an int3, all open, 4 matched at
+# once with it); 9.0 to 2013 are left as upstream found them: padding
+OLDER_TRAPS = ((7, 0), (9, 0))
 DLL_RUNTIME_FROM = (14, 0)  # the games built with /MD when they import their C runtime: 2015 on (older ones: later)
 
 
@@ -912,6 +915,7 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
     md.detail = True
     built = describe(pe.data)
     traps = built.version is not None and _version_key(built.version) >= NORETURN_TRAP_FROM
+    older_traps = _older_traps(built)  # (7.0 and 8.0 have them too, by the call: _noreturn_int3)
     rows: dict[int, dict] = {}
     for r in found:
         s = pe.section_at(r["entry"])
@@ -938,7 +942,7 @@ def analyse(pe: PE, found: list[dict]) -> list[Function]:
                 [i.mnemonic for i in _disasm(md, pe.read(start, code_end - start), start)][-1:] == ["call"]:
             # (a call can end a function only if it never returns: the int3 after it is the compiler's, not padding)
             code_end = end = end + 1
-        elif end == code_end and _noreturn_int3(md, pe, start, code_end, limit):  # (older versions: by the call)
+        elif older_traps and end == code_end and _noreturn_int3(md, pe, start, code_end, limit):
             code_end = end = code_end + 1
         gap = pe.read(end, limit - end)
         rest = gap.lstrip(b"\x90").lstrip(b"\xcc\x00")
@@ -1410,6 +1414,12 @@ def _noreturn_int3(md, pe: PE, start: int, code_end: int, limit: int) -> bool:
     return last is not None and last.mnemonic == "call" and last.address + last.size == code_end
 
 
+def _older_traps(built) -> bool:
+    """Whether a program's Visual C++ is one before 2015 that ends a function with an int3 after its last call that
+    doesn't return (OLDER_TRAPS)."""
+    return built.version is not None and OLDER_TRAPS[0] <= _version_key(built.version) < OLDER_TRAPS[1]
+
+
 def take_noreturn_int3s(root: Path, version: str, keep: set[str] = frozenset()) -> int:
     """A project made before analyse took the int3 a function ending in a call that doesn't return has
     (_noreturn_int3) gets it now; not a matched function (`keep`). Returns how many grew."""
@@ -1417,8 +1427,13 @@ def take_noreturn_int3s(root: Path, version: str, keep: set[str] = frozenset()) 
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
     names = {f.addr: f.name for f in functions}
+    builds = {m: describe(p.data) for m, p in pes.items()}  # (the Visual C++ versions that have the int3)
+    traps = {m: _older_traps(b) or b.version is not None and _version_key(b.version) >= NORETURN_TRAP_FROM
+             for m, b in builds.items()}
     grown = 0
     for k, f in enumerate(functions):
+        if not traps[unit_module(f.unit)]:
+            continue
         pe = pes[unit_module(f.unit)]
         sec = pe.section_at(f.addr)
         end = f.addr + f.size

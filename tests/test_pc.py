@@ -1714,11 +1714,11 @@ def test_a_function_found_in_a_gap_keeps_its_last_instruction_whole():
 
 
 def test_the_int3_after_a_call_that_doesnt_return_is_its_functions():
-    """Visual C++ ends a function whose last instruction is a call that doesn't return (ExitProcess) with an int3 of
-    its own: taken for padding, the function was a byte short of what its C compiles to, on three PC games 17 of them,
-    none matched. Padding after a `ret` stays padding."""
+    """Visual C++ 7.0 and 8.0 end a function whose last instruction is a call that doesn't return (ExitProcess) with
+    an int3 of their own: taken for padding, the function was a byte short of what its C compiles to, on three PC
+    games 17 of them, none matched. Padding after a `ret` stays padding."""
     code = PUSH_FRAME + bytes.fromhex("e800000000") + b"\xcc" + bytes.fromhex("c3") + b"\xcc" * 3 + bytes.fromhex("c3")
-    pe = scratch_pe.read_pe(_tiny_exe(code))
+    pe = scratch_pe.read_pe(_built_by(_tiny_exe(code), (8, 0)))
     found = scratch_pe.analyse(pe, [_row(TEXT, TEXT + len(PUSH_FRAME) + 5), _row(TEXT + len(PUSH_FRAME) + 6, 0),
                                     _row(TEXT + len(PUSH_FRAME) + 10, 0)])
     assert [f.size for f in found] == [len(PUSH_FRAME) + 6, 1, 1]
@@ -1764,16 +1764,18 @@ def test_the_padding_the_linker_aligns_every_function_with_doesnt_end_a_source_f
     assert files([aligned] * 300) == [list(range(0, 0x1000, 0x10)), list(range(0x1000, 0x12C0, 0x10))]  # (4 KiB)
 
 
-def _project(tmp_path: Path, program: bytes, rows: list[dict], unit_bytes: int = 0x1000) -> Path:
-    """A PC project's config and delinked objects for a hand-made program, as create writes them (no compiler)."""
+def _project(tmp_path: Path, program: bytes, rows: list[dict], unit_bytes: int = 0x1000, linker=None) -> Path:
+    """A PC project's config and delinked objects for a hand-made program, as create writes them (no compiler);
+    `linker`: the Visual C++ its optional header names (_built_by)."""
     root = tmp_path / "proj"
     (root / "orig").mkdir(parents=True)
-    (root / "orig" / "game.exe").write_bytes(_tiny_exe(program))
-    pe = scratch_pe.read_pe(_tiny_exe(program))
+    exe = _built_by(_tiny_exe(program), linker) if linker else _tiny_exe(program)
+    (root / "orig" / "game.exe").write_bytes(exe)
+    pe = scratch_pe.read_pe(exe)
     groups = {}
     for f in scratch_pe.analyse(pe, rows):  # (one source file per function, to move pieces between them)
         groups[f"text_{f.addr:08X}"] = [scratch_pe._entry(pe, f)]
-    info = {"exe": "orig/game.exe", "sha1": hashlib.sha1(_tiny_exe(program)).hexdigest(), "image_base": 0x400000,
+    info = {"exe": "orig/game.exe", "sha1": hashlib.sha1(exe).hexdigest(), "image_base": 0x400000,
             "units": groups}
     (root / "config" / "game").mkdir(parents=True)
     (root / "config" / "game" / "functions.json").write_text(json.dumps(info))
@@ -2096,7 +2098,8 @@ def test_a_far_call_is_not_taken_for_a_call_to_another_function(tmp_path):
 def test_a_project_made_before_gets_the_int3_after_a_call_that_doesnt_return(tmp_path):
     program = PUSH_FRAME + bytes.fromhex("e800000000") + b"\xcc" + PUSH_FRAME + bytes.fromhex("5dc3")
     second = TEXT + len(PUSH_FRAME) + 6
-    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(PUSH_FRAME) + 5), _row(second, second + 3)])
+    root = _project(tmp_path, program, [_row(TEXT, TEXT + len(PUSH_FRAME) + 5), _row(second, second + 3)],
+                    linker=(8, 0))
     config = root / "config" / "game" / "functions.json"
     info = json.loads(config.read_text())
     first = info["units"]["text_00401000"][0]
@@ -2497,6 +2500,8 @@ def _project_made_before(tmp_path, monkeypatch, level: int, tools: dict[str, str
     from decompnet.consoles.pc import WindowsPC
     from decompnet.forks.project import Unit
 
+    # (its compiler's pack, which each step builds with, as on a machine that has it: the delinked objects stand in)
+    monkeypatch.setattr(scratch_pe, "compiler_missing", lambda root: None)
     framed = [FRAME_RET] * (scratch_pe.EH_STUB_GAP + 1)  # (the main body's end: no stub's shape in a row)
     program = head[0].ljust(0x30, b"\x90") + b"".join(framed + EH_STUBS)
     rows, at = list(head[1]), 0x401030
@@ -2593,7 +2598,7 @@ def test_a_project_made_before_2017s_rules_gets_them_at_start(tmp_path, monkeypa
     units = json.loads((root / "config" / "game" / "functions.json").read_text())["units"]["u"]
     assert units[0]["addr"] == TEXT and units[1]["addr"] == 0x401030  # (the catch block and the rest: in the first)
     assert [fn["name"] for fn in units if fn.get("generated")] == stubs
-    assert json.loads((root / ".decomp.wtf.json").read_text())["analysis"] == consoles.get("pc").ANALYSIS == 7
+    assert json.loads((root / ".decomp.wtf.json").read_text())["analysis"] == consoles.get("pc").ANALYSIS
     assert net.store.one("SELECT text FROM notes WHERE project_id=?", pid)["text"].startswith("decompdecomp joined")
 
 
