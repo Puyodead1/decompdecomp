@@ -382,6 +382,7 @@ async function renderProjectSettings() {
   if (!ov) return;
   const fork = ov.kind === "fork";
   $("reimportGame").hidden = fork && !ov.reimports;  // (a PC project analyses its program again)
+  renderLibraries();
   // a fork's build sets its compilers, except where each source file has one (DS): then the same panel, with the
   // project's flags its build's and nothing for the ROM engine's survey to check
   $("compilerPanel").hidden = !(ov.compilers || []).length;
@@ -564,6 +565,39 @@ $("reimportBtn").onclick = async () => {
     renderProjectSettings();
     await refreshMap(true);
     toast(`Reimported ${plural(result.functions, "function")}; ${plural(result.matched, "matched function")} still match.`, "match");
+  } catch (e) {
+    showJobError(log, e.message);
+  } finally {
+    button.disabled = false;
+    work.hidden = true;
+  }
+};
+
+/* Library sources (app/engine/libraries.py): the libraries a game has built in, from their own source in the
+   project's libs/ folder; their headers go into every compile, and their functions are matched from it. */
+async function renderLibraries() {
+  const box = $("librariesBox");
+  if (!S.ov || S.ov.kind === "fork") { box.hidden = true; return; }
+  let r;
+  try { r = await api(`/api/libraries?slug=${S.slug}`); } catch { box.hidden = true; return; }
+  box.hidden = false;
+  $("librariesText").textContent = r.libraries.length
+    ? `Library sources in libs/: ${r.libraries.join(", ")}. Their headers are in every compile; matching compiles their source files with the game's compiler and sets aside each function they make byte for byte as library code.`
+    : "A library the game has built into it (Lua, boost...) can be matched from its own source: put each, as it was released, in a folder of its own in the project folder's libs/ (libs/lua-5.1.4), then match.";
+  $("librariesBtn").disabled = !r.libraries.length;
+}
+$("librariesBtn").onclick = async () => {
+  const button = $("librariesBtn"), log = $("librariesLog"), work = $("librariesWork");
+  button.disabled = true;
+  work.hidden = false;
+  showJobError(log, "");
+  try {
+    const { job } = await api("/api/libraries", { method: "POST", body: { slug: S.slug } });
+    const res = await followJob(job, log);
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    renderStats(S.ov);
+    await refreshMap(true);
+    toast(`${plural(res.found, "function")} set aside as library code.`, res.found ? "match" : undefined);
   } catch (e) {
     showJobError(log, e.message);
   } finally {

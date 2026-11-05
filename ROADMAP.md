@@ -208,6 +208,12 @@ whose .comment names it. Its functions keep their symbols as names (what the jud
 (`CRandStoryData::CRandStoryData()`, by the project's own c++filt: Linux.demangle) in the list and briefs. The header
 from DWARF declares a class's methods for C++ only, so a method is defined as the game's source did; on an 84 MB
 2008 C++ program (54,656 functions, 30,398 with DWARF) the header compiles as C and as C++. Left to do:
+- Libraries a program has built in, from their own source (app/engine/libraries.py): the project folder's libs/
+  holds each as released (libs/lua-5.1.4); Match library sources compiles every source file with the game's
+  compiler and sets aside each function it makes byte for byte as library code, and the libraries' headers are in
+  every compile. On Demo Quest of 2008, zlib's source set aside 56 of its 57 functions. Left: a whole-file compile
+  puts a function's strings beside its file's others, so a function with strings (zlibVersion) isn't taken; header-
+  only template code (boost, the C++ library) instantiated in the game's own files isn't matched from its source yet.
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.

@@ -81,6 +81,14 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
             cmd = [a.replace(f"{{tc:{dep}}}", where) for a in cmd]
     else:
         cmd = list(c["cmd"])
+    # the libraries the game has built in, from their own source in its libs/ folder (app/engine/libraries.py):
+    # their headers after the game's own, mounted read-only (never copied: boost's are thousands of files)
+    # (with -I, as a game's build had them: GCC counts a header from a system folder, -isystem, as the system's, and
+    # GCC 4.3 then orders a compare's operands otherwise. The Linux GCCs, which take headers from outside.)
+    for folder in cfg.get("library_includes", ()) if system_headers and not (vm or linux) else ():
+        path = str((root / folder).resolve())
+        ro_paths.append(path)
+        cmd += ["-I", path]
     return CompilerConfig(
         cmd=cmd,
         timeout=float(c.get("timeout", 15)),

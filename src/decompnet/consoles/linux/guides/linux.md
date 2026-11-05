@@ -67,3 +67,9 @@ C++ (a program built by Fedora's GCC 4.3.2, with classes)
 - The shared header declares the methods of the classes the debug information describes, for C++ only. A class it
   doesn't (no debug information, or one in a namespace) needs its methods declared: add them to the class in the
   header with edit_context, inside `#ifdef __cplusplus`, never as `virtual` (its vtable pointer is a member already).
+
+Libraries the program has built in (Lua, boost...)
+- When the project folder's libs/ has a library's own source, its functions that source makes are set aside as
+  library code already, and its headers are in every compile: `#include <boost/shared_ptr.hpp>` works. The shared
+  header has the program's types too, so in C a library header that defines the same ones (`typedef ... Byte`)
+  clashes with it: include one only for what the shared header lacks, or in C++.
