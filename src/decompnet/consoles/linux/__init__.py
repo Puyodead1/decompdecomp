@@ -1,4 +1,4 @@
-"""Linux (32-bit x86): games and programs built for Linux on PCs around 2000-2002, from the user's own copy of the
+"""Linux (32-bit x86): games and programs built for Linux on PCs from 2000 to 2009, from the user's own copy of the
 program (an i386 ELF executable). ROM mode: each function is split out by the program's own symbol table and judged
 by linking the agents' C at its address in the game (arch/x86_link.py); calls into shared libraries go to the
 program's PLT stubs, which its symbols name.
@@ -12,12 +12,14 @@ Files:
   of the program).
 - guides/linux.md: matching GCC 2.95 on i386, given to every helper before its first claim.
 
-The compiler is the distribution's own (toolchains.toml, gcc-2.95.3-linux: Slackware 8.0's GCC 2.95.3 and binutils,
-with glibc 2.2.3's headers), run on the pinned 32-bit runtime."""
+The compilers are the distributions' own (toolchains.toml): gcc-2.95.3-linux, Slackware 8.0's GCC 2.95.3 and binutils
+with glibc 2.2.3's headers, and gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; both run on
+the pinned 32-bit runtime. The program's .comment says which (default_compiler)."""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ...arch import BOUNDARIES
@@ -39,7 +41,9 @@ class Linux(Console):
     mode = ROM
     layout = "elf"
     compilers = (Compiler("gcc-2.95.3-linux", "GCC 2.95.3 (Slackware 8.0)", "Linux programs of 2001-2002",
-                          "GCC: (GNU) 2.95.3 20010315 (release)"),)
+                          "GCC: (GNU) 2.95.3 20010315 (release)"),
+                 Compiler("gcc-4.3.2-linux", "GCC 4.3.2 (Debian 5.0)", "Linux programs of 2008-2009",
+                          "GCC: (Debian 4.3.2-1.1) 4.3.2"))
     guides = ("linux",)  # (not the PC's x86 guide: its conventions are Visual C++'s)
     compiler_guide = "linux"  # (guides/linux.md: GCC 2.95's habits on i386, given every helper before its first claim)
     ram = (0x08048000, 0x10000000)
@@ -50,6 +54,15 @@ class Linux(Console):
     image_ext = ".elf"
     # cutting a function (split.split_function, at an instruction's start); the export (export.py)
     own_features = frozenset({BOUNDARIES, EXPORT})
+
+    def default_compiler(self, info: dict, splat_guess: str) -> str:
+        """The compiler of the GCC version the program's .comment names, whoever built that GCC: Debian's 4.3.2 says
+        "GCC: (Debian 4.3.2-1.1) 4.3.2", Ubuntu's "GCC: (Ubuntu 4.3.2-1ubuntu12) 4.3.2", a GCC built from its
+        release "GCC: (GNU) 4.3.2" (an exact match took only the first). A version none of them is takes the first."""
+        said = info.get("compiler_guess", "")
+        version = m.group(1) if (m := re.search(r"GCC: \([^)]*\) (\d+\.\d+(?:\.\d+)?)", said)) else None
+        return next((c.id for c in self.compilers if version and c.id == f"gcc-{version}-linux"),
+                    self.compilers[0].id)
 
     def sniff(self, head: bytes, file) -> bool:
         """A 32-bit x86 ELF executable (an i386 Linux program): ELF class 1, little-endian, e_machine 3."""

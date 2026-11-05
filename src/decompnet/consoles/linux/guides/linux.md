@@ -1,7 +1,8 @@
-# Matching GCC 2.95 on Linux (32-bit x86 programs, 2000-2002)
+# Matching GCC on Linux (32-bit x86 programs)
 
-The program's own compiler is Slackware 8.0's GCC 2.95.3, usually `-O2` (the project's settings say; search_flags
-tries `-O1`, `-O3` and others on a function). C, cdecl: arguments pushed right to left, the caller takes them off.
+The project's settings name the program's own compiler, read from its `.comment`: Slackware 8.0's GCC 2.95.3
+(programs of 2000-2002) or Debian 5.0's GCC 4.3.2 (2008-2009), usually `-O2` (search_flags tries `-O1`, `-O3` and
+others on a function). C, cdecl. Most of this guide is GCC 2.95's habits; GCC 4.3's differ where its section says.
 
 What the compiler writes, never the C
 - The frame: `push ebp; mov ebp, esp; sub esp, N`, then `push edi; push esi; push ebx` for the callee-saved
@@ -45,3 +46,16 @@ Things to try when registers or order differ
 Machine drafts are Ghidra's (m2c reads no x86): `undefined4` is a 4-byte word, `param_1` the first argument,
 `*(int *)(param_1 + 0x1c)` a field at +0x1c of the struct it points at. Replace them with the program's types from
 the brief and get_context; autopilot already tried each draft as it is.
+
+GCC 4.3 (a program whose `.comment` says 4.3.2)
+- Arguments are stored, not pushed: the frame reserves the outgoing space once (`sub esp, N` after the saved
+  registers) and each call is `mov [esp+8], ..; mov [esp+4], ..; mov [esp], ..; call f`, with no `add esp` after it.
+  The order of those stores is the compiler's: get the arguments right, not their order.
+- The frame saves registers before it reserves space: `push ebp; mov ebp, esp; push edi; push esi; push ebx;
+  sub esp, N`, and ends `add esp, N; pop ebx; pop esi; pop edi; pop ebp; ret`.
+- At -O2 it inlines a `static` function called from one place, and small ones from several: a function the
+  assembly doesn't call but whose code appears inside another was a static helper of its file. Write it as one, in
+  the same source, and the judge's compile inlines it the same way.
+- Loops are padded with the long nops (`lea esi, [esi+eiz*1+0]`, `nop word [eax+eax]`), as 2.95's are: never
+  write them. Counting loops often count up with `add reg, 1` (not `inc`): that's -mtune=generic, not the C.
+- glibc 2.7's headers come with it: include them as the game's files did (`<sys/io.h>`, `<math.h>`, ...).

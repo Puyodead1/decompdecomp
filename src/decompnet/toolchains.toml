@@ -64,6 +64,57 @@ subdir = "usr/include"
 into = "include"
 platforms = ["linux-x86_64"]
 
+["gcc-4.3.2-linux"]
+name = "GCC 4.3.2 for Linux (Debian 5.0)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-3.0"
+source = "Debian 5.0 (lenny)'s own i386 packages: gcc-4.3 and cpp-4.3 4.3.2-1.1, binutils 2.18.1, libc6-dev 2.7 and linux-libc-dev 2.6.26 (their headers), libgmp3c2 and libmpfr1ldbl (what its cc1 needs)"
+description = "The GCC 4.3.2 and binutils 2.18 Debian 5.0 shipped (Ubuntu 8.10's was the same GCC), with glibc 2.7's headers: what Linux programs of 2008-2009 were built with. Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc/i486-linux-gnu/4.3"; LD_LIBRARY_PATH="$tc/lib:$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc-4.3" -B"$tc/cpp/usr/lib/gcc/i486-linux-gnu/4.3/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" -I"$tc/include" -I"$g/include" -I"$g/include-fixed" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/g/gcc-4.3/gcc-4.3_4.3.2-1.1_i386.deb"
+sha256 = "d23d016d367bad971712dce62b1bd9469297d0199be4d4cc1950d9b6f228b874"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/g/gcc-4.3/cpp-4.3_4.3.2-1.1_i386.deb"
+sha256 = "a42bc4fab7da938df43dffed21c39f83216acf69a090343d03821b7c932107d1"
+into = "cpp"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/b/binutils/binutils_2.18.1~cvs20080103-7_i386.deb"
+sha256 = "c3f480f3fcfea300c1971fbbbceb5bdc1e660fb150a29a043b301de666e2a463"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/g/gmp/libgmp3c2_4.2.2+dfsg-3_i386.deb"
+sha256 = "9af882774b7bb0e3d1892e17bd8a80d7b70dc6099c23bc3b8ef6f1ee050d496f"
+subdir = "usr/lib"
+into = "lib"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/m/mpfr/libmpfr1ldbl_2.3.1.dfsg.1-2_i386.deb"
+sha256 = "182704d3cfa9d8c719094525ca8f7a6d4417d83a3a8099d33b905be02100ea3d"
+subdir = "usr/lib"
+into = "lib"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/g/glibc/libc6-dev_2.7-18lenny7_i386.deb"
+sha256 = "b3c98fd32c965a6a63668d67006bf075218773f935c05bf2a71d8a918e3f4ae7"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-linux".parts]]
+url = "https://archive.debian.org/debian/pool/main/l/linux-2.6/linux-libc-dev_2.6.26-29_i386.deb"
+sha256 = "27a3f3c118807c7125b57602d0254bb511a23d49ad28e9477b8dc2d5cdc83f6d"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"

@@ -2,7 +2,8 @@
 program's own .stab and .stabstr sections (not inside .mdebug, as the PS2's EE-GCC does). The entries are read here,
 a compile unit at a time, and handed to the PS2 console's STABS reader (consoles/ps2/stabs.py, debuginfo.py): the
 source files (the project's units), each function's prototype, parameters and locals, the globals' types and every
-struct, union, enum and typedef, as C for the shared header."""
+struct, union, enum and typedef, as C for the shared header. GCC 3 and newer (4.3: a program of 2008) write DWARF 2
+or later instead (.debug_info), read by consoles/ps2/dwarf2.py into the same shapes."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from io import BytesIO
 from elftools.common.exceptions import ELFError
 from elftools.elf.elffile import ELFFile
 
-from ..ps2 import stabs, symtab
+from ..ps2 import dwarf2, stabs, symtab
 from ..ps2.debuginfo import DebugInfo, _describe, _dwarf, _short_names
 
 N_UNDF, N_FUN, N_SO = 0x00, 0x24, 0x64
@@ -113,6 +114,17 @@ def read(data: bytes, reserved: set[str] = frozenset()) -> DebugInfo | None:
     except (ELFError, ValueError, KeyError):
         return None
     try:
+        if not units and dwarf2.has_dwarf(elf):  # (GCC 3 on: DWARF, no STABS)
+            dwarf = dwarf2.read(elf)
+            info.unread = []
+            if dwarf:
+                short = _short_names([source.name for source in dwarf])
+                for source in dwarf:
+                    source.name = short[source.name]
+                    for function in source.functions:
+                        info.units.setdefault(function.address, source.name)
+                info.sources = sorted({source.name for source in dwarf if source.functions})
+                _describe(info, dwarf, reserved, None)
         if units:
             short = _short_names([name for name, _ in units])
             sources = [stabs.read_file(short[name], found, x86_register) for name, found in units]

@@ -194,6 +194,36 @@ def test_zst_archives_need_no_zstd_command(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("tmp*"))  # no leftovers
 
 
+def test_a_debian_packages_links_into_the_system_are_left_out(tmp_path):
+    """Debian 5.0's gcc-4.3 package links libgcc_s.so to /lib/libgcc_s.so.1, the system's: the "data" filter refused
+    the whole package, and GCC 4.3.2 wouldn't install. A link out of the package is of no use in the sandbox; the
+    rest is unpacked, links inside the package kept."""
+    import io
+
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as t:
+        for name, kind, target in (("./usr/bin/gcc-4.3", "file", b"\x7fELF"), ("./usr/lib/libgcc_s.so", "link", "/lib/x"),
+                                   ("./usr/lib/libgmp.so.3", "link", "libgmp.so.3.4.2"),
+                                   ("./usr/lib/libgmp.so.3.4.2", "file", b"gmp")):
+            info = tarfile.TarInfo(name)
+            if kind == "file":
+                info.size = len(target)
+                t.addfile(info, io.BytesIO(target))
+            else:
+                info.type, info.linkname = tarfile.SYMTYPE, target
+                t.addfile(info)
+    member = lambda name, body: name.ljust(16).encode() + b"0".ljust(12) + b"0".ljust(6) + b"0".ljust(6) + \
+        b"100644".ljust(8) + str(len(body)).ljust(10).encode() + b"`\n" + body + (b"\n" if len(body) % 2 else b"")  # noqa: E731
+    deb = tmp_path / "gcc-4.3_4.3.2-1.1_i386.deb"
+    deb.write_bytes(b"!<arch>\n" + member("debian-binary", b"2.0\n") + member("data.tar.gz", data.getvalue()))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    toolchains._extract(deb, dest, None)
+    assert (dest / "usr" / "bin" / "gcc-4.3").read_bytes() == b"\x7fELF"
+    assert not (dest / "usr" / "lib" / "libgcc_s.so").is_symlink()
+    assert (dest / "usr" / "lib" / "libgmp.so.3").read_bytes() == b"gmp"
+
+
 def test_keep_takes_only_what_a_build_needs_and_merges_folders(tmp_path):
     """Visual C++ 2010's archive is a whole install (700 MB unpacked): its compiler and headers go where the project
     looks for them, the Windows SDK's headers with Visual C++'s, and nothing else is unpacked."""
