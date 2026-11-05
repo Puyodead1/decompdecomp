@@ -28,8 +28,14 @@ FLOAT_ENCODINGS = (0x4,)  # DW_ATE_float
 UNSIGNED_ENCODINGS = (0x1, 0x2, 0x7, 0x8)  # DW_ATE_address, boolean, unsigned, unsigned_char
 I386_REGISTERS = ("eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi")  # GCC's DWARF numbers on i386 ELF
 I386_X87_FIRST = 11  # st(0)..st(7)
+CPLUSPLUS_LANGUAGES = (0x4, 0x1A, 0x21, 0x2A)  # DW_LANG_C_plus_plus, _03, _11, _14
 FRAME_POINTER = "ebp"
 FRAME_BASE_EBP = 8  # GCC 4's frame base on i386 (the CFA) is ebp+8 in a function's body
+
+
+def _same(a: list, b: list) -> bool:
+    """Two parameter lists of the same types (the same entries)."""
+    return len(a) == len(b) and all(x[1] is y[1] for x, y in zip(a, b))
 
 
 def i386_register(number: int) -> str:
@@ -109,6 +115,7 @@ class _Reader:
             t.signed = encoding not in UNSIGNED_ENCODINGS
         elif tag in ("DW_TAG_pointer_type", "DW_TAG_reference_type"):
             t.kind, t.target, t.size = "pointer", self.type_of(die), size or POINTER_BYTES
+            t.reference = tag == "DW_TAG_reference_type"
         elif tag in ("DW_TAG_const_type", "DW_TAG_volatile_type"):
             t.kind, t.target = ("const" if tag == "DW_TAG_const_type" else "volatile"), self.type_of(die)
         elif tag == "DW_TAG_typedef":
@@ -119,6 +126,7 @@ class _Reader:
                 t.kind, t.xref, t.name = "xref", kind, name
                 return
             t.kind, t.tag, t.size = kind, name, size or (4 if kind == "enum" else 0)
+            own = self._own_class(die, name)
             for child in die.iter_children():
                 if child.tag == "DW_TAG_member":
                     t.fields.append(self._member(child))
@@ -126,6 +134,11 @@ class _Reader:
                     t.enumerators.append((self._name(child), self._int(child, "DW_AT_const_value")))
                 elif child.tag == "DW_TAG_inheritance":
                     t.bases.append((self._offset(child) * BITS_PER_BYTE, self.type_of(child)))
+                elif child.tag == "DW_TAG_subprogram" and self._name(child) and own and \
+                        "DW_AT_artificial" not in child.attributes:  # (operator=, copy constructors C++ makes itself)
+                    method = self._method(child)
+                    if not any(m[0] == method[0] and _same(m[2], method[2]) and m[3] == method[3] for m in t.methods):
+                        t.methods.append(method)  # (GCC 4.3 declares a constructor once per variant: C1, C2)
         elif tag == "DW_TAG_subroutine_type":
             t.kind, t.target = "function", self.type_of(die)
         elif tag == "DW_TAG_array_type":
@@ -142,6 +155,68 @@ class _Reader:
             for count in reversed(counts[1:]):
                 element = Type(kind="array", count=count, target=element)
             t.kind, t.count, t.target = "array", counts[0] if counts else 0, element
+
+    @staticmethod
+    def _own_class(die, name: str) -> bool:
+        """Whether a class's methods can be declared in the header, which is flat: not a template's instance
+        (`allocator<char>` is written `allocator_char_`, which its constructor can't be) and not one in a namespace or
+        another class (`Ogre::MaterialPtr`: its methods' symbols say the namespace, which a method defined from the
+        header wouldn't). GCC 4.3 doesn't always write the namespace around a class; its methods' linkage names
+        (`_ZN4Ogre11MaterialPtrC1Ev`) say it."""
+        declared = die
+        while "DW_AT_specification" in declared.attributes:  # (GCC writes a namespace's class's definition at the
+            try:                                               # top of its unit, pointing to its declaration in it)
+                declared = declared.get_DIE_from_attribute("DW_AT_specification")
+            except Exception:  # noqa: BLE001
+                break
+        parent = declared.get_parent()
+        if not name or "<" in name or parent is not None and parent.tag != "DW_TAG_compile_unit":
+            return False
+        own = (f"_ZN{len(name)}{name}", f"_ZNK{len(name)}{name}")
+        for child in die.iter_children():
+            linkage = child.attributes.get("DW_AT_MIPS_linkage_name") or child.attributes.get("DW_AT_linkage_name")
+            if child.tag == "DW_TAG_subprogram" and linkage is not None and \
+                    not linkage.value.decode("latin-1").startswith(own):
+                return False
+        return True
+
+    def _method(self, die) -> tuple[str, Type, list[tuple[str, Type]], bool, bool]:
+        """A method as its class declares it: a parameter GCC made (`this`, DW_AT_artificial) isn't written; a method
+        without one is static, one whose `this` points to const is const."""
+        params, this = [], None
+        for child in die.iter_children():
+            if child.tag != "DW_TAG_formal_parameter":
+                continue
+            if "DW_AT_artificial" in child.attributes:
+                this = this or self.type_of(child)
+            else:
+                params.append((self._name(child), self.type_of(child)))
+        const = this is not None and this.kind == "pointer" and this.target is not None and this.target.kind == "const"
+        return self._name(die), self.type_of(die), params, const, this is None
+
+    def qualified(self, die) -> str:
+        """A function's name with its classes and namespaces (`CRandStoryData::CRandStoryData`): those its
+        declaration is inside."""
+        declared = die
+        for _ in range(8):  # (a constructor's code -> its abstract entry -> its declaration in the class)
+            link = next((a for a in ("DW_AT_specification", "DW_AT_abstract_origin") if a in declared.attributes), None)
+            if link is None:
+                break
+            try:
+                declared = declared.get_DIE_from_attribute(link)
+            except Exception:  # noqa: BLE001
+                break
+        parts, parent = [self._name(die)], declared.get_parent()
+        while parent is not None and parent.tag in ("DW_TAG_class_type", "DW_TAG_structure_type",
+                                                    "DW_TAG_union_type", "DW_TAG_namespace"):
+            parts.insert(0, self._name(parent) or "(anonymous)")
+            while "DW_AT_specification" in parent.attributes:  # (a class defined outside its namespace: where it's
+                try:                                             # declared says the namespace)
+                    parent = parent.get_DIE_from_attribute("DW_AT_specification")
+                except Exception:  # noqa: BLE001
+                    break
+            parent = parent.get_parent()
+        return "::".join(parts)
 
     def _offset(self, die) -> int:
         """A member's offset: a constant, or (DWARF 2) a block `DW_OP_plus_uconst offset`."""
@@ -225,13 +300,15 @@ class _Reader:
         if high is not None:  # an address (DWARF 2, 3), or from DWARF 4 a constant: the size
             size = high.value - low.value if high.form == "DW_FORM_addr" else high.value
         source = self.origin(die)  # (its name, type and line: the abstract entry of a function GCC also inlined)
-        function = Function(self._name(die), low.value, self.type_of(die),
+        function = Function(self.qualified(die), low.value, self.type_of(die),
                             is_static="DW_AT_external" not in source.attributes,
                             size=max(0, size), line=self._int(source, "DW_AT_decl_line"))
         stack = list(reversed(list(die.iter_children())))
         while stack:  # the locals of its blocks too
             child = stack.pop()
             if child.tag == "DW_TAG_formal_parameter" and self._name(child):
+                if "DW_AT_artificial" in self.origin(child).attributes:  # (C++'s `this`: the method's own)
+                    continue
                 function.params.append(self.variable(child))
             elif child.tag == "DW_TAG_variable" and self._name(child):
                 function.locals.append(self.variable(child))
@@ -241,15 +318,18 @@ class _Reader:
 
     def unit(self, cu) -> SourceInfo:
         top = cu.get_top_DIE()
-        info = SourceInfo(self._name(top) or f"unit_{cu.cu_offset:X}")
+        info = SourceInfo(self._name(top) or f"unit_{cu.cu_offset:X}",
+                          cplusplus=self._int(top, "DW_AT_language") in CPLUSPLUS_LANGUAGES)
+        # every type the unit names, wherever it's declared: in a namespace, a class, or (GCC 4.3) inside a method's
+        # declaration in its class, where Ogre's typedefs of a parameter are; a field of one was left undefined
+        for die in cu.iter_DIEs():
+            if die.tag in TYPE_TAGS and die.tag != "DW_TAG_base_type" and self._name(die):
+                info.types.append(self.defined(die))
         stack = [(child, False) for child in reversed(list(top.iter_children()))]
         while stack:
             die, in_function = stack.pop()
             try:
-                if die.tag in TYPE_TAGS:
-                    if self._name(die) and die.tag != "DW_TAG_base_type":
-                        info.types.append(self.defined(die))
-                elif die.tag == "DW_TAG_subprogram":
+                if die.tag == "DW_TAG_subprogram":
                     if (function := self.function(die)) is not None:
                         info.functions.append(function)
                 elif die.tag == "DW_TAG_variable" and self._name(die) and not in_function:
@@ -261,8 +341,8 @@ class _Reader:
                         info.statics.append(variable)
             except (KeyError, ValueError, RecursionError):
                 info.skipped += 1
-            if die.tag == "DW_TAG_subprogram":  # the types a function defines (its own structs)
-                stack += [(c, True) for c in reversed(list(die.iter_children())) if c.tag in TYPE_TAGS]
+            if die.tag == "DW_TAG_namespace":  # C++: the functions and variables a namespace declares
+                stack += [(c, in_function) for c in reversed(list(die.iter_children()))]
         return info
 
 

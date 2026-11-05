@@ -174,7 +174,8 @@ def _describe(info: DebugInfo, sources: list[stabs.SourceInfo], reserved: set[st
             variables.append((n.name, variable.type, not _small(n, gp)))  # read through $gp: no extern (GP_NOTE)
         for function in source.functions:
             n = by_address.get(function.address)
-            name = n.name if n is not None else symtab.c_name(function.name)
+            # (a C++ method by its class: CRandStoryData::Get, not its symbol _ZNK14CRandStoryData3GetEv)
+            name = function.name if "::" in function.name else n.name if n is not None else symtab.c_name(function.name)
             info.functions[function.address] = {
                 "source": source.name,
                 "prototype": header.prototype(function, name),

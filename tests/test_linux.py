@@ -399,6 +399,9 @@ def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
     linux = consoles.get("linux")
     for said in ("GCC: (Debian 4.3.2-1.1) 4.3.2", "GCC: (Ubuntu 4.3.2-1ubuntu12) 4.3.2", "GCC: (GNU) 4.3.2"):
         assert linux.default_compiler({"compiler_guess": said}, "") == GCC43
+    # Red Hat's build, Fedora 10's: its own (Red Hat patches its GCC its own way)
+    for said in ("GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)", "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-8)"):
+        assert linux.default_compiler({"compiler_guess": said}, "") == "gcc-4.3.2-redhat-linux"
     assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 2.95.3 20010315 (release)"}, "") == "gcc-2.95.3-linux"
     assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 3.3.6"}, "") == "gcc-2.95.3-linux"
     assert linux.default_compiler({}, "") == "gcc-2.95.3-linux"
@@ -474,3 +477,86 @@ def test_a_program_gcc_4_3_built_matches_from_its_c_and_rebuilds(demo43):
         assert out["matched"], (name, out["text"][:600])
     res = net.export_rom(slug, log=lambda *_: None)
     assert res["identical"] and res["matched"] == len(names), res["log"][-2000:]
+
+
+REDHAT = "gcc-4.3.2-redhat-linux"
+CPP_PROGRAM = """
+namespace Engine { class Mesh { public: Mesh(); int count; }; Mesh::Mesh() { count = 0; } }
+typedef unsigned char data_t;
+union Cell { int i; float f; };
+typedef int read_fn(void *, int);
+struct Callbacks { read_fn *read; };
+class Story {
+public:
+    Story();
+    ~Story();
+    int Get() const;
+    void Copy(const Story &other, Engine::Mesh *mesh);
+    static Story *Make(int seed);
+    int value;
+    Callbacks cb;
+    data_t flags;
+};
+Story::Story() { value = 7; }
+Story::~Story() { value = 0; }
+int Story::Get() const { return value; }
+void Story::Copy(const Story &other, Engine::Mesh *mesh) { value = other.value + mesh->count; }
+Story *Story::Make(int seed) { Story *s = new Story; s->value = seed; return s; }
+union data_u { int x; };
+"""
+
+
+def test_a_cpp_programs_dwarf_declares_its_classes_methods_for_cpp_and_still_compiles_as_c(tmp_path):
+    """A C++ program of 2008 with DWARF: its header compiled as neither C nor C++ (types declared in namespaces and
+    classes, a GCC 4.3 typedef inside a method's declaration, typedefs named like another type's tag), and no
+    method could be defined against it. Now every named type is read wherever it's declared, a class's methods are
+    declared for C++ only (not C++'s implicit ones, not a namespace's class or a template's: their symbols say what
+    the flat header can't), references stay references, and C++ names are qualified. A constructor defined against
+    the header gets the program's own symbol."""
+    from elftools.elf.elffile import ELFFile
+
+    from decompnet import toolchains
+    from decompnet.compiler import compile_source
+    from decompnet.consoles.ps2 import cheader, dwarf2
+    from decompnet.project import compiler_config
+
+    if toolchains.installed(REDHAT) is None:
+        pytest.skip(f"needs {REDHAT}")
+    cfg = compiler_config(tmp_path, {"compiler": {"toolchain": REDHAT, "flags": ["-O2", "-g"]}})
+    built = compile_source(cfg, "", CPP_PROGRAM.replace("namespace Engine", "class Dummy; namespace Engine"))
+    assert built.ok and built.language == "c++", built.log
+    sources = dwarf2.read(ELFFile(__import__("io").BytesIO(built.obj)))
+    functions = {f.name: f for s in sources for f in s.functions}
+    assert {"Story::Story", "Story::Get", "Story::Copy", "Engine::Mesh::Mesh"} <= set(functions)
+    assert [p.name for p in functions["Story::Copy"].params] == ["other", "mesh"]  # (not `this`)
+    header = cheader.Header(sources).text()
+    assert "#ifdef __cplusplus" in header and "    Story();" in header and "    ~Story();" in header
+    assert "int Get() const;" in header and "void Copy(const struct Story &, struct Mesh *);" in header
+    assert "static struct Story *Make(int);" in header  # (GCC names no parameter of a declaration)
+    assert "Mesh();" not in header  # (Engine::Mesh: a method defined from the flat header would miss Engine::)
+    assert "read_fn *read;" in header
+    # glibc's __io_read_fn, a typedef the header leaves out (reserved): the pointer keeps its parentheses
+    from decompnet.consoles.ps2.stabs import Type
+
+    fn = Type(kind="function", target=Type(kind="base", name="int", size=4))
+    loose = Type(kind="pointer", target=Type(kind="alias", typedef="__io_read_fn", target=fn), size=4)
+    assert cheader.Header([]).declaration(loose, "read") == "int (*read)()"
+    for language, source in (("c", "int plain(int x) { return x + 1; }\n"),
+                             ("c++", "Story::Story() { value = 7; }\n")):
+        res = compile_source(compiler_config(tmp_path, {"compiler": {"toolchain": REDHAT, "flags": ["-O2"]}}),
+                             header, source)
+        assert res.ok and res.language == language, res.log[-2000:]
+    names = {s.name for s in ELFFile(__import__("io").BytesIO(res.obj)).get_section_by_name(".symtab").iter_symbols()}
+    assert "_ZN5StoryC1Ev" in names
+
+
+def test_a_cpp_programs_names_are_written_as_cpp_by_its_own_binutils(tmp_path):
+    """A C++ program's function list showed its symbols (_ZN14CRandStoryDataC1Ev): the Linux console names each as
+    written, by the c++filt of the project's own binutils."""
+    from decompnet import toolchains
+
+    if toolchains.installed(REDHAT) is None:
+        pytest.skip(f"needs {REDHAT}")
+    names = consoles.get("linux").demangle(["_ZN14CRandStoryDataC1Ev", "_ZNK14CRandStoryData3GetEv", "main"], REDHAT)
+    assert names == {"_ZN14CRandStoryDataC1Ev": "CRandStoryData::CRandStoryData()",
+                     "_ZNK14CRandStoryData3GetEv": "CRandStoryData::Get() const"}

@@ -115,6 +115,87 @@ subdir = "usr/include"
 into = "include"
 platforms = ["linux-x86_64"]
 
+["gcc-4.3.2-redhat-linux"]
+name = "GCC 4.3.2 for Linux (Red Hat's, Fedora 10)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-3.0"
+source = "Fedora 10's own i386 packages: gcc, cpp and gcc-c++ 4.3.2-7 with libstdc++'s headers, binutils 2.18.50.0.9, glibc-headers 2.9 and kernel-headers 2.6.27 (their headers), gmp, mpfr and zlib (what its cc1 and as need)"
+description = "Red Hat's build of GCC 4.3.2 (4.3.2-7, 20081105) and the binutils Fedora 10 shipped, with glibc 2.9's headers: the compiler a program whose .comment says \"GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)\" was built with. Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc/i386-redhat-linux/4.3.2"; x=; case "$src" in *.cpp) x="-I$tc/include/c++ -I$tc/include/c++/i386-redhat-linux -I$tc/include/c++/backward";; esac; LD_LIBRARY_PATH="$tc/lib:$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc" -B"$tc/cpp/usr/libexec/gcc/i386-redhat-linux/4.3.2/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" $x -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+cplusplus = true
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/gcc-4.3.2-7.i386.rpm"
+sha256 = "05bc044f90756aaebf62937722330f616a74b69340b79273b628cceee8eb0f5d"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/cpp-4.3.2-7.i386.rpm"
+sha256 = "914cd31cb2be59fe49e70cfc36bc549b8858627cba0f9fc31d0739978461cdd0"
+into = "cpp"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+# (C++: its compiler, beside cc1; its driver is gcc's, which compiles a .cpp with it)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/gcc-c%2B%2B-4.3.2-7.i386.rpm"
+file = "gcc-c++-4.3.2-7.i386.rpm"
+sha256 = "f1748bd0253a43bd78afb41ad9101cca65287b5de5d43cb76b322bb991951ee7"
+keep = { "usr/libexec/gcc/i386-redhat-linux/4.3.2/cc1plus" = "usr/libexec/gcc/i386-redhat-linux/4.3.2/cc1plus" }
+into = "cpp"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/binutils-2.18.50.0.9-7.fc10.i386.rpm"
+sha256 = "054f87dbb292e4dbb55d990f6fd7ce2d438eed80fc5cde92b8e2c2320c001702"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/gmp-4.2.2-8.fc10.i386.rpm"
+sha256 = "94e7d48cad3ab24401fdeb10b984eee698da009ead05fbfe863d77ad9b1bfc7b"
+subdir = "usr/lib"
+into = "lib"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/mpfr-2.3.2-1.fc10.i386.rpm"
+sha256 = "8499e77989374ba4b82d6f1638fafb2dd7c07222a36bdce02d0f54d443012e66"
+subdir = "usr/lib"
+into = "lib"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/zlib-1.2.3-18.fc9.i386.rpm"
+sha256 = "758469abcb4785bd3ebe42ed87e6fc4cabd7cdf748ed1f120864f3ed54deade9"
+subdir = "lib"
+into = "lib"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/glibc-headers-2.9-2.i386.rpm"
+sha256 = "71b07f49b2edadf15176a2c37347537d68049bbb197d9e64e7425c597d739184"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+# (the 32-bit stubs glibc-headers' gnu/stubs.h includes: Fedora has them in glibc-devel, its libraries left out)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/glibc-devel-2.9-2.i386.rpm"
+sha256 = "58c0961c5ee1ccf9a0dda0f254425f0b7dc065fa0d53562d4c76aef02af85c78"
+keep = { "usr/include/gnu/stubs-32.h" = "gnu/stubs-32.h" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+# (the C++ library's headers, for C++: the judge puts them first only for a .cpp)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/libstdc%2B%2B-devel-4.3.2-7.i386.rpm"
+file = "libstdc++-devel-4.3.2-7.i386.rpm"
+sha256 = "c856a6b304ec3048b858a8b3379e913169e8464e53d8bc5643c6bb02e8a9508a"
+keep = { "usr/include/c++/4.3.2" = "c++" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.3.2-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/10/Everything/i386/os/Packages/kernel-headers-2.6.27.5-117.fc10.i386.rpm"
+sha256 = "a6425d219887c30a0e361afddf015be165d8ba9a4032eb29dd102686802b8034"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"

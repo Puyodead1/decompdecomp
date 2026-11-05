@@ -55,6 +55,7 @@ class Type:
     alias (another number for the same type), const, volatile, xref (a struct, union or enum known by name only),
     method (C++), or unknown (referred to, never defined)."""
     kind: str = "unknown"
+    reference: bool = False  # a pointer that's a C++ reference (`const X &`): written so in C++ only
     name: str = ""  # base types: the compiler's name ("long unsigned int"); xref: the name referred to
     tag: str = ""  # struct, union, enum: its tag
     typedef: str = ""  # the typedef name this number was given
@@ -66,6 +67,9 @@ class Type:
     fields: list[Field] = field(default_factory=list)
     enumerators: list[tuple[str, int]] = field(default_factory=list)
     bases: list[tuple[int, Type]] = field(default_factory=list)  # C++: (bit offset, base class)
+    # C++: its methods as the debug information declares them (DWARF): (name, return type, [(parameter, type)],
+    # const, static), what the header declares for C++ so a method can be defined outside its class
+    methods: list[tuple[str, Type, list[tuple[str, Type]], bool, bool]] = field(default_factory=list)
 
 
 @dataclass
@@ -97,6 +101,7 @@ class SourceInfo:
     globals: list[Variable] = field(default_factory=list)  # G: defined in this file, address from the symbol table
     statics: list[Variable] = field(default_factory=list)  # S: file statics, with their address
     skipped: int = 0  # entries this reader couldn't follow
+    cplusplus: bool = False  # C++ (DWARF says the language): its header keeps typedef and tag names apart
 
 
 def register(number: int) -> str:
