@@ -30,6 +30,12 @@ SOURCES = (".c", ".cc", ".cpp", ".cxx")
 HEADERS = (".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp")
 INCLUDE_NAMES = ("include", "includes", "inc", "src")  # where a library keeps the headers its users include
 MAX_DEPTH = 5  # how deep include folders are looked for in a library
+# folders of a library that aren't the library: its tests, examples, documentation and tools (boost's 4,698 source
+# files are mostly these; its libraries' own are in libs/<name>/src)
+NOT_LIBRARY = {"test", "tests", "testing", "example", "examples", "sample", "samples", "demo", "demos", "doc", "docs",
+               "contrib", "tools", "tool", "bench", "benchmark", "benchmarks", "perf", "tutorial", "tutorials",
+               "build", "win32", "win32s", "macosx", "osx", "msvc", "vc6", "vc7", "vc8", "vs2005", "vs2008", "android",
+               "iphone", "dox", "scripts", "etc"}
 HEADER_ROOTS = ("boost", "luabind", "OIS", "Ogre", "ParticleUniverse")  # a folder named so: its parent is a root
 
 
@@ -48,6 +54,8 @@ def include_dirs(library: Path) -> list[Path]:
     def has_headers(folder: Path) -> bool:
         return any(p.suffix in HEADERS for p in folder.iterdir() if p.is_file())
 
+    if any((library / name).is_dir() for name in HEADER_ROOTS):  # (<boost/...>: its top, and nothing inside it)
+        return [library]
     stack = [(library, 0)]
     while stack:
         folder, depth = stack.pop()
@@ -57,6 +65,7 @@ def include_dirs(library: Path) -> list[Path]:
             continue
         if folder == library and has_headers(folder):
             found.append(folder)
+        children = [c for c in children if c.name.lower() not in NOT_LIBRARY]  # (not its tools' or samples' own)
         for child in children:
             if child.name in HEADER_ROOTS and folder not in found:
                 found.append(folder)
@@ -65,6 +74,12 @@ def include_dirs(library: Path) -> list[Path]:
             if depth + 1 < MAX_DEPTH:
                 stack.append((child, depth + 1))
     return list(dict.fromkeys(found))
+
+
+def library_sources(library: Path) -> list[Path]:
+    """A library's own source files: not its tests', examples' or tools' (NOT_LIBRARY)."""
+    return sorted(p for p in library.rglob("*") if p.suffix in SOURCES and p.is_file()
+                  and not any(part.lower() in NOT_LIBRARY for part in p.relative_to(library).parts[:-1]))
 
 
 def has_headers_below(folder: Path) -> bool:
@@ -111,7 +126,7 @@ class LibraryMixin:
         for library in libraries:
             own_flags = (library / FLAGS_FILE).read_text(encoding="utf-8").split() \
                 if (library / FLAGS_FILE).is_file() else None
-            files = sorted(p for p in library.rglob("*") if p.suffix in SOURCES and p.is_file())
+            files = library_sources(library)
             own = [str(d.resolve()) for d in include_dirs(library)]
             # its own folders first, then the other libraries' (each once: zlib's scan_tree came out otherwise when
             # its folder was given as a system one too)
