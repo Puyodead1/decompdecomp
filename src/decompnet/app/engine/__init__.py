@@ -13,6 +13,7 @@ Everything stays on this computer.
 The engine is one class, RomNetwork, put together from a module per topic:
 - core.py: the ground floor (a project's rows, its ROM and symbols, finding functions, local agents)
 - importing.py: importing a game
+- libraries.py: the libraries a game has built in, from their own source (libs/): headers and matches
 - judging.py: the judge, claims and attempts
 - briefs.py: what agents read about a function
 - layouts.py: struct layouts guessed from the code (guess_struct, and the brief's lines on them)
@@ -38,13 +39,14 @@ from .gui import GuiMixin
 from .importing import ImportMixin
 from .judging import JudgeMixin
 from .layouts import LayoutMixin
+from .libraries import LibraryMixin
 from .rooms import RoomMixin
 
 __all__ = ["RomNetwork", "COMPILERS", "TOOLS", "parse_ranges"]
 
 
 class RomNetwork(ImportMixin, JudgeMixin, BriefMixin, LayoutMixin, CompilerMixin, EditMixin, RoomMixin, GuiMixin,
-                 AutopilotMixin, Core):
+                 AutopilotMixin, LibraryMixin, Core):
     """A ROM project engine: Network's claims, attempts and notes, for games split from their ROM (see above)."""
 
     # Whether its projects can join functions (#192): app/tools.py offers join_functions to ROM projects when this is

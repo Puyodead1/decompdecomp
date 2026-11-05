@@ -2,6 +2,7 @@
 real game's run (Slackware 8.0's GCC 2.95.3 reproducing its functions byte for byte) needs the game, so the end to end
 check is the demo program built with the same toolchain (projects/demo-linux, and tests/test_consoles.py)."""
 
+import json
 import re
 import struct
 from pathlib import Path
@@ -560,3 +561,52 @@ def test_a_cpp_programs_names_are_written_as_cpp_by_its_own_binutils(tmp_path):
     names = consoles.get("linux").demangle(["_ZN14CRandStoryDataC1Ev", "_ZNK14CRandStoryData3GetEv", "main"], REDHAT)
     assert names == {"_ZN14CRandStoryDataC1Ev": "CRandStoryData::CRandStoryData()",
                      "_ZNK14CRandStoryData3GetEv": "CRandStoryData::Get() const"}
+
+
+def test_a_librarys_include_folders_are_where_its_users_include_from(tmp_path):
+    """boost's headers are included as <boost/...> from its top folder, Ogre's from OgreMain/include, Lua's from
+    src/, TinyXML's from its own top: each library's folders in the project's libs/, relative to the project."""
+    from decompnet.app.engine import libraries
+
+    for path in ("libs/boost_1_36_0/boost/shared_ptr.hpp", "libs/ogre/OgreMain/include/Ogre.h",
+                 "libs/ogre/OgreMain/src/OgreRoot.cpp", "libs/lua-5.1.4/src/lua.h", "libs/lua-5.1.4/src/lapi.c",
+                 "libs/tinyxml/tinyxml.h", "libs/tinyxml/tinyxml.cpp", "libs/ois/includes/OIS.h"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("")
+    found = libraries.library_includes(tmp_path)
+    assert set(found) >= {"libs/boost_1_36_0", "libs/ogre/OgreMain/include", "libs/lua-5.1.4/src", "libs/tinyxml",
+                          "libs/ois/includes"}
+    assert "libs/boost_1_36_0/boost" not in found
+
+
+def test_a_librarys_own_source_sets_its_functions_aside_and_its_headers_are_in_every_compile(demo43):
+    """Demo Quest of 2008 has zlib built in: with zlib's own source in libs/, every zlib function its files make byte
+    for byte with the game's compiler is set aside as library code, naming the file (zlibVersion's string comes out
+    beside the file's other strings, so its data isn't the game's: it stays open). zlib's headers are then in every
+    compile: C may include them."""
+    import shutil
+
+    from decompnet.app.engine import RomNetwork
+
+    from .test_consoles import ROOT
+
+    program, factory = demo43
+    work = factory.mktemp("libs")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    lib = Path(net._project(slug)["root"]) / "libs" / "zlib-1.1.4"
+    lib.mkdir(parents=True)
+    for folder in ("original", "sysinclude"):
+        for f in (ROOT / "projects" / "zlib-n64" / folder).glob("*.[ch]"):
+            shutil.copy(f, lib / f.name)
+    res = net.match_libraries(slug, log=lambda *_: None)
+    assert res["found"] >= 56, res
+    fn = net._function("scan_tree", slug)
+    assert fn["status"] == "asm" and json.loads(fn["meta"])["library"] == "zlib-1.1.4/trees.c"
+    assert net._function("game_tick", slug)["status"] == "open"
+    (lib / "zdemo.h").write_text("#define ZDEMO_SIGN(v) ((v) < 0 ? -(v) : (v))\n")  # (one the header has no types of)
+    net.scan_libraries(slug)
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.claim(agent, slug, "abs_s32")
+    out = net.attempt(agent, "abs_s32", "#include <zdemo.h>\ns32 abs_s32(s32 v) { return ZDEMO_SIGN(v); }\n", slug)
+    assert out["matched"], out["text"][:500]

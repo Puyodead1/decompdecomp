@@ -114,6 +114,13 @@ def register(app: App) -> None:
         return {"job": jobs.start(
             "reimport", lambda log: net.reimport_rom(slug, path, confirmed=True, name=path.name, log=log))}
 
+    def p_libraries(slug, request, data):
+        """The libraries in the project's libs/ folder (GET: what's there, their headers then in every compile);
+        POST: compile their sources and set aside the functions they make byte for byte (engine/libraries.py)."""
+        if request.method != "POST":
+            return net.scan_libraries(slug)
+        return {"job": jobs.start("libraries", lambda log: net.match_libraries(slug, log=log))}
+
     def p_compilermap(slug, request, data):
         """The compiler answer (GET): which compiler built the game, and its parts; the app checks by itself when the
         answer is old. POST: check again now (the survey and the applied ranges)."""
@@ -307,7 +314,7 @@ def register(app: App) -> None:
         "/api/deep-permuter": (p_deep_permuter, ["GET", "POST"]),
         "/api/claim-order": (p_claim_order, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
-        "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/parts": (p_parts, ["POST"]),
+        "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/libraries": (p_libraries, ["GET", "POST"]), "/api/parts": (p_parts, ["POST"]),
         "/api/suggestion": (p_suggestion, ["POST"]), "/api/boundary": (p_boundary, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/compilermap": (p_compilermap, ["GET", "POST"]),
