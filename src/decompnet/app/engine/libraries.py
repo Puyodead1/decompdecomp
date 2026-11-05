@@ -25,6 +25,10 @@ from pathlib import Path
 from ...network import NetworkError
 
 LIBS = "libs"  # the project's folder of library sources
+FRUITLESS = 2  # flag sets tried on a file, after one worked for its library, that bring nothing before it stops
+# files of a library each tried with every flag set while none has worked: then only the first set (a library the
+# game uses little of, as one it loads as a shared library: 391 of Ogre's files took over an hour)
+EXPLORED = 6
 FLAGS_FILE = "decompdecomp-flags.txt"  # a library's own flags (and -D defines), one line, replacing the game's
 SOURCES = (".c", ".cc", ".cpp", ".cxx")
 HEADERS = (".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp")
@@ -123,49 +127,69 @@ class LibraryMixin:
         log(f"{len(libraries)} libraries ({', '.join(lib.name for lib in libraries)}); "
             f"{len(open_rows):,} open functions")
         found, compiled, failed, started = 0, 0, 0, time.time()
+        console = self.console(proj)
         for library in libraries:
             own_flags = (library / FLAGS_FILE).read_text(encoding="utf-8").split() \
                 if (library / FLAGS_FILE).is_file() else None
+            # a library's own build had flags of its own: each set is tried, the ones that make its functions first
+            variants = [own_flags] if own_flags is not None else console.library_flags(cfg["compiler"]["flags"])
+            wins = {i: 0 for i in range(len(variants))}
             files = library_sources(library)
             own = [str(d.resolve()) for d in include_dirs(library)]
             # its own folders first, then the other libraries' (each once: zlib's scan_tree came out otherwise when
             # its folder was given as a system one too)
             others = [f for f in includes if str((root / f).resolve()) not in own]
-            settings = dict(cfg["compiler"], **({"flags": own_flags} if own_flags is not None else {}))
-            base = compiler_config(root, {**cfg, "compiler": settings, "library_includes": others})
-            lib_found = 0
+            lib_found, explored = 0, 0
             for source in files:
-                # the file's own folder for its "local.h", then its library's, read-only like the rest of it
-                config = dataclasses.replace(
-                    base, cmd=[*base.cmd, *(x for d in dict.fromkeys([str(source.parent.resolve()), *own])
-                                            for x in ("-I", d))],
-                    ro_paths=(*base.ro_paths, str(library.resolve())))
                 text = source.read_text(encoding="utf-8", errors="replace")
                 cpp = source.suffix != ".c"
-                res = compile_source(config, "", text, trusted=True, language="c++" if cpp else "c")
-                if not res.ok:
-                    failed += 1
-                    continue
-                compiled += 1
-                for name in _function_symbols_of(res.obj, _function_symbols):
-                    fn = open_rows.get(name)
-                    if fn is None:
-                        continue
-                    cand, verdict, _ = self._evaluate(fn, proj, res.obj)
-                    if cand is None or not verdict:
-                        continue
-                    self._library_code(fn, f"{library.name}/{source.relative_to(library)}")
-                    open_rows.pop(name)
-                    lib_found += 1
+                # the flags that worked most first; once some have, a file stops after a few that bring nothing
+                order = sorted(wins, key=lambda i: (-wins[i], i))
+                if not any(wins.values()) and explored >= EXPLORED:
+                    order = order[:1]
+                fruitless = 0
+                for i in order:
+                    settings = dict(cfg["compiler"], flags=variants[i])
+                    # the file's own folder for its "local.h", then its library's, then the others': in that order
+                    # (an earlier one's png.h was libpng's, and libpng's own files compiled to nothing)
+                    first = list(dict.fromkeys([str(source.parent.resolve()), *own]))
+                    base = compiler_config(root, {**cfg, "compiler": settings, "library_includes": [*first, *others]})
+                    config = dataclasses.replace(base, ro_paths=(*base.ro_paths, str(library.resolve())))
+                    res = compile_source(config, "", text, trusted=True, language="c++" if cpp else "c")
+                    if not res.ok:
+                        failed += i == order[0]
+                        break  # (a file that doesn't build doesn't build with other flags either)
+                    compiled += i == order[0]
+                    wanted = [n for n in _function_symbols_of(res.obj, _function_symbols) if n in open_rows]
+                    if not wanted:
+                        break
+                    explored += i == order[0]
+                    new = 0
+                    for name in wanted:
+                        fn = open_rows[name]
+                        cand, verdict, _ = self._evaluate(fn, proj, res.obj)
+                        if cand is None or not verdict:
+                            continue
+                        self._library_code(fn, f"{library.name}/{source.relative_to(library)}",
+                                           " ".join(variants[i]))
+                        open_rows.pop(name)
+                        new += 1
+                    lib_found += new
+                    wins[i] += new
+                    fruitless = 0 if new else fruitless + 1
+                    if new == len(wanted) or (any(wins.values()) and fruitless >= FRUITLESS):
+                        break
             found += lib_found
-            log(f"{library.name}: {len(files)} source files, {lib_found:,} functions are its code")
+            best = [" ".join(variants[i]) for i in sorted(wins, key=lambda i: -wins[i]) if wins[i]][:2]
+            log(f"{library.name}: {len(files)} source files, {lib_found:,} functions are its code"
+                + (f" (built {' or '.join(best)})" if best else ""))
         log(f"{found:,} functions set aside as library code; {compiled} files compiled, {failed} didn't "
             f"({time.time() - started:.0f}s)")
         return {"found": found, "compiled": compiled, "failed": failed}
 
-    def _library_code(self, fn, where: str) -> None:
+    def _library_code(self, fn, where: str, flags: str) -> None:
         meta = json.loads(fn["meta"] or "{}")
-        meta["set_aside"] = f"library code: {where} makes it byte for byte with the game's compiler"
+        meta["set_aside"] = f"library code: {where} makes it byte for byte with the game's compiler ({flags})"
         meta["library"] = where
         with self.store.tx() as db:
             db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))

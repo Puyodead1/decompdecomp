@@ -270,6 +270,11 @@ class Console:
         """ROM mode: what a function's row must keep besides its bytes (GBA: whether it's Thumb)."""
         return {}
 
+    def library_flags(self, flags: list[str]) -> list[list[str]]:
+        """ROM mode: the flags a library built into a game may have had (its own build's, not the game's): what
+        match_libraries tries. The game's by default."""
+        return [list(flags)]
+
     def demangle(self, names: list[str], toolchain: str) -> dict[str, str]:
         """ROM mode: the C++ functions' names as written (`CRandStoryData::CRandStoryData()`), by their symbols
         (`_ZN14CRandStoryDataC1Ev`), for briefs and the function list; the symbol stays the name the judge links by.

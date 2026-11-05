@@ -30,6 +30,8 @@ from .. import BETA, EXPORT, ROM, Compiler, Console
 ELF_MAGIC = b"\x7fELF"
 EM_386 = 3
 MAX_SIZE = 256 << 20
+LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
+LIBRARY_MARCHES = ("", "amdfam10", "k8", "core2", "pentium4", "i686")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
 
 
@@ -57,6 +59,8 @@ class Linux(Console):
     # (the export assembles nothing: export.py builds each function's C into a copy of the program)
     as_flags = ("--32",)
     image_ext = ".elf"
+    # search_flags: the build machine's processor (-march=native): a 2008 program's Lua was built for AMD's family 10h
+    flag_extras = ("-march=amdfam10", "-march=k8", "-march=core2")
     # cutting a function (split.split_function, at an instruction's start); the export (export.py)
     own_features = frozenset({BOUNDARIES, EXPORT})
 
@@ -74,6 +78,18 @@ class Linux(Console):
             if version and wanted in ids:
                 return wanted
         return self.compilers[0].id
+
+    def library_flags(self, flags: list[str]) -> list[list[str]]:
+        """A library's own build: an optimisation level, and the processor it was tuned for. A 2008 program's Lua and
+        luabind were built -O0 for the build machine's AMD processor (-march=amdfam10: 71 of lapi.c's 74 functions,
+        none at the game's -O2), its TinyXML -O0 alone, its libogg and libpng -O2."""
+        out = [list(flags)]
+        for level in LIBRARY_LEVELS:
+            for march in LIBRARY_MARCHES:
+                variant = [level, *([f"-march={march}"] if march else [])]
+                if variant not in out:
+                    out.append(variant)
+        return out
 
     def demangle(self, names: list[str], toolchain: str) -> dict[str, str]:
         """A C++ program's symbols (`_ZN14CRandStoryDataC1Ev`, GCC 2's `Get__C4Data`) as written, by the c++filt of

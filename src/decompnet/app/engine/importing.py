@@ -18,6 +18,7 @@ from ...project import compiler_for
 from ...rom import Picked, RomError, split
 from ...rom.symbols import AUTO_NAME, Symbol, SymbolTable
 from .common import BASE_HEADER, GP_NOTE, data_preview, slugify
+from .libraries import LIBS
 
 # what the first header defines already: the game's typedefs of these names are left out (consoles/ps2/cheader.py)
 _HEADER_NAMES = {name for pair in re.findall(r"typedef [^;]*\b(\w+);|#define (\w+)", BASE_HEADER) for name in pair if name}
@@ -218,12 +219,20 @@ class ImportMixin:
             if saved_progress.is_dir():
                 log("Copying saved progress into the replacement project.")
                 shutil.copytree(saved_progress, workdir / "progress", dirs_exist_ok=True)
+            # the libraries' own sources the user put there (engine/libraries.py): moved, not copied (boost's are
+            # hundreds of MB), and put back below if the replacement fails
+            libs = root / LIBS
+            if libs.exists() or libs.is_symlink():
+                log("Moving the library sources into the replacement project.")
+                shutil.move(str(libs), str(workdir / LIBS))
             log("Replacing project files and updating the function analysis.")
             backup = root.with_name(f".{root.name}-reimport-backup-{time.time_ns()}")
             root.replace(backup)
             try:
                 workdir.replace(root)
             except OSError:
+                if (workdir / LIBS).exists() or (workdir / LIBS).is_symlink():
+                    shutil.move(str(workdir / LIBS), str(backup / LIBS))
                 backup.replace(root)
                 raise
             workdir = root
