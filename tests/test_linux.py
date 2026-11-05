@@ -573,10 +573,20 @@ def test_a_librarys_include_folders_are_where_its_users_include_from(tmp_path):
                  "libs/tinyxml/tinyxml.h", "libs/tinyxml/tinyxml.cpp", "libs/ois/includes/OIS.h"):
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text("")
+    for path in ("libs/boost_1_36_0/libs/thread/src/thread.cpp", "libs/boost_1_36_0/libs/thread/test/t.cpp",
+                 "libs/boost_1_36_0/tools/jam/src/jam.c", "libs/ogre/Tools/XMLConverter/include/x.h",
+                 "libs/lua-5.1.4/test/life.c"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("")
     found = libraries.library_includes(tmp_path)
     assert set(found) >= {"libs/boost_1_36_0", "libs/ogre/OgreMain/include", "libs/lua-5.1.4/src", "libs/tinyxml",
                           "libs/ois/includes"}
-    assert "libs/boost_1_36_0/boost" not in found
+    assert "libs/boost_1_36_0/boost" not in found and not any("Tools" in f for f in found)
+    # a library's own sources: not its tests', examples' or tools' (boost's 4,698 files are mostly those)
+    sources = {str(p.relative_to(tmp_path / "libs")) for lib in libraries.library_folders(tmp_path)
+               for p in libraries.library_sources(lib)}
+    assert sources == {"boost_1_36_0/libs/thread/src/thread.cpp", "ogre/OgreMain/src/OgreRoot.cpp",
+                       "lua-5.1.4/src/lapi.c", "tinyxml/tinyxml.cpp"}
 
 
 def test_a_librarys_own_source_sets_its_functions_aside_and_its_headers_are_in_every_compile(demo43):
