@@ -260,3 +260,18 @@ def test_a_long_functions_assembly_comes_in_parts(net, monkeypatch):
     assert brief.index("remember this") < brief.index("### Target assembly")
     second = net.get_function("func_80000A0C", "demo-quest-64", part=2)
     assert "part 2 of" in second and "remember this" not in second and second.count("\n") < 12
+
+
+def test_every_function_row_has_the_same_fields_when_only_some_are_cpp(net):
+    """/api/map takes its columns from the first row: a C++ program's functions with a name as written had a `cxx`
+    the others lacked, and its list failed (500) whenever the first row had none."""
+    import json
+
+    pid = net.project_row("demo-quest-64")["id"]
+    row = net.store.one("SELECT id, meta FROM functions WHERE project_id=? ORDER BY vram DESC LIMIT 1", pid)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET meta=? WHERE id=?",
+                   (json.dumps({**json.loads(row["meta"] or "{}"), "demangled": "Story::Story()"}), row["id"]))
+    rows = net.function_map("demo-quest-64")
+    assert len({tuple(r) for r in rows}) == 1
+    assert [r["cxx"] for r in rows if r["cxx"]] == ["Story::Story()"]

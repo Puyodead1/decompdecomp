@@ -192,8 +192,9 @@ class GuiMixin:
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
                  "not_c": r["status"] == "asm" and '"not_c"' in (r["meta"] or ""),
                  "polished": r["status"] == "matched" and bool(r["readable"]),
-                 # a C++ function's name as written (its symbol stays `name`, what the judge links by)
-                 **({"cxx": json.loads(r["meta"]).get("demangled")} if '"demangled"' in (r["meta"] or "") else {})}
+                 # a C++ function's name as written (its symbol stays `name`, what the judge links by); every row
+                 # has the field, as /api/map takes its columns from the first row (a C++ program's list failed: 500)
+                 "cxx": json.loads(r["meta"]).get("demangled") if '"demangled"' in (r["meta"] or "") else None}
                 for r in rows]
 
     def map_columns(self, slug: str) -> list[list]:
