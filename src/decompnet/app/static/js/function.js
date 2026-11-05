@@ -318,7 +318,8 @@ const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
 function searchFunctions(fns, q, fork) {
   if (!q) return fns;
   const inUnit = (f) => (f.unit || "").toLowerCase().includes(q);
-  const found = fns.filter((f) => f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (fork && inUnit(f)));
+  const found = fns.filter((f) => f.name.toLowerCase().includes(q) || (f.cxx || "").toLowerCase().includes(q)
+    || hex8(f.vram).toLowerCase().includes(q) || (fork && inUnit(f)));
   return found.length || fork ? found : fns.filter(inUnit);
 }
 
@@ -334,7 +335,7 @@ function renderList() {
   let rows = searchFunctions(S.map.filter((f) => L.filter === "all" || (L.filter === "first" ? starred(f) : L.filter === "polished" ? polished(f) : fnState(f) === L.filter)),
     q, S.ov && S.ov.kind === "fork");
   const key = {
-    i: (f) => f.i, name: (f) => f.name.toLowerCase(), insns: (f) => f.insns, attempts: (f) => f.attempts || 0,
+    i: (f) => f.i, name: (f) => (f.cxx || f.name).toLowerCase(), insns: (f) => f.insns, attempts: (f) => f.attempts || 0,
     best: (f) => (f.status === "matched" ? 2 : f.best == null ? -1 : pctOf(f.best, f.insns)), status: (f) => STATE_RANK[fnState(f)],
   }[L.sort === "vram" ? "i" : L.sort];
   rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : a.i - b.i) * L.dir; });
@@ -348,7 +349,7 @@ function renderList() {
     const on = starred(f), open = st !== "matched" && st !== "asm";
     const starCell = !star ? "" : `<td class="star-col">${open || on ? `<button type="button" class="star-btn${on ? " on" : ""}" data-star="${esc(f.name)}" aria-pressed="${on}" aria-label="${on ? "Agents take it first: click to stop" : "Agents take it first"}" title="${on ? "Agents take it first (click to stop)" : "Agents take it first"}">${on ? "★" : "☆"}</button>` : ""}</td>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0">${starCell}<td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
-      <td class="mono name">${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
+      <td class="mono name"${f.cxx ? ` title="${esc(f.name)}"` : ""}>${esc(f.cxx || f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
       <td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td>${status}</td></tr>`;
   }).join("") || `<tr class="none"><td colspan="7">${L.filter === "first" && !q ? "No function is starred. ☆ one and agents take it before the others." : `No function matches${q ? ` “${esc(L.q)}”` : ""}.`}</td></tr>`;
   $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, "function");

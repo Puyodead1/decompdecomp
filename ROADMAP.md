@@ -200,7 +200,17 @@ reader (consoles/ps2/dwarf2.py, on pyelftools) gives the same source files, type
 function GCC also inlined to the abstract entry that has its name and parameters. Demo Quest built with it
 (projects/demo-linux/build.py gcc-4.3.2-linux, -O2 -g) imports with its header from DWARF, every game function
 matches from its C (the three that inline the file's earlier functions, with those in the C as the game's file had
-them), and the export rebuilds it byte for byte. Left to do:
+them), and the export rebuilds it byte for byte.
+
+C++ programs of that time: Fedora 10's own GCC 4.3.2 (Red Hat's 4.3.2-7, with g++ and libstdc++'s headers:
+gcc-4.3.2-redhat-linux, its RPM packages unpacked by the installer, toolchains._rpm_payload) is picked for a program
+whose .comment names it. Its functions keep their symbols as names (what the judge links), with the names as written
+(`CRandStoryData::CRandStoryData()`, by the project's own c++filt: Linux.demangle) in the list and briefs. The header
+from DWARF declares a class's methods for C++ only, so a method is defined as the game's source did; on an 84 MB
+2008 C++ program (54,656 functions, 30,398 with DWARF) the header compiles as C and as C++. Left to do:
+- Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
+  from it would miss the namespace in its symbol); a header with namespaces for C++.
+- Debian's GCC 4.3.2 has no g++ yet.
 - DWARF for the other consoles that read debug information (a PS2 game built by a later GCC is told its DWARF isn't
   read: consoles/ps2/debuginfo.py UNREAD_SECTIONS), with their processor's register numbers.
 - Ghidra's drafts with the program's own types: its STABS read into Ghidra (now the drafts treat a struct global as

@@ -59,3 +59,11 @@ GCC 4.3 (a program whose `.comment` says 4.3.2)
 - Loops are padded with the long nops (`lea esi, [esi+eiz*1+0]`, `nop word [eax+eax]`), as 2.95's are: never
   write them. Counting loops often count up with `add reg, 1` (not `inc`): that's -mtune=generic, not the C.
 - glibc 2.7's headers come with it: include them as the game's files did (`<sys/io.h>`, `<math.h>`, ...).
+
+C++ (a program built by Fedora's GCC 4.3.2, with classes)
+- A function's name is its symbol (`_ZN14CRandStoryDataC1Ev`); the brief says it as written
+  (`CRandStoryData::CRandStoryData()`). Write it so, `Class::method`, and the judge compiles your C as C++. C1 and C2
+  (D1 and D2) are the same constructor (destructor) GCC writes twice: one definition makes both.
+- The shared header declares the methods of the classes the debug information describes, for C++ only. A class it
+  doesn't (no debug information, or one in a namespace) needs its methods declared: add them to the class in the
+  header with edit_context, inside `#ifdef __cplusplus`, never as `virtual` (its vtable pointer is a member already).

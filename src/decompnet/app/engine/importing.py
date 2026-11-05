@@ -227,6 +227,11 @@ class ImportMixin:
                 backup.replace(root)
                 raise
             workdir = root
+        # C++ names as written, for briefs and the list (the symbol stays the name the judge links by); before the
+        # transaction, as it runs a tool
+        demangled = console.demangle([fn.name for fn in res.functions], cfg["compiler"]["toolchain"])
+        if demangled:
+            log(f"{len(demangled)} C++ functions, their names as written from their symbols")
         try:
             now = time.time()
             with self.store.tx() as db:
@@ -281,6 +286,8 @@ class ImportMixin:
                     meta_data = dict(console.function_meta(fn))
                     if known:
                         meta_data["debug"] = known
+                    if fn.name in demangled:
+                        meta_data["demangled"] = demangled[fn.name]
                     meta = json.dumps(meta_data) if meta_data else None
                     n_insns = console.function_insns(fn)
                     status = console.function_status(fn)

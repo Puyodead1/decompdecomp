@@ -14,6 +14,7 @@ import os
 import platform as _platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -356,6 +357,85 @@ def _deb_data(deb: Path, out: Path) -> Path:
     raise ToolchainError(f"{deb.name} has no data.tar")
 
 
+RPM_LEAD_BYTES = 96
+RPM_HEADER_MAGIC = b"\x8e\xad\xe8"
+CPIO_NEWC = b"070701"
+CPIO_HEADER_BYTES = 110
+S_IFMT, S_IFDIR, S_IFREG, S_IFLNK = 0o170000, 0o040000, 0o100000, 0o120000
+
+
+def _rpm_payload(rpm: Path) -> bytes:
+    """The cpio archive inside an RPM package: after its lead, its signature header (padded to 8 bytes) and its
+    header, compressed with gzip (Fedora 10's), xz or lzma."""
+    import gzip
+    import lzma
+
+    data = rpm.read_bytes()
+    if data[:4] != b"\xed\xab\xee\xdb":
+        raise ToolchainError(f"{rpm.name} isn't an RPM package")
+    at = RPM_LEAD_BYTES
+    for pad in (True, False):  # the signature header, then the header
+        if data[at:at + 3] != RPM_HEADER_MAGIC:
+            raise ToolchainError(f"{rpm.name}: its header isn't where an RPM's is")
+        entries, size = struct.unpack(">II", data[at + 8:at + 16])
+        at += 16 + entries * 16 + size
+        if pad:
+            at = (at + 7) & ~7
+    payload = data[at:]
+    if payload[:2] == b"\x1f\x8b":
+        return gzip.decompress(payload)
+    if payload[:6] == b"\xfd7zXZ\x00" or payload[:1] == b"\x5d":
+        return lzma.decompress(payload)
+    raise ToolchainError(f"{rpm.name}'s payload is compressed in a way decompdecomp doesn't read")
+
+
+def _extract_cpio(data: bytes, out: Path, take) -> None:
+    """A cpio archive (newc, as RPM packs it) into `out`: files, folders and links inside it; never a path out of
+    `out`, and not a link into the system the package installs to (as with a Debian package). A file several names
+    share (a hard link) has its data with the last of them."""
+    root = out.resolve()
+    at, names_of = 0, {}
+    while at + CPIO_HEADER_BYTES <= len(data):
+        if data[at:at + 6] != CPIO_NEWC:
+            raise ToolchainError("an RPM's payload isn't a cpio archive decompdecomp reads (newc)")
+        fields = [int(data[at + 6 + 8 * i:at + 14 + 8 * i], 16) for i in range(13)]
+        ino, mode, size, namesize = fields[0], fields[1], fields[6], fields[11]
+        start = at + CPIO_HEADER_BYTES
+        name = data[start:start + namesize - 1].decode("utf-8", "replace")
+        body_at = (start + namesize + 3) & ~3
+        body = data[body_at:body_at + size]
+        at = (body_at + size + 3) & ~3
+        if name == "TRAILER!!!":
+            break
+        rel = name.removeprefix("./").lstrip("/")
+        if not rel or not take(rel):
+            continue
+        target = (out / rel).resolve()
+        if root not in target.parents:
+            raise ToolchainError(f"refusing to extract {name} outside the toolchain folder")
+        kind = mode & S_IFMT
+        if kind == S_IFDIR:
+            target.mkdir(parents=True, exist_ok=True)
+        elif kind == S_IFLNK:
+            link = body.decode("utf-8", "replace")
+            if link.startswith("/") or root not in (target.parent / link).resolve().parents:
+                continue  # (out of the package: of no use in the sandbox)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.unlink(missing_ok=True)
+            os.symlink(link, target)
+        elif kind == S_IFREG:
+            names_of.setdefault(ino, []).append(target)
+            if size or fields[4] <= 1:  # (a hard link's earlier names come empty: the data is with the last)
+                for each in names_of.pop(ino):
+                    each.parent.mkdir(parents=True, exist_ok=True)
+                    each.write_bytes(body)
+                    os.chmod(each, 0o755 if mode & 0o111 else 0o644)
+    for names in names_of.values():  # (hard links of an empty file)
+        for each in names:
+            each.parent.mkdir(parents=True, exist_ok=True)
+            each.touch()
+
+
 def _extract(archive: Path, dest: Path, subdir: str | None, keep: dict[str, str] | None = None) -> None:
     """Unpack an archive (or its `subdir`) into `dest`. `keep`: {path in it: where it goes in dest}, and nothing else:
     a compiler's archive is often a whole install (its IDE, libraries, the C runtime's sources: 700 MB for Visual C++
@@ -368,7 +448,9 @@ def _extract(archive: Path, dest: Path, subdir: str | None, keep: dict[str, str]
         return wanted is None or any(name == w or name.startswith(w + "/") for w in wanted)
 
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
-        if archive.name.endswith(".deb"):
+        if archive.name.endswith(".rpm"):
+            _extract_cpio(_rpm_payload(archive), Path(tmp), lambda name: take(name))
+        elif archive.name.endswith(".deb"):
             with tempfile.TemporaryDirectory(dir=dest.parent) as raw:
                 with tarfile.open(_deb_data(archive, Path(raw))) as t:
                     # (a distribution's package links into the system it installs to, /lib/libgcc_s.so.1: outside the

@@ -13,8 +13,9 @@ Files:
 - guides/linux.md: matching GCC 2.95 on i386, given to every helper before its first claim.
 
 The compilers are the distributions' own (toolchains.toml): gcc-2.95.3-linux, Slackware 8.0's GCC 2.95.3 and binutils
-with glibc 2.2.3's headers, and gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; both run on
-the pinned 32-bit runtime. The program's .comment says which (default_compiler)."""
+with glibc 2.2.3's headers; gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; and
+gcc-4.3.2-redhat-linux, Fedora 10's (Red Hat's 4.3.2-7, C and C++); all run on the pinned 32-bit runtime. The
+program's .comment says which (default_compiler)."""
 
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from .. import BETA, EXPORT, ROM, Compiler, Console
 ELF_MAGIC = b"\x7fELF"
 EM_386 = 3
 MAX_SIZE = 256 << 20
+DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
 
 
 class Linux(Console):
@@ -43,7 +45,10 @@ class Linux(Console):
     compilers = (Compiler("gcc-2.95.3-linux", "GCC 2.95.3 (Slackware 8.0)", "Linux programs of 2001-2002",
                           "GCC: (GNU) 2.95.3 20010315 (release)"),
                  Compiler("gcc-4.3.2-linux", "GCC 4.3.2 (Debian 5.0)", "Linux programs of 2008-2009",
-                          "GCC: (Debian 4.3.2-1.1) 4.3.2"))
+                          "GCC: (Debian 4.3.2-1.1) 4.3.2"),
+                 Compiler("gcc-4.3.2-redhat-linux", "GCC 4.3.2 (Red Hat, Fedora 10)",
+                          "Linux programs of 2008-2009 built on Fedora or Red Hat (C and C++)",
+                          "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)"))
     guides = ("linux",)  # (not the PC's x86 guide: its conventions are Visual C++'s)
     compiler_guide = "linux"  # (guides/linux.md: GCC 2.95's habits on i386, given every helper before its first claim)
     ram = (0x08048000, 0x10000000)
@@ -60,9 +65,68 @@ class Linux(Console):
         "GCC: (Debian 4.3.2-1.1) 4.3.2", Ubuntu's "GCC: (Ubuntu 4.3.2-1ubuntu12) 4.3.2", a GCC built from its
         release "GCC: (GNU) 4.3.2" (an exact match took only the first). A version none of them is takes the first."""
         said = info.get("compiler_guess", "")
+        if (exact := next((c.id for c in self.compilers if c.guess == said), None)):
+            return exact
         version = m.group(1) if (m := re.search(r"GCC: \([^)]*\) (\d+\.\d+(?:\.\d+)?)", said)) else None
-        return next((c.id for c in self.compilers if version and c.id == f"gcc-{version}-linux"),
-                    self.compilers[0].id)
+        vendor = "redhat-" if "Red Hat" in said else ""  # (Red Hat's GCC is patched its own way: its own build)
+        ids = {c.id for c in self.compilers}
+        for wanted in (f"gcc-{version}-{vendor}linux", f"gcc-{version}-linux"):
+            if version and wanted in ids:
+                return wanted
+        return self.compilers[0].id
+
+    def demangle(self, names: list[str], toolchain: str) -> dict[str, str]:
+        """A C++ program's symbols (`_ZN14CRandStoryDataC1Ev`, GCC 2's `Get__C4Data`) as written, by the c++filt of
+        the binutils the project's compiler comes with (the pinned toolchain's, in the sandbox: no tool of the
+        host's), all in one run. {} when its compiler isn't installed or none is C++."""
+        import tempfile
+
+        from ... import compiler, toolchains
+        from ...project import compiler_config
+
+        mangled = sorted({n for n in names if n.startswith("_Z") or "__" in n.strip("_")})
+        if not mangled:
+            return {}
+        try:  # (free software: installed when a program needs it, as its import does)
+            toolchains.ensure(toolchain, log=lambda *_: None)
+        except toolchains.ToolchainError:
+            return {}
+        with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
+            work = Path(tmp)
+            (work / "names.txt").write_text("\n".join(mangled) + "\n", encoding="utf-8")
+            cfg = compiler_config(work, {"compiler": {"toolchain": toolchain, "flags": []}})
+            tc = toolchains.path(toolchain)
+            res = compiler.run_in(cfg, work, ["/bin/sh", "-c", f'LD_LIBRARY_PATH="{tc}/lib:{tc}/binutils/usr/lib'
+                                              '${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec '
+                                              f'"{tc}/binutils/usr/bin/c++filt" < names.txt > demangled.txt'],
+                                  timeout=DEMANGLE_SECONDS)
+            out = (work / "demangled.txt").read_text(encoding="utf-8", errors="replace").splitlines() \
+                if res.returncode == 0 and (work / "demangled.txt").exists() else []
+        if len(out) != len(mangled):
+            return {}
+        return {m: d for m, d in zip(mangled, out) if d and d != m}
+
+    def on_start(self, net, slug: str, log=print) -> None:
+        """A C++ program imported before its functions had their names as written (meta "demangled") gets them."""
+        proj = net.project_row(slug)
+        if net.cfg(proj).get("demangled"):  # (done once: a C program's names stay as they are)
+            return
+        rows = net.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND (name LIKE '\\_Z%' ESCAPE '\\' "
+                             "OR name LIKE '%\\_\\_%' ESCAPE '\\') AND (meta IS NULL OR meta NOT LIKE '%\"demangled\"%')",
+                             proj["id"])
+        names = self.demangle([r["name"] for r in rows], net.cfg(proj)["compiler"]["toolchain"]) if rows else {}
+        if rows and not names and any(r["name"].startswith("_Z") for r in rows):
+            return  # (its compiler couldn't run: the next start tries again)
+        net._update_cfg(slug, lambda cfg: cfg.update(demangled=True))
+        if not names:
+            return
+        with net.store.tx() as db:
+            for r in rows:
+                if r["name"] in names:
+                    meta = json.loads(r["meta"] or "{}")
+                    meta["demangled"] = names[r["name"]]
+                    db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+        log(f"{slug}: {len(names)} C++ functions have their names as written")
 
     def sniff(self, head: bytes, file) -> bool:
         """A 32-bit x86 ELF executable (an i386 Linux program): ELF class 1, little-endian, e_machine 3."""

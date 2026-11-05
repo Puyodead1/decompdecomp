@@ -1206,6 +1206,9 @@ class Network:
         lines = [f"## {header}: {proj['slug']}/{fn['name']}",
                  f"size {fn['size']} bytes, {fn['n_insns']} instructions, arch {proj['arch']}, "
                  f"context.h v{ctx['version']} ({len(ctx['header'].splitlines())} lines)"]
+        if (demangled := json.loads(fn["meta"] or "{}").get("demangled")):  # (C++: the symbol is what the judge links)
+            lines.append(f"C++ name: {demangled} (its symbol {fn['name']}: write it as C++, `Class::method`, "
+                         "and the judge compiles it as C++)")
         cfg = json.loads(proj["config"])
         own = compiler_for(cfg, fn["vram"])
         if own is not cfg.get("compiler"):  # a range built by another compiler than the rest of the game

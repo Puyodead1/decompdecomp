@@ -191,7 +191,10 @@ class GuiMixin:
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
                  "not_c": r["status"] == "asm" and '"not_c"' in (r["meta"] or ""),
-                 "polished": r["status"] == "matched" and bool(r["readable"])} for r in rows]
+                 "polished": r["status"] == "matched" and bool(r["readable"]),
+                 # a C++ function's name as written (its symbol stays `name`, what the judge links by)
+                 **({"cxx": json.loads(r["meta"]).get("demangled")} if '"demangled"' in (r["meta"] or "") else {})}
+                for r in rows]
 
     def map_columns(self, slug: str) -> list[list]:
         """The compiler map's view of each function for the ROM map, asked for after the map is drawn: the map no

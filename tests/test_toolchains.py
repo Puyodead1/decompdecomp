@@ -224,6 +224,41 @@ def test_a_debian_packages_links_into_the_system_are_left_out(tmp_path):
     assert (dest / "usr" / "lib" / "libgmp.so.3").read_bytes() == b"gmp"
 
 
+def test_an_rpm_packages_files_are_unpacked_from_its_cpio(tmp_path):
+    """Fedora 10's GCC is RPM packages: a lead, a signature header padded to 8 bytes, a header, then a gzip'd cpio
+    (newc). Its files, folders and links inside the package come out, a file two names share (gcc and
+    i386-redhat-linux-gcc, the data with the last) under both, and a link into the system it installs to doesn't."""
+    import gzip
+    import struct as st
+
+    def entry(name: str, mode: int, body: bytes = b"", ino: int = 0, nlink: int = 1) -> bytes:
+        fields = [ino, mode, 0, 0, nlink, 0, len(body), 0, 0, 0, 0, len(name) + 1, 0]
+        head = b"070701" + b"".join(f"{f:08x}".encode() for f in fields) + name.encode() + b"\0"
+        head += b"\0" * (-len(head) % 4)
+        return head + body + b"\0" * (-len(body) % 4)
+
+    cpio = (entry("./usr", 0o040755) + entry("./usr/bin/gcc", 0o100755, b"", ino=7, nlink=2)
+            + entry("./usr/bin/i386-redhat-linux-gcc", 0o100755, b"\x7fELF", ino=7, nlink=2)
+            + entry("./usr/lib/libgmp.so.3", 0o120777, b"libgmp.so.3.4.2")
+            + entry("./usr/lib/libgmp.so.3.4.2", 0o100644, b"gmp") + entry("./usr/lib/libgcc_s.so", 0o120777, b"/lib/x")
+            + entry("TRAILER!!!", 0))
+    header = lambda size: b"\x8e\xad\xe8\x01" + b"\0" * 4 + st.pack(">II", 0, size) + b"\0" * size  # noqa: E731
+    rpm = tmp_path / "gcc-4.3.2-7.i386.rpm"
+    rpm.write_bytes(b"\xed\xab\xee\xdb" + b"\0" * 92 + header(5) + b"\0" * 3 + header(8) + gzip.compress(cpio))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    toolchains._extract(rpm, dest, None)
+    assert (dest / "usr" / "bin" / "gcc").read_bytes() == (dest / "usr" / "bin" / "i386-redhat-linux-gcc").read_bytes() \
+        == b"\x7fELF"
+    assert os.access(dest / "usr" / "bin" / "gcc", os.X_OK)
+    assert (dest / "usr" / "lib" / "libgmp.so.3").read_bytes() == b"gmp"
+    assert not (dest / "usr" / "lib" / "libgcc_s.so").is_symlink()
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    toolchains._extract(rpm, keep, None, {"usr/lib/libgmp.so.3.4.2": "lib/libgmp.so.3.4.2"})
+    assert [p.name for p in keep.rglob("*") if p.is_file()] == ["libgmp.so.3.4.2"]
+
+
 def test_keep_takes_only_what_a_build_needs_and_merges_folders(tmp_path):
     """Visual C++ 2010's archive is a whole install (700 MB unpacked): its compiler and headers go where the project
     looks for them, the Windows SDK's headers with Visual C++'s, and nothing else is unpacked."""

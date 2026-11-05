@@ -270,6 +270,12 @@ class Console:
         """ROM mode: what a function's row must keep besides its bytes (GBA: whether it's Thumb)."""
         return {}
 
+    def demangle(self, names: list[str], toolchain: str) -> dict[str, str]:
+        """ROM mode: the C++ functions' names as written (`CRandStoryData::CRandStoryData()`), by their symbols
+        (`_ZN14CRandStoryDataC1Ev`), for briefs and the function list; the symbol stays the name the judge links by.
+        None by default."""
+        return {}
+
     def function_status(self, fn) -> str:
         """ROM mode: the status a just-split function starts with (GBA: hand-written helpers are 'asm')."""
         return "open"

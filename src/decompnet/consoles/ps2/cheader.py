@@ -65,6 +65,9 @@ class Header:
     def __init__(self, sources: list[SourceInfo], reserved: set[str] = frozenset()):
         self.reserved = set(reserved)
         self.tags: dict[int, str] = {}  # id(type) -> its tag in the header
+        # a C++ program's header: C++ has one name for a tag and a typedef, so a typedef named like another
+        # type's tag is renamed (C keeps them apart, and a C game's matched code may use the shared name)
+        self.cplusplus = any(getattr(source, "cplusplus", False) for source in sources)
         self.typedefs: dict[int, str] = {}  # id(type) -> its typedef name in the header
         self.entities: dict[tuple[str, str], Type] = {}  # ("struct" | "union" | "enum" | "typedef", name) -> type
         self.renamed = 0
@@ -109,13 +112,36 @@ class Header:
         new one (Thing_2) when a different type has it."""
         base = identifier(name)
         candidate, copy = base, 2
-        while (space, candidate) in self.entities:
-            if self._signature(self.entities[(space, candidate)], space) == self._signature(t, space):
+        while (space, candidate) in self.entities or self._clashes(space, candidate, t):
+            if (space, candidate) in self.entities and \
+                    self._signature(self.entities[(space, candidate)], space) == self._signature(t, space):
                 return candidate
             candidate, copy = f"{base}_{copy}", copy + 1
         self.entities[(space, candidate)] = t
         self.renamed += candidate != base
         return candidate
+
+    def _clashes(self, space: str, name: str, t: Type) -> bool:
+        """Whether a typedef's name is a tag of another type, or a tag a typedef's name of another type: C keeps the
+        two apart, C++ doesn't (a C++ program's `union data_t` and another file's `typedef unsigned char data_t`)."""
+        if not self.cplusplus:
+            return False
+
+        def names(typedef: Type) -> str:  # (the tag a typedef's type has: `typedef struct X X` is no clash)
+            target = typedef.target if typedef.kind == "alias" and typedef.target is not None else typedef
+            for _ in range(_DEPTH):
+                if target.kind in ("alias", "const", "volatile") and target.target is not None:
+                    target = target.target
+                else:
+                    break
+            if target.kind in TAGGED:  # (by the name it's written with: a struct renamed Item_2 is its typedef's)
+                return self._tag(target)
+            return identifier(target.name) if target.kind == "xref" else ""
+
+        if space == "typedef":
+            return any((tag, name) in self.entities for tag in TAGGED) and names(t) != name
+        typedef = self.entities.get(("typedef", name))
+        return typedef is not None and names(typedef) != name
 
     def _signature(self, t: Type, space: str) -> str:
         """What makes two definitions the same type, whatever their names. Kept: a game's every source file repeats
@@ -201,7 +227,7 @@ class Header:
     # ------------------------------------------------------------------ writing C
 
     def declaration(self, t: Type, name: str = "", deps: set | None = None, by_value: bool = True,
-                    own: bool = False) -> str:
+                    own: bool = False, cxx: bool = False) -> str:
         """`t` declared as `name` in C: `struct Entity *next`, `s32 (*think)()`, `char name[16]`. `deps` collects the
         definitions this needs before it. `own`: `t` itself is being defined by a typedef (its own name isn't used)."""
         deps = set() if deps is None else deps
@@ -214,8 +240,8 @@ class Header:
                 if by_value:
                     self._value_deps(t, deps)
                 break
-            if t.kind == "pointer" and t.target is not None:
-                inner, t, by_value = f"*{inner}", t.target, False
+            if t.kind == "pointer" and t.target is not None:  # (a C++ reference, in what only C++ reads: `&`)
+                inner, t, by_value = f"{'&' if cxx and t.reference else '*'}{inner}", t.target, False
                 if not self._known_as(t) and t.kind in ("array", "function"):
                     inner = f"({inner})"
                 if not self._known_as(t) and t.kind in ("struct", "union") and not t.tag:
@@ -236,6 +262,10 @@ class Header:
                 continue
             if t.kind == "alias" and t.target is not None:
                 t = t.target
+                # a pointer to a typedef of a function or array, the typedef not written by that name (another
+                # unit's copy): the pointer needs its parentheses still, `int (*read)()`, not `int *read()`
+                if inner.startswith(("*", "&")) and not self._known_as(t) and t.kind in ("array", "function"):
+                    inner = f"({inner})"
                 continue
             spec = self._specifier(t, deps, by_value)
             break
@@ -299,6 +329,10 @@ class Header:
                 name = f"{name}_{offset:X}"
             used.add(name)
             width = self.size(member)
+            if self._resolve(member) is t:  # (a class and its base of the same name, flattened into one: its bytes)
+                lines.append(f"unsigned char {name}[0x{max(width, 1):X}]; /* 0x{offset:X} */")
+                cursor_bits = max(cursor_bits, bit_offset + width * BITS_PER_BYTE)
+                continue
             bitfield = bit_size and bit_size != width * BITS_PER_BYTE and self._resolve(member).kind in ("base", "enum")
             if t.kind == "struct" and not bitfield:
                 start = _align_up(cursor_bits, BITS_PER_BYTE) // BITS_PER_BYTE
@@ -339,7 +373,22 @@ class Header:
         if not lines and t.size:
             lines = [f"unsigned char data[0x{t.size:X}];"]
         body = "".join(f"    {line}\n" for line in lines)
+        if t.methods and self._tag(t) == t.tag:  # (C++ only, as the same header is compiled as C too; not for a
+            # class written under another name, whose constructor couldn't be named: TiXmlString_2)
+            body += "#ifdef __cplusplus\n" + "".join(f"    {self._method(t, deps, *m)};\n" for m in t.methods) + "#endif\n"
         return f"{t.kind} {self._tag(t)} {{ /* 0x{t.size:X} bytes */\n{body}}};"
+
+    def _method(self, t: Type, deps: set, name: str, returns: Type, params, const: bool, static: bool) -> str:
+        """A method's declaration in its class: a constructor, destructor or operator by its own name, the others as
+        C identifiers. Not `virtual`: the class's vtable pointer is a member of the struct already (a virtual method
+        would add a second)."""
+        special = name == t.tag or name.startswith("~") or name.startswith("operator")
+        args = ", ".join(self.declaration(p, self._ident(n) if n else "", deps, by_value=False, cxx=True)
+                         for n, p in params)
+        call = f"{name if special else self._ident(name)}({args}){' const' if const else ''}"
+        if name == t.tag or name.startswith("~"):
+            return call
+        return ("static " if static else "") + self.declaration(returns, call, deps, by_value=False, cxx=True)
 
     def text(self, variables: list[tuple[str, Type, bool]] = ()) -> str:
         """Every type, in an order the compiler accepts (what each needs comes first), then `variables`: (name, type,
