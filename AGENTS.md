@@ -150,7 +150,9 @@ secret in its user agent; Linux and Windows have a tray icon; tests set `DECOMP_
 `app/manual_mcp.py` (project-scoped credentials for manual MCP clients),
 `app/edition.py` (release or development copy), `app/saves.py` (a ROM project's work as plain files, and a project
 restored from them), `app/readable.py` (polishing matched code), `app/knowledge.py` (what agents learn, shared once
-two models agree), `app/drafts.py` + `app/permute.py` (background drafts and the permuter), `structs.py` (struct
+two models agree), `app/drafts.py` + `app/permute.py` (background drafts and the permuter, on `app/workers.py`'s shared workers, which
+take turns between projects), `app/deep.py` (a deep search: the permuter on one function the user picks),
+`app/monitor.py` (the Background work page), `structs.py` (struct
 layouts from loads and stores), `app/guide/*.md` and `consoles/<id>/guides/*.md` (know-how agents read through
 `guide(topic)`), `app/static/` (GUI: `index.html`, `app.css`, and `js/*.js`, twelve plain scripts loaded in order;
 `js/base.js` says which is which).

@@ -56,3 +56,4 @@ class App:
     # what one part of the app lends another (set by the module that defines it)
     autopilot: Callable[[str], None] | None = None  # state: start autopilot on a project
     with_project: Callable[..., Any] | None = None  # projects: a project route from fn(slug, request, data)
+    searches: Any = None  # projects: the deep searches on single functions (deep.Searches)

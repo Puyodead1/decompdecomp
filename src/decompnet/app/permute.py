@@ -220,8 +220,15 @@ class Permuter:
                                                         given["permuter_max_turns"])
 
     def status(self, slug: str) -> dict | None:
+        """Its counts, and while it runs, what it waits for on the shared workers (workers.FairPool.waiting): a turn
+        queued behind other projects' work said nothing before, and looked like a permuter doing nothing."""
         st = self.jobs.get(slug)
-        return None if st is None else {k: v for k, v in st.__dict__.items() if k != "stop" and not k.startswith("_")}
+        if st is None:
+            return None
+        out = {k: v for k, v in st.__dict__.items() if k != "stop" and not k.startswith("_")}
+        if st.state == "running":
+            out["workers"] = workers.pool().waiting((slug, "permuter"))
+        return out
 
     def start(self, slug: str) -> State | None:
         """Run on the project's near misses until there are none (looking again every few minutes while the
@@ -237,6 +244,7 @@ class Permuter:
     def stop(self, slug: str) -> None:
         if (st := self.jobs.get(slug)) is not None:
             st.stop.set()
+        workers.cancel((slug, "permuter"))
 
     def candidates(self, proj, limit: int = CANDIDATES) -> list:
         return self.net.store.all(
@@ -262,7 +270,7 @@ class Permuter:
                     st.stop.wait(IDLE_SECONDS)
                     continue
                 idle = 0
-                wait([workers.pool().submit(self._turn, agent, proj, fn, st) for fn in todo])
+                wait([workers.submit((slug, "permuter"), self._turn, agent, proj, fn, st, label=fn["name"]) for fn in todo])
         finally:
             st.state = "stopped" if st.stop.is_set() else "done"
 
@@ -288,8 +296,13 @@ class Permuter:
                 db.execute("UPDATE functions SET permuted = permuted + 1 WHERE id=?", (fn["id"],))
         return True
 
-    def _random_seed(self, fn):
+    @staticmethod
+    def _seed(fn) -> str:
+        """A turn's random seed: the same function and turn write the same variants."""
         return f"{fn['id']}-{fn['permuted']}"
+
+    def _random_seed(self, fn):
+        return self._seed(fn)
 
     def _turn_deadline(self):
         return time.monotonic() + self.seconds
