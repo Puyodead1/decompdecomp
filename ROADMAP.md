@@ -568,6 +568,21 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (the rest: two return types guessed wrong, a function compiled with frame pointers, which `#pragma optimize("y",
   off)` gives, and a C runtime function built for size). That game keeps an ebp frame in about half its functions:
   if all of it was built with /Oy-, a project flag would serve better than a pragma per function.
+- **From RetroReversing's fork: deep searches, fair background workers, a Background work page, richer work
+  selection.** The permuter only took near misses (6% off, 400 instructions, a few minute-long turns, never a claimed
+  function), so a 2000s Linux game's last three functions (one register off, at 722 and 417 instructions) never got
+  it; run by hand on a copy for 80 minutes it took one from 270 to 50. A function's page now has Deep search: the
+  permuter on that function alone, for up to two hours, beside any agent holding it (a project's try puts the file
+  back under the unit's lock; `app/deep.py`), keeping each better score as it goes; tried on that Linux game (ROM
+  mode) and a Visual C++ 6.0 game (project mode). The shared workers took work first come, first served: a PC game's
+  Ghidra drafts held all four for hours while another game's permuter waited, and its line read as working. They
+  take turns between projects and kinds now, drafts never hold them all, Stop drops what a part queued
+  (`workers.FairPool`), the permuter's line says what it waits for, and a Background work page lists every part at
+  work, the deep searches and jobs, with Stop for each (`app/monitor.py`). An agent's work selection opens in the side
+  panel and can be set in the launcher, with three more orders (untried, longest unchecked, no compiling C yet) and
+  "only functions this model hasn't tried". Their C-line evidence (which C line made each different instruction)
+  wasn't brought: it needs the project's own compile to carry line information (-g), which none of the PC, Linux or
+  most ROM projects' builds do, and their own review found agents didn't use it.
 - **A Visual C++ 6.0 debug build builds as one.** A 6.0 SP6 game shipped as a debug build: 1,540 functions filled
   their stack with 0xCC (/GZ) after edit-and-continue's 0x40 bytes (/ZI), unoptimised, and the project built every
   file with /O2, so 102 of 2,219 functions matched and agents wrote "only the /GZ debug prologue is missing" on C that

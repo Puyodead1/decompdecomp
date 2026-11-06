@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from ... import consoles, hostenv, toolchains
 from ...forks.project import SCOPES
 from ...network import NetworkError
-from .. import saves
+from .. import deep, saves
 from ..engine import parse_ranges
 from . import App
 
@@ -159,6 +159,25 @@ def register(app: App) -> None:
         return {"job": jobs.start("recheck", lambda log: {
             "said": net.recheck(slug, log=log) or "nothing to do on this computer, as the room's host checks the game"})}
 
+    searches = deep.Searches(net, jobs)
+    app.searches = searches
+
+    def p_deep(slug, request, data):
+        """A deep search on one function (deep.Searches): its job, which Stop cancels; a second start on the same
+        function gives the one running."""
+        return {"job": searches.start(slug, str(data.get("name", "")), data.get("minutes"), data.get("variants"))}
+
+    def p_function(slug, request, data):
+        """A function's page, with the deep search running on it (its job, to follow again when the page reopens)."""
+        name = request.query_params.get("name", "")
+        detail = net.function_detail(slug, name)
+        try:
+            last = json.loads(net._function(detail.get("name", name), slug)["meta"] or "{}").get("deep")
+        except NetworkError:
+            last = None
+        return detail | {"deep_job": searches.job_for(slug, detail.get("name", name)), "deep": last,
+                         "deep_limits": {"minutes": deep.DEFAULT_MINUTES, "variants": deep.DEFAULT_VARIANTS}}
+
     def p_compare(slug, request, data):
         """One function's best C with each compiler and flag variant, ranked (compare_compilers), in the background."""
         name = str(data.get("name", ""))
@@ -264,7 +283,7 @@ def register(app: App) -> None:
         "/api/modelcosts": (lambda s, r, d: manager.costs(s), ["GET"]),
         "/api/save": (p_save, ["POST"]),
         "/api/live": (p_live, ["GET"]),
-        "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
+        "/api/function": (p_function, ["GET"]), "/api/deep": (p_deep, ["POST"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),

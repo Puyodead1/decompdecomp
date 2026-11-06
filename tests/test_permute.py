@@ -197,11 +197,13 @@ def test_workers_yield_the_cpu_to_the_app():
 
 
 def test_drafts_and_the_permuter_share_one_pool_of_workers(monkeypatch):
-    """Two pools of four made eight background threads beside the agents' compiles: both submit to the one pool."""
+    """Two pools of four made eight background threads beside the agents' compiles: both submit to the one pool,
+    each as its project's own kind of work."""
     from decompnet.app import drafts
 
     used = []
-    monkeypatch.setattr(workers, "pool", lambda: used.append("pool") or workers.ThreadPoolExecutor(1))
+    one = workers.ThreadPoolExecutor(1)
+    monkeypatch.setattr(workers, "submit", lambda owner, fn, *args, label="": used.append(owner) or one.submit(fn, *args))
     net = FakeNet()
     net.local_agent = lambda name: (AGENT, "")
     p = Permuter(net)
@@ -212,7 +214,43 @@ def test_drafts_and_the_permuter_share_one_pool_of_workers(monkeypatch):
     net.draft_mark, net.can_draft, net.stale_drafts = (lambda proj: 1), (lambda proj: True), (lambda proj: [1])
     d._one = lambda *args: d.stop("game")
     d._loop("game", d.jobs.setdefault("game", drafts.State()))
-    assert used == ["pool", "pool"]
+    assert used == [("game", "permuter"), ("game", "drafts")]
+
+
+def test_the_workers_take_turns_between_projects_and_kinds():
+    """A first-come pool let a PC game's machine drafts (687 of them, minutes each) hold every worker for hours while
+    another game's permuter waited behind them. The workers take each owner's work in turn, drafts never hold them
+    all, a part that stops drops what it queued, and a waiting part can say for whom it waits."""
+    gate = threading.Event()
+    done: list[str] = []
+    fair = workers.FairPool(2, caps={"drafts": 1})
+    held = [fair.submit(gate.wait, owner=("pc", "drafts"), label="first draft")]
+    drafts = [fair.submit(done.append, f"draft {i}", owner=("pc", "drafts")) for i in range(5)]
+    turn = fair.submit(done.append, "trek turn", owner=("trek", "permuter"), label="read_tga")
+    turn.result(timeout=10)  # (the second worker: drafts may hold only one, and that one waits on the gate)
+    assert done == ["trek turn"]
+    assert fair.waiting(("trek", "permuter")) == {"queued": 0, "running": 0, "busy_with": ["pc (drafts)"]}
+    rows = {(r["project"], r["kind"]): r for r in fair.snapshot()}
+    assert rows[("pc", "drafts")]["queued"] == 5 and rows[("pc", "drafts")]["running"][0]["label"] == "first draft"
+    assert fair.cancel(("pc", "drafts")) == 5 and all(f.cancelled() for f in drafts)
+    gate.set()
+    held[0].result(timeout=10)
+    assert done == ["trek turn"] and fair.snapshot() == []
+    # turns: with one worker, two owners' queues alternate rather than one draining first
+    gate.clear()
+    order: list[str] = []
+    solo = workers.FairPool(1, caps={})
+    first = solo.submit(gate.wait, owner=("a", "x"))
+    jobs = [solo.submit(order.append, f"a{i}", owner=("a", "x")) for i in range(3)]
+    jobs += [solo.submit(order.append, f"b{i}", owner=("b", "x")) for i in range(3)]
+    gate.set()
+    first.result(timeout=10)
+    for j in jobs:
+        j.result(timeout=10)
+    assert {order[0][0], order[1][0]} == {"a", "b"} and all(x[0] != y[0] for x, y in zip(order, order[1:]))
+    assert [x for x in order if x[0] == "a"] == ["a0", "a1", "a2"]  # (each owner's own in the order it came)
+    with pytest.raises(ZeroDivisionError):  # (a piece of work's error reaches whoever waits on it)
+        solo.submit(lambda: 1 / 0).result(timeout=10)
     assert workers.WORKERS <= workers.MAX_WORKERS == 4
 
 

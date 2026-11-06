@@ -63,6 +63,7 @@ class Drafter:
     def stop(self, slug: str) -> None:
         if (st := self.jobs.get(slug)) is not None:
             st.stop.set()
+        workers.cancel((slug, "drafts"))  # (what it queued goes too: else it kept the workers after its stop)
 
     def _loop(self, slug: str, st: State) -> None:
         mark = None
@@ -86,7 +87,7 @@ class Drafter:
                     st.total, st.made = len(todo), 0
                     if todo:
                         agent, _ = self.net.local_agent("autopilot")
-                        wait([workers.pool().submit(self._one, agent, proj, fid, st) for fid in todo])
+                        wait([workers.submit((slug, "drafts"), self._one, agent, proj, fid, st, label=f"draft {fid}") for fid in todo])
                     mark = now  # (what changed while the pass ran is seen at the next look)
                 st.stop.wait(POLL_SECONDS)
         except Exception:  # background work: it never stands in the way, and says why it stopped

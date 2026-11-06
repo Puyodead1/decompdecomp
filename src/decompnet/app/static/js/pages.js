@@ -63,6 +63,45 @@ function renderAgentsPage() {
 }
 $("agRefresh").onclick = showAgentsPage;
 
+/* ------------------------------------------------------------------ background work page */
+/* What runs in the background (monitor.snapshot), asked again every few seconds while the page is open, with Stop for
+   each part. A permuter queued behind another project's drafts used to look as if it were working. */
+const WORK_POLL_MS = 3000;
+async function showWorkPage() {
+  show("workPage");
+  await renderWork();
+}
+async function renderWork(stop = null) {
+  if ($("workPage").hidden) return;
+  let w;
+  try { w = await api("/api/background-work", stop ? { method: "POST", body: stop } : undefined); } catch (e) {
+    $("workParts").innerHTML = `<p class="muted small">Couldn't ask: ${esc(e.message)}</p>`;
+    return;
+  } finally { clearTimeout(S.workTimer); S.workTimer = setTimeout(() => renderWork(), WORK_POLL_MS); }
+  const proj = (slug) => { const p = (S.projects || []).find((x) => x.slug === slug); return p ? esc(p.title || p.name || slug) : esc(slug); };
+  const mins = (s) => (s >= 90 ? `${Math.round(s / 60)} min` : `${s} s`);
+  const parts = w.parts.map((p) => `<li><b>${esc(p.label)}</b> · <a href="#/p/${esc(p.project)}">${proj(p.project)}</a>
+      <span class="muted small">${p.running.length ? `working on ${p.running.length}${p.detail ? ` (${esc(p.detail)})` : ""}` : p.queued ? "waiting for a worker" : "looking for work"}${p.queued ? ` · ${p.queued} queued` : ""}</span>
+      <button class="ghost small-btn" data-stop-kind="${esc(p.kind)}" data-stop-key="${esc(p.project)}" type="button">Stop</button></li>`);
+  const jobs = w.jobs.map((j) => {
+    const pr = j.progress;
+    const what = j.kind === "deep-search" && pr ? `${Number(pr.tested).toLocaleString()} variants, best ${pr.best_score} from ${pr.start_score}` : esc(j.last || "");
+    return `<li><b>${esc(j.label)}</b>${j.function ? ` · <span class="mono">${esc(j.function)}</span>` : ""}${j.project ? ` · <a href="#/p/${esc(j.project)}">${proj(j.project)}</a>` : ""}
+      <span class="muted small">${mins(j.seconds)}${what ? ` · ${what}` : ""}</span>
+      <button class="ghost small-btn" data-stop-kind="job" data-stop-key="${esc(j.id)}" type="button">Stop</button></li>`;
+  });
+  $("workParts").innerHTML = parts.length || jobs.length ? `<ul class="work-list">${[...parts, ...jobs].join("")}</ul>`
+    : `<p class="muted small">Nothing runs in the background now.</p>`;
+  $("workHint").textContent = `${plural(w.parts.length + w.jobs.length, "part")} at work`;
+  $("workSize").textContent = `${plural(w.size, "worker")}`;
+  $("workQueue").innerHTML = w.workers.length ? `<ul class="work-list">${w.workers.map((r) => `<li><b>${r.project ? proj(r.project) : "The app"}</b> · ${esc(r.kind)}
+      <span class="muted small">${r.running.length ? r.running.map((x) => `${esc(x.label || "work")} for ${mins(x.seconds)}`).join(", ") : "nothing running"}${r.queued ? ` · ${r.queued} waiting` : ""}</span></li>`).join("")}</ul>`
+    : `<p class="muted small">The workers are free.</p>`;
+  document.querySelectorAll("#workPage [data-stop-kind]").forEach((b) => {
+    b.onclick = () => { b.disabled = true; renderWork({ kind: b.dataset.stopKind, key: b.dataset.stopKey }); };
+  });
+}
+
 /* ------------------------------------------------------------------ compilers & tools page */
 let toolFilter = "";
 async function showToolsPage() {

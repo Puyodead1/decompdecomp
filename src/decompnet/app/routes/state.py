@@ -18,7 +18,7 @@ from ...agents.api import API_PRESETS
 from ...forks.project import SCOPES, ForkError
 from ...network import NetworkError
 from ...rom import RomError
-from .. import cleanup, edition, picker, saves, updates
+from .. import cleanup, edition, monitor, picker, saves, updates
 from ..engine import COMPILERS, TOOLS
 from ..support import MAX_DISC, job_error, static_file
 from . import App
@@ -324,5 +324,15 @@ def register(app: App) -> None:
             return bad
         data = await body(request)
         return JSONResponse({"cancelled": jobs.cancel(str(data.get("id") or ""))})
+
+    @mcp.custom_route("/api/background-work", methods=["GET", "POST"])
+    async def api_background_work(request: Request) -> Response:
+        """What runs in the background, every project's (monitor.snapshot); POST {kind, key}: stop one of them."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        if request.method == "POST":
+            data = await body(request)
+            await call(lambda: monitor.stop(net, jobs, str(data.get("kind", "")), str(data.get("key", ""))))
+        return JSONResponse(await call(lambda: monitor.snapshot(net, jobs, app.searches)))
 
     app.autopilot = autopilot

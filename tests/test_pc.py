@@ -843,7 +843,7 @@ def test_agents_divide_a_file_and_give_it_its_own_compiler(pc):
     assert "each source file can have its own compiler" in info
     # the agents are told of this 32-bit game's own compilers, and can't suggest the 64-bit one (review of #138)
     assert "MSVC/6.0" in info and "MSVC/14.16-x64" not in info
-    with pytest.raises(NetworkError, match="no compiler 'MSVC/14.16-x64' for this game; its own: MSVC/6.0"):
+    with pytest.raises(NetworkError, match="no compiler 'MSVC/14.16-x64' for this game; its own: .*MSVC/6.0"):
         net.suggest(agent, slug, "built with 2017, 64-bit", compiler="MSVC/14.16-x64")
     adder = f"_func_{syms['_add_score']:08X}"
     sub = _by_address()

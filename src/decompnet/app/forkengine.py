@@ -3264,18 +3264,23 @@ class ForkEngine:
         return "\n".join(out) or "none"
 
     def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                quiet: int | None = None, comment: bool = False) -> dict:
+                quiet: int | None = None, comment: bool = False, background: bool = False) -> dict:
         """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
         is undone and kept only as the function's best attempt (autopilot's drafts). `prelude`: (decompdecomp's own
         tries) type definitions the code needs, placed after the file's includes. `quiet`: (the permuter's
         variants) recorded only when better than this score. A try that isn't kept holds the function only while
         it builds (twins' tries come unclaimed: a 30-minute claim each kept agents off them, then counted as given up).
-        `comment`: (polishing) the comment right above the definition goes into the file, in place of the file's."""
+        `comment`: (polishing) the comment right above the definition goes into the file, in place of the file's.
+        `background`: (a deep search the user started on one function) a try beside whoever holds the function: no
+        claim taken or refused. Never kept, never in a room: the file is put back as it was under the unit's lock, the
+        agent's work in progress in it too, and only a better score is recorded."""
+        if background and (keep or slug in self.net.links):
+            raise NetworkError("a try beside an agent's claim is never kept in the file, and not made in a room")
         if keep:  # (an agent's own work: its work selection's max tries)
             self.net.check_tries(agent, self._fn(slug, function))
-        held = None if keep else self._hold_for_try(slug, function, agent)
+        held = None if keep or background else self._hold_for_try(slug, function, agent)
         try:
-            res = self._attempt(agent, slug, function, source, keep, prelude, quiet, comment)
+            res = self._attempt(agent, slug, function, source, keep, prelude, quiet, comment, background)
         finally:
             if held is not None:
                 with self.net.store.tx() as db:
@@ -3328,7 +3333,7 @@ class ForkEngine:
             pass
 
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                 quiet: int | None = None, comment: bool = False) -> dict:
+                 quiet: int | None = None, comment: bool = False, background: bool = False) -> dict:
         proj, fp, cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -3367,13 +3372,14 @@ class ForkEngine:
         except OSError:
             have = ""
         includes, before_lines, after_lines = _around(source, span, have, unit.source)
-        with self.net.store.tx() as db:  # claim bookkeeping, as for ROM projects
+        with self.net.store.tx() as db:  # claim bookkeeping, as for ROM projects (none for a try in the background)
             self.net._expire_claims(db)
-            claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+            claim = None if background else db.execute("SELECT agent_id FROM claims WHERE function_id=?",
+                                                       (fn["id"],)).fetchone()
             if claim is not None and claim["agent_id"] != agent.id:
                 raise NetworkError(f"{fn['name']} is claimed by {self.net._agent_name(claim['agent_id'])}")
             now = time.time()
-            if claim is None and fn["status"] != "matched":
+            if claim is None and fn["status"] != "matched" and not background:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.net.claim_ttl))
             elif claim is not None:
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.net.claim_ttl, fn["id"]))
@@ -4817,7 +4823,14 @@ class ForkEngine:
             return
         text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
         with self._tree(proj).exclusive(), self._units_locked(proj, [u.name for u in units]):
-            before = {u.name: self._baseline(proj, fp, u, text)[0] or {} for u in units}
+            before = {u.name: dict(self._baseline(proj, fp, u, text)[0] or {}) for u in units}
+            # what the project counts as matched in the file must hold too, whatever the measured scores say: a
+            # cached measurement taken as the file was divided read none of its matches, and the switch to 7.1 that
+            # broke one was kept (the demo's divided file, now and then)
+            for u in units:
+                for r in self.net.store.all("SELECT name, meta FROM functions WHERE project_id=? AND unit=? AND "
+                                            "status='matched'", proj["id"], u.name):
+                    before[u.name][self._meta(r).get("symbol") or r["name"]] = 100.0
             with self._build_locks[proj["id"]]:
                 rel = console.set_file_compiler(fp, source, compiler)
             after, broken = {}, []

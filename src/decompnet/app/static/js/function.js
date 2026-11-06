@@ -69,6 +69,7 @@ async function refreshFn(first) {
     $("fnCompare").hidden = d.status !== "open";
     if (S.compareFor !== d.name) { $("fnCompareBox").hidden = true; $("fnCompareOut").innerHTML = ""; }
     $("fnCompare").onclick = () => compareCompilers(d.name);
+    showDeep(d);
     $("fnSetAside").onclick = async () => {
       const why = prompt(`Why does no C make ${d.name}? (optional: agents and you read it on its page)`, "hand-written assembly");
       if (why === null) return;
@@ -395,6 +396,53 @@ function renderProgress() {
   svg.innerHTML = `<path class="area" d="${line}V44H0Z"/><path class="line" d="${line}"/>`;
 }
 
+
+/* A deep search: the permuter on this function alone (deep.py), followed from its page, again when it reopens. */
+const DEEP_REASONS = { matched: "it matched", time: "its time ran out", variants: "it judged every variant it was given",
+  stopped: "you stopped it", exhausted: "the permuter had nothing new to write from this C", gone: "the function isn't open any more" };
+function deepPercent(score, insns) { return score == null ? "—" : `${(Math.floor(Math.max(0, 100 * (1 - score / Math.max(1, insns * 100))) * 10) / 10).toFixed(1)}%`; }
+function showDeep(d) {
+  const can = d.status === "open" && d.best != null;
+  $("fnDeep").hidden = !can && !d.deep_job;
+  if (S.deepFor !== d.name) {
+    S.deepFor = null;
+    $("fnDeepBox").hidden = !d.deep_job;
+    $("fnDeepLog").textContent = "";
+    $("fnDeepStats").textContent = d.deep ? `Last search: ${deepSaid(d.deep, d.insns)}` : "";
+  }
+  $("fnDeepMinutes").value ||= (d.deep_limits || {}).minutes || 30;
+  $("fnDeepVariants").value ||= (d.deep_limits || {}).variants || 100000;
+  $("fnDeep").onclick = () => { $("fnDeepBox").hidden = !$("fnDeepBox").hidden; };
+  $("fnDeepRun").onclick = () => runDeep(d.name, d.insns);
+  if (d.deep_job && S.deepFor !== d.name) runDeep(d.name, d.insns, d.deep_job);
+}
+function deepSaid(r, insns) {
+  const moved = r.best_score === 0 ? "matched" : r.best_score !== r.start_score
+    ? `${r.start_score} → ${r.best_score} (${deepPercent(r.best_score, insns)})` : `no better than ${r.start_score}`;
+  return `${moved}, ${Number(r.tested || 0).toLocaleString()} variants in ${Math.round((r.seconds || 0) / 60)} min; it ended because ${DEEP_REASONS[r.reason] || r.reason}.`;
+}
+async function runDeep(name, insns, running = null) {
+  const log = $("fnDeepLog"), stats = $("fnDeepStats"), run = $("fnDeepRun"), stop = $("fnDeepStop");
+  S.deepFor = name;
+  $("fnDeepBox").hidden = false;
+  showJobError(log, "");
+  const finish = beginWork(log, "Deep search", [run, $("fnDeepMinutes"), $("fnDeepVariants")], "Finished.");
+  try {
+    const job = running || (await api("/api/deep", { method: "POST", body: { slug: S.slug, name,
+      minutes: Number($("fnDeepMinutes").value), variants: Number($("fnDeepVariants").value) } })).job;
+    stop.hidden = false;
+    stop.onclick = async () => { stop.disabled = true; await api("/api/job/cancel", { method: "POST", body: { id: job } }).catch(() => {}); };
+    const r = await followJob(job, log, (_, j) => {
+      const p = j && j.progress;
+      if (!p || S.deepFor !== name) return;
+      stats.textContent = `${Number(p.tested).toLocaleString()} variants · best ${p.best_score} (${deepPercent(p.best_score, insns)}), from ${p.start_score} · ${p.improved} better · ${Math.floor(p.seconds / 60)}:${String(p.seconds % 60).padStart(2, "0")} of ${p.minutes} min`;
+    });
+    if (S.deepFor === name) stats.textContent = deepSaid(r, insns);
+    if (r.best_score !== r.start_score) { await refreshFn(false); await refreshMap(true); }
+  } catch (e) {
+    if (/stopped/.test(e.message)) { stats.textContent = e.message; await refreshFn(false); } else showJobError(log, e.message);
+  } finally { stop.hidden = true; stop.disabled = false; finish(); }
+}
 
 /* Compare compilers: the function's best C with each compiler and flag variant, ranked (compare_compilers). */
 async function compareCompilers(name) {

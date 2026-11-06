@@ -72,7 +72,7 @@ class FlagSurvey:
                 if stop.is_set():
                     return
                 try:
-                    said = workers.pool().submit(self.net.forks.survey_file, slug, source).result()
+                    said = workers.submit((slug, "survey"), self.net.forks.survey_file, slug, source, label=source).result()
                 except NetworkError:
                     return  # the project is gone
                 except Exception:  # one odd file must not stop the rest

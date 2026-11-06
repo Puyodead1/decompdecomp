@@ -229,8 +229,12 @@ function renderAutopilot(ov) {
   const twinsRunning = tw && tw.state === "running";
   box.classList.toggle("on", !!(running || twinsRunning));
   $("apBar").hidden = !running || ap.phase === "twins" || ap.phase === "stl";
+  // a permuter whose turns wait for a worker says so, and for whose work (workers.FairPool.waiting)
+  const pw = pm && pm.workers;
+  const queued = pw && pw.queued && !pw.running
+    ? ` ${plural(pw.queued, "turn")} waiting for a background worker${pw.busy_with && pw.busy_with.length ? `, busy with ${pw.busy_with.join(", ")}` : ""}.` : "";
   const perm = pm && (pm.tried || pm.state === "running")
-    ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.` : "";
+    ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.${queued}` : "";
   const twinsDone = (ap && ap.twins) || (tw && tw.matched) || 0;
   if (running && ap.phase === "twins") {
     $("apTitle").textContent = "Autopilot: matching code the game has more than once (twins of matched functions)";
