@@ -46,7 +46,8 @@ class Xbox(WindowsPC):
     status = BETA
     compilers = (Compiler("MSVC/7.1", "Visual C++ 7.1", "games made with the XDK from 2003 on"),
                  Compiler("MSVC/7.0", "Visual C++ 7.0", "games made with earlier XDKs"))  # (+ your XDKs': kit_compilers)
-    packs = (("msvc", "Visual C++ 7.0 and 7.1, the compilers of Xbox games (proprietary)"),
+    packs = (("msvc7", "Visual C++ .NET 2002 (7.0), a compiler of Xbox games (proprietary)"),
+             ("msvc71", "Visual C++ .NET 2003 (7.1), a compiler of Xbox games (proprietary)"),
              ("ghidra", "finds an Xbox game's functions, and drafts of its code (540 MB, needs Java 21+)"))
     kits = ("xdk",)  # the user's own XDK: its libraries' code set aside, its compiler for early games
     guides = ("x86", "xbox", "cpp")

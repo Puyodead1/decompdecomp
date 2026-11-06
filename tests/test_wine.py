@@ -21,7 +21,7 @@ def tc_root(tmp_path, monkeypatch):
 
 
 def test_the_2017_pack_is_pinned_and_runs_through_wine():
-    """Your verified downloads, each version a folder with Bin and Include (msvc2005's layout), the Windows 10 SDK's
+    """Your verified downloads, each version a folder with Bin and Include (msvc8.s layout), the Windows 10 SDK's
     headers a toolchain of their own the pack names (shared by packs that use that SDK, one copy on disk), and the
     64-bit compiler with the host's program database DLLs beside it."""
     tc = toolchains.get("msvc2015")

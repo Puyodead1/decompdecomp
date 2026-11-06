@@ -35,8 +35,8 @@ def _installed(*tools) -> bool:
 
 @pytest.fixture(scope="module")
 def demo():
-    if not _installed("msvc", "wibo"):
-        pytest.skip("the Xbox demo is built with Visual C++ 7.1 (the msvc pack) through wibo")
+    if not _installed("msvc71", "msvc", "wibo"):
+        pytest.skip("the Xbox demo is built with Visual C++ 7.1 (msvc71) and 6.0's linker (msvc) through wibo")
     key = DEMO / "build" / "demo.json"
     if not key.exists():
         subprocess.run([sys.executable, str(DEMO / "build.py")], check=True)
