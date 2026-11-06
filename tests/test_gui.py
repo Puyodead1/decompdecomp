@@ -253,8 +253,8 @@ def test_a_dropped_pc_game_is_offered_the_visual_cpp_pack_its_program_names(gui)
         built = scratch.describe(bytes.fromhex(head))
         assert pack == offered == scratch.compiler_pack(built.pack_version), (head, built)
         assert target == "x86"  # (a 32-bit program: its import lists 32-bit compilers only, next)
-    assert [p for _, p, _, _ in packs] == ["msvc2005", "msvc", "msvc", "msvc2005", "msvc2005", "msvc",
-                                        "msvc2015", "msvc2015", "msvc2005", "msvc2015", "msvc2015"]
+    assert [p for _, p, _, _ in packs] == ["msvc10", "msvc", "msvc71", "msvc8", "msvc9", "msvc",  # (a pack per version)
+                                        "msvc2015", "msvc2015", "msvc10", "msvc2015", "msvc2015"]
 
 
 def test_a_pc_game_dropped_before_the_page_loaded_is_offered_its_pack_and_32_bit_compilers(gui):

@@ -66,6 +66,7 @@ PAD = 0x90  # what Visual C++ 6 pads a function's section with (the linker pads 
 # (github.com/dishather/richprint) and kirschju/richheader's prodids.py. (version, the ids of its C and C++
 # compilers, and of its whole-program objects: /GL's link-time code generation (LTCG) and profile-guided ones)
 RICH_COMPILERS = (
+    ("5.0", (0x08,), ()),  # Utc11_C: 5.0's (Visual Studio 97's) compiler, C and C++ alike
     ("6.0", (0x0A, 0x0B, *range(0x15, 0x19), 0x23, 0x24, *range(0x30, 0x36)), ()),
     ("7.0", (0x1C, 0x1D, 0x39, 0x3A), (0x2B, 0x2C, *range(0x41, 0x45))),
     ("7.1", (*range(0x4C, 0x50), *range(0x5F, 0x63)), (*range(0x50, 0x56), *range(0x63, 0x69))),
@@ -82,7 +83,7 @@ VISUAL_STUDIO = {"2.0": "2.0", "4.0": "4.0", "4.1": "4.1", "4.2": "4.2", "5.0": 
                  "11.0": "2012", "12.0": "2013", "14.0": "2015", "14.1": "2017", "14.2": "2019", "14.3": "2022",
                  "14.4": "2022", "14.5": "2026"}
 # the release each common build is (comp_id.txt), so the import says "2008 SP1": each update generates other code
-RELEASES = {("6.0", 8447): "SP3", ("6.0", 8799): "SP4", ("6.0", 8966): "SP5", ("6.0", 9044): "SP5 Processor Pack",
+RELEASES = {("5.0", 7153): "SP1", ("5.0", 7303): "SP3", ("7.0", 9955): "SP1", ("6.0", 8447): "SP3", ("6.0", 8799): "SP4", ("6.0", 8966): "SP5", ("6.0", 9044): "SP5 Processor Pack",
             ("6.0", 9782): "SP6", ("7.1", 6030): "SP1", ("9.0", 30729): "SP1", ("10.0", 40219): "SP1",
             ("11.0", 51106): "Update 1", ("11.0", 60315): "Update 2", ("11.0", 60610): "Update 3",
             ("11.0", 61030): "Update 4", ("12.0", 30501): "Update 2", ("12.0", 30723): "Update 3",
@@ -93,12 +94,18 @@ RELEASES = {("6.0", 8447): "SP3", ("6.0", 8799): "SP4", ("6.0", 8966): "SP5", ("
 # header keeps no more of the version), so an import takes SP1; RTM ("8.0") is chosen by file, with try_compiler.
 # 2017's 64-bit compiler (14.16-x64) is never a game's: 64-bit games aren't started yet. From each compiler's own
 # banner (cl.exe)
-RICH_BUILDS = {("6.0", 8168): "6.0", ("7.0", 9466): "7.0", ("7.1", 3077): "7.1", ("8.0", 50727): "8.0SP1",
+RICH_BUILDS = {("5.0", 7022): "5.0", ("5.0", 7153): "5.0SP1", ("5.0", 7303): "5.0SP3",
+               ("6.0", 8168): "6.0", ("6.0", 8447): "6.0SP3", ("6.0", 8799): "6.0SP4", ("6.0", 8966): "6.0SP5",
+               ("6.0", 9044): "6.0SP5PP", ("6.0", 9782): "6.0SP6",
+               ("7.0", 9466): "7.0", ("7.0", 9955): "7.0SP1", ("7.1", 3077): "7.1", ("7.1", 6030): "7.1SP1",
+               ("8.0", 50727): "8.0SP1",
                ("9.0", 21022): "9.0", ("9.0", 30729): "9.0SP1", ("10.0", 30319): "10.0", ("10.0", 40219): "10.0SP1",
                ("14.1", 27027): "14.16"}
 # toolchains.toml's packs, each named after its first version: 6.0-7.1, 2005-2010, and 2017 (msvc2015: 2015 is to
 # join it); each version in a folder of its pack
-MSVC_PACKS = ("msvc", "msvc2005", "msvc2015")
+MSVC_PACKS = ("msvc5", "msvc", "msvc7", "msvc71", "msvc8", "msvc9", "msvc10", "msvc2015")  # (a pack per version: 6.0's is msvc)
+# the packs whose compilers say /GX for exceptions (/EHsc from 2005 on: saying /GX warns on every file)
+GX_PACKS = ("msvc5", "msvc", "msvc7", "msvc71")
 FIRST_YEAR = 1998  # Visual C++ 6.0's, whose name (VISUAL_STUDIO) has no year
 KIT = "visualcpp"  # the kit PC games take: the user's own Visual C++ copies
 LINKER_VERSION_AT = 2  # in the optional header: the linker's major and minor version, a byte each
@@ -399,11 +406,12 @@ class Build:
     def cannot_match(self) -> list[str]:
         """Why a program decompdecomp does start can't match (all of it, or some): none, it can."""
         out = []
-        # before 6.0 only the user's own copy builds it (no pack has one: its own word); 2015 builds with 2017's
+        # before 5.0 only the user's own copy builds it (no pack has one: its own word); 2015 builds with 2017's
         # without a word here: the same toolset's next version, much of its code the same (the import's log names
         # the compiler it builds with all the same); the user's own copy builds its own build exactly, so none of
         # this is news then
-        if self.version is not None and self.own is None and _version_key(self.version) < (6, 0):
+        if self.version is not None and self.own is None and _version_key(self.version) < (6, 0) \
+                and not any(version == self.version for version, _ in RICH_BUILDS):
             out.append(f"it was built with {self.compiler}, which the compiler packs don't have: nothing matches until "
                        f"you set up your own Visual C++ {self.version} copy in Setup (the Visual C++ kit)")
         elif self.own is None and (near := self.stand_in):
@@ -428,7 +436,14 @@ def _pack() -> list[str]:
     return [v.removeprefix("MSVC/") for v in MSVC_VERSIONS]
 
 
+# the years the Visual C++ versions whose Visual Studio has no year in its name came out (a 4.x game's stand-in is
+# then 5.0, the nearest, not whichever version tied newest)
+OLD_YEARS = {"2.0": 1994, "4.0": 1995, "4.1": 1996, "4.2": 1996, "5.0": 1997, "6.0": 1998, "7.0": 2002, "7.1": 2003}
+
+
 def _year(version: str) -> int:
+    if version in OLD_YEARS:
+        return OLD_YEARS[version]
     return int(m.group()) if (m := re.search(r"\d{4}", VISUAL_STUDIO[version])) else FIRST_YEAR
 
 
@@ -534,7 +549,7 @@ def compiler_version(compiler: str) -> str | None:
     """The Visual C++ version (the Rich header's) a compiler id builds as: "MSVC/8.0SP1" is 8.0, "MSVC/14.16" 14.1, a
     copy of the user's its build's; None when that isn't known (a copy whose build couldn't be read)."""
     version = compiler.removeprefix("MSVC/")
-    if (m := re.fullmatch(r"(\d+)\.(\d+)(SP\d+)?(-x64)?", version)):
+    if (m := re.fullmatch(r"(\d+)\.(\d+)(SP\d+(?:PP)?)?(-x64)?", version)):
         major, minor = int(m.group(1)), m.group(2)
         return f"14.{minor[0]}" if major == 14 else f"{major}.{minor}"
     own = next((c for c in kits.compilers((KIT,)) if c.version == version), None)
@@ -2118,7 +2133,7 @@ def configure_settings(text: str, compiler: str, pe: PE, log=print, modules: lis
         text = re.sub(r"^CL_FLAGS = \[[^\]]*\].*$", f"CL_FLAGS = {json.dumps(cl_flags)}", text, count=1, flags=re.M)
     else:
         if ehsc is None:
-            ehsc = compiler_pack(compiler) != "msvc"
+            ehsc = compiler_pack(compiler) not in GX_PACKS
         if ehsc:
             text = text.replace('"/GX"]  # /GX:', '"/EHsc"]  # /EHsc (/GX before 2005):')
         md = builds_md(pe, compiler)
@@ -2276,12 +2291,12 @@ def fork_row_names(symbols, names: dict[str, str]) -> dict[str, str]:
 
 
 def tool_args(kit_ids=()) -> list[str]:
-    """configure.py arguments pointing at decompdecomp's pinned tools: every installed compiler pack, 6.0-7.1's
-    last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0 to 7.1), and
+    """configure.py arguments pointing at decompdecomp's pinned tools: every installed compiler pack, 6.0's (msvc)
+    last, as an older project's configure.py keeps only the last --msvc (its projects build with 6.0), and
     the compilers in the user's copies of the kits `kit_ids` (the console's Console.kits: --own).
     Nothing about wine: a 2017 file finds it when it builds (WindowsPC.build_env), so no configure.py, older or
     new, is given an argument it doesn't know."""
-    packs = [p for p in reversed(MSVC_PACKS) if toolchains.installed(p) is not None]
+    packs = [p for p in sorted(reversed(MSVC_PACKS), key=lambda p: p == "msvc") if toolchains.installed(p) is not None]
     if not packs:
         raise ForkError("PC games are built with Microsoft Visual C++, which is proprietary: install it in Setup "
                         "(Visual C++) if you accept that, then try again")
@@ -2857,7 +2872,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     cfg = root / "tools" / "configure.py"
     text = configure_settings(cfg.read_text(encoding="utf-8"), compiler, pe, log=log, modules=modules,
-                              ehsc=pack != "msvc" or info.get("modern_eh"), cl_flags=cl_flags)
+                              ehsc=pack not in GX_PACKS or info.get("modern_eh"), cl_flags=cl_flags)
     # the C runtime the game links, by its imports (/MT: LIBCMT, a 2003 game's TlsAlloc), where configure_settings
     # didn't say it (its /MD is Visual C++ 2015 on); with_flag adds none where one is
     if (flag := runtime_flag(pe)):

@@ -142,7 +142,7 @@ def main() -> None:
             old.unlink()
     for src in (GAME / "game.c", GAME / "game.h", HERE / "xboxmain.c"):
         shutil.copy(src, BUILD / src.name)
-    msvc = toolchains.require("msvc") / "7.1" / "Bin"
+    msvc = toolchains.require("msvc71") / "7.1" / "Bin"
     link = toolchains.require("msvc") / "6.0" / "Bin"  # (7.1's linker stops under wibo, see the docstring)
     wibo = [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
     for src in ("game.c", "xboxmain.c"):

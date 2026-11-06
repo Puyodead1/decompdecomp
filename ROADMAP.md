@@ -568,6 +568,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (the rest: two return types guessed wrong, a function compiled with frame pointers, which `#pragma optimize("y",
   off)` gives, and a C runtime function built for size). That game keeps an ebp frame in about half its functions:
   if all of it was built with /Oy-, a project flag would serve better than a pragma per function.
+- **Every Visual C++ service pack, one pack per version.** A game built with Visual C++ 6.0 SP6 (c2 build 9782)
+  built with plain 6.0, whose code generation differs between service packs. The packs are now one per version, each
+  with its service packs: `msvc5` (5.0, SP1, SP3), `msvc` (6.0, SP3, SP4, SP5, SP5 with the Processor Pack, SP6),
+  `msvc7` (7.0, SP1), `msvc71` (7.1, SP1), `msvc8`, `msvc9` and `msvc10`. The Rich header's c2 build picks the service
+  pack (`RICH_BUILDS`); a game named only by its linker builds with its version's newest. Each compiles
+  through wibo. Before 5.0, and 2012, aren't in yet (2012's only archive is its release candidate).
 - **PC projects get the newest build tools.** A PC project kept the `tools/` it was made with, so a newer names.py
   (constructors and destructors paired by their class) or delink.py never reached one. The template's tools have a
   version (`scratch.tools_version`, the manifest's "tools"): a project with another gets them when the app starts

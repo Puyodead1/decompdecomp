@@ -213,9 +213,9 @@ A console works in one of two modes:
 
 Example: PC has Visual C++ 6.0 to 2010, and you want Visual C++ 2012 (11.0).
 
-1. **Pin it** in `src/decompnet/toolchains.toml`. A new part of a pack (`msvc2005`, or a pack of its own, as
-   2012-2013 would be) with its `url`, its `sha256` (`sha256sum` of the archive) and `into = "11.0"`. An archive
-   that's a whole install takes only its compiler and headers with `keep` (see `msvc2005`). A compiler of 2015 and
+1. **Pin it** in `src/decompnet/toolchains.toml`. A pack of its own (`msvc11`: one pack per Visual C++ version,
+   each holding its service packs) with its `url`, its `sha256` (`sha256sum` of the archive) and `into = "11.0"`. An archive
+   that's a whole install takes only its compiler and headers with `keep` (see `msvc8`). A compiler of 2015 and
    newer compiles against a Windows SDK: that's a toolchain of its own (`winsdk-<version>`) the pack names in
    `headers`, so packs that use one SDK share it (see `msvc2015`); each version's folder then gets an `includes.txt`
    the build reads. Take it from where the decomp community keeps it (decomp.me's compilers, decomp.dev's archive,

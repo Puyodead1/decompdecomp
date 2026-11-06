@@ -46,11 +46,16 @@ from pathlib import Path
 from ...network import NetworkError
 from .. import BETA, PROJECT, REBUILD_CHECK, Compiler, Console
 
-MSVC_VERSIONS = ["MSVC/6.0", "MSVC/7.0", "MSVC/7.1",  # the `msvc` pack
-                 "MSVC/8.0", "MSVC/8.0SP1", "MSVC/9.0", "MSVC/9.0SP1", "MSVC/10.0", "MSVC/10.0SP1",  # `msvc2005`
-                 "MSVC/14.16", "MSVC/14.16-x64"]  # `msvc2015`: its 32-bit compiler and its 64-bit one
+# a pack per Visual C++ version, each with its service packs (toolchains.toml): 5.0's msvc5, 6.0's msvc, 7.0's
+# msvc7, 7.1's msvc71, 2005's msvc8, 2008's msvc9, 2010's msvc10, and 2017's msvc2015 (its 32- and 64-bit compilers)
+MSVC_VERSIONS = ["MSVC/5.0", "MSVC/5.0SP1", "MSVC/5.0SP3",
+                 "MSVC/6.0", "MSVC/6.0SP3", "MSVC/6.0SP4", "MSVC/6.0SP5", "MSVC/6.0SP5PP", "MSVC/6.0SP6",
+                 "MSVC/7.0", "MSVC/7.0SP1", "MSVC/7.1", "MSVC/7.1SP1",
+                 "MSVC/8.0", "MSVC/8.0SP1", "MSVC/9.0", "MSVC/9.0SP1", "MSVC/10.0", "MSVC/10.0SP1",
+                 "MSVC/14.16", "MSVC/14.16-x64"]
 # what the app calls a version whose number alone doesn't say it: 2017's (Visual Studio's year, and its target)
-MSVC_NAMES = {"14.16": "Visual C++ 14.16 (2017)", "14.16-x64": "Visual C++ 14.16 (2017, 64-bit)"}
+MSVC_NAMES = {"14.16": "Visual C++ 14.16 (2017)", "14.16-x64": "Visual C++ 14.16 (2017, 64-bit)",
+              "5.0SP1": "Visual C++ 5.0 SP1 (and SP2)", "6.0SP5PP": "Visual C++ 6.0 SP5 + Processor Pack"}
 X64_SUFFIX = "-x64"  # a 64-bit compiler's version: the rest are 32-bit x86's (Compiler.target)
 
 
@@ -70,8 +75,13 @@ class WindowsPC(Console):
                                                  f"Visual C++ {v.removeprefix('MSVC/').replace('SP', ' SP')}"),
                                target="x64" if v.endswith(X64_SUFFIX) else "x86")
                       for v in MSVC_VERSIONS)
-    packs = (("msvc", "Visual C++ 6.0, 7.0 and 7.1, the compilers of PC games (proprietary)"),
-             ("msvc2005", "Visual C++ 2005, 2008 and 2010, the compilers of newer PC games (proprietary, 600 MB)"),
+    packs = (("msvc5", "Visual C++ 5.0 and its service packs, for PC games of 1997-1998 (proprietary)"),
+             ("msvc", "Visual C++ 6.0 and its service packs 3 to 6, for PC games of 1998-2003 (proprietary)"),
+             ("msvc7", "Visual C++ .NET 2002 (7.0) and its SP1 (proprietary)"),
+             ("msvc71", "Visual C++ .NET 2003 (7.1) and its SP1 (proprietary)"),
+             ("msvc8", "Visual C++ 2005 and 2005 SP1 (proprietary)"),
+             ("msvc9", "Visual C++ 2008 and 2008 SP1 (proprietary)"),
+             ("msvc10", "Visual C++ 2010 and 2010 SP1 (proprietary)"),
              ("msvc2015", "Visual C++ 2017, 32- and 64-bit, with its Windows 10 SDK (proprietary, 220 MB; runs "
                           "through wine on Linux and macOS, which you install)"),
              ("ghidra", "finds a PC game's functions, and drafts for platforms m2c can't read (540 MB, needs Java 21+)"))

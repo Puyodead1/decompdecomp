@@ -1200,81 +1200,175 @@ sha256 = "cf6ec90a9d299643e8a087e387c4de27645767094fa11317ad3a02b976ab8071"
 subdir = "ps3dev"
 platforms = ["macos-x86_64"]
 
-[msvc]
-name = "Microsoft Visual C++ 6.0, 7.0 and 7.1 (PC)"
+# Visual C++, a pack per version with its service packs (each a folder, named as the app names it: 6.0SP6): a game
+# builds with its own build's, which its Rich header names, as each service pack generates other code (a 6.0 SP6
+# game's 208 files were built by c2 12.00.9782, not 6.0's 8168). Archives that hold a whole install keep the
+# compiler (Bin), its headers (Include, the Windows SDK's with them) and libraries (Lib), so the project's build
+# finds every version the same way (tools/configure.py looks for each version's folder in every pack).
+[msvc5]
+name = "Microsoft Visual C++ 5.0 (PC)"
 kind = "compiler-pack"
 platform = "PC"
 license = "proprietary"
-source = "the decomp community's archives, as decomp.me uses them (OmniBlade/decomp.me msvcwin9x, roblabla/MSVC-7.0-Portable)"
-description = "The compilers most Windows games of 1998-2005 were built with: Visual C++ 6.0, .NET 2002 (7.0) and .NET 2003 (7.1). Windows programs, run through wibo on Linux and macOS."
+source = "archaic-msvc (msvc500, msvc500sp1, msvc500sp3)"
+description = "Visual C++ 5.0 (Visual Studio 97) and its service packs 1 (2: the same compiler) and 3: Windows games of 1997-1998. Windows programs, run through wibo on Linux and macOS."
+[[msvc5.parts]]
+url = "https://github.com/archaic-msvc/msvc500/archive/8abf95ce980161ad87b0b02402269cce76988953.tar.gz"  # c2 11.00.7022
+sha256 = "4f3f44520c8fa53014200eb678beddd52ab2745de8365c92bd3cb16c677809a1"
+subdir = "msvc500-8abf95ce980161ad87b0b02402269cce76988953"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "5.0"
+[[msvc5.parts]]
+url = "https://github.com/archaic-msvc/msvc500sp1/archive/401174749393c9991a6b91425a795e04e8bdeedb.tar.gz"  # SP1 and SP2 (the same compiler): c2 11.00.7153
+sha256 = "3bffbbb3b4569b7f5ca5072651caf97f2d89e837684931522e9d224125b104f3"
+subdir = "msvc500sp1-401174749393c9991a6b91425a795e04e8bdeedb"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "5.0SP1"
+[[msvc5.parts]]
+url = "https://github.com/archaic-msvc/msvc500sp3/archive/259a03f0bc863de5baf657ec064cb60cb20a2cdc.tar.gz"  # SP3: c2 11.00.7303
+sha256 = "6f4427b5c46b0ce648242e7b18f4d8b96c5500bae6b27cc68cb5d6a7c8a89347"
+subdir = "msvc500sp3-259a03f0bc863de5baf657ec064cb60cb20a2cdc"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "5.0SP3"
+
+[msvc]
+name = "Microsoft Visual C++ 6.0 (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "the decomp community's archives, as decomp.me uses them (OmniBlade/decomp.me msvcwin9x)"
+description = "Visual C++ 6.0 and its service packs 3, 4, 5 (and its Processor Pack) and 6: the compiler most Windows games of 1998-2003 were built with. Windows programs, run through wibo on Linux and macOS."
 [[msvc.parts]]
-url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.0.tar.gz"
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.0.tar.gz"  # 12.00.8168
 sha256 = "5c81e9c2ab0ac5545022c1418a23392cb514db950cf6dcb1f48327270403fcd3"
 into = "6.0"
 [[msvc.parts]]
-url = "https://github.com/roblabla/MSVC-7.0-Portable/releases/download/release/msvc7.0.tar.gz"
-sha256 = "9b995af7ff4b31f7d8cc91194f54e21a0a07ff6be360a94e9aa3686649b3f072"
-file = "msvc7.0-portable.tar.gz"
-into = "7.0"
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.3.tar.gz"  # SP3: c2 12.00.8447
+sha256 = "84f73e718b3671bfd5de3b7764622b07633b572ee826ca3b77602d224c128608"
+into = "6.0SP3"
 [[msvc.parts]]
-url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc7.0.tar.gz"  # holds 7.1 (13.10.3077)
-sha256 = "49eba7f9f72644f6f872a4176baeac544e8b5dfb2be1f47bb4d439b1136ffeac"
-into = "7.1"
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.4.tar.gz"  # SP4: c2 12.00.8799
+sha256 = "6d4ef930390ca7481ae5b63ea3bf00d62e0993cd95f1d6f42ba06bb30f993c57"
+into = "6.0SP4"
+[[msvc.parts]]
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.5.tar.gz"  # SP5: c2 12.00.8966
+sha256 = "16f639b7961ca74b938532d912d2bb655d5ea08b01dc2f50e4a180774d138169"
+into = "6.0SP5"
+[[msvc.parts]]
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.5pp.tar.gz"  # SP5 + Processor Pack: c2 13.00.9044
+sha256 = "0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e"
+into = "6.0SP5PP"
+[[msvc.parts]]
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.6.tar.gz"  # SP6: c2 12.00.9782
+sha256 = "0a4cd7628a79067ee62dd90d40d2c027221cc46f530e40d92245ec46d550dd4d"
+into = "6.0SP6"
 
-# Each archive is a whole install: `keep` takes its compiler (Bin) and headers (Include: Visual C++'s and the Windows
-# SDK's in one folder, as the 6.0-7.1 pack has them), so the project's build finds every version the same way.
-# 2005's RTM and SP1 share the Rich header's build (50727), so an import takes SP1, the one most 2005 games were built
-# with; RTM is there for the rest (#42): try_compiler and Settings switch a file to it. wibo has no msvcp100.dll of its own (2010's compiler calls a few of its functions), so 2010's Bin gets the
-# Visual C++ 2010 redistributable's, from the archive the CodeWarrior pack (mwcc) already pins.
-[msvc2005]
-name = "Microsoft Visual C++ 2005, 2008 and 2010 (PC)"
+[msvc7]
+name = "Microsoft Visual C++ .NET 2002 (7.0) (PC)"
 kind = "compiler-pack"
 platform = "PC"
 license = "proprietary"
-source = "the decomp community's archives: decomp.me's 2005 RTM (widberg/msvc8.0) and SP1 (Drahsid/ffxiv_msvc8.0sp1), archaic-msvc's 2008 and 2010 (msvc900, msvc1000, msvc1000_sp1), Marvisak/msvc900_sp1 (2008 SP1)"
-description = "The compilers of Windows games of 2005-2012: Visual C++ 2005 and 2005 SP1 (8.0), 2008 and 2008 SP1 (9.0), 2010 and 2010 SP1 (10.0). Windows programs, run through wibo on Linux and macOS."
-[[msvc2005.parts]]
+source = "roblabla/MSVC-7.0-Portable, archaic-msvc (msvc700_sp1)"
+description = "Visual C++ .NET 2002 (7.0) and its service pack 1: Windows and Xbox games of 2002-2003. Windows programs, run through wibo on Linux and macOS."
+[[msvc7.parts]]
+url = "https://github.com/roblabla/MSVC-7.0-Portable/releases/download/release/msvc7.0.tar.gz"  # 13.00.9466
+sha256 = "9b995af7ff4b31f7d8cc91194f54e21a0a07ff6be360a94e9aa3686649b3f072"
+file = "msvc7.0-portable.tar.gz"
+into = "7.0"
+[[msvc7.parts]]
+url = "https://github.com/archaic-msvc/msvc700_sp1/archive/8bd9502d74274667de198247a459d63dbd431068.tar.gz"  # SP1: c2 13.00.9955
+sha256 = "0ab5939866ac411f658ab616a8f6cce7f74cad28c75a251fbda6adff297a6018"
+subdir = "msvc700_sp1-8bd9502d74274667de198247a459d63dbd431068"
+keep = { "Vc7/bin" = "Bin", "Vc7/include" = "Include", "Vc7/PlatformSDK/Include" = "Include", "Vc7/lib" = "Lib", "Vc7/PlatformSDK/lib" = "Lib" }
+into = "7.0SP1"
+
+[msvc71]
+name = "Microsoft Visual C++ .NET 2003 (7.1) (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "OmniBlade/decomp.me msvcwin9x, archaic-msvc (msvc710_sp1)"
+description = "Visual C++ .NET 2003 (7.1) and its service pack 1: Windows and Xbox games of 2003-2005. Windows programs, run through wibo on Linux and macOS."
+[[msvc71.parts]]
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc7.0.tar.gz"  # holds 7.1 (13.10.3077)
+sha256 = "49eba7f9f72644f6f872a4176baeac544e8b5dfb2be1f47bb4d439b1136ffeac"
+into = "7.1"
+[[msvc71.parts]]
+url = "https://github.com/archaic-msvc/msvc710_sp1/archive/cf62606064633dd8441aa2feffe34792099cc366.tar.gz"  # SP1: c2 13.10.6030
+sha256 = "b6135a0434141f2e05a29e8740a635f6cfd26908666c7f0d9d6d087d5c6c80a5"
+subdir = "msvc710_sp1-cf62606064633dd8441aa2feffe34792099cc366"
+keep = { "Vc7/bin" = "Bin", "Vc7/include" = "Include", "Vc7/PlatformSDK/Include" = "Include", "Vc7/lib" = "Lib", "Vc7/PlatformSDK/Lib" = "Lib" }
+into = "7.1SP1"
+
+# 2005's RTM and SP1 share the Rich header's build (50727), so an import takes SP1, the one most 2005 games were built
+# with; RTM is there for the rest (#42): try_compiler and Settings switch a file to it.
+[msvc8]
+name = "Microsoft Visual C++ 2005 (8.0) (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "decomp.me's 2005 RTM (widberg/msvc8.0) and SP1 (Drahsid/ffxiv_msvc8.0sp1)"
+description = "Visual C++ 2005 (8.0) and 2005 SP1: Windows games of 2005-2008. Windows programs, run through wibo on Linux and macOS."
+[[msvc8.parts]]
 url = "https://github.com/widberg/msvc8.0/archive/936f93b9e9e92943ed5c9398d24712a32c2e9fe4.tar.gz"  # 14.00.50727.42
 sha256 = "18e876d22285aa17be6676d765be6556cb30ffb26e0c9dad59ddd66e5ccf6afa"
 subdir = "msvc8.0-936f93b9e9e92943ed5c9398d24712a32c2e9fe4"
 keep = { "bin" = "Bin", "PlatformSDK/Include" = "Include", "include" = "Include" }
 into = "8.0"
-[[msvc2005.parts]]
+[[msvc8.parts]]
 url = "https://github.com/Drahsid/ffxiv_msvc8.0sp1/archive/0d6f444cfc120e4e62a092726844fa310c74b1bc.tar.gz"  # 14.00.50727.762
 sha256 = "e728de13878c2876e855e2206fc4b8b0a52a3e801c29bd8e0478ef1670aa7be7"
 subdir = "ffxiv_msvc8.0sp1-0d6f444cfc120e4e62a092726844fa310c74b1bc"
 keep = { "bin" = "Bin", "PlatformSDK/Include" = "Include", "include" = "Include" }
 into = "8.0SP1"
-[[msvc2005.parts]]
+
+[msvc9]
+name = "Microsoft Visual C++ 2008 (9.0) (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "archaic-msvc (msvc900), Marvisak/msvc900_sp1"
+description = "Visual C++ 2008 (9.0) and 2008 SP1: Windows games of 2008-2011. Windows programs, run through wibo on Linux and macOS."
+[[msvc9.parts]]
 url = "https://github.com/archaic-msvc/msvc900/archive/c9d710cef9a3dec08d7d2dca78a3b494335a5baa.tar.gz"  # 15.00.21022.08
 sha256 = "084c135403e1f46abd1db1b7059de9ae95a4304049d2428f2816818e89004b89"
 subdir = "msvc900-c9d710cef9a3dec08d7d2dca78a3b494335a5baa"
 keep = { "VC/bin" = "Bin", "Microsoft SDKs/Windows/v6.0A/Include" = "Include", "VC/include" = "Include" }
 into = "9.0"
-[[msvc2005.parts]]
+[[msvc9.parts]]
 url = "https://github.com/Marvisak/msvc900_sp1/archive/a1465772ad6c5767f6d191ff0861282efc822f5c.tar.gz"  # 15.00.30729.01
 sha256 = "2544e8fb817421bd5a09fd4cc243ff0a0db6049cf1a15b92a7b4a3f1f6568e69"
 subdir = "msvc900_sp1-a1465772ad6c5767f6d191ff0861282efc822f5c"
 keep = { "VC/bin" = "Bin", "Microsoft SDKs/Windows/v6.0A/Include" = "Include", "VC/include" = "Include" }
 into = "9.0SP1"
-[[msvc2005.parts]]
+
+# wibo has no msvcp100.dll of its own (2010's compiler calls a few of its functions), so 2010's Bin gets the Visual C++
+# 2010 redistributable's, from the archive the CodeWarrior pack (mwcc) already pins.
+[msvc10]
+name = "Microsoft Visual C++ 2010 (10.0) (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "archaic-msvc (msvc1000, msvc1000_sp1)"
+description = "Visual C++ 2010 (10.0) and 2010 SP1: Windows games of 2010-2013. Windows programs, run through wibo on Linux and macOS."
+[[msvc10.parts]]
 url = "https://github.com/archaic-msvc/msvc1000/archive/f8977e2cacbe6cab4f9e73eb2c05695a88519bfe.tar.gz"  # 16.00.30319.01
 sha256 = "923684491a7e3fbdc326a0681c7d8d4ecfb9a9d217638038ac2859c702c45b01"
 subdir = "msvc1000-f8977e2cacbe6cab4f9e73eb2c05695a88519bfe"
 keep = { "VC/bin" = "Bin", "Microsoft SDKs/Windows/v7.0A/Include" = "Include", "VC/include" = "Include" }
 into = "10.0"
-[[msvc2005.parts]]
+[[msvc10.parts]]
+url = "https://files.decomp.dev/compilers_20251118.zip"
+sha256 = "69b0d4980a2eccea4ae6e70b486714b5190cb6c75e3bc7b8fb5878a8854d0d1c"
+keep = { "X360/16.00.11886.00/msvcp100.dll" = "Bin/msvcp100.dll" }
+into = "10.0"
+[[msvc10.parts]]
 url = "https://github.com/archaic-msvc/msvc1000_sp1/archive/09a53c11f781ec9ab5e66772ba720b9d85e4c2a4.tar.gz"  # 16.00.40219.01
 sha256 = "4d256b37c4fea1327c554e19f9fda3078155a404699a5fb3f33a8a4804258bfb"
 subdir = "msvc1000_sp1-09a53c11f781ec9ab5e66772ba720b9d85e4c2a4"
 keep = { "VC/bin" = "Bin", "Microsoft SDKs/Windows/v7.0A/Include" = "Include", "VC/include" = "Include" }
 into = "10.0SP1"
-[[msvc2005.parts]]
-url = "https://files.decomp.dev/compilers_20251118.zip"
-sha256 = "69b0d4980a2eccea4ae6e70b486714b5190cb6c75e3bc7b8fb5878a8854d0d1c"
-keep = { "X360/16.00.11886.00/msvcp100.dll" = "Bin/msvcp100.dll" }
-into = "10.0"
-[[msvc2005.parts]]
+[[msvc10.parts]]
 url = "https://files.decomp.dev/compilers_20251118.zip"
 sha256 = "69b0d4980a2eccea4ae6e70b486714b5190cb6c75e3bc7b8fb5878a8854d0d1c"
 keep = { "X360/16.00.11886.00/msvcp100.dll" = "Bin/msvcp100.dll" }
@@ -1301,13 +1395,13 @@ keep = { "Include/10.0.17763.0/shared" = "Include", "Include/10.0.17763.0/um" = 
 
 # Visual C++ 2017's last toolset (14.16, cl 19.16.27027.1: Visual Studio 2017 15.9.7), with the Windows 10 SDK it was
 # used with (10.0.17763), from ojdkbuild's copies of the Build Tools (235,092,441 and 309,898,570 bytes). Laid out as
-# msvc2005's: each version a folder with Bin and Include, so the project's build finds it the same way. Two versions:
+# msvc8's: each version a folder with Bin and Include, so the project's build finds it the same way. Two versions:
 # 14.16 is the 32-bit compiler (Hostx86/x86), 14.16-x64 the 64-bit one (Hostx86/x64), which loads the 32-bit host's
 # program database DLLs (mspdb140, mspdbcore; msobj140 for debug information): they're copied beside it, so it runs
 # by itself under wine and on Windows, where Visual Studio's PATH would otherwise hold Hostx86/x86.
 # wibo can't run these compilers, so on Linux and macOS they run through wine (wine.py), which the user installs.
-# Its id says 2015, its name 2017: the packs are named after the first version they hold (`msvc`: 6.0-7.1, `msvc2005`:
-# 2005-2010), and Visual C++ 2015 (Update 3) is to join this pack beside 2017, both run through wine. An install is
+# Its id says 2015, its name 2017: the older packs are one per version (`msvc5`, `msvc` for 6.0, `msvc7`, `msvc71`,
+# `msvc8`, `msvc9`, `msvc10`, each with its service packs), and Visual C++ 2015 (Update 3) is to join this pack beside 2017, both run through wine. An install is
 # filed under its id, so the id was chosen before anyone installed the pack; its name says 2015 once 2015 is in it.
 [msvc2015]
 name = "Microsoft Visual C++ 2017 (PC)"

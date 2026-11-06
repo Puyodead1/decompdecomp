@@ -732,13 +732,13 @@ def test_the_project_rebuilds_the_whole_program_from_its_matched_c(pc, tmp_path)
     assert set(json.loads((clone / "build" / version / "rebuild.json").read_text())["c"]) == from_c
 
 
-NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc2005 pack
+NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc8, msvc9 and msvc10 packs
 
 
 @pytest.mark.parametrize("version", NEWER)
 @needs_tools
-@pytest.mark.skipif(toolchains.installed("msvc2005") is None,
-                    reason="needs Visual C++ 2005, 2008 and 2010 (msvc2005, proprietary)")
+@pytest.mark.skipif(any(toolchains.installed(p) is None for p in ("msvc8", "msvc9", "msvc10")),
+                    reason="needs Visual C++ 2005, 2008 and 2010 (msvc8, msvc9, msvc10: proprietary)")
 def test_a_game_of_2005_to_2010_builds_with_its_own_visual_cpp_and_matches(tmp_path, version):
     """Newer Windows games, phase C: Demo Quest built by each Visual C++ of 2005-2010 imports with that very build
     (its Rich header names it), the project compiles with it (/EHsc, its name for /GX), and agents' C matches."""
@@ -772,8 +772,8 @@ def test_a_game_of_2005_to_2010_builds_with_its_own_visual_cpp_and_matches(tmp_p
 
 @pytest.mark.parametrize(("built", "other"), [("10.0SP1", "10.0"), ("8.0", "8.0")])
 @needs_tools
-@pytest.mark.skipif(toolchains.installed("msvc2005") is None,
-                    reason="needs Visual C++ 2005, 2008 and 2010 (msvc2005, proprietary)")
+@pytest.mark.skipif(any(toolchains.installed(p) is None for p in ("msvc8", "msvc9", "msvc10")),
+                    reason="needs Visual C++ 2005, 2008 and 2010 (msvc8, msvc9, msvc10: proprietary)")
 def test_a_file_of_a_newer_game_takes_any_installed_packs_visual_cpp(tmp_path, built, other):
     """A compiler per source file in a newer game: the map can name a version of either pack (2010 RTM from the
     2005-2010 pack, 7.1 from the other), and the build finds each in the pack that has it. 2005 RTM (#42) shares SP1's
@@ -1062,7 +1062,7 @@ def test_the_import_names_the_visual_cpp_build_from_the_rich_header():
                                                      (0x13, 8034, 23)]))
     # the C library's files come prebuilt by an older build: the game's is the newest that built a tenth of them
     assert (vc6.version, vc6.build, vc6.compiler) == ("6.0", 8966, "Visual C++ 6.0 SP5 (build 8966)")
-    assert vc6.blockers() == vc6.cannot_match() == [] and vc6.pack_version == "6.0"
+    assert vc6.blockers() == vc6.cannot_match() == [] and vc6.pack_version == "6.0SP5"  # (its own service pack's)
     vs2010 = scratch_pe.describe(_windows_program(rich=[(0xAB, 40219, 503), (0xAA, 40219, 171), (0x30, 9044, 121),
                                                         (0x9D, 40219, 1)]))
     assert vs2010.compiler == "Visual C++ 2010 SP1 (10.0, build 40219)" and vs2010.blockers() == []
@@ -1157,27 +1157,29 @@ def test_every_visual_cpp_the_import_picks_is_in_a_compiler_pack():
     assert {scratch_pe.compiler_pack(v) for v in [*picked, *by_file]} == set(scratch_pe.MSVC_PACKS)
     for version in by_file:  # each in its own folder of its pack
         assert any(part.get("into") == version for part in toolchains.get(scratch_pe.compiler_pack(version)).parts)
-    with pytest.raises(ForkError, match="no Visual C\\+\\+ 5.0"):
-        scratch_pe.compiler_pack("5.0")
+    with pytest.raises(ForkError, match="no Visual C\\+\\+ 4.2"):
+        scratch_pe.compiler_pack("4.2")
 
 
 def test_a_game_whose_visual_cpp_is_not_installed_says_which_pack_to_install(tmp_path, monkeypatch):
     """A 2008 game with only 6.0-7.1 installed: the import names the pack its compiler comes in, before Ghidra runs,
     instead of building with a compiler nothing can match with."""
     monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
-    (tmp_path / "toolchains" / "msvc" / "7.1").mkdir(parents=True)
+    (tmp_path / "toolchains" / "msvc" / "6.0").mkdir(parents=True)
     (tmp_path / "toolchains" / "msvc" / toolchains.MANIFEST).write_text("{}")
     game = tmp_path / "game.exe"
     game.write_bytes(_windows_program(rich=[(0x84, 30729, 300), (0x91, 30729, 1)], linker=(9, 0)))
-    with pytest.raises(ForkError, match="Visual C\\+\\+ 9.0SP1, which comes in Microsoft Visual C\\+\\+ 2005, 2008"):
+    with pytest.raises(ForkError, match="Visual C\\+\\+ 9.0SP1, which comes in Microsoft Visual C\\+\\+ 2008"):
         scratch_pe.create(tmp_path / "project", game, log=lambda *_: None)
     assert not (tmp_path / "project").exists()
-    # every installed pack goes to the build, 6.0-7.1's last: an older project's configure.py keeps only the last
-    (tmp_path / "toolchains" / "msvc2005").mkdir()
-    (tmp_path / "toolchains" / "msvc2005" / toolchains.MANIFEST).write_text("{}")
+    # every installed pack goes to the build, 6.0's last: an older project's configure.py keeps only the last
+    for pack in ("msvc9", "msvc5"):
+        (tmp_path / "toolchains" / pack).mkdir()
+        (tmp_path / "toolchains" / pack / toolchains.MANIFEST).write_text("{}")
     monkeypatch.setattr(toolchains, "get", lambda tid: type("T", (), {"supported": False})() if tid == "wibo"
                         else toolchains.registry()[tid])
-    assert scratch_pe.tool_args() == ["--msvc", str(tmp_path / "toolchains" / "msvc2005"),
+    assert scratch_pe.tool_args() == ["--msvc", str(tmp_path / "toolchains" / "msvc9"),
+                                      "--msvc", str(tmp_path / "toolchains" / "msvc5"),
                                       "--msvc", str(tmp_path / "toolchains" / "msvc")]
     # 2017's pack goes to the build like the others, and nothing about wine does (review of #136): a project whose
     # configure.py is older than wine would refuse an argument it doesn't know (its setup then failing, reanalyse
@@ -1194,7 +1196,8 @@ def test_a_game_whose_visual_cpp_is_not_installed_says_which_pack_to_install(tmp
     monkeypatch.setattr(wine, "find", lambda: "/opt/wine/bin/wine")
     monkeypatch.setattr(wine, "prepare", lambda *a, **k: pytest.fail("tool_args must start no wine"))
     assert scratch_pe.tool_args() == ["--msvc", str(tmp_path / "toolchains" / "msvc2015"),
-                                      "--msvc", str(tmp_path / "toolchains" / "msvc2005"),
+                                      "--msvc", str(tmp_path / "toolchains" / "msvc9"),
+                                      "--msvc", str(tmp_path / "toolchains" / "msvc5"),
                                       "--msvc", str(tmp_path / "toolchains" / "msvc")]
     # and which packs wine runs (configure.py's runner): in the environment too, never configure.py's arguments
     assert consoles.get("pc").build_env() == {"DECOMPNET_WINE": "/opt/wine/bin/wine",
@@ -1389,7 +1392,7 @@ def test_a_64_bit_program_is_the_pcs_and_told_why_it_cant_start(tmp_path):
     assert "Visual C++ 2012 Update 3 (11.0, build 60610)" in scratch_pe.describe(game.read_bytes()).summary()
     game.write_bytes(_windows_program(rich=[(0x0B, 8966, 148)]))
     info = scratch_pe.game_info(game)
-    assert info["compiler"] == "6.0" and info["cannot_match"] == []
+    assert info["compiler"] == "6.0SP5" and info["cannot_match"] == []
     assert info["summary"] == ("32-bit x86, built with Visual C++ 6.0 SP5 (build 8966), no whole-program "
                                "optimisation, no DRM or packer found")
 
@@ -2334,7 +2337,7 @@ def test_the_stubs_visual_cpp_makes_are_found(tmp_path, version, own_wine_prefix
     env, runs = None, [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
     if toolchains.get(pack).wine and sys.platform != "win32":
         env, runs = wine.environment(wine.prepare(log=lambda *_: None)), [wine.find()]
-    eh = "/GX" if pack == "msvc" else "/EHsc"
+    eh = "/GX" if pack in scratch_pe.GX_PACKS else "/EHsc"
     subprocess.run([*runs, str(cl), "/nologo", "/c", eh, "/O2", "t.cpp"], cwd=tmp_path, check=True, env=env,
                    capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
     sections = _coff_sections((tmp_path / "t.obj").read_bytes())
@@ -3286,7 +3289,7 @@ def test_a_dlls_data_functions_and_files_are_its_own(tmp_path):
 
 
 @needs_tools
-@pytest.mark.skipif(toolchains.installed("msvc2005") is None, reason="the demo's DLL is built with Visual C++ 2010 SP1")
+@pytest.mark.skipif(any(toolchains.installed(p) is None for p in ("msvc8", "msvc9", "msvc10")), reason="the demo's DLL is built with Visual C++ 2010 SP1")
 def test_a_game_folder_brings_its_dll_and_agents_match_the_dlls_functions(tmp_path):
     """Demo Quest with a DLL of its own (build.py dll), imported from its folder: the DLL is analysed at its own
     address (moved, as the program has that one), its exports name its functions, its files build with the Visual
@@ -3405,12 +3408,17 @@ def test_a_copys_compiler_build_is_read_as_the_rich_header_reads_it(build, versi
                                             ((5, 0), "5.0")])
 def test_a_game_without_a_rich_header_names_old_visual_cpp_by_its_linker_and_takes_the_users_copy(
         tmp_path, monkeypatch, linker, version):
-    """#137: a game built with Visual C++ 2.x to 5.0 has no Rich header; its linker's version says which. Without the
-    user's copy the packs' 6.0 stands in and the message names the copy to set up; with it, that copy builds the game."""
+    """#137: a game built with Visual C++ 2.x to 5.0 has no Rich header; its linker's version says which. 5.0's is the
+    packs' own (its newest service pack: the linker names no build); without the user's copy an older one's stand-in
+    is 5.0 and the message names the copy to set up; with it, that copy builds the game."""
     game = _windows_program(linker=linker)
     plain = scratch_pe.describe(game)
-    assert (plain.version, plain.build, plain.own, plain.pack_version) == (version, None, None, "6.0")
-    assert version in plain.cannot_match()[0] and plain.blockers() == []
+    assert (plain.version, plain.build, plain.own) == (version, None, None) and plain.pack_version.startswith("5.0")
+    if version == "5.0":
+        assert plain.pack_version == "5.0SP3" and plain.cannot_match() == []
+    else:
+        assert version in plain.cannot_match()[0]
+    assert plain.blockers() == []
     cl = {"2.0": "9.0.2196.0", "4.0": "10.0.5270.0", "4.1": "10.10.6038.0", "4.2": "10.20.6166.0", "5.0": "11.0.7022.0"}
     _own_copies(tmp_path, monkeypatch, "15.0.30729.1", cl[version], "12.0.8168.0")
     built = scratch_pe.describe(game)
@@ -3514,7 +3522,7 @@ def test_a_fork_projects_renamed_rows_keep_their_history_under_the_report_s_name
 
 def test_a_project_waits_for_its_visual_cpp_before_it_is_brought_up_to_date(tmp_path, monkeypatch):
     """Each catch-up step builds the project: without its compiler every one was taken back, and not tried again.
-    A fork's 8.0-sp1 is the msvc2005 pack's 8.0SP1."""
+    A fork's 8.0-sp1 is the msvc8 pack's 8.0SP1."""
     (tmp_path / "tools").mkdir()
     (tmp_path / "tools" / "configure.py").write_text('MSVC_VERSION = "8.0-sp1"\n')
     monkeypatch.setattr(toolchains, "installed", lambda tid, linux=None: None)
@@ -3523,7 +3531,7 @@ def test_a_project_waits_for_its_visual_cpp_before_it_is_brought_up_to_date(tmp_
     assert scratch_pe.compiler_missing(tmp_path) is None
 
 
-@pytest.mark.skipif(not (toolchains.root() / "msvc" / "7.0" / "Lib").is_dir(),
+@pytest.mark.skipif(not (toolchains.root() / "msvc7" / "7.0" / "Lib").is_dir(),
                     reason="needs Visual C++ .NET 2002's runtime libraries (the user's copy, in msvc/7.0/Lib)")
 def test_the_runtime_libraries_own_code_is_found_whatever_its_relocations_fill_in():
     """Function ID knew a 2002 game's runtime by 2003's fingerprints and missed rand, fopen and sprintf; the libraries
@@ -3598,14 +3606,14 @@ def test_each_files_compiler_and_flags_are_read_from_the_build():
         "build/g/src/auto/a.obj": ("/opt/wibo", "/opt/7.0/CL.EXE", ("/opt/7.0/Include",), ("/nologo", "/c", "/O2", "/GX"))}
 
 
-@pytest.mark.skipif(toolchains.installed("msvc") is None or not (toolchains.root() / "msvc" / "7.0" / "Bin").is_dir(),
+@pytest.mark.skipif(toolchains.installed("msvc7") is None or not (toolchains.root() / "msvc7" / "7.0" / "Bin").is_dir(),
                     reason="needs Visual C++ 7.0 (msvc, proprietary)")
 def test_the_stl_probes_compile_the_instances_a_game_has(tmp_path):
     """A 2003 game's std::map<std::string, int> erase is what the probe compiles, as the game's file builds."""
     from decompnet.consoles.pc import stl
 
     tc = toolchains.root()
-    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc" / "7.0" / "Include"),),
+    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc7" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc7" / "7.0" / "Include"),),
                 ("/nologo", "/c", "/O2", "/W3", "/GX", "/Oy-"))
     prints = stl.prints(tmp_path, compiler, tmp_path / "stl", log=lambda *_: None)
     erase = [f for by in prints.by_shape.values() for fs in by.values() for f in fs
@@ -3645,7 +3653,7 @@ def test_a_facets_explicit_instantiation_goes_where_a_probe_uses_it():
     assert stl.spoiler("template class std::map<int, int>;") is None
 
 
-@pytest.mark.skipif(toolchains.installed("msvc") is None or not (toolchains.root() / "msvc" / "7.0" / "Bin").is_dir(),
+@pytest.mark.skipif(toolchains.installed("msvc7") is None or not (toolchains.root() / "msvc7" / "7.0" / "Bin").is_dir(),
                     reason="needs Visual C++ 7.0 (msvc, proprietary)")
 def test_a_facet_used_compiles_as_the_games_stream_code(tmp_path):
     """A 2003 game's num_get<char>::do_get(unsigned long&) is 281 bytes, calling istreambuf_iterator::equal: what the
@@ -3653,7 +3661,7 @@ def test_a_facet_used_compiles_as_the_games_stream_code(tmp_path):
     from decompnet.consoles.pc import stl
 
     tc = toolchains.root()
-    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc" / "7.0" / "Include"),),
+    compiler = (str(tc / "wibo" / "wibo"), str(tc / "msvc7" / "7.0" / "Bin" / "CL.EXE"), (str(tc / "msvc7" / "7.0" / "Include"),),
                 ("/nologo", "/c", "/O2", "/W3", "/GX", "/MT", "/Oy-", "/GS"))
     prints = stl.prints(tmp_path, compiler, tmp_path / "stl", log=lambda *_: None)
     do_get = [f for by in prints.by_shape.values() for fs in by.values() for f in fs

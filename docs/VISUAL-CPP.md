@@ -32,24 +32,38 @@ but changed the compiler behind it, so the Rich header can't tell them apart:
 
 - Visual C++ 2005 RTM and SP1 are both build 50727. The import takes SP1, which most games of that time used. RTM
   stays available for a file or a game that needs it.
-- Visual C++ 6.0 SP5 and SP6 are both build 8804.
-- Visual Studio .NET 2002 SP1 kept build 9466 of RTM.
+- Visual C++ 6.0's service packs kept `cl.exe`'s build (8168, then 8804 from SP4) but changed the code generator
+  behind it (`c2.dll`), whose build the Rich header records: 8447 (SP3), 8799 (SP4), 8966 (SP5), 9044 (SP5 with the
+  Processor Pack), 9782 (SP6). A game built with SP6 names 9782 and builds with SP6.
+- Visual C++ 5.0 SP2 has SP1's compiler: one folder, 5.0SP1, is both.
 
 ## The builds decompdecomp has
 
-| VS | Visual C++ | `cl.exe` build | Released | Pack |
+| VS | Visual C++ | compiler build (`c2`) | Released | Pack |
 | :-- | :-- | :-- | :-- | :-- |
+| 5.0 | Visual Studio 97 | 11.00.7022 | 1997 | `msvc5` |
+| 5.0SP1 | 97 SP1 (and SP2: the same compiler) | 11.00.7153 | 1997 | `msvc5` |
+| 5.0SP3 | 97 SP3 | 11.00.7303 | 1997 | `msvc5` |
 | 6.0 | 6.0 (also used by SP1 and SP2) | 12.00.8168 | 1998 | `msvc` |
-| 7.0 | Visual Studio .NET 2002 | 13.00.9466 | 2002 | `msvc` |
-| 7.1 | Visual Studio .NET 2003 | 13.10.3077 | 2003 | `msvc` |
-| 8.0 | 2005 | 14.00.50727.42 | 2005 | `msvc2005` |
-| 8.0SP1 | 2005 SP1 | 14.00.50727.762 | 2006 | `msvc2005` |
-| 9.0 | 2008 | 15.00.21022.08 | 2007 | `msvc2005` |
-| 9.0SP1 | 2008 SP1 | 15.00.30729.01 | 2008 | `msvc2005` |
-| 10.0 | 2010 | 16.00.30319.01 | 2010 | `msvc2005` |
-| 10.0SP1 | 2010 SP1 | 16.00.40219.01 | 2011 | `msvc2005` |
+| 6.0SP3 | 6.0 SP3 | 12.00.8447 | 1999 | `msvc` |
+| 6.0SP4 | 6.0 SP4 | 12.00.8799 | 2000 | `msvc` |
+| 6.0SP5 | 6.0 SP5 | 12.00.8966 | 2001 | `msvc` |
+| 6.0SP5PP | 6.0 SP5 with the Processor Pack | 13.00.9044 | 2001 | `msvc` |
+| 6.0SP6 | 6.0 SP6 | 12.00.9782 | 2004 | `msvc` |
+| 7.0 | Visual Studio .NET 2002 | 13.00.9466 | 2002 | `msvc7` |
+| 7.0SP1 | .NET 2002 SP1 | 13.00.9955 | 2002 | `msvc7` |
+| 7.1 | Visual Studio .NET 2003 | 13.10.3077 | 2003 | `msvc71` |
+| 7.1SP1 | .NET 2003 SP1 | 13.10.6030 | 2006 | `msvc71` |
+| 8.0 | 2005 | 14.00.50727.42 | 2005 | `msvc8` |
+| 8.0SP1 | 2005 SP1 | 14.00.50727.762 | 2006 | `msvc8` |
+| 9.0 | 2008 | 15.00.21022.08 | 2007 | `msvc9` |
+| 9.0SP1 | 2008 SP1 | 15.00.30729.01 | 2008 | `msvc9` |
+| 10.0 | 2010 | 16.00.30319.01 | 2010 | `msvc10` |
+| 10.0SP1 | 2010 SP1 | 16.00.40219.01 | 2011 | `msvc10` |
 | 14.16 | 2017 15.9, 32-bit | 19.16.27027.1 | 2019 | `msvc2015` |
 | 14.16-x64 | 2017 15.9, 64-bit | 19.16.27027.1 | 2019 | `msvc2015` |
+
+Each Visual C++ version is a pack of its own, with its service packs: install the one your game needs.
 
 `src/decompnet/toolchains.toml` pins where each one comes from, with its checksum.
 

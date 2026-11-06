@@ -133,8 +133,6 @@ const CW_PACK = {
     note: "decompdecomp reads which Visual C++ built the game from the program itself (a version it doesn't have yet "
       + "builds with the nearest it has, and the import says so); you can change it later in tools/configure.py. The "
       + "functions are found by Ghidra (installed once, 540 MB, needs Java 21+)." },
-  msvc2005: { title: "Visual C++ 2005-2010", text: "Install Visual C++ 2005, 2008 and 2010, the compilers PC games of 2005-2012 were built with (about 600 MB): this game's program says it's one of them. It's proprietary software, kept by the decomp community: only if you accept that.",
-    note: "decompdecomp reads which Visual C++ built the game from the program itself; you can change it later in tools/configure.py. The functions are found by Ghidra (installed once, 540 MB, needs Java 21+)." },
   mwccarm: { title: "CodeWarrior for DS", text: "Install CodeWarrior for DS, the 24 compiler versions DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that.",
     note: "Not sure? Keep the default. Games mix versions: a file the game built with another one gets it later, when a helper finds the version its functions match with." },
 };
@@ -157,7 +155,7 @@ const packOf = (info) => info?.pack || (CW_PACK[consoleOf(info?.platform)?.packs
    the linker's built the game's own code, else the version that built the most files; without a Rich header, the
    linker's version says. (tests/test_pc_debug.py keeps these ids scratch.RICH_COMPILERS' and RICH_LINKERS'.) */
 const RICH_COMPILERS = {  // version -> its compilers' product ids (whole-program ones too), as [from, to) ranges
-  "6.0": [[0x0a, 0x0c], [0x15, 0x19], [0x23, 0x25], [0x30, 0x36]], "7.0": [[0x1c, 0x1e], [0x39, 0x3b], [0x2b, 0x2d], [0x41, 0x45]],
+  "5.0": [[0x08, 0x09]], "6.0": [[0x0a, 0x0c], [0x15, 0x19], [0x23, 0x25], [0x30, 0x36]], "7.0": [[0x1c, 0x1e], [0x39, 0x3b], [0x2b, 0x2d], [0x41, 0x45]],
   "7.1": [[0x4c, 0x56], [0x5f, 0x69]], "8.0": [[0x6d, 0x77], [0x82, 0x83]], "9.0": [[0x83, 0x87], [0x89, 0x90]],
   "10.0": [[0xaa, 0xac], [0xbc, 0xbe], [0xae, 0xb5], [0xc0, 0xc7]], "11.0": [[0xce, 0xd0], [0xd2, 0xd9]],
   "12.0": [[0xe0, 0xe2], [0xf2, 0xf4], [0xe4, 0xeb], [0xf6, 0xfd]], "14": [[0x104, 0x106], [0x108, 0x10f]],
