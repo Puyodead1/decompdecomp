@@ -120,8 +120,10 @@ class WindowsPC(Console):
     # /MD) in every file's flags (scratch.set_runtime_flag); 18 the runtime's functions Ghidra cut in two found too
     # (scratch.runtime_matches: a 2003 game's sin and cos); 19 the joins again, for a catch block's rest that takes its
     # call's arguments off the stack (arch/x86.piece: the STL's node allocators, each cut at the operator delete of its
-    # catch(...)); 20 the joins again, for `pop ecx` pieces; 21 the joins again, for funclets' `pop ecx; ret` tails
-    ANALYSIS = 21
+    # catch(...)); 20 the joins again, for `pop ecx` pieces; 21 the joins again, for funclets' `pop ecx; ret` tails;
+    # 22 the files of a debug build (their functions fill their stack with 0xCC) built as one: /Od /ZI /GZ
+    # (scratch.set_debug_flags), but for files with matched code
+    ANALYSIS = 22
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -350,6 +352,15 @@ class WindowsPC(Console):
             return (f"every source file builds with {flag} now, for the C runtime the game links (its headers make "
                     "that runtime's code: errno, the STL's locks)" if flag else None)
 
+        def debug(fp):
+            done = {scratch._source(fp.root, r["unit"]) for r in net.store.all(
+                "SELECT DISTINCT unit FROM functions WHERE project_id=? AND status='matched'", net.project_row(slug)["id"])}
+            n = scratch.set_debug_flags(fp.root, version, _compiler(fp), keep=done)
+            if n:  # (the build tools too, before the rebuild: /ZI's program database, each object its own: compile.py)
+                scratch.write_tools(fp.root, version)
+            return (f"{n} source files were a debug build (their functions fill their stack with 0xCC): they build "
+                    "with /Od and /GZ now, unoptimised, as the game's were" if n else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -359,12 +370,13 @@ class WindowsPC(Console):
         steps = {2: (repairs, False), 3: (stubs, True), 4: (pieces, False), 5: (thunks, False), 6: (frames, True),
                  7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True),
                  12: (merged, False), 13: (merged, False), 14: (library, True), 15: (runtime_code, True),
-                 16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False), 21: (stubs, True)}
+                 16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False), 21: (stubs, True),
+                 22: (debug, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
                 if not (level == 7 and 4 in kept):  # (7 is 3 and 4 again, by their rules now: not when they just ran)
-                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config",),
+                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config", "tools") if level == 22 else ("config",),
                                                       fix=fix, log=log)  # (17 changes configure.py's CL_FLAGS)
                 if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
                     rename_rows({new: old for old, new in renamed.items()})

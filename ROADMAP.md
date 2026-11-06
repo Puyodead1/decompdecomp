@@ -568,6 +568,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (the rest: two return types guessed wrong, a function compiled with frame pointers, which `#pragma optimize("y",
   off)` gives, and a C runtime function built for size). That game keeps an ebp frame in about half its functions:
   if all of it was built with /Oy-, a project flag would serve better than a pragma per function.
+- **A Visual C++ 6.0 debug build builds as one.** A 6.0 SP6 game shipped as a debug build: 1,540 functions filled
+  their stack with 0xCC (/GZ) after edit-and-continue's 0x40 bytes (/ZI), unoptimised, and the project built every
+  file with /O2, so 102 of 2,219 functions matched and agents wrote "only the /GZ debug prologue is missing" on C that
+  came out byte for byte with /Od /ZI /GZ. Each file whose functions fill their stack builds with those flags
+  (`scratch.set_debug_flags`, at import and as analysis step 22; files with matched code keep theirs; the release
+  runtime library linked in stays /O2), and `tools/compile.py` gives each object its own program database, as
+  several compiles at once writing one vc60.pdb failed. 7.0 and newer: Next, Newer Windows games.
 - **Every Visual C++ service pack, one pack per version.** A game built with Visual C++ 6.0 SP6 (c2 build 9782)
   built with plain 6.0, whose code generation differs between service packs. The packs are now one per version, each
   with its service packs: `msvc5` (5.0, SP1, SP3), `msvc` (6.0, SP3, SP4, SP5, SP5 with the Processor Pack, SP6),
@@ -970,6 +977,10 @@ naming its SDK in `headers`), and goes into `RICH_BUILDS`, so its games build wi
   file with /GL and linking it with /LTCG against stubs; until then a mostly-/GL game isn't started.
 - **Visual C++ 2017 on Windows, and /Zi under wine.** On a Windows computer the 2017 pack is untested. Under wine,
   /Zi with /FS fails (C1902: no mspdbsrv), which no project's build uses.
+- **Debug builds of Visual C++ 7.0 and newer.** A game shipped as a debug build builds its files with /Od /ZI /GZ
+  (Recently done), but only with 6.0: from 7.0 on the compiler writes debug information through mspdbsrv.exe, which
+  wibo doesn't run, so with /Zi, /ZI or /Z7 it makes no object at all, and /RTCs alone gives a different frame than
+  /ZI's. Until wibo runs it (or the compile goes through wine), those games' debug files keep /O2 and say why.
 - **F, 64-bit.** Read PE32+ programs and delink their relocations (nearly all relative), with the x64 calling
   convention. A 64-bit program lists every function's start and end in its exception directory (`.pdata`), so
   functions come from the program, not Ghidra's guess. Done when a 64-bit demo, then a real game, imports and

@@ -2116,6 +2116,67 @@ def set_gs_flags(root: Path, version: str, keep: set[str] = frozenset()) -> int 
     return len(wanted)
 
 
+# A game shipped as a debug build: its code compiled without optimisation (/Od), each function's locals filled with
+# 0xCC (/GZ: `mov eax, 0xCCCCCCCC; rep stosd` in its prologue) and, with edit-and-continue's debug information (/ZI),
+# 0x40 bytes more of stack in every function. Built with /O2 none of it matches: a Visual C++ 6.0 SP6 game had 1,540
+# such functions, 102 of 2,219 matched, and agents wrote "the /GZ debug prologue is missing" on C that, built with
+# /Od /ZI /GZ, came out byte for byte. Its runtime library is the release build all the same, so each file says.
+DEBUG_FILL = b"\xb8\xcc\xcc\xcc\xcc\xf3\xab"  # mov eax, 0xCCCCCCCC; rep stosd
+DEBUG_FILL_BYTES = 48  # how far into a function the fill is looked for (after its frame and pushes)
+DEBUG_SHARE = 0.5  # a file whose functions fill their stack this often or more was a debug build
+EDIT_AND_CONTINUE = 0x40  # the stack /ZI adds to every function
+# Visual C++ 7.0 on writes debug information through a server (mspdbsrv.exe) wibo doesn't run: with /Zi, /ZI or /Z7
+# it makes no object at all. Until it does, only 6.0's debug builds (/GZ came with 6.0) are made (ROADMAP.md).
+DEBUG_VERSIONS = ("6.0",)
+
+
+def debug_frame(pe: PE, f: Function) -> int | None:
+    """The stack a debug build's function reserves (`sub esp, N` before its 0xCC fill), or None: no fill."""
+    head = pe.read(f.addr, min(f.size, DEBUG_FILL_BYTES))
+    if not head.startswith(b"\x55\x8b\xec") or DEBUG_FILL not in head:
+        return None
+    if head[3:5] == b"\x83\xec":
+        return head[5]
+    return int.from_bytes(head[5:9], "little") if head[3:5] == b"\x81\xec" else 0
+
+
+def debug_flags(pe: PE, functions: list[Function]) -> list[str] | None:
+    """The flags a file whose functions these are was built with, if it was a debug build (most of them fill their
+    stack with 0xCC): /Od /GZ, and /ZI when they reserve edit-and-continue's 0x40 bytes, /Zi when not. None: not."""
+    frames = [debug_frame(pe, f) for f in functions]
+    filled = [n for n in frames if n is not None]
+    if not filled or len(filled) < DEBUG_SHARE * len(frames):
+        return None
+    zi = sum(n >= EDIT_AND_CONTINUE for n in filled) >= DEBUG_SHARE * len(filled)
+    return ["/Od", "/ZI" if zi else "/Zi", "/GZ"]
+
+
+def set_debug_flags(root: Path, version: str, compiler: str | None, keep: set[str] = frozenset()) -> int | None:
+    """The debug build's flags (debug_flags) for each source file built as one, in place of /Oy- (/Od keeps every
+    frame); not `keep`'s, nor a file whose Visual C++ can't make them yet (DEBUG_VERSIONS). Returns how many files got
+    them; None without the user's copies of the programs."""
+    if missing(root, version):
+        return None
+    _, info, pes, functions = _project_functions(root, version)
+    stubs = {fn["addr"] for fns in info["units"].values() for fn in fns if fn.get("generated")}
+    found, compilers = file_flags(root, version), file_compilers(root, version)
+    groups: dict[str, list[Function]] = {}
+    for f in functions:
+        if f.addr not in stubs:
+            groups.setdefault(f.unit, []).append(f)
+    wanted = {}
+    for unit, fns in groups.items():
+        source = _source(root, unit)
+        built = (compilers.get(source) or compiler or "").removeprefix("MSVC/")
+        if source in keep or not built.startswith(DEBUG_VERSIONS) or "/Od" in found.get(source, ()):
+            continue
+        if flags := debug_flags(pes[unit_module(unit)], fns):
+            wanted[source] = [*(f for f in found.get(source, []) if f != FRAME_FLAG), *flags]
+    if wanted:
+        _write_compilers(flags_file(root, version), {**found, **wanted})
+    return len(wanted)
+
+
 # ---------------------------------------------------------------------------------------------------- the project
 
 
@@ -2912,6 +2973,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
             f"with {FRAME_FLAG} (Visual C++ keeps the frame pointer)")
     if gs := set_gs_flags(root, version):
         log(f"{gs} source files have functions with a buffer security cookie: they build with {GS_FLAG}")
+    if debug := set_debug_flags(root, version, compiler):
+        log(f"{debug} source files were a debug build (their functions fill their stack with 0xCC): they build "
+            "with /Od and /GZ, unoptimised, as the game's were")
     sources = {addr: source for known in debugs for addr, source in known.units.items()}
     for u, fns in groups.items():
         src = root / "src" / "auto" / f"{u}.cpp"  # C++, as PC games of the time were written (C compiles too)

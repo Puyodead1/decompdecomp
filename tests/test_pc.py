@@ -2215,6 +2215,69 @@ def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
     assert ["/Oy-", "/GS"] in consoles.get("pc").flag_variants(["/Oy-"])
 
 
+# a Visual C++ 6.0 debug build's method that sets two fields (/Od /ZI /GZ): edit-and-continue's 0x40 bytes and `this`'s
+# 4, filled with 0xCC; then `this` kept at [ebp-4] and read again for each store
+DEBUG_METHOD = bytes.fromhex(
+    "558bec83ec44535657518d7dbcb911000000b8ccccccccf3ab59894dfc"  # frame, pushes, the fill, this to [ebp-4]
+    "8b45fcc7403c00000000"  # mov eax, [ebp-4]; mov [eax+0x3c], 0
+    "8b4dfcc7413896000000"  # mov ecx, [ebp-4]; mov [ecx+0x38], 150
+    "5f5e5b8be55dc3")  # pops, leave, ret
+
+
+def test_files_of_a_debug_build_build_with_od_and_gz(tmp_path):
+    """A Visual C++ 6.0 SP6 game shipped as a debug build: 1,540 functions filled their stack with 0xCC, the project
+    built every file with /O2, and agents wrote "only the /GZ debug prologue is missing" on C that /Od /ZI /GZ made
+    byte for byte. Each file says (the runtime library linked in is the release build), files with matched code keep
+    their flags, and a Visual C++ wibo can't make debug information with yet gets none."""
+    plain = PUSH_FRAME + bytes.fromhex("8b4508") + bytes.fromhex("5dc3")  # an optimised function with a frame
+    root = _project(tmp_path, DEBUG_METHOD.ljust(64, b"\xcc") + plain,
+                    [_row(TEXT, TEXT + len(DEBUG_METHOD)), _row(TEXT + 64, TEXT + 64 + len(plain))], unit_bytes=16)
+    flags = lambda: json.loads(scratch_pe.flags_file(root, "game").read_text())  # noqa: E731
+    sources = sorted(scratch_pe._source(root, u) for u in json.loads(
+        (root / "config" / "game" / "functions.json").read_text())["units"])
+    scratch_pe._write_compilers(scratch_pe.flags_file(root, "game"), {sources[0]: ["/Oy-"], sources[1]: ["/Oy-"]})
+    assert scratch_pe.set_debug_flags(root, "game", "7.1") == 0  # (7.1 under wibo makes no object with /Zi)
+    assert scratch_pe.set_debug_flags(root, "game", "6.0SP6", keep={sources[0]}) == 0
+    assert scratch_pe.set_debug_flags(root, "game", "6.0SP6") == 1
+    assert flags()[sources[0]] == ["/Od", "/ZI", "/GZ"] and flags()[sources[1]] == ["/Oy-"]  # (/Od keeps frames)
+    assert scratch_pe.set_debug_flags(root, "game", "6.0SP6") == 0
+    # without edit-and-continue (/Zi), a function reserves only its locals
+    small = DEBUG_METHOD[:5] + bytes([0x04]) + DEBUG_METHOD[6:]
+    pe = scratch_pe.read_pe(_tiny_exe(small))
+    assert scratch_pe.debug_flags(pe, [scratch_pe.Function(TEXT, len(small), "_f", [], "u")]) == ["/Od", "/Zi", "/GZ"]
+
+
+def test_a_debug_builds_program_database_is_each_objects_own(tmp_path):
+    """/ZI writes vc60.pdb where the compiler runs: several of a build's compiles at once, all writing the one file,
+    made one of them fail. compile.py names one beside each object."""
+    compile_py = Path(scratch_pe.__file__).with_name("project_template") / "tools" / "compile.py"
+    said = tmp_path / "args.txt"
+    fake = tmp_path / "fake.sh"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {said}\nexit 1\n')  # (failing: names.py doesn't run)
+    fake.chmod(0o755)
+    common = ["--config", "c.json", "--compiler", "cl.exe", "--include", "inc", "--wrapper", str(fake),
+              "--output", "build/x/y.obj", "--source", "x.cpp", "--"]
+    for extra, pdb in ((["/O2", "/Od", "/ZI", "/GZ"], "/Fdbuild/x/y.pdb"), (["/O2"], None), (["/Zi", "/Fdz.pdb"], None)):
+        subprocess.run([sys.executable, str(compile_py), *common, *extra], cwd=tmp_path, timeout=30)
+        args = said.read_text().split("\n")
+        assert (pdb in args) if pdb else not any(a.startswith("/Fdbuild") for a in args), args
+        assert ("/O2" in args) == ("/O2" in extra and "/Od" not in extra), args  # (/O2 goes for a debug build's file)
+
+
+@pytest.mark.skipif(sys.platform == "win32" or toolchains.installed("wibo") is None
+                    or toolchains.installed("msvc") is None or not (toolchains.path("msvc") / "6.0SP6").is_dir(),
+                    reason="needs Visual C++ 6.0 SP6 (the msvc pack, proprietary) and wibo")
+def test_visual_cpp_6_makes_a_debug_builds_function_with_its_flags(tmp_path):
+    """The flags set_debug_flags gives make a debug build's function byte for byte (DEBUG_METHOD, from the C)."""
+    cl = toolchains.path("msvc") / "6.0SP6" / "Bin"
+    (tmp_path / "t.cpp").write_text("struct S { char pad[0x38]; int i38, i3c; void Reset(); };\n"
+                                    "void S::Reset() { i3c = 0; i38 = 150; }\n")
+    subprocess.run([str(toolchains.path("wibo") / "wibo"), str(cl / "CL.EXE"), "/nologo", "/c", "/O2", "/W3",
+                    "/Od", "/ZI", "/GZ", "/Fdt.pdb", "t.cpp"], cwd=tmp_path, capture_output=True, timeout=120,
+                   env={**os.environ, "INCLUDE": str(cl.parent / "Include")})
+    assert DEBUG_METHOD in (tmp_path / "t.obj").read_bytes()  # (its .text, as the game's)
+
+
 def test_a_project_made_before_gets_its_functions_last_instructions_whole(tmp_path):
     """Found in a gap, `jmp <next function>` (e9 0a 00 00 00) lost its zeros with the padding after it: the function
     was 2 bytes, and no C could match it. 465 functions of a PC game ended mid-instruction."""
