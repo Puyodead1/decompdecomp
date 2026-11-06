@@ -297,3 +297,20 @@ def test_a_long_header_comes_in_parts_and_its_declarations_by_search(net, monkey
     first = net.get_context("demo")
     assert "lines 1-5 of" in first and "get_context(start=6)" in first and len(first.splitlines()) == 7
     assert "lines 6-10 of" in net.get_context("demo", start=6)
+
+
+def test_cpp_that_asks_for_no_shared_header_is_compiled_without_it(net):
+    """A C++ program's header from its DWARF has glibc's and the C++ library's types too, so the real <string> and
+    <map> clashed with it and agents couldn't instantiate std::map's functions. `#pragma decompdecomp no_context`
+    compiles the C without the shared header (its own pragma: any other is still refused)."""
+    from decompnet.compiler import SourceRejected, check_source
+
+    check_source("#pragma decompdecomp no_context\nint f(void) { return 1; }\n")
+    with pytest.raises(SourceRejected):
+        check_source("#pragma GCC optimize(\"O0\")\nint f(void) { return 1; }\n")
+    proj = net._project("demo")
+    clash = "typedef struct Entity { int x; } Entity;\nint f(Entity *e) { return e->x; }\n"  # (the header has an Entity)
+    header = net._context(proj["id"])["header"]
+    assert "Entity" in header
+    assert not net._compile(proj, header, clash).ok
+    assert net._compile(proj, header, "#pragma decompdecomp no_context\n" + clash).ok
