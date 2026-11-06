@@ -44,6 +44,57 @@ def test_the_queue_takes_only_what_the_selection_does(tmp_path):
     assert net.claim_row(other, "game", "f1")["name"] == "f1"  # another helper's choices are its own
 
 
+def test_the_new_orders_and_filters_of_a_selection(tmp_path):
+    """From RetroReversing's fork: untried first, the longest unchecked first, only functions no C has compiled for
+    yet (a filter: the helper stops when there's none), and only functions no agent of its model has tried (whatever its effort)."""
+    assert network.model_key("claude-mythos-5-1-low-1") == network.model_key("claude-mythos-5-1-high-12") == \
+        "claude-mythos-5-1"
+    assert network.model_key("opencode-deepseek-v4.1-flash-high-4") == "opencode-deepseek-v4.1-flash"
+    assert network.validate_selection({"strategy": "no_compiling_c", "model_untried": True}) == {
+        "strategy": "no_compiling_c", "model_untried": True}
+    with pytest.raises(NetworkError):
+        network.validate_selection({"model_untried": "yes"})
+    net = _game(tmp_path, functions=3)
+    low, _ = net.local_agent("claude-opus-low-1")
+    with net.store.tx() as db:  # f0: compiled (scored) by low long ago; f1: a compile error only, lately; f2: never
+        ids = {r["name"]: r["id"] for r in db.execute("SELECT id, name FROM functions")}
+        db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,created_at) VALUES(?,?,5,1,1)",
+                   (ids["f0"], low.id))
+        db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,created_at) VALUES(?,?,NULL,0,9)",
+                   (ids["f1"], low.id))
+        db.execute("UPDATE functions SET attempts=1 WHERE name IN ('f0', 'f1')")
+        db.execute("UPDATE functions SET best_score=5, best_source='int f;' WHERE name='f0'")
+    pick = lambda name, sel: (net.set_selection("game", name, sel),  # noqa: E731
+                              net.claim_row(net.local_agent(name)[0], "game"))[1]["name"]
+    def unclaim(*sql):
+        with net.store.tx() as db:
+            db.execute("DELETE FROM claims")
+            for q in sql:
+                db.execute(q)
+
+    assert pick("claude-opus-2", {"strategy": "untried"}) == "f2"
+    unclaim()
+    assert pick("claude-opus-3", {"strategy": "oldest_checked"}) == "f2"  # (never checked first)
+    unclaim("UPDATE functions SET status='matched' WHERE name='f2'")
+    assert pick("claude-opus-4", {"strategy": "oldest_checked"}) == "f0"  # (checked at 1, before f1's 9)
+    unclaim()
+    sweeper, _ = net.local_agent("claude-opus-5")
+    net.set_selection("game", sweeper.name, {"strategy": "no_compiling_c"})
+    assert net.selection_left(sweeper, "game") == 1  # f1: its only try didn't compile
+    with pytest.raises(NetworkError, match="C has compiled for f0 already"):
+        net.claim_row(sweeper, "game", "f0")
+    assert net.claim_row(sweeper, "game")["name"] == "f1"
+    unclaim()
+    high, _ = net.local_agent("claude-opus-high-6")  # low's model, another effort: f0 and f1 were its model's
+    net.set_selection("game", high.name, {"model_untried": True})
+    assert net.selection_left(high, "game") == 0 and net.claim_row(high, "game") is None
+    with pytest.raises(NetworkError, match="an agent of your model has tried f1"):
+        net.claim_row(high, "game", "f1")
+    fresh, _ = net.local_agent("codex-gpt-6-1")  # another model: both are new to it
+    net.set_selection("game", fresh.name, {"model_untried": True})
+    assert net.selection_left(fresh, "game") == 2
+
+
 def test_max_tries_releases_the_function_and_keeps_its_best(tmp_path):
     net = _game(tmp_path)
     agent, _ = net.local_agent("claude-opus-1")

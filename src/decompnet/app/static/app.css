@@ -991,6 +991,10 @@ details.more[open] > summary::before { content: "− "; }
 .ptab[data-pane="agents"] .agents-grid, .ptab[data-pane="agents"] .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .ptab[data-pane="agents"] .agents-grid > .panel { display: flex; flex-direction: column; height: var(--agents-row); }
 .ptab[data-pane="agents"] .agents-grid .sessions, .ptab[data-pane="agents"] .feed { flex: 1; min-height: 0; overflow-y: auto; }
+/* an agent's full transcript: its session picker, then its list scrolling in what's left of the panel (the list in a
+   wrapper of its own grew past the panel and under the cost panel below, with no scrollbar); the panel clips the rest */
+.ptab[data-pane="agents"] .transcript:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ptab[data-pane="agents"] .agents-grid > .feed-panel { overflow: hidden; }
 /* the agents row fills the window below the project's header and tabs, never shorter than --agents-row-min */
 .ptab[data-pane="agents"] { --agents-row-min: 560px; --above-agents: 230px; --agents-row: max(var(--agents-row-min), calc(100vh - var(--above-agents))); }
 .ptab[data-pane="agents"] .suggest-panel { margin: 16px 0 0; }
@@ -1023,5 +1027,7 @@ details.more[open] > summary::before { content: "− "; }
 .compare-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 .compare-table th, .compare-table td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line-soft); }
 .compare-table tr.own td { font-weight: 600; }
-details.selection { font-size: 12px; margin-top: 4px; }
-details.selection .field { margin: 4px 0; }
+/* the launcher's work selection for the agents it starts (each agent's own: its card opens it in the side panel) */
+details.lz-selection { margin: 10px 0 0; font-size: 13px; }
+details.lz-selection summary { cursor: pointer; color: var(--ink-2); }
+details.lz-selection .field, details.lz-selection .check { margin: 8px 0; }

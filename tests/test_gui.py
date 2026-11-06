@@ -25,6 +25,23 @@ def test_the_game_picker_stays_above_existing_project_cards():
             assert not re.search(r"(?:^|;)\s*order\s*:", declarations), selector
 
 
+def test_every_list_in_the_agents_feed_panel_scrolls_inside_it():
+    """An agent's full transcript grew past its panel, under the cost panel below, with no scrollbar: its list sat in
+    a wrapper that wasn't allowed to shrink. Each list the feed panel shows is one that shrinks and scrolls, or sits in
+    a wrapper that does, and the panel clips the rest."""
+    static = Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static"
+    html = (static / "index.html").read_text(encoding="utf-8")
+    panel = html.split('class="panel feed-panel"', 1)[1].split("</section>", 1)[0]
+    css = (static / "app.css").read_text(encoding="utf-8")
+    rules = {sel.strip(): body for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)}
+    scrolls = lambda body: "min-height: 0" in body and "flex: 1" in body  # noqa: E731
+    assert any(".feed" in s and 'data-pane="agents"' in s and scrolls(b) and "overflow-y: auto" in b for s, b in rules.items())
+    assert 'class="transcript"' in panel
+    assert any(".transcript" in s and 'data-pane="agents"' in s and scrolls(b) and "flex-direction: column" in b
+               for s, b in rules.items())
+    assert any(".feed-panel" in s and 'data-pane="agents"' in s and "overflow: hidden" in b for s, b in rules.items())
+
+
 def test_foreground_progress_covers_delayed_starts_and_clears_on_every_outcome():
     if NODE is None:
         pytest.skip("needs node to run the GUI's scripts")

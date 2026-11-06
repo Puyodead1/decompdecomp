@@ -144,7 +144,7 @@ function renderSessions(sessions) {
       ${todo ? `<span class="todo-line">${esc(todo)}</span>` : ""}
       ${s.last_message ? `<q class="said" title="${esc(s.last_message)}">${esc(s.last_message)}</q>` : ""}
       <span class="facts-line">${facts.join(" · ")}</span>
-      ${s.task === "readable" ? "" : selectionBox(s)}
+      ${s.task === "readable" ? "" : `<span class="facts-line"><button class="link-btn" data-sel="${id}" type="button">Work selection</button>${selectionSummary(s.selection) ? ` · ${esc(selectionSummary(s.selection))}` : ""}</span>`}
       <button class="link-btn" data-log="${id}" type="button" aria-pressed="${S.logFor === s.id}">${S.logFor === s.id ? "Back to everything" : "What it said and did"}</button></div>`;
   }).join("");
   setHtml(box, html);
@@ -164,31 +164,67 @@ function renderSessions(sessions) {
   box.querySelectorAll("[data-log]").forEach((b) => {
     b.onclick = () => { S.logFor = S.logFor === b.dataset.log ? null : b.dataset.log; renderLog(); renderSessions(S.sessions || []); };
   });
-  box.querySelectorAll("details[data-sel]").forEach((d) => {
-    d.ontoggle = () => { S.selOpen = S.selOpen || new Set(); d.open ? S.selOpen.add(d.dataset.sel) : S.selOpen.delete(d.dataset.sel); };
-    d.querySelectorAll("[data-k]").forEach((f) => {
-      f.onchange = async () => {
-        const selection = {};
-        d.querySelectorAll("[data-k]").forEach((x) => { if (x.value !== "") selection[x.dataset.k] = x.dataset.k === "strategy" ? x.value : Number(x.value); });
-        try {
-          await api("/api/agents/selection", { method: "POST", body: { id: d.dataset.sel, selection } });
-          toast("Work selection saved: it applies from its next claim.");
-          poll(false);
-        } catch (e) { toast(esc(e.message), "err"); }
-      };
-    });
+  box.querySelectorAll("[data-sel]").forEach((b) => {
+    b.onclick = () => { const s = sessions.find((x) => x.id === b.dataset.sel); if (s) openSelection(s); };
   });
 }
-// a helper's work selection (network.validate_selection): the order it takes functions in, which ones, how long
-const STRATEGY_NAMES = [["", "The app's choice"], ["easiest", "Smallest first"], ["finish", "Files closest to done"], ["closest", "Nearest matches"], ["least_tried", "Least tried"], ["hardest", "Biggest first"], ["random", "Any order"]];
-function selectionBox(s) {
-  const sel = s.selection || {}, id = esc(s.id), set = Object.keys(sel).length;
-  const num = (k, label, min, max, step) => `<label class="field"><span>${label}</span><input data-k="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${sel[k] ?? ""}" placeholder="any"></label>`;
-  return `<details class="selection" data-sel="${id}" ${S.selOpen && S.selOpen.has(s.id) ? "open" : ""}><summary>Work selection${set ? " (set)" : ""}</summary>
-    <label class="field"><span>Order</span><select data-k="strategy">${STRATEGY_NAMES.map(([v, l]) => `<option value="${v}" ${(sel.strategy || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-    ${num("match_below", "Only functions below this % matched", 0, 100, "any")}
-    ${num("max_tries", "Compiles of one function at most", 1, 10000, 1)}
-    ${num("stall_compiles", "Move on after this many compiles without a better score (else by the function's size)", 1, 1000, 1)}</details>`;
+// a helper's work selection (network.validate_selection): the order it takes functions in, which ones, how long. Set
+// in the launcher for the agents it starts, and changed for one agent in the side panel its card opens
+const STRATEGY_NAMES = [
+  ["", "The app's choice", "Smallest first for a ROM project, the files closest to done for a project; models that gave up on a function hand it to stronger ones."],
+  ["easiest", "Smallest first", "Small functions first, what nobody gave up on before what others did."],
+  ["finish", "Files closest to done", "Among functions of about the same size, those of the files with the fewest left: a file is linked into the game once all of it matches."],
+  ["closest", "Nearest matches", "Functions with the best scores for their size first."],
+  ["untried", "Untried first", "Functions nobody has tried yet, small first, then what nobody gave up on; the rest after them."],
+  ["least_tried", "Least tried", "The fewest compiles first, then the fewest give-ups, then small first."],
+  ["oldest_checked", "Longest unchecked", "Never compiled first, then the longest since anyone compiled C for it."],
+  ["no_compiling_c", "No compiling C yet", "Only functions no C has compiled for yet (never tried, or only compile errors); the agent pauses when there are none."],
+  ["hardest", "Biggest first", "The most instructions first."],
+  ["random", "Any order", "Any open function: the other rules (claims, functions waiting for others) still apply."]];
+const strategyHint = (v) => (STRATEGY_NAMES.find(([k]) => k === (v || "")) || STRATEGY_NAMES[0])[2];
+function selectionFields(sel = {}) {
+  const num = (k, label, min, max, step, ph) => `<label class="field"><span>${label}</span><input data-k="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${sel[k] ?? ""}" placeholder="${ph}"></label>`;
+  return `<label class="field"><span>Order</span><select data-k="strategy">${STRATEGY_NAMES.map(([v, l]) => `<option value="${v}" ${(sel.strategy || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <p class="muted small" data-hint aria-live="polite">${esc(strategyHint(sel.strategy))}</p>
+    <label class="check"><input data-k="model_untried" type="checkbox" ${sel.model_untried ? "checked" : ""}><span>Only functions no agent of this model has tried yet (whatever its effort; compile errors count as tries)</span></label>
+    ${num("match_below", "Only functions below this % matched", 0, 100, "any", "any")}
+    ${num("max_tries", "Compiles of one function at most (then it's released, its best attempt kept)", 1, 10000, 1, "no limit")}
+    ${num("stall_compiles", "Move on after this many compiles without a better score", 1, 1000, 1, "by the function's size")}`;
+}
+function readSelection(box) {
+  const out = {};
+  box.querySelectorAll("[data-k]").forEach((x) => {
+    if (x.type === "checkbox") { if (x.checked) out[x.dataset.k] = true; }
+    else if (x.value !== "") out[x.dataset.k] = x.dataset.k === "strategy" ? x.value : Number(x.value);
+  });
+  return out;
+}
+function wireSelection(box) {
+  const pick = box.querySelector('[data-k="strategy"]'), hint = box.querySelector("[data-hint]");
+  if (pick && hint) pick.addEventListener("change", () => { hint.textContent = strategyHint(pick.value); });
+}
+function selectionSummary(sel = {}) {
+  const parts = [sel.strategy ? (STRATEGY_NAMES.find(([k]) => k === sel.strategy) || [, sel.strategy])[1] : "",
+    sel.model_untried ? "new to its model" : "", sel.match_below != null ? `below ${sel.match_below}%` : "",
+    sel.max_tries ? `${plural(sel.max_tries, "compile")} each` : "", sel.stall_compiles ? `moves on after ${sel.stall_compiles}` : ""].filter(Boolean);
+  return parts.join(" · ");
+}
+function openSelection(s) {
+  const body = dialog(`Work selection · ${s.label}`, `${selectionFields(s.selection || {})}
+    <p class="muted small">It applies from the agent's next claim; the function it holds now stays with it.</p>
+    <div class="row"><button class="primary" data-save type="button">Save</button><button class="ghost" data-clear type="button">The app's choices</button><button class="ghost" data-close type="button">Cancel</button></div>`, "selection");
+  wireSelection(body);
+  const save = async (selection, b) => {
+    b.disabled = true;
+    try {
+      await api("/api/agents/selection", { method: "POST", body: { id: s.id, selection } });
+      toast("Work selection saved: it applies from its next claim.");
+      closeDialog();
+      poll(false);
+    } catch (e) { toast(esc(e.message), "err"); } finally { b.disabled = false; }
+  };
+  body.querySelector("[data-save]").onclick = (e) => save(readSelection(body), e.currentTarget);
+  body.querySelector("[data-clear]").onclick = (e) => save({}, e.currentTarget);
 }
 $("helperLogClose").onclick = () => { S.logFor = null; renderLog(); renderSessions(S.sessions || []); $("feedTitle").focus(); };
 $("stopAll").onclick = async () => {
@@ -211,7 +247,7 @@ $("removePaused").onclick = async () => {
 };
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
-const LZ = { kind: null, model: "", customModel: false, apiSingleModel: null, apiCustomModel: "", models: [], multiple: false, endpointModels: {}, byKind: {}, count: 1, per: null, effort: "", task: "" };
+const LZ = { kind: null, model: "", customModel: false, apiSingleModel: null, apiCustomModel: "", models: [], multiple: false, endpointModels: {}, byKind: {}, count: 1, per: null, effort: "", task: "", selection: {}, selOpen: false };
 const EFFORT_NAMES = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 const effortField = (a) => (a.takes_effort ? `<label class="field"><span>Effort (how hard the model thinks, for models that offer it)</span><select data-f="effort">${[["", "Model's default"], ...effortsOf(a).map((e) => [e, EFFORT_NAMES[e] || e])].map(([v, l]) => `<option value="${v}" ${effortOf(a) === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : "");
 // an agent that takes an effort (opencode 2, Claude Code) gets it with the model's name: provider/model#high. The
@@ -314,6 +350,7 @@ async function startAgents(a, model, count, btn, extra = {}, models = []) {
     else if (effortOf(a) && !model && !models.length) throw new Error("pick a model to set its effort");
     if (LZ.per) options.per_session = LZ.per;
     if (LZ.task) options.task = LZ.task;
+    if (!LZ.task && Object.keys(LZ.selection).length) options.selection = LZ.selection;
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
     S.st.settings.launcher = { kind: a.id, model: model || "", models, multiple: LZ.multiple, count,
       ...(a.uses_endpoints && LZ.apiSingleModel ? { api_model: LZ.apiSingleModel } : {}),
@@ -406,6 +443,7 @@ function renderLauncher(box, compact = true) {
         <label class="field"><span>Functions per session</span><input data-f="per" type="number" min="1" max="${MAX_PER_SESSION}" value="${LZ.per || S.st.settings.per_session}"></label>
         <span class="grow"></span>
         <button class="primary" data-act="start" type="button">${esc(launchLabel(a, LZ.model, LZ.count, LZ.models))}</button></div>
+        ${!LZ.task ? `<details class="lz-selection" data-lz-sel ${LZ.selOpen ? "open" : ""}><summary>Work selection for these agents${selectionSummary(LZ.selection) ? `: ${esc(selectionSummary(LZ.selection))}` : ""}</summary>${selectionFields(LZ.selection)}</details>` : ""}
         <p class="muted small">${a.uses_endpoints ? "A built-in agent loop drives the model through the decomp tools." : esc(a.signin)} Each agent takes a different function; a fresh session every few functions keeps its context small.</p>` : ""}
     </div>`;
   wireCopies(box);
@@ -481,6 +519,12 @@ function renderLauncher(box, compact = true) {
   const eff = box.querySelector('[data-f="effort"]');
   if (eff) eff.onchange = () => { LZ.effort = eff.value; label(); };
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(MAX_AT_ONCE, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });
+  const lzSel = box.querySelector("[data-lz-sel]");
+  if (lzSel) {
+    wireSelection(lzSel);
+    lzSel.ontoggle = () => { LZ.selOpen = lzSel.open; };
+    lzSel.querySelectorAll("[data-k]").forEach((x) => x.addEventListener("change", () => { LZ.selection = readSelection(lzSel); }));
+  }
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(MAX_PER_SESSION, Number(per.value) || S.st.settings.per_session)); };
   wireEndpointFields(box);

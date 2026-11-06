@@ -459,7 +459,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         Args:
             function: optional name or address (0x80001234) of a specific function
             strategy: finish (forks' default: the files closest to being linked first), easiest (fewest
-                instructions; ROM projects' default), closest (nearly matched already), least_tried, hardest, random
+                instructions; ROM projects' default), closest (nearly matched already), untried, least_tried, oldest_checked
+                (longest since anyone compiled it), hardest, random. A work selection the user set wins over it
             count: up to 6: small functions come as a batch (neighbours in one file) to write together and
                 judge in one compile_and_diff; a big one comes alone
         """
