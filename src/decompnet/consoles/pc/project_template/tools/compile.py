@@ -75,8 +75,14 @@ def main() -> int:
         wine, env = wine_setup()
         keep_wine_server(wine, env)
         path = windows_path
+    if "/Od" in flags:  # a debug build's file: the project's /O2 goes (its D4025 warning on every compile told nothing)
+        flags = [f for f in flags if f not in ("/O1", "/O2", "/Ox")]
+    # a debug build's debug information (/ZI, /Zi) goes in a program database: each object its own, beside it, as
+    # several compiles at once all writing vc60.pdb where the build runs made one of them fail
+    pdb = [f"/Fd{path(str(Path(args.output).with_suffix('.pdb')))}"] \
+        if any(f.lower() == "/zi" for f in flags) and not any(f.lower().startswith("/fd") for f in flags) else []
     command = ([wine] if wine else [args.wrapper] if args.wrapper else []) + [
-        args.compiler, *flags, f"/I{path('include')}", *(f"/I{path(d)}" for d in args.include),
+        args.compiler, *flags, *pdb, f"/I{path('include')}", *(f"/I{path(d)}" for d in args.include),
         f"/Fo{path(args.output)}", path(args.source)]
     if args.wine:
         # wine's output to a file, then ours: the services the first wine program after a new server starts
