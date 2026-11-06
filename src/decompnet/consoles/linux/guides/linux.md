@@ -77,3 +77,15 @@ Libraries the program has built in (Lua, boost...)
   every use of a parameter reloads it from its stack slot (`mov eax, [ebp+8]` again and again) and nothing stays in
   esi or edi. Code like that won't match at -O2: call search_flags, which tries -O0 and the build machine's processor
   (-march=amdfam10, k8, core2), and suggest the file's range with the flags that match.
+
+The C++ library, boost, and classes in namespaces (C++ programs)
+- The shared header made from the debug information has glibc's and the C++ library's own types in it, so the real
+  `<string>`, `<map>` or boost headers clash with it. C++ that needs them starts with `#pragma decompdecomp
+  no_context`: it's compiled without the shared header, and declares what it uses itself.
+- A template's function (`_ZNSt8_Rb_treeISsSt4pairIKSsSt6vector...D1Ev`: std::map's tree's destructor) is made by
+  an explicit instantiation with the program's types: declare the game's class in its namespace with its fields
+  (`namespace graphics { struct GTParticleSystem { struct ParticleState { ... }; }; }`), then
+  `template class std::_Rb_tree<...>;` (or std::vector<...>, boost::shared_ptr<...>), and judge it. The symbol says
+  every argument: `c++filt` spells it out in the brief's C++ name.
+- A method of a class in a namespace the same way: `namespace Ogre { class Foo { public: void bar(); ... }; }` then
+  `void Ogre::Foo::bar() { ... }`.

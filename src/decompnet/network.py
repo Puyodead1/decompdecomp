@@ -1209,6 +1209,11 @@ class Network:
         if (demangled := json.loads(fn["meta"] or "{}").get("demangled")):  # (C++: the symbol is what the judge links)
             lines.append(f"C++ name: {demangled} (its symbol {fn['name']}: write it as C++, `Class::method`, "
                          "and the judge compiles it as C++)")
+            if demangled.startswith(("std::", "boost::", "__gnu_cxx::")):  # (a template of a library, in a namespace)
+                lines.append("a library template's function: start the C with `#pragma decompdecomp no_context`, "
+                             "include its real headers (<map>, <boost/...>), declare the game's types it's made with "
+                             "in their namespaces, and instantiate it (`template class std::...<...>;`): the guide's "
+                             "C++ section says how")
         cfg = json.loads(proj["config"])
         own = compiler_for(cfg, fn["vram"])
         if own is not cfg.get("compiler"):  # a range built by another compiler than the rest of the game

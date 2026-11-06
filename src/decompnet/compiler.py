@@ -56,6 +56,12 @@ class SourceRejected(ValueError):
     pass
 
 
+# C that asks to be compiled without the shared header: a C++ program's header made from its DWARF has glibc's and the
+# C++ library's own types in it (pthread_attr_t...), which the real <string> or <map> define again, so C++ that needs
+# them (std::map's instances, a class in a namespace) declares what it uses itself. Everywhere it's compiled alike.
+NO_CONTEXT = re.compile(r"^\s*#\s*pragma\s+decompdecomp\s+no_context\b", re.M)
+
+
 def check_source(source: str, system_headers: bool = False) -> None:
     """Refuse C that could match without being C (inline asm, asm-include macros, pragmas) or reach outside the
     sandbox (absolute or `..` includes): what the judge accepts must come from a compiler. `system_headers`: the
@@ -66,7 +72,7 @@ def check_source(source: str, system_headers: bool = False) -> None:
     for inc in _INCLUDE.findall(source):
         if inc.startswith("/") or ".." in inc.split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
-    code = _COMMENTS_AND_STRINGS.sub(" ", source)
+    code = NO_CONTEXT.sub(" ", _COMMENTS_AND_STRINGS.sub(" ", source))  # (decompdecomp's own, not the compiler's)
     for pattern, why in _FORBIDDEN:
         if pattern.search(code) and not (system_headers and pattern is _SYSTEM_INCLUDE):
             raise SourceRejected(why)
@@ -206,6 +212,8 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
 
+    if NO_CONTEXT.search(source):  # (C++ with the real standard headers: the shared header defines their types too)
+        context_header = ""
     with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
         work = Path(tmp)
         inc = work / "include"
