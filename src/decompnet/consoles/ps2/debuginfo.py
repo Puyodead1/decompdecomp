@@ -180,10 +180,46 @@ def _describe(info: DebugInfo, sources: list[stabs.SourceInfo], reserved: set[st
                 "source": source.name,
                 "prototype": header.prototype(function, name),
                 "params": [f"{p.name} in {p.where}" for p in function.params if p.where],
-                "locals": [f"{header.variable(v)} ({v.where})" if v.where else header.variable(v)
-                           for v in function.locals],
-            } | ({"line": function.line} if function.line else {})
+                "locals": [_local(header.variable(v), v) for v in function.locals],
+            } | ({"line": function.line} if function.line else {}) | _line_table(function)
     info.header = header.text(variables)
+
+
+def _local(declared: str, v) -> str:
+    said = ", ".join(x for x in (v.where, f"declared on line {v.line}" if v.line else "") if x)
+    return f"{declared} ({said})" if said else declared
+
+
+def _line_table(function) -> dict:
+    """{"lines": [[source line, [[start, end) addresses of its code...]]...] in source order, "blocks": inner blocks}
+    from the function's N_SLINE entries (a Linux program's STABS): where each statement's instructions are, after
+    the scheduler interleaved them. A 2000s Linux game's last function took 273 agent compiles without it: its table
+    put one channel's unpacking per line and named no local for any of them (inner-block locals the scheduler had
+    dropped from the debug information), and the first source written to that shape scored 520 and matched within
+    a hundred permuter variants."""
+    if not function.lines:
+        return {}
+    runs = sorted(function.lines)
+    spans: dict[int, list[list[int]]] = {}
+    for k, (start, line) in enumerate(runs):
+        end = runs[k + 1][0] if k + 1 < len(runs) else (function.size or start)
+        if end <= start:
+            continue
+        mine = spans.setdefault(line, [])
+        start, end = function.address + start, function.address + end  # (as the brief's assembly shows them)
+        if mine and mine[-1][1] == start:  # (two entries of one line in a row: one run)
+            mine[-1][1] = end
+        else:
+            mine.append([start, end])
+    return {"lines": [[line, spans[line]] for line in sorted(spans)], "blocks": function.blocks}
+
+
+LINE_TABLE_NOTE = ("The line table is the original source's shape: one statement (or declaration with an initializer) "
+                   "per line listed, in that order; lines with no code between them are blank lines, braces or plain "
+                   "declarations. A value the code keeps in a register that no parameter or local above names was a "
+                   "local of an inner block ({ int r0 = ...; }): GCC drops a block's locals from STABS when scheduling "
+                   "moves its code across the block's ends. Write those blocks and lines as the table shows before "
+                   "trying other shapes: register allocation follows the statements' order and their variables' scopes.")
 
 
 def brief_lines(debug: dict, header: str = "context.h") -> list[str]:
@@ -197,4 +233,9 @@ def brief_lines(debug: dict, header: str = "context.h") -> list[str]:
         lines.append("parameters live in: " + ", ".join(debug["params"]))
     if debug.get("locals"):
         lines.append("locals: " + "; ".join(debug["locals"]))
+    if debug.get("lines"):
+        lines.append("source lines, each with the addresses of its code (from the first up to the second; the "
+                     "scheduler interleaves them): " + "; ".join(
+                         f"{line}: " + ", ".join(f"{a:08X}-{b:08X}" for a, b in spans) for line, spans in debug["lines"]))
+        lines.append(LINE_TABLE_NOTE)
     return lines

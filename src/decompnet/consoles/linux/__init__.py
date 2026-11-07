@@ -33,6 +33,7 @@ MAX_SIZE = 256 << 20
 LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
 LIBRARY_MARCHES = ("", "amdfam10", "k8", "core2", "pentium4", "i686")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
+DEBUG_LINES = 1  # the version of what add_line_tables reads into a project imported before it
 
 
 class Linux(Console):
@@ -123,7 +124,9 @@ class Linux(Console):
         return {m: d for m, d in zip(mangled, out) if d and d != m}
 
     def on_start(self, net, slug: str, log=print) -> None:
-        """A C++ program imported before its functions had their names as written (meta "demangled") gets them."""
+        """A C++ program imported before its functions had their names as written (meta "demangled") gets them, and
+        one imported before its STABS line tables were read gets those (add_line_tables)."""
+        self.add_line_tables(net, slug, log=log)
         proj = net.project_row(slug)
         if net.cfg(proj).get("demangled"):  # (done once: a C program's names stay as they are)
             return
@@ -143,6 +146,38 @@ class Linux(Console):
                     meta["demangled"] = names[r["name"]]
                     db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
         log(f"{slug}: {len(names)} C++ functions have their names as written")
+
+    def add_line_tables(self, net, slug: str, log=print) -> None:
+        """Each function's line table, the lines its locals are declared on and the register a parameter lives in
+        (debuginfo.read, ps2/debuginfo._line_table), for a project imported before they were read: its briefs said
+        only which locals there were, and agents spent 273 compiles on a function whose table showed its shape."""
+        from . import debuginfo
+
+        proj = net.project_row(slug)
+        cfg = net.cfg(proj)
+        program = Path(proj["root"]) / cfg.get("rom", {}).get("program", "")
+        if cfg.get("kind") != "rom" or cfg.get("debug_lines", 0) >= DEBUG_LINES or net._link(slug) \
+                or not program.is_file():  # (a room's guest: the host reads it; the game's file gone: it may come back)
+            return
+        info = debuginfo.read(program.read_bytes())
+        found = {address: known for address, known in (info.functions if info is not None else {}).items()
+                 if known.get("lines")}
+        changed = 0
+        if found:
+            rows = net.store.all("SELECT id, vram, meta FROM functions WHERE project_id=? AND meta LIKE '%\"debug\"%'",
+                                 proj["id"])
+            with net.store.tx() as db:
+                for r in rows:
+                    meta = json.loads(r["meta"] or "{}")
+                    if (known := found.get(r["vram"])) is None or not isinstance(meta.get("debug"), dict):
+                        continue
+                    meta["debug"].update({k: known[k] for k in ("line", "params", "locals", "lines", "blocks") if k in known})
+                    db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+                    changed += 1
+        net._update_cfg(slug, lambda c: c.update(debug_lines=DEBUG_LINES))
+        if changed:
+            log(f"{slug}: {changed} functions' briefs have the game's line table now (which source line each "
+                "instruction came from)")
 
     def sniff(self, head: bytes, file) -> bool:
         """A 32-bit x86 ELF executable (an i386 Linux program): ELF class 1, little-endian, e_machine 3."""

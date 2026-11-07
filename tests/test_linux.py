@@ -44,8 +44,8 @@ def test_stabs_are_read_a_compile_unit_at_a_time_with_continued_strings_joined()
             + _stab(0, 0, len(second)) + _stab(1, 0x64, 0) + _stab(5, 0x24, 0x8048200))
     units = debuginfo.entries(stab, first + second)
     assert [name for name, _ in units] == ["a.c", "b.c"]
-    assert units[0][1] == [(0x24, "f:F(0,1)", 0x8048100), (0x80, "int:t(0,1)=r(0,1);-2147483648;2147483647;", 0)]
-    assert units[1][1] == [(0x24, "g:F(0,1)", 0x8048200)]
+    assert units[0][1] == [(0x24, "f:F(0,1)", 0x8048100, 0), (0x80, "int:t(0,1)=r(0,1);-2147483648;2147483647;", 0, 0)]
+    assert units[1][1] == [(0x24, "g:F(0,1)", 0x8048200, 0)]
     assert debuginfo.x86_register(6) == "esi" and debuginfo.x86_register(12) == "st(0)"
 
 
@@ -69,12 +69,12 @@ def test_a_header_written_once_is_put_back_in_each_unit_with_its_types_numbered_
             + _stab(at["b.c"], 0x64, 0) + _stab(at["g.h"], 0x82, 5) + _stab(0, 0xA2, 0)  # (g.h: file 1 in b.c)
             + _stab(at["h.h"], 0xC2, 77) + _stab(at["v:G(2,1)"], 0x20, 0) + _stab(at["w:G(0,1)"], 0x20, 0))
     (_, a), (_, b) = debuginfo.entries(stab, strings)
-    defined = next(t for _, t, _ in a if t.startswith("T:t"))
+    defined = next(t for _, t, *_ in a if t.startswith("T:t"))
     number = defined[defined.index("(") + 1:defined.index(",")]
     assert defined.startswith(f"T:t({number},1)=s4x:(0,1)")  # (built-in types keep file 0)
-    assert any(t == defined for _, t, _ in b)  # h.h's types are back in b.c ...
+    assert any(t == defined for _, t, *_ in b)  # h.h's types are back in b.c ...
     # ... and b.c's file 2 (after its own g.h) is h.h there, by the same number
-    assert number != "2" and (0x20, f"v:G({number},1)", 0) in b and (0x20, "w:G(0,1)", 0) in b
+    assert number != "2" and (0x20, f"v:G({number},1)", 0, 0) in b and (0x20, "w:G(0,1)", 0, 0) in b
 
 
 def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
@@ -88,6 +88,31 @@ def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
     text = cheader.Header([source]).text()
     assert "struct Foo {" in text and "x; /* 0x0 */" in text and "Foo f; /* 0x0 */" in text
 
+
+
+def test_a_functions_line_table_and_where_its_variables_live_reach_its_brief():
+    """A 2000s Linux game's last function took 273 agent compiles: its brief named four locals and no line table, so
+    nobody saw that its STABS put one channel's unpacking per source line, the values in registers with no local
+    (an inner block's, dropped from the debug information by scheduling). The table's lines, each with its code's
+    addresses, the line each local is declared on, and a parameter kept in a register (an r entry after its p one)."""
+    from decompnet.consoles.ps2 import debuginfo as described
+    from decompnet.consoles.ps2 import stabs
+
+    source = stabs.read_file("ps_argb.c", [
+        (0x80, "int:t(0,1)=r(0,1);-2147483648;2147483647;", 0, 0),
+        (0x24, "lerp:F(0,1)", 0x8099000, 21), (0xA0, "a:p(0,1)", 8, 21), (0xA0, "b:p(0,1)", 12, 21),
+        (0x44, "", 9, 21), (0x44, "", 0xC, 25), (0x44, "", 0x15, 26), (0x44, "", 0x1C, 25), (0x44, "", 0x20, 28),
+        (0x40, "b:r(0,1)", 3, 21), (0x80, "f:(0,1)", 0xFFFFFFF4, 22),
+        (0xC0, "", 0, 0), (0xE0, "", 0x30, 0), (0x24, "", 0x30, 0)], debuginfo.x86_register)
+    function = source.functions[0]
+    assert [p.where for p in function.params] == ["the stack, frame offset +0x8", "ebx"]
+    assert [(v.name, v.where, v.line) for v in function.locals] == [("f", "the stack, frame offset -0xc", 22)]
+    table = described._line_table(function)
+    assert table["lines"] == [[21, [[0x8099009, 0x809900C]]], [25, [[0x809900C, 0x8099015], [0x809901C, 0x8099020]]],
+                              [26, [[0x8099015, 0x809901C]]], [28, [[0x8099020, 0x8099030]]]]
+    brief = "\n".join(described.brief_lines({"source": "ps_argb.c", "prototype": "int lerp(int a, int b)",
+                                              "locals": ["int f (declared on line 22)"]} | table))
+    assert "25: 0809900C-08099015, 0809901C-08099020" in brief and "inner block" in brief
 
 
 @pytest.fixture(scope="module")
@@ -116,6 +141,29 @@ def _imported(demo, name):
     work = factory.mktemp(name)
     net = RomNetwork(work / "app.db", work)
     return net, net.import_rom(program, confirmed=True, log=lambda *_: None)
+
+
+def test_the_demos_briefs_have_its_line_tables_and_an_older_import_gets_them_at_start(demo):
+    """Demo Quest built -g: a function's brief says which source line each instruction came from. A project imported
+    before the line tables were read gets them when the app starts (Linux.add_line_tables), once."""
+    net, slug = _imported(demo, "lines")
+    pid = net.project_row(slug)["id"]
+    row = net.store.one("SELECT * FROM functions WHERE project_id=? AND name='entity_update_physics'", pid)
+    assert json.loads(row["meta"])["debug"]["lines"]
+    assert any(line.startswith("source lines, each with the addresses of its code")
+               for line in net._debug_brief(row, net.project_row(slug)))
+    with net.store.tx() as db:  # as an older import left it
+        for r in db.execute("SELECT id, meta FROM functions WHERE project_id=? AND meta LIKE '%\"lines\"%'", (pid,)):
+            meta = json.loads(r["meta"])
+            meta["debug"].pop("lines")
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+    net._update_cfg(slug, lambda c: c.pop("debug_lines", None))
+    said = []
+    consoles.get("linux").add_line_tables(net, slug, log=said.append)
+    row = net.store.one("SELECT meta FROM functions WHERE project_id=? AND name='entity_update_physics'", pid)
+    assert json.loads(row["meta"])["debug"]["lines"] and said and "line table" in said[0]
+    consoles.get("linux").add_line_tables(net, slug, log=said.append)
+    assert len(said) == 1  # (once)
 
 
 def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_identifiers(demo):
