@@ -40,6 +40,10 @@ class GuiMixin:
             return {"path": self._project(slug)["root"], "identical": None}
 
         proj = self._project(slug)
+        # (the C written with the game's addresses as numbers matches only where it lies: named first, where it
+        # still matches, so the tree can be relinked and moved once it's all C)
+        log("naming the strings, constants, globals and functions matched C still writes as addresses")
+        self.readability.name_addresses(slug, log=log)
         res = self.console(proj).export_project(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])

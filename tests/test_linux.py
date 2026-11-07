@@ -367,6 +367,10 @@ def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_progr
     out = Path(res["path"])
     assert "(3 of" in res["log"] and (out / "build" / "program").read_bytes() == demo[0].read_bytes()
     assert ".own0" in (out / "build" / "obj" / "entity_default_hp.ld").read_text()
+    # the shared header without the app's note to its helpers, and once (not again as a file's with nothing more)
+    headers = {p.name: p.read_text() for p in (out / "include").glob("*.h")}
+    assert "edit_context" not in headers["common.h"]
+    assert sum(text == headers["common.h"] for text in headers.values()) == 1, sorted(headers)
 
     # code before a function in its C (the file's other functions) can leave it at another offset modulo 16 in its
     # object than in the game: the judge relocates its bytes where they are, and so does the build (a loop's
@@ -387,6 +391,29 @@ def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_progr
     src.write_text(src.read_text().replace("return v;", "return v + 1;"))
     bad = subprocess.run([sys.executable, "build.py", "check", "clamp_s32"], cwd=out, capture_output=True, text=True)
     assert bad.returncode != 0 and "differs from the original" in bad.stderr
+
+
+def test_a_global_matched_c_reads_by_its_address_is_named_and_still_matches(demo):
+    """C that matched writing a global as its address (`*(u32 *)0x80...`) is given the global's name, judged, and
+    kept: the export's tree then names what it reads, and can be relinked. Each C is tried once."""
+    from decompnet import addresses
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    net, slug = _imported(demo, "addresses")
+    proj = net.project_row(slug)
+    at = net.symbols(proj["id"]).resolve("g_rng_state")
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.claim(agent, slug, "rng_next")
+    source = GAME_DEFINES + csource.get(DEMO_GAME.read_text(), "rng_next").replace("g_rng_state", f"*(u32 *)0x{at:x}")
+    assert net.attempt(agent, "rng_next", source, slug)["matched"]
+    assert net.readability.name_addresses(slug, log=lambda *_: None) == 1
+    fn = net._function("rng_next", slug)
+    assert addresses.numbers(fn["matched_source"]) == 0 and "g_rng_state" in fn["matched_source"]
+    header = net._context(proj["id"], fn["unit"])["header"]
+    assert net.readability._still_matches(proj, fn, header, fn["matched_source"])
+    assert net.readability.name_addresses(slug, log=lambda *_: None) == 0
 
 
 def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():

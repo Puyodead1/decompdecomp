@@ -96,7 +96,9 @@ functions, then stop:
 4. make_readable(function, source): the same function with meaningful parameter and local names, the header's
    types and names, and one comment saying what it does. Keep the statements' shape (order, casts, temporaries):
    it's judged again and must still match byte for byte, or it's refused and the matching C stays. Refused? Undo
-   your last change and try a smaller one.
+   your last change and try a smaller one. An address written as a number (`(char *)0x80aa0c0`,
+   `*(float *)0x80a4e44`) becomes what is there: the string, the constant, the global's or function's name
+   (read_data shows it).
 
 Once every function in a source file is readable, claim_readable may give you the file to tidy instead (TIDY A
 FILE): follow its list with edit_file and rename_symbol, then tidy_done. A file counts as one of your {count}.

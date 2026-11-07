@@ -326,12 +326,14 @@ def link(obj: bytes, name: str, target: ArmTarget, symbols, read) -> LinkResult:
 
 
 def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, target: ArmTarget, symbols,
-                read, own: dict, problem, abs32: int = R_ARM_ABS32, thumb: bool = True) -> None:
+                read, own: dict, problem, abs32: int = R_ARM_ABS32, thumb: bool = True,
+                widths: dict | None = None) -> None:
     """The data the candidate defines itself must be the original's: placed where the original's code points, each
     datum compared up to the next one (after every place is known), pointers inside it (a table of strings)
     followed to where the original's pointers point. `abs32` is the processor's absolute address relocation (x86's
     R_386_32 is 1; its 2 is a relative call); `thumb`: an address's low bit says Thumb, not part of it (an x86
-    switch's jump table points at odd addresses)."""
+    switch's jump table points at odd addresses). `widths`: the bytes the code loads from a datum, by its key in
+    `own`, where every use of it is a load (x86's `flds` of a float): only those count (rom.link.significant)."""
     low = ~1 if thumb else ~0
     data_relocs: dict[int, list] = {}
 
@@ -411,7 +413,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
             mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, "little")
         if unplaced:
             continue
-        n = significant(bytes(mine), addr, None, next_start)
+        n = significant(bytes(mine), addr, (widths or {}).get((sec_idx, off)), next_start)
         rom = read(addr, n)
         if rom is not None and rom != bytes(mine[:n]):
             problem(f"your {sec.name} data at +0x{off:X} differs from the original's at 0x{addr:08X} "

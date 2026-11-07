@@ -42,6 +42,15 @@ class ExportError(RuntimeError):
 CONTEXT_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"context\.h"', re.M)
 
 
+_TEMPLATE_NOTE = re.compile(r"\A/\* context\.h for .*?\*/\n*", re.S)
+
+
+def exported_header(text: str) -> str:
+    """A shared header as the export writes it: without the note to the app's helpers it starts with (edit_context
+    is the app's tool; the tree is the user's, read by people and tools that have no such thing)."""
+    return _TEMPLATE_NOTE.sub("", text, count=1)
+
+
 def exported_source(prelude: str, include: str, source: str) -> str:
     """A matched function's file in the export: its header first, as the judge compiled it. The judge offers the
     shared header as context.h, and some agents include it themselves: the export's header has the project's own
@@ -141,9 +150,10 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
     units = net._unit_contexts(proj["id"])
     header = net._context(proj["id"])["header"]
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(header, encoding="utf-8")
+    (out / "include" / "common.h").write_text(exported_header(header), encoding="utf-8")
     for u in units:
-        (out / "include" / f"common_{u}.h").write_text(net._context(proj["id"], u)["header"], encoding="utf-8")
+        (out / "include" / f"common_{u}.h").write_text(exported_header(net._context(proj["id"], u)["header"]),
+                                                       encoding="utf-8")
     for path in (out / "asm").glob("**/*.s"):  # what GNU as can't read as spimdisasm writes it, as raw words
         text = path.read_text(encoding="utf-8")
         if (raw := console.export_asm(text)) != text:
