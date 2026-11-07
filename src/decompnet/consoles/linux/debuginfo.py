@@ -35,9 +35,9 @@ def x86_register(number: int) -> str:
     return f"register {number}"
 
 
-def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str, int]]]]:
-    """Each compile unit's source file and its STABS entries (code, string, value), GCC's continued strings (a
-    trailing backslash) joined. Each unit starts with an N_UNDF entry whose value is the size of its strings.
+def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str, int, int]]]]:
+    """Each compile unit's source file and its STABS entries (code, string, value, line: n_desc), GCC's continued
+    strings (a trailing backslash) joined. Each unit starts with an N_UNDF entry whose value is the size of its strings.
 
     A type is numbered (file, index), its file counted in its unit by each N_BINCL and N_EXCL. The linker writes a
     header's entries once (N_BINCL ... N_EINCL, keyed by its name and a checksum that skips those file numbers) and
@@ -45,12 +45,12 @@ def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str,
     file number is rewritten to one number for that header in the whole program (each unit's own source another),
     and each N_EXCL brings back the header's entries, so the types it defines are there for the unit that refers to
     them by their header."""
-    out: list[tuple[str, list[tuple[int, str, int]]]] = []
-    ranges: dict[tuple[str, int], list[tuple[int, str, int]]] = {}  # header (name, checksum) -> its entries
+    out: list[tuple[str, list[tuple[int, str, int, int]]]] = []
+    ranges: dict[tuple[str, int], list[tuple[int, str, int, int]]] = {}  # header (name, checksum) -> its entries
     numbers: dict[tuple[str, int], int] = {}  # header, or a unit's own source -> its number in the whole program
     base = next_base = 0
     pending = ""
-    unit: list[tuple[int, str, int]] | None = None
+    unit: list[tuple[int, str, int, int]] | None = None
     files: list[int] = []  # this unit's file numbers -> program-wide ones
     open_ranges: list[tuple[tuple[str, int], list]] = []
 
@@ -64,13 +64,13 @@ def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str,
             return m.group(0) if n == 0 or n >= len(files) else f"({files[n]},{m.group(2)})"
         return _TYPE_NUMBER.sub(one, text)
 
-    def add(entry: tuple[int, str, int]) -> None:
+    def add(entry: tuple[int, str, int, int]) -> None:
         unit.append(entry)
         for _, kept in open_ranges:  # (an enclosing header's range has its nested headers in it)
             kept.append(entry)
 
     for k in range(len(stab) // ENTRY):
-        strx, code, _, _, value = struct.unpack_from("<IBBhI", stab, k * ENTRY)
+        strx, code, _, desc, value = struct.unpack_from("<IBBHI", stab, k * ENTRY)
         if code == N_UNDF:
             base, next_base = next_base, next_base + value
             continue
@@ -94,7 +94,7 @@ def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str,
             for entry in ranges.get((text, value), ()):  # the header's own entries, already program-wide
                 add(entry)
             continue
-        entry = (code, program_wide(text), value)
+        entry = (code, program_wide(text), value, desc)  # (desc: the source line, for SLINE and declarations)
         add(entry)
         if code == N_BINCL:
             open_ranges.append(((text, value), [entry]))
@@ -129,11 +129,11 @@ def read(data: bytes, reserved: set[str] = frozenset()) -> DebugInfo | None:
             short = _short_names([name for name, _ in units])
             sources = [stabs.read_file(short[name], found, x86_register) for name, found in units]
             for name, found in units:
-                for code, text, value in found:
+                for code, text, value, _ in found:
                     if code == N_FUN and text and value:
                         info.units.setdefault(value, short[name])
             info.sources = sorted({short[name] for name, found in units
-                                   if any(code == N_FUN and text for code, text, _ in found)})
+                                   if any(code == N_FUN and text for code, text, *_ in found)})
             _describe(info, sources, reserved, None)
     except Exception:  # a heuristic over the game's own data: never stands between the user and the import
         logging.getLogger("decompdecomp").exception("reading the program's debug information failed")

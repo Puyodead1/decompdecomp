@@ -19,6 +19,11 @@ What the compiler writes, never the C
   right. If every instruction matches and only an encoding still differs, say so in a note and release it.
 
 Reading the code for the C
+- With debug information, the brief has the function's line table: which source line each instruction came from.
+  It is the source's own shape: one statement per listed line, in that order, the blank lines and braces in the
+  gaps. A register value no listed local names was a local of an inner block (GCC drops those from the debug
+  information when it reorders code across the block). When the allocation is the only thing left that differs, the
+  answer is usually that shape: write it before trying anything else.
 - A parameter's real type: the debug information (the brief's prototype) gives a short or char parameter its
   promoted type, `int`. `movsx`/`cwde`/`movzx` on it right at the start (`mov eax, [ebp+8]; dec eax; cwde`) says
   it was `short` (or `unsigned short`, `char`): write the narrow type.

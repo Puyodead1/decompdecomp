@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 # stab codes (the "type" field of a stab; mdebug.py finds them in the ECOFF symbols)
 N_GSYM, N_FUN, N_STSYM, N_LCSYM, N_RSYM, N_LSYM, N_PSYM = 0x20, 0x24, 0x26, 0x28, 0x40, 0x80, 0xA0
+N_SLINE, N_LBRAC, N_RBRAC = 0x44, 0xC0, 0xE0  # a line's code (its offset in the function), a block's start and end
 
 POINTER_BYTES = 4
 ENUM_BYTES = 4
@@ -78,6 +79,7 @@ class Variable:
     type: Type
     where: str = ""  # "$s0", "stack +0x10", or a global's section
     address: int | None = None
+    line: int = 0  # the source line it's declared on (the entry's n_desc, where the reader has it)
 
 
 @dataclass
@@ -90,6 +92,10 @@ class Function:
     params: list[Variable] = field(default_factory=list)
     locals: list[Variable] = field(default_factory=list)
     line: int = 0  # the source line it starts on, when the debug information says (DWARF 1's .line)
+    # (offset in the function, source line) of each run of its code, in address order (N_SLINE): which statement
+    # each instruction came from, after the scheduler interleaved them
+    lines: list[tuple[int, int]] = field(default_factory=list)
+    blocks: int = 0  # inner blocks ({ ... } with locals) the debug information kept (N_LBRAC past the function's own)
 
 
 @dataclass
@@ -114,6 +120,8 @@ def register(number: int) -> str:
 
 
 def _frame(offset: int) -> str:
+    if offset >= 1 << 31:  # (a 32-bit value: a local below the frame pointer, -0xc, not +0xfffffff4)
+        offset -= 1 << 32
     return f"the stack, frame offset {offset:+#x}"
 
 
@@ -361,19 +369,28 @@ def _name_type(t: Type, name: str, tag: bool, typedef: bool) -> None:
             t.typedef = name
 
 
-def read_file(name: str, stabs: list[tuple[int, str, int]], registers=None) -> SourceInfo:
-    """What one source file's STABS entries (code, string, value) say. `registers`: how its processor's registers
-    are named from their numbers (the MIPS's by default: register)."""
+def read_file(name: str, stabs: list[tuple], registers=None) -> SourceInfo:
+    """What one source file's STABS entries (code, string, value[, line]) say. `registers`: how its processor's
+    registers are named from their numbers (the MIPS's by default: register). With each entry's n_desc (a Linux
+    program's .stab has it), the line each variable is declared on and each function's line table (N_SLINE)."""
     registers = registers or register
     info = SourceInfo(name)
     table: dict = {}
     current: Function | None = None
     named: set[int] = set()
-    for code, text, value in stabs:
+    for entry in stabs:
+        code, text, value = entry[:3]
+        line = entry[3] if len(entry) > 3 else 0
         if code == N_FUN and not text:  # the end of a function: its size
             if current is not None:
                 current.size = value
             current = None
+            continue
+        if current is not None and code == N_SLINE:
+            current.lines.append((value, line))
+            continue
+        if current is not None and code == N_LBRAC:
+            current.blocks += 1
             continue
         found = _NAME.match(text)
         if found is None or found.end() >= len(text):
@@ -383,7 +400,7 @@ def read_file(name: str, stabs: list[tuple[int, str, int]], registers=None) -> S
         try:
             if letter.isdigit() or letter == "(":  # a local variable on the stack
                 if current is not None:
-                    current.locals.append(Variable(name, _Reader(text, at, table).type(), _frame(value)))
+                    current.locals.append(Variable(name, _Reader(text, at, table).type(), _frame(value), line=line))
                 continue
             reader = _Reader(text, at + 1, table)
             if letter == "T":
@@ -395,7 +412,7 @@ def read_file(name: str, stabs: list[tuple[int, str, int]], registers=None) -> S
                 t = reader.type()
                 _name_type(t, name, tag=False, typedef=True)
             elif letter in "Ff" and code == N_FUN:
-                current = Function(name, value, reader.type(), is_static=letter == "f")
+                current = Function(name, value, reader.type(), is_static=letter == "f", line=line)
                 info.functions.append(current)
                 continue
             elif letter in "pPRv" and current is not None:
@@ -405,10 +422,15 @@ def read_file(name: str, stabs: list[tuple[int, str, int]], registers=None) -> S
                     current.params.append(variable)
                 continue
             elif letter == "r" and current is not None:
-                current.locals.append(Variable(name, reader.type(), registers(value)))
+                kind = reader.type()
+                param = next((p for p in current.params if p.name == name), None)
+                if param is not None:  # (a parameter GCC keeps in a register: its p entry said its stack slot)
+                    param.where = registers(value)
+                else:
+                    current.locals.append(Variable(name, kind, registers(value), line=line))
                 continue
             elif letter == "V" and current is not None:
-                current.locals.append(Variable(name, reader.type(), "static", value))
+                current.locals.append(Variable(name, reader.type(), "static", value, line=line))
                 continue
             elif letter == "G":
                 info.globals.append(Variable(name, reader.type()))
