@@ -186,6 +186,15 @@ class Structs:
             type_id = self._types.children[self._types.find(type_id)].get(offset)
         return None if type_id is None else self._types.find(type_id)
 
+    def results_in(self, function: int) -> list[tuple[int, int]]:
+        """(callee, type) of what each call in `function` returns, where the code says it's a pointer to a struct:
+        once per callee, by address."""
+        out = {}
+        for key, type_id in self._named.items():
+            if key[0] == CALL and key[1] == function and key[3] not in out:
+                out[key[3]] = self._types.find(type_id)
+        return sorted(out.items())
+
     def _index(self) -> None:
         if self._members is not None:
             return
@@ -267,7 +276,7 @@ def _member_order(member: tuple) -> tuple:
 
 
 def recover(functions: Iterable[tuple[int, bytes, list]], read_facts: Callable[..., Facts],
-            datum: Callable[[int], int]) -> Structs:
+            datum: Callable[[int], int], same_returns: bool = True) -> Structs:
     """Types from (address, code, relocations) of every function, read by the processor's reader:
     `read_facts(address, code, relocations, datum=...)`. `datum(address)`: where the global containing a data address
     starts (the symbol table's)."""
@@ -322,6 +331,17 @@ def recover(functions: Iterable[tuple[int, bytes, list]], read_facts: Callable[.
         type_id = named.get(key)
         return type_id is not None and bool(types.accesses[types.find(type_id)])
 
+    # What one function returns is one type, at every call: a getter (`tex *get_tex(int)`, `&textures[id]`) doesn't
+    # use what it returns, so it joined nobody's type, and each caller's `tex` was a type of its own that no brief
+    # showed. Its callers' uses of the result are one type's, whatever their number, unless they disagree on a
+    # field's width, or the function hands on another's result (an allocator's wrapper returns every type).
+    passes_on = {function for function, said in facts.items() if any(term[0] == CALL for term in said.returns)}
+    if same_returns:
+        for function, term, key in edges:
+            if key[0] == RETURN and key[1] not in passes_on:
+                mine, theirs = node(term, function), named_node(key)
+                if types.agree(mine, theirs):
+                    types.union(mine, theirs)
     pending = [(caller, term, key) for caller, term, key in edges
                if key not in walked and len(callers[key[1]]) <= HUB_CALLERS]
     while True:

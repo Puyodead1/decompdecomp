@@ -33,6 +33,7 @@ HEADERS_KEPT = 16  # header versions whose declarations are kept read
 STALE_BATCH = 500  # functions whose assembly is read at a time, looking for drafts to make again
 VTABLE_HEADER_BYTES = 8  # before a C++ vtable's functions: an offset and the type information (classes.py)
 MAX_SHOWN_FIELDS = 32  # of a class, in a method's draft (get_class has them all)
+CALLEE_PROTOTYPES = 30  # callees whose debug-information prototypes a brief lists (as many as its "calls:" line)
 
 
 class BriefMixin:
@@ -442,6 +443,30 @@ class BriefMixin:
         debug = json.loads(fn["meta"] or "{}").get("debug") if "meta" in fn.keys() else None
         return self.console(proj).debug_brief(debug) if debug else []
 
+    def _callee_brief(self, fn, proj) -> list[str]:
+        """The prototypes the game's own debug information gives the functions this one calls. The shared header has
+        the game's types but not its functions, so agents declared each callee themselves, mostly as returning int:
+        on a 2000s Linux game 1,209 of 1,588 matched functions did, and a `tex *get_tex(int)` written `int get_tex()`
+        left `*(unsigned int *)(tex + 0x2c)` where the header has `Tex->flags` (a pointer and an int compile alike)."""
+        if not self.is_rom(proj) or fn["vram"] is None:
+            return []
+        calls = sorted(self.xrefs(proj)["calls"].get(fn["vram"], ()))[:CALLEE_PROTOTYPES]
+        if not calls:
+            return []
+        marks = ",".join("?" * len(calls))
+        found = []
+        for r in self.store.all(f"SELECT vram, meta FROM functions WHERE project_id=? AND vram IN ({marks}) "
+                                "AND meta LIKE '%\"prototype\"%' ORDER BY vram", proj["id"], *calls):
+            debug = json.loads(r["meta"] or "{}").get("debug") or {}
+            if debug.get("prototype"):
+                found.append(debug["prototype"])
+        if not found:
+            return []
+        return ["", "### What it calls, as the game's own debug information declares them",
+                *(f"{p};" for p in found),
+                "Declare a callee exactly so (context.h has the types): a function returning a struct pointer returns "
+                "that pointer, and its fields are read by name (`tex->flags`), not through an int and an offset."]
+
     def _extra_brief(self, fn, proj) -> list[str]:
         if not self.is_rom(proj):
             return []
@@ -471,7 +496,8 @@ class BriefMixin:
                 lines.append(f"- {syms.label(a)} (0x{a:08X}; {desc})")
         # the brief's sections after those: one method each, (fn, proj) -> its lines (none when it has nothing to say);
         # _struct_brief (layouts.py): its pointer arguments' likely structs
-        for section in (self._debug_brief, self._class_brief, self._types_brief, self._compiler_brief, self._struct_brief):
+        for section in (self._debug_brief, self._callee_brief, self._class_brief, self._types_brief,
+                        self._compiler_brief, self._struct_brief):
             lines += section(fn, proj)
         twin = self._twin_lines(proj, fn) if fn["status"] != "matched" else []
         lines += twin

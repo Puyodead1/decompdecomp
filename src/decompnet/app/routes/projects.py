@@ -146,6 +146,13 @@ def register(app: App) -> None:
         res = net.attempt(agent, str(data.get("name", "")), str(data.get("source", "")), slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
+    def p_repolish(slug, request, data):
+        """Polished functions that still read memory through casts and offsets where the code shows a struct
+        (readable.reopen_untyped with guesses): GET how many, POST puts them on the polishing list again."""
+        if request.method == "GET":
+            return {"count": net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True, dry=True)}
+        return {"count": net.readability.reopen_untyped(slug, guesses=True)}
+
     def p_release(slug, request, data):
         agent, _ = net.local_agent("you")
         try:
@@ -289,7 +296,7 @@ def register(app: App) -> None:
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
-        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
+        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),

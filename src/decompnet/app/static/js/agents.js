@@ -434,7 +434,8 @@ function renderLauncher(box, compact = true) {
   // helpers can also polish matched C (app/readable.py), once half the game matches
   const tasks = polishOffered(S.ov) ?`<div class="field"><span>What they do</span><div class="seg" role="radiogroup" aria-label="What they do">${
     TASKS.map(([k, label, what]) => `<button type="button" role="radio" aria-checked="${LZ.task === k}" class="${LZ.task === k ? "on" : ""}" data-task="${k}" title="${what}">${label}</button>`).join("")}</div>
-    <span class="muted small">${esc(TASKS.find(([k]) => k === LZ.task)[2])}</span></div>` : "";
+    <span class="muted small">${esc(TASKS.find(([k]) => k === LZ.task)[2])}</span>
+    ${LZ.task === "readable" ? `<span class="muted small">Polished before types were shown? <button class="link-btn" data-act="repolish" type="button">Find polished functions that still read structs through raw offsets</button></span>` : ""}</div>` : "";
   if (!tasks) LZ.task = "";
   box.innerHTML = `${tasks}<div class="lz-kinds">${kinds}</div>
     <div class="lz-body">${body}
@@ -565,6 +566,21 @@ function renderLauncher(box, compact = true) {
       await loadState();
       rerender();
     } catch (e) { showJobError(log, e.message); inst.disabled = false; } finally { finish(); }
+  };
+  // functions polished before the layouts the code shows were in polishing's job (readable.reopen_untyped): how
+  // many, then polished again only if the user says so (each costs an agent's turn)
+  const repolish = box.querySelector('[data-act="repolish"]');
+  if (repolish) repolish.onclick = async () => {
+    repolish.disabled = true;
+    const label = repolish.textContent;
+    repolish.textContent = "Looking…";
+    try {
+      const { count } = await api(`/api/repolish?slug=${encodeURIComponent(S.slug)}`);
+      if (!count) { toast("No polished function reads a struct through raw offsets where its type is known."); return; }
+      if (!confirm(`${count} polished function${count === 1 ? "" : "s"} still read structs through raw offsets where the code shows the struct's layout. Put them on the polishing list again? Each costs a polishing agent a turn.`)) return;
+      const done = await api("/api/repolish", { method: "POST", body: { slug: S.slug } });
+      toast(`${done.count} function${done.count === 1 ? " is" : "s are"} on the polishing list again.`);
+    } catch (e) { toast(esc(e.message), "err"); } finally { repolish.disabled = false; repolish.textContent = label; }
   };
   const again = box.querySelector('[data-act="detect"]');
   if (again) again.onclick = async () => {

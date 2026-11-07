@@ -166,6 +166,73 @@ def test_the_demos_briefs_have_its_line_tables_and_an_older_import_gets_them_at_
     assert len(said) == 1  # (once)
 
 
+def test_a_brief_and_a_polishing_job_give_the_callees_prototypes_from_the_debug_information(demo):
+    """The shared header has the game's types, not its functions: agents declared each callee themselves, as
+    returning int, and a struct pointer became an int read at offsets (a 2000s Linux game's `*(unsigned int *)(tex +
+    0x2c)` for `Tex->flags`, through polishing too). A brief lists what each callee is, as the debug information
+    declares it; the polishing job shows the function's debug information and those too."""
+    net, slug = _imported(demo, "callees")
+    proj = net.project_row(slug)
+    x = net.xrefs(proj)
+    rows = net.store.all("SELECT * FROM functions WHERE project_id=? AND meta LIKE '%\"prototype\"%'", proj["id"])
+    by_vram = {r["vram"]: r for r in rows}
+    fn = next(r for r in rows if any(c in by_vram for c in x["calls"].get(r["vram"], ())))
+    callee = by_vram[next(c for c in sorted(x["calls"][fn["vram"]]) if c in by_vram)]
+    prototype = json.loads(callee["meta"])["debug"]["prototype"]
+    brief = net._callee_brief(fn, proj)
+    assert f"{prototype};" in brief and "not through an int and an offset" in brief[-1]
+    with net.store.tx() as db:  # (the one matched function left to polish)
+        db.execute("UPDATE functions SET readable=1 WHERE project_id=?", (proj["id"],))
+        db.execute("UPDATE functions SET status='matched', readable=0, matched_source=? WHERE id=?",
+                   (f"int {fn['name']}(void) {{ return 0; }}", fn["id"]))
+    agent, _ = net.local_agent("polisher")
+    job = net.readability.claim(agent, slug)
+    assert f"MAKE READABLE: {fn['name']}" in job and prototype in job and "their fields by name" in job
+    # what polishing made readable before it showed them, still reading through offsets: polished again, once
+    with net.store.tx() as db:
+        db.execute("DELETE FROM claims")
+        db.execute("UPDATE functions SET readable=1, matched_source=? WHERE id=?",
+                   ("int f(int tex) { return *(unsigned int *)(tex + 0x2c); }", fn["id"]))
+    net._update_cfg(slug, lambda c: c.pop("untyped_reading", None))
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 1
+    assert net.store.one("SELECT readable FROM functions WHERE id=?", fn["id"])["readable"] == 0
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET readable=1 WHERE id=?", (fn["id"],))
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0
+
+
+def test_without_debug_information_briefs_show_what_calls_return_and_polishing_again_is_asked_for(demo):
+    """A game with no debug information: what a function's calls return is the type its code shows across the game
+    (structs.recover: one type per function's results), in the brief and the polishing job. Polishing again what
+    was made readable through offsets is a guess's worth only when the user asks (the Polish launcher's button)."""
+    from decompnet import structs
+    from decompnet.app.engine import layouts
+
+    net, slug = _imported(demo, "guesses")
+    proj = net.project_row(slug)
+    with net.store.tx() as db:  # (as a stripped program's import: no debug information)
+        for r in db.execute("SELECT id, meta FROM functions WHERE project_id=?", (proj["id"],)).fetchall():
+            meta = json.loads(r["meta"] or "{}")
+            meta.pop("debug", None)
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+    found = net.structs(proj)
+    rows = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
+    keys = lambda fn: [(structs.ARGUMENT, fn["vram"], n) for n in layouts.BRIEF_ARGUMENTS] + [(structs.RETURN, fn["vram"])]
+    fn = next(fn for fn in rows if any(t is not None and len(found.layout(t).functions) >= 2
+                                       for t in [found.type_of(k) for k in keys(fn)]
+                                       + [t for _, t in found.results_in(fn["vram"])]))
+    assert net._struct_brief(fn, proj)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET readable=1 WHERE project_id=?", (proj["id"],))
+        db.execute("UPDATE functions SET status='matched', matched_source=? WHERE id=?",
+                   ("int f(int p) { return *(int *)(p + 0x18); }", fn["id"]))
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0  # (at start: debug information's only)
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True, dry=True) == 1
+    assert net.store.one("SELECT readable FROM functions WHERE id=?", fn["id"])["readable"] == 1
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True) == 1
+    assert net.store.one("SELECT readable FROM functions WHERE id=?", fn["id"])["readable"] == 0
+
+
 def test_the_demos_struct_comes_from_its_debug_information_and_names_are_c_identifiers(demo):
     """Demo Quest built -g: guess_struct answers with the STABS prototype's type, field for field, and GCC's static
     locals (`mark.21`) get C names an agent can write and a save can store."""

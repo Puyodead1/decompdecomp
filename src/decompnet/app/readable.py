@@ -21,14 +21,16 @@ with duplicate and unused declarations around them. Its edits go through edit_fi
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
 from pathlib import Path
 
-from .. import scoring
+from .. import scoring, structs
 from ..forks.project import ForkProject
 from ..network import GAME_CODE, IN_BUILD, Agent, NetworkError
+from .engine import layouts
 
 CLAIM_SECONDS = 30 * 60
 # The order polishing takes functions in (starred ones first): SMALL_INSNS to BIG_INSNS biggest first, where the logic
@@ -78,7 +80,48 @@ EXTERN_DATA = re.compile(r"^[ \t]*extern\s+(?!\"C\")[^;(){}=]*?\b([A-Za-z_]\w*)\
 DATA_READ, DATA_SHOWN = 32, 40  # bytes read of each, globals listed at most
 
 
+# memory read through a cast and an offset: `*(unsigned int *)(tex + 0x2c)`, `*(short *)((char *)e + 8)`
+OFFSET_READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*(?:\(\s*[\w\s]+\*+\s*\)\s*)?\w+\s*\+\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)")
+UNTYPED_READING = 1  # the version of reopen_untyped's reading, in the project's config
+LAYOUT_FUNCTIONS = 2  # functions whose code a guessed layout comes from, for reopen_untyped to polish again for it
+
+
 class Readability:
+    def reopen_untyped(self, slug: str, log=print, guesses: bool = False, dry: bool = False) -> int:
+        """Matched functions made readable before polishing showed their types (the game's debug information, its
+        callees' prototypes, the struct layouts the code says) whose C still reads memory through casts and offsets
+        where there are types to use: polished again. On a 2000s Linux game 99 of the first 545 polished did,
+        `*(unsigned int *)(tex + 0x2c)` for `Tex->flags` among them. Once per project (UNTYPED_READING), for the
+        debug information's types: the layouts the code shows are guesses (about 4 in 5 of their fields fall in a
+        real one, on a game whose debug information says), and a PC game had 239 of its 692 readable functions with
+        one, so polishing those again (`guesses`) is the user's to ask for."""
+        proj = self.net.project_row(slug)
+        if (not guesses and self.net.cfg(proj).get("untyped_reading", 0) >= UNTYPED_READING) or self.net._link(slug):
+            return 0
+        fork = not self.net.is_rom(proj)
+        rows = self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' AND readable=1",
+                                  proj["id"])
+        again = []
+        for fn in rows:
+            try:
+                source = self._matching_c(proj, fn)
+            except (OSError, NetworkError):
+                continue
+            if source and OFFSET_READ.search(source) and self._worth_polishing_again(proj, fn, fork, guesses):
+                again.append(fn["id"])
+        if dry:  # (how many: what the Polish launcher offers)
+            return len(again)
+        if again:
+            with self.net.store.tx() as db:
+                db.executemany("UPDATE functions SET readable=0 WHERE id=?", [(i,) for i in again])
+        if not guesses:
+            self.net._update_cfg(slug, lambda c: c.update(untyped_reading=UNTYPED_READING))
+        if again:
+            log(f"{slug}: {len(again)} readable functions read memory through casts and offsets where their types "
+                "are known (the game's debug information, or the struct layouts its code shows): they're on the "
+                "polishing list again")
+        return len(again)
+
     def __init__(self, net):
         self.net = net
         self._tidying: dict[tuple[int, str], tuple[int, float]] = {}  # (project, unit) -> (agent, until)
@@ -254,9 +297,19 @@ class Readability:
         # picked its own style (Shape3_Init, Shape2_init, vec3_dot_product)
         names += ("- read_data a global before you name it: what it holds (a string, a table, a constant) says what it "
                   "is;\n- name things in the style the names around them already use.\n")
+        # The game's own types for it and what it calls: polished C kept `int tex` and `*(unsigned int *)(tex + 0x2c)`
+        # for the debug information's `tex *Tex` and `Tex->flags`, because the job never showed them
+        # Without debug information, the struct layouts the code itself says (structs.py: its arguments', what it
+        # returns, what its calls return) are the same help
+        known = self._types_known(proj, fn, fork)
+        if known:
+            names += ("- use the types below (the game's debug information's, or the layouts its code shows): struct "
+                      "pointers and their fields by name instead of ints, casts and offsets, declared in the shared "
+                      "header so every function uses them;\n")
         return (f"{given_up}MAKE READABLE: {fn['name']}{where}, {fn['n_insns']} instructions "
                 f"({counts['readable']} of {counts['matched']} matched functions are readable so far).\n\n"
-                f"It matches today with this C:\n```c\n{self._matching_c(proj, fn).strip()}\n```\n\n"
+                f"It matches today with this C:\n```c\n{self._matching_c(proj, fn).strip()}\n```\n"
+                + ("\n".join(known) + "\n" if known else "") + "\n"
                 "Make it readable without changing what the compiler makes of it:\n" + names +
                 "- give parameters and locals meaningful names; write one comment saying what the function does;\n"
                 "- keep the statements' shape: the order, the casts and the temporaries that make it match.\n"
@@ -264,6 +317,48 @@ class Readability:
                    "(one slip anywhere in it and the rewrite is refused).\n" if fn["n_insns"] > BIG_INSNS else "") +
                 f"Then make_readable(\"{fn['name']}\", source). It's judged again: it must still match byte for byte, or "
                 "it's refused and the matching C stays.")
+
+    def _worth_polishing_again(self, proj, fn, fork: bool, guesses: bool = False) -> bool:
+        """Whether there are types to polish a function's offsets into: the game's debug information (its own types
+        or its callees'), or a struct layout the code of at least LAYOUT_FUNCTIONS functions shows (one function's
+        loads say little more than its offsets already do: on a PC game, half the 692 readable functions had such a
+        guess, most of one function's)."""
+        try:
+            if not fork and (self.net._debug_brief(fn, proj) or self.net._callee_brief(fn, proj)):
+                return True
+            if fork:
+                _, fp, cfg = self.net.forks.get(proj["slug"])
+                if self.net.forks._debug_brief(fp, cfg, fn):
+                    return True
+                if not guesses:
+                    return False
+                found = self.net.forks._structs(fp, cfg)
+                addr = found.symbols.get(self.net.forks._meta(fn).get("symbol") or fn["name"]) if found else None
+            else:
+                if not guesses:
+                    return False
+                found = self.net.structs(proj)
+                addr = fn["vram"]
+            if found is None or addr is None:
+                return False
+            kinds = [(structs.ARGUMENT, addr, n) for n in layouts.BRIEF_ARGUMENTS] + [(structs.RETURN, addr)]
+            types = [found.type_of(k) for k in kinds] + [t for _, t in found.results_in(addr)]
+            return any(len(found.layout(t).functions) >= LAYOUT_FUNCTIONS for t in types if t is not None)
+        except Exception:  # (a heuristic over the game's code: never in the way)
+            logging.getLogger("decompdecomp").exception("the types for %s", fn["name"])
+            return False
+
+    def _types_known(self, proj, fn, fork: bool) -> list[str]:
+        """The brief's lines on the function's types: its debug information and its callees' (ROM mode), and the
+        struct layouts its code and the game's say (both modes)."""
+        try:
+            if fork:
+                _, fp, cfg = self.net.forks.get(proj["slug"])
+                return self.net.forks._debug_brief(fp, cfg, fn) + self.net.forks._struct_brief(fp, cfg, fn)
+            return self.net._debug_brief(fn, proj) + self.net._callee_brief(fn, proj) + self.net._struct_brief(fn, proj)
+        except Exception:  # (help for the job, never in its way)
+            logging.getLogger("decompdecomp").exception("the types for %s's polishing job", fn["name"])
+            return []
 
     def _held_by_others(self, proj) -> str:
         """claim's answer when everything left to polish is held by other helpers: come back later, not stop. Told to
