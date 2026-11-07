@@ -49,6 +49,7 @@ _FORBIDDEN = [
     (re.compile(r"#\s*include\s*<"), "system includes are not allowed; everything you need is in context.h"),
 ]
 _SYSTEM_INCLUDE = _FORBIDDEN[-1][0]
+_SPLICE = re.compile(r"\\\r?\n")
 _INCLUDE = re.compile(r'#\s*include\s*["<]([^">]+)[">]')
 
 
@@ -69,8 +70,12 @@ def check_source(source: str, system_headers: bool = False) -> None:
     is the system's, pinned, not the agent's."""
     if len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
+    # The preprocessor joins a line ending in a backslash to the next before it reads a directive, so the checks read
+    # the source as it does: `#inc\<newline>lude "/etc/passwd"` is an include too (from decomp.anything). A drive or
+    # a backslash path leaves the sandbox as well where the compiler runs under Windows (wibo, wine: Z: is /).
+    source = _SPLICE.sub("", source)
     for inc in _INCLUDE.findall(source):
-        if inc.startswith("/") or ".." in inc.split("/"):
+        if inc.startswith(("/", "\\")) or ":" in inc or ".." in inc.replace("\\", "/").split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
     code = NO_CONTEXT.sub(" ", _COMMENTS_AND_STRINGS.sub(" ", source))  # (decompdecomp's own, not the compiler's)
     for pattern, why in _FORBIDDEN:

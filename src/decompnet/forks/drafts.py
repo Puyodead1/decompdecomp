@@ -121,10 +121,15 @@ def self_contained(text: str, span: tuple[int, int], file_text: str = "") -> str
             continue
         line = re.sub(r"/\*.*\*/\s*$", "", line).strip()
         line = re.sub(r"^static\s+", "extern ", line)
-        name = re.search(r"(\w+)\s*(?:\(|\[|;)", line)
+        # a function pointer's name is inside its parentheses (`void (*handler)(int);`): the first word before a
+        # parenthesis is its return type, which the file always has (from decomp.anything)
+        pointer = re.search(r"\(\s*\*+\s*(\w+)\s*\)", line)
+        name = pointer or re.search(r"(\w+)\s*(?:\(|\[|;)", line)
         if name and outside and re.search(rf"\b{re.escape(name.group(1))}\b", outside):
             continue
-        if "(" in line or line.startswith("extern "):
+        if pointer and not line.startswith("extern "):
+            decls.append("extern " + line)
+        elif "(" in line or line.startswith("extern "):
             decls.append(line)
         else:
             decls.append("extern " + line)

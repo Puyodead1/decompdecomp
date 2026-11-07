@@ -631,6 +631,17 @@ def test_a_draft_declares_what_another_functions_draft_declared_inside_itself():
     assert "extern M2C_UNK D_10BDD31C;" in out and "g_score" not in out
 
 
+def test_a_drafts_function_pointer_is_declared_by_its_own_name():
+    """`void (*handler)(int);` is named handler, not void (the first word before a parenthesis): it was taken for a
+    name the file has, and dropped. From decomp.anything."""
+    from decompnet.forks import drafts
+
+    draft = "static void (*D_10BD0000)(s32);\n\nvoid func_B(void) {\n    D_10BD0000(1);\n}\n"
+    span = (draft.index("void func_B"), len(draft))
+    out = drafts.self_contained(draft, span, "void func_A(void) {\n}\n")
+    assert "extern void (*D_10BD0000)(s32);" in out
+
+
 def test_a_header_with_m2cs_macros_gets_the_ones_drafts_use_since(tmp_path):
     """A project's common.h got m2c's macros once; ARM drafts use SECOND_REG too, which it lacked ("undeclared"):
     it's added to a header that has the rest, once."""
