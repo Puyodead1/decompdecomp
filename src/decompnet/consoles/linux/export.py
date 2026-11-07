@@ -25,7 +25,7 @@ from elftools.elf.elffile import ELFFile
 
 from ...limits import capped
 from ...project import compiler_for
-from ...rom.export import exported_source
+from ...rom.export import exported_header, exported_source
 from ...rom.symbols import AUTO_NAME
 
 
@@ -34,12 +34,25 @@ def _unit_name(unit: str | None) -> str:
     return re.sub(r"\W", "_", Path(unit or "program").stem) or "program"
 
 
-def _holding_addresses(obj: bytes) -> set[str]:
-    """The object's sections that have relocations of their own (a switch's jump table, a table of strings)."""
+def _unplaceable(obj: bytes, scattered: set[str]) -> bool:
+    """Whether a section the game keeps apart holds an address the build can't give the game's value: one into the
+    function's own code (a switch's jump table, beside strings the game merged with its file's) it can. (One into
+    its own data only where the code points at that too: the judge's placements also hold what it followed from a
+    table of strings, which the build doesn't, so those stay the program's bytes.)"""
     from elftools.elf.relocation import RelocationSection
 
     elf = ELFFile(BytesIO(obj))
-    return {elf.get_section(r["sh_info"]).name for r in elf.iter_sections() if isinstance(r, RelocationSection)}
+    for rsec in elf.iter_sections():
+        if not isinstance(rsec, RelocationSection) or elf.get_section(rsec["sh_info"]).name not in scattered:
+            continue
+        symtab = elf.get_section(rsec["sh_link"])
+        for rel in rsec.iter_relocations():
+            sym = symtab.get_symbol(rel["r_info_sym"])
+            if rel["r_info_type"] != 1 or not isinstance(sym["st_shndx"], int):
+                return True
+            if elf.get_section(sym["st_shndx"]).name != ".text":
+                return True
+    return False
 
 
 def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
@@ -59,7 +72,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     syms = net.symbols(proj["id"])
     units = net._unit_contexts(proj["id"])
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
+    common = net._context(proj["id"])["header"]
+    (out / "include" / "common.h").write_text(exported_header(common), encoding="utf-8")
     headers = {None: "common.h"}
 
     log("checking the matched functions and writing them as C")
@@ -83,12 +97,14 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         # address, checked as the judge checks it; a table of addresses so scattered it can't
         scattered = {name for name, offsets in linked.placements.items()
                      if len({addr - off for off, addr in offsets.items()}) != 1}
-        if scattered & _holding_addresses(compiled.obj):
+        if scattered and _unplaceable(compiled.obj, scattered):
             fallback.append((row["name"], "its own data isn't laid out like the game's"))
             continue
-        if unit not in headers:
+        if unit not in headers and hdr == common:  # (a source file with nothing of its own: the shared one)
+            headers[unit] = "common.h"
+        elif unit not in headers:
             headers[unit] = f"common_{_unit_name(unit)}.h"
-            (out / "include" / headers[unit]).write_text(hdr, encoding="utf-8")
+            (out / "include" / headers[unit]).write_text(exported_header(hdr), encoding="utf-8")
         src = out / "src" / _unit_name(row["unit"]) / f"{row['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text(exported_source("", headers[unit], row["matched_source"]), encoding="utf-8")

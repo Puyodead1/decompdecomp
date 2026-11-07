@@ -90,6 +90,8 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
         if text not in problems:
             problems.append(text)
 
+    loads = load_widths(bytes(code))
+    widths: dict[tuple[int, int], int | None] = {}
     for rsec in elf.iter_sections():
         if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != shndx:
             continue
@@ -138,6 +140,11 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
                                 f"({symbols.label(original)})")
                 else:  # data this function brings itself (a string, a constant): the original's copy is at `original`
                     key = (sym["st_shndx"], addend + (0 if is_section else sym["st_value"]))
+                    width = loads.get(at)
+                    if key not in widths:
+                        widths[key] = width
+                    elif widths[key] != width:  # (loaded as two widths: the wider; an address taken too: all of it)
+                        widths[key] = max(widths[key], width) if widths[key] and width else None
                     if own.setdefault(key, original) != original:
                         problem(f"{elf.get_section(key[0]).name}+0x{key[1]:X} is used for two different addresses in "
                                 "the original")
@@ -147,7 +154,7 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
 
     _local_calls(elf, shndx, start, code, tcode, target, symbols, name, problem)
     _verify_own(elf, elf.get_section_by_name(".symtab"), name, shndx, start, target, symbols, read, own, problem,
-                abs32=R_386_32, thumb=False)
+                abs32=R_386_32, thumb=False, widths=widths)
     placements: dict[str, dict[int, int]] = {}
     for (sec_idx, offset), original in own.items():
         placements.setdefault(elf.get_section(sec_idx).name, {})[offset] = original
@@ -158,6 +165,26 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
 
 
 CALL_REL32, JMP_REL32 = 0xE8, 0xE9
+
+
+def load_widths(code: bytes) -> dict[int, int]:
+    """The bytes each instruction that reads or writes memory at an absolute address moves, by where that address
+    is in the code: `flds 0x80a90c0` loads 4. A datum the code only loads is compared that far, as the MIPS judge
+    compares a `lwc1`'s: the original's next constant follows a float where the candidate's object pads it with
+    zeros, and a polished `90.0f` for `*(float *)0x80a90c0` was refused for the padding. An address used as a value
+    (`push $0x80aa0c0`, `lea`) isn't a load: its whole datum counts."""
+    import capstone
+
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    out: dict[int, int] = {}
+    for ins in md.disasm(code, 0):
+        if ins.mnemonic == "lea" or not ins.disp_offset:
+            continue
+        mem = [op for op in ins.operands if op.type == capstone.x86.X86_OP_MEM]
+        if len(mem) == 1 and mem[0].size:
+            out[ins.address + ins.disp_offset] = mem[0].size
+    return out
 
 
 def _local_calls(elf, shndx: int, start: int, code: bytearray, tcode: bytes, target: X86Target, symbols, name: str,

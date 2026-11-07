@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ...arch import arm
 from ...limits import capped
+from ...rom.export import exported_header
 from ...rom.symbols import AUTO_NAME
 from .split import BASE
 
@@ -37,7 +38,7 @@ def export_gba(net, slug: str, out: Path, log=print) -> dict:
     syms = net.symbols(proj["id"])
     units = net._unit_contexts(proj["id"])
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
+    (out / "include" / "common.h").write_text(exported_header(net._context(proj["id"])["header"]), encoding="utf-8")
 
     log("checking the matched functions and writing them as C")
     functions, fallback = [], []

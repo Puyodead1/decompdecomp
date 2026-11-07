@@ -29,6 +29,7 @@ try:
     from elftools.elf.elffile import ELFFile
 
     from decompnet import toolchains
+    from decompnet.arch.x86_link import load_widths
     from decompnet.compiler import compile_source, run_in
     from decompnet.project import compiler_config
 except ImportError:
@@ -103,24 +104,60 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
             refs.append((at, section, addend))
     placed = {section: next(iter(bases)) for section, bases in found.items() if len(bases) == 1}
     scattered = [(at, section, addend) for at, section, addend in refs if section not in placed]
-    for section in {section for _, section, _ in scattered}:
-        if any(isinstance(r, RelocationSection) and elf.get_section(r["sh_info"]).name == section
-               for r in elf.iter_sections()):
-            fail(f"{fn['name']}'s {section} isn't laid out like the program's, and it holds addresses itself")
     if scattered:
         game = ELFFile(BytesIO(data))
-        addresses = {int.from_bytes(data[start + at:start + at + 4], "little") for at, _, _ in refs}
+        obj_text = elf.get_section(text_idx).data()
+        where_of = {(section, addend): int.from_bytes(data[start + at:start + at + 4], "little")
+                    for at, section, addend in refs}
+        later = sorted(set(where_of.values()))
+        widths: dict[tuple[str, int], int | None] = {}
+        loads = load_widths(obj_text)
+        for at, section, addend in refs:  # (what the code only loads counts as far as it loads it, as the judge's)
+            key, width = (section, addend), loads.get(at)
+            widths[key] = width if key not in widths else (
+                max(widths[key], width) if widths[key] and width else None)
         for at, section, addend in scattered:
             sec = elf.get_section_by_name(section)
             if sec["sh_type"] == "SHT_NOBITS":
                 continue
             ends = sorted({a for _, s2, a in refs if s2 == section and a > addend} | {sec["sh_size"]})
-            want = sec.data()[addend:ends[0]]
-            where = int.from_bytes(data[start + at:start + at + 4], "little")
-            want = want[:significant(want, where, [w for w in addresses if w > where])]
+            want = bytearray(sec.data()[addend:ends[0]])
+            where = where_of[(section, addend)]
+            # the addresses it holds itself (a switch's jump table: words into the function's code), relocated
+            for off, target, value in _relocations(elf, section):
+                if not addend <= off <= addend + len(want) - 4:
+                    continue
+                if target == text_idx:
+                    word = fn["vram"] - pad + value
+                elif (elf.get_section(target).name, value) in where_of:
+                    word = where_of[(elf.get_section(target).name, value)]
+                else:
+                    fail(f"{fn['name']}'s {section} isn't laid out like the program's, and it holds addresses itself")
+                want[off - addend:off - addend + 4] = (word & 0xFFFFFFFF).to_bytes(4, "little")
+            width = widths.get((section, addend))
+            want = bytes(want[:width] if width else want[:significant(bytes(want), where, [w for w in later if w > where])])
             if file_bytes(game, data, where, len(want)) != want:
                 fail(f"{fn['name']}'s {section}+0x{addend:X} isn't the program's data at 0x{where:X}")
     return placed, scattered
+
+
+def _relocations(elf, section: str) -> list[tuple[int, int, int]]:
+    """The absolute addresses a section of the object holds: (offset in it, the section they point into, the offset
+    there)."""
+    from elftools.elf.relocation import RelocationSection
+
+    out = []
+    for rsec in elf.iter_sections():
+        if isinstance(rsec, RelocationSection) and elf.get_section(rsec["sh_info"]).name == section:
+            symtab, own = elf.get_section(rsec["sh_link"]), elf.get_section_by_name(section).data()
+            for rel in rsec.iter_relocations():
+                sym = symtab.get_symbol(rel["r_info_sym"])
+                if rel["r_info_type"] != 1 or not isinstance(sym["st_shndx"], int):
+                    fail(f"{section} holds an address this build can't place")
+                value = int.from_bytes(own[rel["r_offset"]:rel["r_offset"] + 4], "little")
+                out.append((rel["r_offset"], sym["st_shndx"],
+                            value + (sym["st_value"] if sym["st_info"]["type"] != "STT_SECTION" else 0)))
+    return out
 
 
 def significant(mine: bytes, where: int, later: list[int]) -> int:

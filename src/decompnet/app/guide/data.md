@@ -7,6 +7,9 @@ Names
   in your source or in context.h. The type decides the load/store width and offsets.
 - A reference to `D_80012350` might be `D_80012340 + 0x10`: a field of a struct or an array element.
   Either spelling links to the same address and matches.
+- Never write an address as a number (`printf((char *)0x80aa0c0)`, `*(float *)0x80a4e44`), even where a
+  decompiler did: it matches where it lies and nowhere else, so the exported tree can't be relinked. Write what is
+  there: the string, the constant (`1.5f`), the global (`D_80012340` or its real name), the function.
 
 Look at the bytes
 - `read_data("D_80012340", 64)` shows a hex dump, text, words that look like pointers, and floats.

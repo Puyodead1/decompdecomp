@@ -28,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import cfields, scoring, structs
+from .. import addresses, cfields, scoring, structs
 from ..forks.project import ForkProject
 from ..network import GAME_CODE, IN_BUILD, Agent, NetworkError
 from .engine import layouts
@@ -52,6 +52,12 @@ GIVEN_UP = ("SELECT p.detail FROM events p WHERE p.project_id=? AND p.kind='poli
             "MAX(r.id) FROM events r WHERE r.project_id=p.project_id AND r.kind='readable' AND r.detail=p.detail), 0) "
             f"GROUP BY p.detail HAVING COUNT(*) >= {POLISH_TRIES}")
 TODO = f"status='matched' AND readable=0 AND {GAME_CODE} AND name NOT IN ({GIVEN_UP})"
+
+
+def _digest(source: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(source.encode()).hexdigest()[:16]
 
 
 def _left_as_it_is(name: str, without: str) -> str:
@@ -129,6 +135,83 @@ class Readability:
                 "are known (the game's debug information, or the struct layouts its code shows): they're on the "
                 "polishing list again")
         return len(again)
+
+    def name_addresses(self, slug: str, log=print, only: set[str] | None = None) -> int:
+        """Matched functions whose C writes addresses as numbers (`printf((char *)0x80aa0c0)`) given what the game
+        holds there instead, each change kept only where the function still matches (addresses.py says why). ROM
+        mode: a project-mode judge (objdiff) compares relocations by symbol, so its C can't match through a number.
+        Each function's C is tried once (the project's config remembers what was left), so a start doesn't judge
+        the same C again. `only`: these functions (an export). Returns how many functions changed."""
+        proj = self.net.project_row(slug)
+        if not self.net.is_rom(proj) or self.net._link(slug):
+            return 0
+        cfg = self.net.cfg(proj)
+        tried = dict(cfg.get("addresses_tried") or {})
+        rows = [r for r in self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' AND "
+                                              "matched_source IS NOT NULL", proj["id"])
+                if (only is None or r["name"] in only) and addresses.numbers(r["matched_source"])
+                and tried.get(r["name"]) != _digest(r["matched_source"])]
+        if not rows:
+            return 0
+        program = self._program(proj)
+        units = self.net._unit_contexts(proj["id"])
+        changed = 0
+        for fn in rows:
+            header = self.net._context(proj["id"], self.net._effective_unit(fn, units))["header"]
+            program.header = header
+            try:
+                source = self._named_addresses(proj, fn, header, program)
+            except Exception:  # one function's trouble never stops the rest
+                logging.getLogger(__name__).exception("naming %s's addresses failed", fn["name"])
+                source = None
+            if source is not None:
+                with self.net.progress._project_lock(slug), self.net.store.tx() as db:
+                    # (only if it's still the C it was: a helper may have polished it meanwhile)
+                    cur = db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=? AND "
+                                     "matched_source=?", (source, source, fn["id"], fn["matched_source"]))
+                changed += cur.rowcount
+            final = source or fn["matched_source"]
+            if addresses.numbers(final):
+                tried[fn["name"]] = _digest(final)
+            else:
+                tried.pop(fn["name"], None)
+        self.net._update_cfg(slug, lambda c: c.update(addresses_tried=tried))
+        if changed:
+            log(f"{slug}: {changed} matched functions write the strings, constants, globals and functions they used "
+                "as addresses by name now, and still match")
+        return changed
+
+    def _program(self, proj):
+        segments = self.net._rom(proj)[1]
+
+        def section(address: int) -> str | None:
+            return next((s.name for s in segments if s.contains(address)), None)
+        return addresses.Program(self.net.reader(proj), section, self.net.symbols(proj["id"]), "",
+                                 bool(self.net.cfg(proj).get("big_endian", True)))
+
+    def _named_addresses(self, proj, fn, header: str, program) -> str | None:
+        """`fn`'s matched C with what of its addresses still matches named, or None (none did)."""
+        source = fn["matched_source"]
+        found = addresses.proposals(source, program)
+        if not found:
+            return None
+        matches = lambda chosen: self._still_matches(proj, fn, header, addresses.apply(source, chosen))
+        if matches(found):
+            return addresses.apply(source, found)
+        kept: list = []
+        for p in found:  # one at a time, each on top of those kept (a folded constant, a merged string's order)
+            if matches(kept + [p]):
+                kept.append(p)
+        return addresses.apply(source, kept) if kept else None
+
+    def _still_matches(self, proj, fn, header: str, source: str) -> bool:
+        result = self.net._compile(proj, header, source, fn)
+        if not result.ok:
+            return False
+        cand, verdict, _ = self.net._evaluate(fn, proj, result.obj)
+        if cand is None:
+            return False
+        return scoring.diff(self.net._target_obj(fn, proj), cand).bytes_match if verdict is None else bool(verdict)
 
     def __init__(self, net):
         self.net = net
