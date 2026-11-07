@@ -67,16 +67,22 @@ def config(fn: dict, work: Path):
     return dataclasses.replace(cfg, prelude=cfg.prelude + placed, include_dirs=(*cfg.include_dirs, str(ROOT / "include")))
 
 
-def own_data(elf, data: bytes, fn: dict, pad: int) -> dict[str, int]:
+def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list[tuple[int, str, int]]]:
     """Where the function's own constants (strings, jump tables, floats) go: where the original's code points at
     them. Each word the object relocates against one of its own sections holds, in the original, the address the
-    game keeps that constant at, so the section's place is that address less the offset into it."""
+    game keeps that constant at, so the section's place is that address less the offset into it.
+
+    A section whose constants the game keeps apart (GCC merges a file's equal strings: a function's "%s\n" is the
+    copy an earlier function of the game's file has) can't go to one place: its words are the game's addresses, each
+    checked to hold the same bytes as the object's constant (scattered: (offset in .text, section, offset in it)),
+    as the judge checks them. 105 functions of a Linux game's 1,588 were left as the program's bytes for that."""
     from elftools.elf.relocation import RelocationSection
 
     t = B["text"]
     start = t["offset"] + fn["vram"] - pad - t["vram"]
     text_idx = next(i for i, s in enumerate(elf.iter_sections()) if s.name == ".text")
     found: dict[str, set[int]] = {}
+    refs: list[tuple[int, str, int]] = []
     for rsec in elf.iter_sections():
         if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != text_idx:
             continue
@@ -94,11 +100,56 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> dict[str, int]:
             addend = int.from_bytes(obj_text[at:at + 4], "little") + (sym["st_value"] if sym["st_info"]["type"] ==
                                                                        "STT_OBJECT" else 0)
             found.setdefault(section, set()).add(int.from_bytes(data[start + at:start + at + 4], "little") - addend)
-    for section, bases in found.items():
-        if len(bases) != 1:
-            fail(f"{fn['name']}'s {section} isn't laid out like the program's: its constants would have to go to "
-                 f"{len(bases)} places")
-    return {section: bases.pop() for section, bases in found.items()}
+            refs.append((at, section, addend))
+    placed = {section: next(iter(bases)) for section, bases in found.items() if len(bases) == 1}
+    scattered = [(at, section, addend) for at, section, addend in refs if section not in placed]
+    for section in {section for _, section, _ in scattered}:
+        if any(isinstance(r, RelocationSection) and elf.get_section(r["sh_info"]).name == section
+               for r in elf.iter_sections()):
+            fail(f"{fn['name']}'s {section} isn't laid out like the program's, and it holds addresses itself")
+    if scattered:
+        game = ELFFile(BytesIO(data))
+        addresses = {int.from_bytes(data[start + at:start + at + 4], "little") for at, _, _ in refs}
+        for at, section, addend in scattered:
+            sec = elf.get_section_by_name(section)
+            if sec["sh_type"] == "SHT_NOBITS":
+                continue
+            ends = sorted({a for _, s2, a in refs if s2 == section and a > addend} | {sec["sh_size"]})
+            want = sec.data()[addend:ends[0]]
+            where = int.from_bytes(data[start + at:start + at + 4], "little")
+            want = want[:significant(want, where, [w for w in addresses if w > where])]
+            if file_bytes(game, data, where, len(want)) != want:
+                fail(f"{fn['name']}'s {section}+0x{addend:X} isn't the program's data at 0x{where:X}")
+    return placed, scattered
+
+
+def significant(mine: bytes, where: int, later: list[int]) -> int:
+    """How much of a constant must be the program's, as the judge counts it (decompdecomp's rom/link.py): not the
+    zeros the compiler pads it with up to an alignment, where the program keeps its next constant already, after
+    a string's terminator or after a number's last word ("    barmd NO tex\\n" padded to 32 bytes in the object, the next string right after it in
+    the program)."""
+    k = len(mine.rstrip(b"\0"))
+    if k + 1 >= len(mine):
+        return len(mine)
+    nxt = min((w for w in later if w >= where + k + 1), default=None)
+    if nxt is not None and nxt < where + len(mine):
+        return nxt - where
+    # (a string is plain ASCII here: the judge also counts bytes from 0x80 as text, but knows how much of a float
+    # the code loads; this doesn't, and 0.6602f is 97 ff 28 3f)
+    if k and all(32 <= c < 127 or c in (9, 10, 13, 27) for c in mine[:k]):
+        return k + 1
+    # a number (a float the code loads, padded to the double after it): its words up to the last that isn't zero
+    return min(len(mine), max(4, -(-k // 4) * 4))
+
+
+def file_bytes(game, data: bytes, address: int, size: int) -> bytes | None:
+    """The program's bytes at an address, from the section that holds it."""
+    for section in game.iter_sections():
+        lo = section["sh_addr"]
+        if section["sh_type"] != "SHT_NOBITS" and lo and lo <= address and address + size <= lo + section["sh_size"]:
+            at = section["sh_offset"] + address - lo
+            return data[at:at + size]
+    return None
 
 
 def build_function(fn: dict, data: bytes) -> bytes:
@@ -115,8 +166,9 @@ def build_function(fn: dict, data: bytes) -> bytes:
     elf = ELFFile(BytesIO(res.obj))
     # where the function sits in its .text: its offset modulo 16, after the code its prelude puts before it
     pad = next(s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == fn["name"])
+    placed, scattered = own_data(elf, data, fn, pad)
     own = "".join(f"  .own{i} 0x{addr:X} : {{ {obj.name}({section}) }}\n"
-                  for i, (section, addr) in enumerate(own_data(elf, data, fn, pad).items()))
+                  for i, (section, addr) in enumerate(placed.items()))
     # every name but the function's own at the program's address, those the C defines too: a C file that defines the
     # functions and globals before it (GCC 4.3 inlines them, as the game's file did) calls and reads the program's,
     # as the judge links it (a static the C defines is local to its object: the assignment doesn't touch it)
@@ -133,8 +185,12 @@ def build_function(fn: dict, data: bytes) -> bytes:
                              f'"{tc}/binutils/usr/bin/ld" -m elf_i386 -e 0 -T {fn["name"]}.ld -o {out} {obj.name}'])
     if res.returncode != 0:
         fail(f"{fn['name']} doesn't link:\n{(res.stdout + res.stderr)[-3000:]}")
-    text = ELFFile(BytesIO((work / out).read_bytes())).get_section_by_name(".text").data()
-    return text[pad:pad + fn["size"]]
+    text = bytearray(ELFFile(BytesIO((work / out).read_bytes())).get_section_by_name(".text").data())
+    t = B["text"]
+    start = t["offset"] + fn["vram"] - pad - t["vram"]
+    for at, _, _ in scattered:  # (the game's address of a constant checked to be the object's: own_data)
+        text[at:at + 4] = data[start + at:start + at + 4]
+    return bytes(text[pad:pad + fn["size"]])
 
 
 def unaligned_text(obj: bytes) -> bytes:
