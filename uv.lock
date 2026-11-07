@@ -310,7 +310,7 @@ wheels = [
 
 [[package]]
 name = "decompnet"
-version = "1.0.9a4+puyo.19"
+version = "1.0.9a4+puyo.20"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

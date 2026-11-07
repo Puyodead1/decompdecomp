@@ -34,6 +34,14 @@ def _unit_name(unit: str | None) -> str:
     return re.sub(r"\W", "_", Path(unit or "program").stem) or "program"
 
 
+def _holding_addresses(obj: bytes) -> set[str]:
+    """The object's sections that have relocations of their own (a switch's jump table, a table of strings)."""
+    from elftools.elf.relocation import RelocationSection
+
+    elf = ELFFile(BytesIO(obj))
+    return {elf.get_section(r["sh_info"]).name for r in elf.iter_sections() if isinstance(r, RelocationSection)}
+
+
 def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     proj = net._project(slug)
     cfg = net.cfg(proj)
@@ -71,7 +79,11 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         if not linked.exact:
             fallback.append((row["name"], "no longer matches"))
             continue
-        if any(len({addr - off for off, addr in offsets.items()}) != 1 for offsets in linked.placements.values()):
+        # constants the game keeps apart (a file's equal strings merged): the build gives each word the game's
+        # address, checked as the judge checks it; a table of addresses so scattered it can't
+        scattered = {name for name, offsets in linked.placements.items()
+                     if len({addr - off for off, addr in offsets.items()}) != 1}
+        if scattered & _holding_addresses(compiled.obj):
             fallback.append((row["name"], "its own data isn't laid out like the game's"))
             continue
         if unit not in headers:

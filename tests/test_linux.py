@@ -833,3 +833,32 @@ def test_flags_a_debug_build_or_another_machine_used_are_tried():
     assert variants[0] == ["-O2"] and ["-O0", "-march=amdfam10"] in variants and ["-O0"] in variants
     tried = CompilerMixin.flag_variants(None, "gcc-4.3.2-redhat-linux", ["-O2"], linux.flag_extras)
     assert ["-O0"] in tried and ["-O2", "-march=amdfam10"] in tried
+
+
+def test_the_exported_build_compares_a_scattered_constant_as_the_judge_does(tmp_path):
+    """GCC merges a file's equal strings, so a function's constants can be apart in the program: the build gives
+    each word the program's address after comparing the constant, without the zeros the object pads it with (105
+    of a Linux game's functions were left as the program's bytes, then two failed the build for padding)."""
+    import importlib.util
+    import shutil
+
+    from decompnet.consoles import linux
+
+    shutil.copyfile(Path(linux.__file__).with_name("export_build.py"), tmp_path / "build.py")
+    (tmp_path / "build.json").write_text(json.dumps({"functions": []}))
+    spec = importlib.util.spec_from_file_location("exported_build", tmp_path / "build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    string = b"    barmd NO tex\n\0" + b"\0" * 14  # (padded to the next string's 32-byte alignment)
+    assert build.significant(string, 0x809DB8E, []) == 18
+    number = bytes.fromhex("97ff283f00000000")  # (a float, padded to the double after it)
+    assert build.significant(number, 0x809E954, []) == 4
+    assert build.significant(bytes.fromhex("0000000000000040"), 0x1000, []) == 8  # (a double: all of it)
+    assert build.significant(b"ab\0\0\0\0\0\0", 0x1000, [0x1004]) == 4  # (the program's next constant is there)
+
+
+def test_the_export_card_counts_what_the_export_kept_as_the_programs_bytes_apart_from_new_matches():
+    """A Linux game's card said "106 new matches since" of an export made a minute before: those were matched
+    functions the export kept as the program's bytes."""
+    js = (Path(__file__).parents[1] / "src/decompnet/app/static/js/steering.js").read_text()
+    assert "ex.matched + kept < ov.matched" in js and "ov.matched - ex.matched - kept" in js

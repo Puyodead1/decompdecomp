@@ -336,10 +336,13 @@ function renderSource(ov) {
     return;
   }
   $("srcText").innerHTML = "decompdecomp writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
-  const stale = ex && ex.matched != null && ex.matched < ov.matched;
+  // matched functions the export kept as the program's bytes (its README says why) aren't new matches: a Linux
+  // game's card said "106 new matches since" of an export made a minute before
+  const kept = (ex && ex.fallback) || 0;
+  const stale = ex && ex.matched != null && ex.matched + kept < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
     : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
-       <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions in C` : ""}${stale ? ` · <b>${ov.matched - ex.matched} new matches since</b>` : ""}</div>
+       <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions in C` : ""}${kept ? ` · ${kept.toLocaleString()} matched kept as the program's bytes (README.md says why)` : ""}${stale ? ` · <b>${(ov.matched - ex.matched - kept).toLocaleString()} new matches since</b>` : ""}</div>
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";
 }
