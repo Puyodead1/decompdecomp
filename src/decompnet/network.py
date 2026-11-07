@@ -392,7 +392,9 @@ def stall_budget_text() -> str:
 
 ASM_PAGE = 400  # assembly lines get_function shows at once
 CONTEXT_PAGE = 1000  # header lines get_context shows at once
-SEARCH_LIMIT = 60_000  # characters of matching declarations get_context(search=...) returns
+# characters of matching declarations get_context(search=...) returns: Claude Code saves a longer answer (61,739
+# characters for a Linux game's `TObject`) to a file, which a helper without a shell can't read
+SEARCH_LIMIT = 30_000
 
 
 def _declarations(header: str) -> list[tuple[int, str]]:
@@ -419,12 +421,42 @@ def header_search(header: str, pattern: str) -> str:
         rx = re.compile(pattern)
     except re.error as e:
         raise NetworkError(f"search isn't a regular expression Python reads: {e}") from None
-    found = [(n, d) for n, d in _declarations(header) if d.strip() and rx.search(d)]
-    if not found:
-        return f"// nothing in the header matches {pattern!r}"
+    every = _declarations(header)
+    found = [(n, d) for n, d in every if d.strip() and rx.search(d)]
+    aliases = {m.group(2): m.group(1) for m in re.finditer(
+        r"\btypedef\s+(?:struct|union|class)\s+(\w+)\s+(\w+)\s*;", header)}
+    if not found:  # `struct TObject {` for a typedef's name: the struct it names, with the typedef
+        named = [w for w in dict.fromkeys(re.findall(r"[A-Za-z_]\w+", pattern)) if w in aliases]
+        found = [(n, d) for w in named for n, d in every
+                 if re.match(rf"\s*(?:typedef\s+)?(?:struct|union|class)\s+({re.escape(aliases[w])}\s*\{{|"
+                             rf"{re.escape(aliases[w])}\s+{re.escape(w)}\s*;)", d)]
+        if not found:
+            return f"// nothing in the header matches {pattern!r}"
+        return (f"// nothing in the header matches {pattern!r}, but " +
+                ", ".join(f"{w} is struct {aliases[w]}" for w in named) + ":\n" +
+                "\n".join(f"// line {n}\n{d}" for n, d in found))
+    # what's named so first (a match in the declaration's first line: `typedef struct SObject TObject;`, `struct
+    # SObject {`), each typedef with the struct it names (searched for as TObject, its body is SObject's); then
+    # the declarations that only use it
+    bodies = {}
+    for n, d in every:
+        if (m := re.match(r"\s*(?:typedef\s+)?(?:struct|union|class)\s+(\w+)[^;{}()]*\{", d)):
+            bodies.setdefault(m.group(1), (n, d))
+    named, used = [], []
+    for n, d in found:
+        first = d.strip().splitlines()[0]
+        (named if rx.search(first) else used).append((n, d))
+        alias = re.match(r"\s*typedef\s+(?:struct|union|class)\s+(\w+)\s+\w+\s*;", d)
+        if alias and alias.group(1) in bodies and rx.search(first):
+            named.append(bodies[alias.group(1)])
+    seen, found = set(), []
+    for n, d in named + used:
+        if n not in seen:
+            seen.add(n)
+            found.append((n, d))
     out, size = [], 0
     for n, d in found:
-        if size + len(d) > SEARCH_LIMIT:
+        if size + len(d) > SEARCH_LIMIT and out:
             out.append(f"// ... {len(found) - len(out)} more declarations match: narrow the search")
             break
         out.append(f"// line {n}\n{d}")

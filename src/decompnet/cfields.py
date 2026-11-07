@@ -35,6 +35,10 @@ _FUNC_POINTER = re.compile(r"\(\s*\*+\s*(\w+)\s*\)\s*\(")
 # `*(T *)((char *)v + 0x40)`: a read through a byte pointer made of a variable, at a constant offset
 READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*\(\s*((?:unsigned\s+|signed\s+)?\w+)\s*\*\s*\)\s*(\w+)\s*\+\s*"
                   r"(0x[0-9a-fA-F]+|\d+)\s*\)")
+# `*(T *)(param_2 + 0x1bc)`: a read at an offset from a variable declared as an integer (a machine draft's
+# `int param_2`), named when the debug information says what the parameter really is (`TObject *pObj`)
+INT_READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*(\w+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)\s*\)")
+INTEGERS = r"(?:unsigned\s+int|unsigned\s+long|unsigned|int|long|uint|ulong|u32|s32|undefined4|DWORD)"
 SHOWN = 12  # reads listed at most
 
 
@@ -271,26 +275,31 @@ def _declared_type(source: str, var: str) -> str | None:
     return None
 
 
-def named_reads(source: str, header_text: str) -> list[str]:
+def named_reads(source: str, header_text: str, types: dict[str, str] | None = None) -> list[str]:
     """The reads `source` makes through a byte pointer and an offset that the header names, one line each:
-    "`*(char ***)((char *)pModel + 0x40)` is pModel->Geometries (TLODGeometry *)"."""
-    found = list(READ.finditer(source))
-    if not found or not header_text:
+    "`*(char ***)((char *)pModel + 0x40)` is pModel->Geometries (TLODGeometry *)". `types`: what the debug
+    information says variables declared as integers are (`{"param_2": "TObject"}`), for reads straight off them."""
+    types = types or {}
+    reads = [(m, m.group(2), m.group(3)) for m in READ.finditer(source)
+             if " ".join(m.group(1).split()) in BYTE_POINTERS]
+    reads += [(m, m.group(1), m.group(2)) for m in INT_READ.finditer(source) if m.group(1) in types
+              and re.search(rf"\b{INTEGERS}\s+{re.escape(m.group(1))}\s*[,;)=]", source)]
+    if not reads or not header_text:
         return []
     header = Header(header_text)
     out, seen = [], set()
-    for m in found:
-        cast, var, offset = m.group(1), m.group(2), int(m.group(3), 0)
-        if " ".join(cast.split()) not in BYTE_POINTERS or m.group(0) in seen:
+    for m, var, offset in sorted(reads, key=lambda r: r[0].start()):
+        if m.group(0) in seen:
             continue
         seen.add(m.group(0))
-        declared = _declared_type(source, var)
+        declared = types.get(var) or _declared_type(source, var)
         if declared is None or header.struct(declared) is None:
             continue
-        named = header.name_read(declared, offset)
+        named = header.name_read(declared, int(offset, 0))
         if named is None:
             continue
-        out.append(f"- `{' '.join(m.group(0).split())}` is {var}{named[0]} ({named[1]})")
+        really = f" ({var} is a {declared} *)" if var in types else ""
+        out.append(f"- `{' '.join(m.group(0).split())}` is {var}{named[0]} ({named[1]}){really}")
         if len(out) >= SHOWN:
             break
     return out

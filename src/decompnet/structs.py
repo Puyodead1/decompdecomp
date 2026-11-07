@@ -428,8 +428,21 @@ def type_name(ctype: str) -> str | None:
     return None if not name or " " in name or BASIC_TYPES.match(name) else name
 
 
-def definition(header: str, name: str) -> str | None:
-    """`name`'s struct, union or class definition in C text (a header), braces and all; None when it isn't there."""
+def definition(header: str, name: str, depth: int = 0) -> str | None:
+    """`name`'s struct, union or class definition in C text (a header), braces and all; None when it isn't there.
+    A typedef's name is followed to the struct it names: the debug information's headers say `typedef struct SObject
+    TObject;` apart from `struct SObject {...}`, and guess_struct told a helper TObject wasn't defined, so it left a
+    function's every field an offset."""
+    found = _definition(header, name)
+    if found is None and depth < 8:
+        alias = re.search(rf"\btypedef\s+(?:struct|union|class)\s+(\w+)\s+{re.escape(name)}\s*;", header)
+        if alias and alias.group(1) != name:
+            found = definition(header, alias.group(1), depth + 1)
+            return f"{alias.group(0)}\n{found}" if found else None
+    return found
+
+
+def _definition(header: str, name: str) -> str | None:
     for m in DEFINITION.finditer(header):
         depth = 0
         for at in range(m.end() - 1, len(header)):

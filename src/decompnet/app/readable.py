@@ -21,6 +21,7 @@ with duplicate and unused declarations around them. Its edits go through edit_fi
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -82,7 +83,8 @@ DATA_READ, DATA_SHOWN = 32, 40  # bytes read of each, globals listed at most
 
 # memory read through a cast and an offset: `*(unsigned int *)(tex + 0x2c)`, `*(short *)((char *)e + 8)`
 OFFSET_READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*(?:\(\s*[\w\s]+\*+\s*\)\s*)?\w+\s*\+\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)")
-UNTYPED_READING = 2  # the version of reopen_untyped's reading, in the project's config (2: reads the header names)
+UNTYPED_READING = 3  # the version of reopen_untyped's reading, in the project's config (2: reads the header names,
+# 3: through parameters the debug information types)
 LAYOUT_FUNCTIONS = 2  # functions whose code a guessed layout comes from, for reopen_untyped to polish again for it
 
 
@@ -371,10 +373,34 @@ class Readability:
                 header = ctx["header"] if ctx else ""
             else:
                 header = self.net.forks.permuter_header(proj["slug"], fn["name"])
-            return cfields.named_reads(source, header)
+            return cfields.named_reads(source, header, self._debug_parameters(fn, source))
         except Exception:  # (help for the job, never in its way)
             logging.getLogger("decompdecomp").exception("the named reads of %s", fn["name"])
             return []
+
+    @staticmethod
+    def _debug_parameters(fn, source: str) -> dict[str, str]:
+        """The structs the debug information's prototype says the parameters point to, by the names the matched C
+        gives them: `void mdDetach(undefined4 param_1, int param_2)` with `void mdDetach(TModel *pModel, TObject
+        *pObj)` is {"param_1": "TModel", "param_2": "TObject"}."""
+        try:
+            meta = json.loads(fn["meta"] or "{}") if "meta" in fn.keys() else {}
+        except ValueError:
+            return {}
+        prototype = (meta.get("debug") or {}).get("prototype") or ""
+        name = re.search(r"(\w+)\s*\(", prototype)
+        if not name:
+            return {}
+        real = structs.parameter_types(prototype + " {", name.group(1))
+        m = re.search(rf"\b{re.escape(fn['name'])}\s*\(([^()]*)\)\s*\{{", source)
+        if not m:
+            return {}
+        names = [re.findall(r"\w+", p)[-1] if re.findall(r"\w+", p) else "" for p in m.group(1).split(",")]
+        out = {}
+        for var, ctype in zip(names, real):
+            if var and (struct := structs.type_name(ctype)):
+                out[var] = struct
+        return out
 
     def _types_known(self, proj, fn, fork: bool) -> list[str]:
         """The brief's lines on the function's types: its debug information and its callees' (ROM mode), and the
