@@ -67,3 +67,41 @@ def test_a_read_through_a_variable_that_isnt_a_struct_pointer_isnt_named():
     assert cfields.named_reads(source, DEBUG_HEADER) == []
     source = "int f(TModel *m) { return *(int *)((short *)m + 0x2); }"  # (not a byte pointer: scaled)
     assert cfields.named_reads(source, DEBUG_HEADER) == []
+
+
+def test_reads_off_an_integer_parameter_are_named_by_the_type_the_debug_information_gives_it():
+    """A machine draft's `void mdDetach(undefined4 param_1, int param_2)` read `*(void **)(param_2 + 0x44)`; the
+    debug information's prototype says param_2 is a TModel *, and polishing left it so for want of the name."""
+    source = "void mdDetach(undefined4 param_1, int param_2)\n{\n  free(*(void **)(param_2 + 0x44));\n}"
+    assert cfields.named_reads(source, DEBUG_HEADER) == []
+    assert cfields.named_reads(source, DEBUG_HEADER, {"param_2": "TModel"}) == [
+        "- `*(void **)(param_2 + 0x44)` is param_2->Skins (TSkin *) (param_2 is a TModel *)"]
+    pointer = "void f(TModel *param_2)\n{\n  free(*(void **)(param_2 + 0x44));\n}"  # (scaled: not an offset)
+    assert cfields.named_reads(pointer, DEBUG_HEADER, {"param_2": "TModel"}) == []
+
+
+def test_a_typedefs_name_finds_the_struct_it_names_in_definitions_and_searches():
+    """guess_struct told a helper `TObject isn't defined in context.h` for `typedef struct SObject TObject;`, and
+    its searches for `struct TObject {` found nothing, or 61,739 characters that its CLI saved where it couldn't
+    read them."""
+    from decompnet import structs
+    from decompnet.network import SEARCH_LIMIT, header_search
+
+    assert structs.definition(DEBUG_HEADER, "TModel").startswith("typedef struct SModel TModel;\nstruct SModel {")
+    found = header_search(DEBUG_HEADER, r"^struct TModel \{")
+    assert "TModel is struct SModel" in found and "TLODGeometry *Geometries; /* 0x40 */" in found
+    users = "".join(f"struct User{i} {{ /* {'x' * 400} */\n    TModel *m;\n}};\n" for i in range(200))
+    found = header_search(users + DEBUG_HEADER, "TModel")
+    assert found.index("typedef struct SModel TModel;") < found.index("struct SModel {") < found.index("User0")
+    assert len(found) < SEARCH_LIMIT + 1000
+
+
+def test_the_debug_prototypes_parameters_are_matched_to_the_c_by_position():
+    import json
+
+    from decompnet.app.readable import Readability
+
+    fn = {"name": "mdDetach", "meta": json.dumps({"debug": {"prototype": "void mdDetach(TModel *pModel, TObject *pObj)"}})}
+    source = "void mdDetach(undefined4 param_1, int param_2)\n{\n}"
+    assert Readability._debug_parameters(fn, source) == {"param_1": "TModel", "param_2": "TObject"}
+    assert Readability._debug_parameters({"name": "f", "meta": "{}"}, source) == {}
