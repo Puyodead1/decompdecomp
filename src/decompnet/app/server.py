@@ -120,6 +120,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     continue  # its folder is gone: only its records are left, and those are removed, not set up
                 if net.is_rom(row):
                     net.rangechecks.reopen(row["slug"])
+                net.readability.reopen_untyped(row["slug"], log=jobs.logger.info)
                 net.console(row).on_start(net, row["slug"], log=jobs.logger.info)
             except Exception:  # never stands between the user and the app
                 jobs.logger.exception("%s's console work at start failed", row["slug"])

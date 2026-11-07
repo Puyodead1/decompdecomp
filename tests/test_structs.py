@@ -97,6 +97,34 @@ def test_types_that_disagree_on_a_width_stay_apart():
     assert found.type_of((structs.ARGUMENT, 0x200000, 0)) != found.type_of((structs.ARGUMENT, READ, 0))
 
 
+GETTER, WRAPPER, ANY = 0x400000, 0x400100, 0x400200
+
+
+def _user(at, offset, op, callee):
+    """A function that reads what `callee` returns at `offset`."""
+    return (at, code(jal(callee), NOP, i(op, V0, V1, offset), JR_RA, NOP), [[0, mips_fields.R_MIPS_26, callee]])
+
+
+def test_what_a_function_returns_is_one_type_at_every_call():
+    """`tex *get_tex(int)` returns `&textures[id]` and uses none of it: its callers' uses of what it returns made no
+    type a brief could show, so each declared it as returning int and read its fields at offsets. Its results are
+    one type, however many call it; but not a function's that returns another's result (an allocator's wrapper)."""
+    getter = (GETTER, code(JR_RA, i(ADDIU, ZERO, V0, 0)), [])
+    users = [_user(0x500000 + 0x100 * n, 0x2C if n % 2 else 4, LW if n % 2 else LWC1, GETTER)
+             for n in range(structs.HUB_CALLERS + 2)]
+    found = recover([getter, *users])
+    assert fields(found, (structs.RETURN, GETTER)) == {4: ("f32", 3), 0x2C: ("s32", 3)}
+    assert found.results_in(users[0][0]) == [(GETTER, found.type_of((structs.RETURN, GETTER)))]
+    alone = structs.recover([getter, *users], functools.partial(mips_fields.read_facts, big_endian=False), lambda a: a,
+                            same_returns=False)
+    assert len({alone.type_of((structs.CALL, at, 0, GETTER)) for at, _, _ in users}) == len(users)  # (before: apart)
+    wrapper = (WRAPPER, code(jal(ANY), NOP, JR_RA, NOP), [[0, mips_fields.R_MIPS_26, ANY]])
+    wrapped = [_user(0x600000, 4, LWC1, WRAPPER), _user(0x600100, 4, LW, WRAPPER), _user(0x600200, 0x10, LW, WRAPPER)]
+    found = recover([wrapper, (ANY, code(JR_RA, NOP), []), *wrapped])
+    assert found.type_of((structs.RETURN, WRAPPER)) is None or not found.layout(
+        found.type_of((structs.RETURN, WRAPPER))).fields
+
+
 WALK = 0x300000
 
 

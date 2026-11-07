@@ -270,7 +270,7 @@ def test_guess_struct_in_a_pc_project_reads_this_and_the_stack(tmp_path):
     fn = {"name": f"@func_{DERIVED_H:08X}@8", "meta": json.dumps({"symbol": f"@func_{DERIVED_H:08X}@8"})}
     assert net.forks._struct_brief(ForkProject(root), cfg, fn)[1:] == [
         '### Likely struct layouts (from loads and stores across the game; guess_struct("@func_0040103C@8", "arg0") '
-        'has one as C)', "- this: S_Grow_this, +0xC f32 (1 function)"]
+        'has one as C, guess_struct("<callee>", "return") what a callee returns)', "- this: S_Grow_this, +0xC f32 (1 function)"]
     # a rename reads the names again, not the code (what the functions do is most of the time a big game takes)
     facts = next(iter(rtti._FACTS.values()))
     config = root / "config" / "game" / "functions.json"

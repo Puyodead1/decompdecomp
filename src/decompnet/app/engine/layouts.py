@@ -20,6 +20,7 @@ from .common import _ADDRESS
 ARGUMENT_TEXT = re.compile(r"^(?:arg|a|\$a)?([0-3])$|^(this|ecx)$", re.I)
 RETURN_TEXT = ("return", "ret", "v0", "result")
 PATH_STEP = re.compile(r"\+\s*(0x[0-9A-Fa-f]+|\d+)")
+BRIEF_RESULTS = 6  # calls whose returned struct a brief describes
 BRIEF_ARGUMENTS = (structs.THIS, 0, 1, 2, 3)  # x86's `this` (ecx), then a0-a3 (MIPS) or the first four on the stack
 SHOWN_MATCHED = 3  # matched functions named as already using a type
 
@@ -78,17 +79,28 @@ def _struct_flows(found, lay, key, label) -> list[str]:
 
 
 def brief_lines(found: structs.Structs, addr: int, name: str, label) -> list[str]:
-    """The brief's lines: each pointer argument's likely layout in one line."""
+    """The brief's lines: each pointer argument's likely layout in one line, then what the function returns and
+    what its calls return, where those are pointers to structs. A pointer a call returns was in no brief: agents
+    declared the callee as returning int and read its fields at offsets (`*(unsigned int *)(tex + 0x2c)`)."""
     lines = []
     for n in BRIEF_ARGUMENTS:
         t = found.type_of((structs.ARGUMENT, addr, n))
         lay = found.layout(t) if t is not None else None
         if lay and lay.fields:
             lines.append(f"- {structs.argument_name(n)}: {found.name(t, label)}, {structs.summary(lay)}")
+    t = found.type_of((structs.RETURN, addr))
+    lay = found.layout(t) if t is not None else None
+    if lay and lay.fields:
+        lines.append(f"- what it returns: a pointer to {found.name(t, label)}, {structs.summary(lay)}")
+    for callee, t in found.results_in(addr)[:BRIEF_RESULTS]:
+        lay = found.layout(t)
+        if lay.fields:
+            lines.append(f"- what {label(callee)}() returns: a pointer to {found.name(t, label)}, {structs.summary(lay)}"
+                         " (declare it returning that pointer, and read its fields by name)")
     if not lines:
         return []
     return ["", f"### Likely struct layouts (from loads and stores across the game; guess_struct("
-                f"\"{name}\", \"arg0\") has one as C)"] + lines
+                f"\"{name}\", \"arg0\") has one as C, guess_struct(\"<callee>\", \"return\") what a callee returns)"] + lines
 
 
 def where_read() -> str:
@@ -207,7 +219,7 @@ class LayoutMixin:
         information gives the function's prototype (the brief shows it): those types are the real ones."""
         try:
             if "meta" in fn.keys() and json.loads(fn["meta"] or "{}").get("debug"):
-                return []
+                return []  # (the real types are shown: its own, and its callees' (_callee_brief))
             found = self.structs(proj)
             if found is None:
                 return []

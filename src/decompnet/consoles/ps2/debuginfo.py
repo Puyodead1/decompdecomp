@@ -229,6 +229,9 @@ def brief_lines(debug: dict, header: str = "context.h") -> list[str]:
              f"source file {debug['source']}" + (f", from line {debug['line']}" if debug.get("line") else "")
              + f"; its types are in {header} already",
              f"prototype: {debug['prototype']};"]
+    lines.append("Write these types as they are: a pointer to a struct is that pointer, its fields read by name "
+                 "(`e->hp`), never an int with an offset (`*(int *)(e + 0x18)`): both compile the same, and only one "
+                 "can be read.")
     if debug.get("params"):
         lines.append("parameters live in: " + ", ".join(debug["params"]))
     if debug.get("locals"):
