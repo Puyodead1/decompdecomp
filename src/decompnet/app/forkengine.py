@@ -602,6 +602,15 @@ class ForkEngine:
         with self._mlock:
             return self._unit_locks[(proj["id"], unit)]
 
+    def _build_lock(self, proj) -> threading.Lock:
+        # (from decomp.anything: two threads asking a defaultdict for a new key can each make a lock of their own)
+        with self._mlock:
+            return self._build_locks[proj["id"]]
+
+    def _git_lock(self, proj) -> threading.Lock:
+        with self._mlock:
+            return self._git_locks[proj["id"]]
+
     @contextmanager
     def _units_locked(self, proj, names: list[str]):
         with ExitStack() as stack:
@@ -611,11 +620,11 @@ class ForkEngine:
 
     def _build_unit(self, proj, fp: ForkProject, unit) -> tuple[bool, str]:
         """Build one unit's object. Builds share the tree's build files (ninja's log), so they take turns."""
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             return fp.build_unit(unit)
 
     def _build_all(self, proj, fp: ForkProject, failed: list[str] | None = None) -> tuple[bool, str]:
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             return fp.build_all(failed=failed)
 
     def _keep_scores(self, proj, unit, text: str, scores: dict) -> None:
@@ -649,7 +658,7 @@ class ForkEngine:
         working tree keeps. A commit of the whole file swept one up: a 2007 PC game's file stayed "built with Visual
         C++ 2010" after an agent's try of it was in the map when a choice in Settings was committed."""
         path = fp.root / rel
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             now = path.read_text(encoding="utf-8")
             ok, head = fp.git("show", f"HEAD:{rel}")
             if ok:  # (one no commit has yet is as it is: projects commit their maps when they're made)
@@ -677,7 +686,7 @@ class ForkEngine:
 
     def _commit(self, proj, fp: ForkProject, rel: str, message: str) -> None:
         """Commit one file (agents work side by side: never sweep up another one's change)."""
-        with self._git_locks[proj["id"]]:
+        with self._git_lock(proj):
             fp.git("add", "--", rel)
             fp.git("commit", "-q", "-m", message, "--", rel)
 
@@ -867,7 +876,7 @@ class ForkEngine:
         console = consoles.get(manifest.get("platform"))
         if cfg.get("origin") != "scratch" or consoles.REBUILD_CHECK not in console.features:
             raise NetworkError(f"{console.name or 'this'} projects started from scratch don't rebuild here")
-        with self._build_locks[proj["id"]]:  # not while an agent's compile builds in the same tree
+        with self._build_lock(proj):  # not while an agent's compile builds in the same tree
             result = console.check_rebuild(fp, manifest["version"], log=log)
         manifest["rebuild"] = result | {"t": time.time()}
         (fp.root / ".decomp.wtf.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -945,9 +954,25 @@ class ForkEngine:
             for rel in untracked() - there:
                 (fp.root / rel).unlink(missing_ok=True)
 
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        def set_up(failed: list[str]) -> bool:
+            """The project set up: True when every step but its builds' compiles went through, `failed` the targets
+            that didn't build (ninja keeps going past them, so the list is all of them)."""
+            fine = True
+            for cmd in fp.setup_commands(version):
+                ninja = Path(cmd[0]).name in ("ninja", "ninja.exe")
+                found: list[str] = []
+                ok, _ = fp.run([*cmd, "-k", "0"] if ninja else cmd, log=log, failed=found)
+                failed.extend(found)
+                fine = fine and (ok or ninja and bool(found))  # (a ninja that failed naming nothing: its own error)
+            return fine
+
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             before = (fp.manifest or {}).get("rebuild") or \
                 (console.check_rebuild(fp, version, log=log) if checks and baseline else {})
+            # What doesn't build already isn't the step's doing: an agent's attempt that doesn't compile, left in a
+            # file, failed the setup, and a Visual C++ 6.0 debug build's flags for 1,540 files were taken back for it
+            broken: list[str] = []
+            set_up(broken)
             there = untracked()
             try:
                 said = step(fp)
@@ -957,7 +982,9 @@ class ForkEngine:
             else:
                 if said is None:
                     return None
-                setup = [fp.run(cmd, log=log)[0] for cmd in fp.setup_commands(version)]
+                failed: list[str] = []
+                new_failures = sorted(set(failed) - set(broken)) if (fine := set_up(failed)) else []
+                setup = [fine and not new_failures]
                 after = console.check_rebuild(fp, version, log=log) if checks and all(setup) else {"identical": None}
                 # the config says more about the same bytes: a rebuild that differs where it didn't is its doing
                 kept = all(setup) and (not checks or after.get("identical") or not before.get("identical") and (
@@ -967,7 +994,9 @@ class ForkEngine:
                     for cmd in fp.setup_commands(version):
                         fp.run(cmd, log=log)
                     said = (f"a new analysis of the game ({said}) was taken back: the game "
-                            f"{'no longer rebuilt byte for byte' if all(setup) else 'no longer built'} with it")
+                            f"{'no longer rebuilt byte for byte' if all(setup) else 'no longer built'} with it"
+                            + (f" ({', '.join(new_failures[:5])}{' and more' if len(new_failures) > 5 else ''} "
+                               "didn't build)" if new_failures else ""))
                 else:
                     if checks:  # what the project shows (check_rom)
                         manifest = json.loads((fp.root / ".decomp.wtf.json").read_text(encoding="utf-8"))
@@ -1039,7 +1068,7 @@ class ForkEngine:
         if build:
             log("building what changed since the last build")
             failed: list[str] = []
-            with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+            with self._tree(proj).exclusive(), self._build_lock(proj):
                 fp.build_all(log=log, failed=failed)
                 rep = fp.report()
             # a unit whose source doesn't build keeps its last object: what it matched then doesn't count now
@@ -1239,7 +1268,7 @@ class ForkEngine:
         proj, fp, cfg = self.get(slug)
         if not fp.linkable():
             return {"linked": [], "failed": {}, "note": "this project has no link step decompdecomp knows (dtk-template)"}
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             fp.build_all()
             rep = fp.report()
             todo = self.link_candidates(proj, fp, rep)
@@ -1290,7 +1319,7 @@ class ForkEngine:
         return {"linked": linked, "failed": failed}
 
     def _verify(self, proj, fp: ForkProject) -> tuple[bool, str]:
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             return fp.verify()
 
     def _file_done(self, slug: str, proj, fp: ForkProject, unit, scores: dict, agent: Agent | None) -> str:
@@ -1479,7 +1508,7 @@ class ForkEngine:
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
         conf = fp.root / "configure.py"
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             fp.build_all()
             plan = self.code_without_files(slug, fp.report())
             if not plan["create"] and not plan["split"]:
@@ -1743,7 +1772,7 @@ class ForkEngine:
         new_text, rest, moved = self._divide(text, rows, going)
         protected = {n for n, pct in (self._baseline(proj, fp, unit, text)[0] or {}).items() if pct is not None and pct >= 100}
         checks = consoles.REBUILD_CHECK in console.features
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             before = (fp.manifest or {}).get("rebuild") or {}
             saved = {old_path: text}
             try:
@@ -1834,7 +1863,7 @@ class ForkEngine:
         own = [console.file_flags(fp, p_) for p_ in (first, second)]
         choices = [None] if own[0] == own[1] else [f for f in own if f is not None]
         why = ""
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             before = (fp.manifest or {}).get("rebuild") or {}
             for flags in choices:
                 saved = {fp.root / p_: t for p_, t in texts.items()}
@@ -1956,7 +1985,7 @@ class ForkEngine:
                 "SELECT name, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
             before = (fp.manifest or {}).get("rebuild") or {}
             saved: dict[Path, str] = {}
-            with self._build_locks[proj["id"]]:
+            with self._build_lock(proj):
                 try:
                     for t, c in found.items():
                         saved.update(console.rename_symbol(fp, version, t, c))
@@ -2052,7 +2081,7 @@ class ForkEngine:
         version = (fp.manifest or {}).get("version") or cfg.get("version")
         word, taken = re.compile(console.rename_pattern(old)), re.compile(rf"\b{re.escape(new)}\b")
         checks = consoles.REBUILD_CHECK in console.features
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             # read under the lock: eight polishing helpers renamed at once, each wrote back files it had read before
             # the others' renames, and half of an Xbox game's renames were undone in some files and not others
             files = sorted(p for d in ("src", "include") if (fp.root / d).is_dir() for p in (fp.root / d).rglob("*")
@@ -2113,7 +2142,7 @@ class ForkEngine:
         return f"✅ {old} is {new} now, in the game's symbols and in {len(saved)} file(s); every match still matches."
 
     def _commit_paths(self, proj, fp: ForkProject, paths: list[str], message: str) -> None:
-        with self._git_locks[proj["id"]]:
+        with self._git_lock(proj):
             fp.git("add", "--", *paths)
             fp.git("commit", "-q", "-m", message, "--", *paths)
 
@@ -3430,7 +3459,7 @@ class ForkEngine:
             renamed: dict[Path, str] = {}
             if structor:
                 try:
-                    with self._build_locks[proj["id"]]:  # builds read the config
+                    with self._build_lock(proj):  # builds read the config
                         renamed = console.rename_symbol(fp, version, fn["name"], structor)
                 except ForkError as e:
                     raise NetworkError(f"{structor} can't be {fn['name']}'s name: {e}") from None
@@ -3438,7 +3467,7 @@ class ForkEngine:
             def unname() -> None:
                 """The config as it was: a name left behind would keep another function from being that class's
                 constructor (an agent's wrong address)."""
-                with self._build_locks[proj["id"]]:
+                with self._build_lock(proj):
                     for p, t in renamed.items():
                         p.write_text(t, encoding="utf-8")
 
@@ -3614,7 +3643,7 @@ class ForkEngine:
                         if tried and time.monotonic() > until:
                             break
                         if c != own:
-                            with self._build_locks[proj["id"]]:  # (a build reads the map)
+                            with self._build_lock(proj):  # (a build reads the map)
                                 rel = console.set_file_compiler(fp, unit.source, c)
                             changed = True
                         res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
@@ -3634,7 +3663,7 @@ class ForkEngine:
                         tried.append(f"{c}: {res['text']}" if len(wanted) == 1 else f"{c}: {res['text'].split(chr(10))[0]}")
                 finally:
                     if changed and kept is None:
-                        with self._build_locks[proj["id"]]:
+                        with self._build_lock(proj):
                             console.set_file_compiler(fp, unit.source, own)
                         self._build_unit(proj, fp, unit)  # the file's object is its own compiler's again
         finally:
@@ -3686,7 +3715,7 @@ class ForkEngine:
                         if time.monotonic() > until:
                             log(f"time is up: {len(combos) - k + 1} combinations not tried")
                             break
-                        with self._build_locks[proj["id"]]:
+                        with self._build_lock(proj):
                             rel = console.set_file_compiler(fp, unit.source, c)
                             if flags is not None:
                                 console.set_file_flags(fp, unit.source, flags)
@@ -3715,7 +3744,7 @@ class ForkEngine:
                             break
                 finally:
                     if kept is None:
-                        with self._build_locks[proj["id"]]:
+                        with self._build_lock(proj):
                             console.set_file_compiler(fp, unit.source, own)
                             if own_flags is not None:
                                 console.set_file_flags(fp, unit.source, own_flags)
@@ -3775,7 +3804,7 @@ class ForkEngine:
                     self._baseline(proj, fp, unit, (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
                     for flags in console.flag_variants(own):
                         if flags != own:
-                            with self._build_locks[proj["id"]]:  # (a build reads the flags)
+                            with self._build_lock(proj):  # (a build reads the flags)
                                 rel = console.set_file_flags(fp, unit.source, flags)
                             changed = True
                         res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
@@ -3799,7 +3828,7 @@ class ForkEngine:
                     # kept -O3 because nothing matched yet: agents could only say "needs -O0" in a note
                     if (near := _far_closer(results, own)) is not None:
                         ours = next(r[0] for r in results if r[1] == own)
-                        with self._build_locks[proj["id"]]:
+                        with self._build_lock(proj):
                             rel = console.set_file_flags(fp, unit.source, near[1])
                         kept = near[1]
                         self._build_unit(proj, fp, unit)
@@ -3811,7 +3840,7 @@ class ForkEngine:
                                                     f"decompdecomp).")
                 finally:
                     if changed and kept is None:
-                        with self._build_locks[proj["id"]]:
+                        with self._build_lock(proj):
                             console.set_file_flags(fp, unit.source, own)
                         self._build_unit(proj, fp, unit)  # the file's object is its own flags' again
         finally:
@@ -3888,7 +3917,7 @@ class ForkEngine:
             changed = False
             try:
                 for flags in console.survey_variants(own)[1:]:
-                    with self._build_locks[proj["id"]]:
+                    with self._build_lock(proj):
                         console.set_file_flags(fp, source, flags)
                     changed = True
                     after = {n: pct for scores in measure().values() for n, pct in scores.items()}
@@ -3902,7 +3931,7 @@ class ForkEngine:
                         nearer = (flags, gain, after)
             finally:
                 if changed:
-                    with self._build_locks[proj["id"]]:
+                    with self._build_lock(proj):
                         console.set_file_flags(fp, source, own)
                     for u in units:
                         self._build_unit(proj, fp, u)  # the file's objects are its own flags' again
@@ -3910,13 +3939,13 @@ class ForkEngine:
                 best = (nearer[0], [], [])
             if best is not None and not best[2]:
                 flags, gained, _ = best
-                with self._build_locks[proj["id"]]:
+                with self._build_lock(proj):
                     rel = console.set_file_flags(fp, source, flags)
                 after = measure()
                 now = {n: pct for scores in after.values() for n, pct in scores.items()}
                 if len(after) < len(units) or any((pct or 0) >= 100 and (now.get(n) or 0) < 100
                                                   for n, pct in before.items()):  # (measured otherwise this time)
-                    with self._build_locks[proj["id"]]:
+                    with self._build_lock(proj):
                         console.set_file_flags(fp, source, own)
                     for u in units:
                         self._build_unit(proj, fp, u)
@@ -4763,7 +4792,7 @@ class ForkEngine:
                 stayed.append(str(e))
             if n % 20 == 0 or n == len(sources):
                 log(f"{n} of {len(sources)} source files tried, {len(stayed)} kept their compiler")
-        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+        with self._tree(proj).exclusive(), self._build_lock(proj):
             changed = console.set_own_compiler(fp, compiler, sources)
         self.net.bump_generation(proj["id"])
         self._commit_paths(proj, fp, changed, f"Build the game with {compiler}\n\nChosen in decompdecomp's project "
@@ -4790,7 +4819,7 @@ class ForkEngine:
                 return before, before
             after: dict[str, float] = {}
             try:
-                with self._build_locks[proj["id"]]:  # (a build reads the map)
+                with self._build_lock(proj):  # (a build reads the map)
                     console.set_file_compiler(fp, source, compiler)
                 for u in units:
                     if self._build_unit(proj, fp, u)[0]:
@@ -4799,7 +4828,7 @@ class ForkEngine:
                         except (ObjdiffError, ForkError):
                             pass
             finally:
-                with self._build_locks[proj["id"]]:
+                with self._build_lock(proj):
                     console.set_file_compiler(fp, source, own)
                 for u in units:
                     self._build_unit(proj, fp, u)  # the file's objects are its own compiler's again
@@ -4831,7 +4860,7 @@ class ForkEngine:
                 for r in self.net.store.all("SELECT name, meta FROM functions WHERE project_id=? AND unit=? AND "
                                             "status='matched'", proj["id"], u.name):
                     before[u.name][self._meta(r).get("symbol") or r["name"]] = 100.0
-            with self._build_locks[proj["id"]]:
+            with self._build_lock(proj):
                 rel = console.set_file_compiler(fp, source, compiler)
             after, broken = {}, []
             for u in units:
@@ -4843,7 +4872,7 @@ class ForkEngine:
                 broken += [n for n, pct in before[u.name].items()
                            if (pct or 0) >= 100 and (after[u.name].get(n) or 0) < 100]
             if (broken or not all(after.values())) and not force:
-                with self._build_locks[proj["id"]]:
+                with self._build_lock(proj):
                     console.set_file_compiler(fp, source, own)
                 for u in units:
                     self._build_unit(proj, fp, u)

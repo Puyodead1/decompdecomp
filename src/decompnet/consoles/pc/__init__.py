@@ -122,8 +122,9 @@ class WindowsPC(Console):
     # call's arguments off the stack (arch/x86.piece: the STL's node allocators, each cut at the operator delete of its
     # catch(...)); 20 the joins again, for `pop ecx` pieces; 21 the joins again, for funclets' `pop ecx; ret` tails;
     # 22 the files of a debug build (their functions fill their stack with 0xCC) built as one: /Od /ZI /GZ
-    # (scratch.set_debug_flags), but for files with matched code
-    ANALYSIS = 22
+    # (scratch.set_debug_flags), but for files with matched code; 23 that again, where an agent's attempt that
+    # didn't compile failed 22's setup and took it back (forkengine.reanalyse now blames a step only for what it breaks)
+    ANALYSIS = 23
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -371,12 +372,12 @@ class WindowsPC(Console):
                  7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True),
                  12: (merged, False), 13: (merged, False), 14: (library, True), 15: (runtime_code, True),
                  16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False), 21: (stubs, True),
-                 22: (debug, True)}
+                 22: (debug, True), 23: (debug, True)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
                 if not (level == 7 and 4 in kept):  # (7 is 3 and 4 again, by their rules now: not when they just ran)
-                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config", "tools") if level == 22 else ("config",),
+                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config", "tools") if level in (22, 23) else ("config",),
                                                       fix=fix, log=log)  # (17 changes configure.py's CL_FLAGS)
                 if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
                     rename_rows({new: old for old, new in renamed.items()})

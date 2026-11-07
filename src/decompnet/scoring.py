@@ -296,8 +296,20 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
     score += (sum(missing.values()) - reordered) * PENALTY_DELETION
     score += (sum(extra.values()) - reordered) * PENALTY_INSERTION
     if reordered:
-        moved = missing & extra
-        rows = [("o" if m in "|<>" and ((t and moved[t]) or (c and moved[c])) else m, t, c) for m, t, c in rows]
+        # each moved instruction marks as many rows as moved, not every row with its text (from decomp.anything)
+        left, right = missing & extra, missing & extra
+        marked = []
+        for m, t, c in rows:
+            moved = False
+            if m in "|<>":
+                if t and left[t] > 0:
+                    left[t] -= 1
+                    moved = True
+                if c and right[c] > 0:
+                    right[c] -= 1
+                    moved = True
+            marked.append(("o" if moved else m, t, c))
+        rows = marked
 
     if score == 0 and not bytes_match:
         score = 1  # textually identical but encodings/relocs differ (e.g. branch form, addend)

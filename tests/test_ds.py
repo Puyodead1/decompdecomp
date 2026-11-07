@@ -623,6 +623,26 @@ def test_a_project_is_analysed_again_and_says_so(per_file):
     assert not (root / "src" / "half.c").exists()
 
 
+def test_a_file_that_didnt_build_before_a_new_analysis_isnt_blamed_on_it(per_file):
+    """An agent's attempt that doesn't compile, left in its file, failed the project's setup: every new analysis was
+    taken back as "the game no longer built", a debug build's flags for 1,540 files of a PC game among them. What
+    didn't build before isn't the step's doing; what the step breaks still takes it back, and says which."""
+    net, slug, agent, root, state, lerp = per_file
+    game = root / "src" / "game.c"
+    good = game.read_text()
+    game.write_text(good + "\nint broken(void) { return undeclared_name; }\n")  # (the agent's, uncommitted)
+    assert net.forks.reanalyse(slug, lambda fp: "a better analysis", log=lambda *_: None) == "a better analysis"
+    game.write_text(good)
+
+    def breaks_a_file(fp):
+        (fp.root / "src" / "game.c").write_text(good + "\nthis is not C\n")
+        return "a better source file"
+    assert net.forks.reanalyse(slug, breaks_a_file, paths=("src",), log=lambda *_: None) is None
+    said = net.store.one("SELECT detail FROM events WHERE kind='analysis' ORDER BY id DESC LIMIT 1")["detail"]
+    assert "no longer built" in said and "build/src/game.o didn't build" in said
+    assert game.read_text() == good
+
+
 def test_an_older_projects_build_tools_get_the_fixes_and_keep_its_settings(tmp_path):
     """Its tools/ came from the template when it was made: dead stripping in its link dropped every overlay holding
     only data (nothing points at one: the game loads it by number), so the overlays after it moved and the rebuild

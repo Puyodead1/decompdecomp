@@ -314,3 +314,38 @@ def test_cpp_that_asks_for_no_shared_header_is_compiled_without_it(net):
     assert "Entity" in header
     assert not net._compile(proj, header, clash).ok
     assert net._compile(proj, header, "#pragma decompdecomp no_context\n" + clash).ok
+
+
+def test_includes_are_checked_as_the_preprocessor_reads_them():
+    """A backslash at a line's end joins it to the next before the preprocessor reads a directive, and a drive or a
+    backslash path leaves the sandbox where the compiler runs under Windows (wibo, wine: Z: is /). From decomp.anything."""
+    for bad in ['#inc\\\nlude "../../etc/passwd"', '#include ".\\\n./secret.h"', '#include "Z:/etc/passwd"',
+                '#include "\\\\server\\share\\x.h"', '#include "..\\..\\x.h"']:
+        with pytest.raises(SourceRejected):
+            check_source(bad)
+    check_source('#define TWO \\\n    2\nint f(void) { return TWO; }')
+
+
+def test_an_empty_old_text_is_refused_not_searched_for_forever():
+    """`old` empty occurs everywhere: counting where it occurred never moved on, and held the file's lock."""
+    from decompnet.textedit import replace_once
+
+    for old in ("", "  \n"):
+        with pytest.raises(NetworkError, match="empty"):
+            replace_once("int a;\nint b;\n", old, "int c;\n", "the header")
+
+
+def test_a_moved_instruction_marks_one_row_not_every_row_with_its_text():
+    """One `pop ebx` of the candidate's two extra ones is the target's, moved: one row says so, the other stays an
+    insertion (every row with the text was marked moved). From decomp.anything."""
+    from decompnet import scoring
+    from decompnet.elfobj import FunctionObj
+
+    ops = {"a": b"\x40", "b": b"\x43", "n": b"\x90", "p": b"\x50", "q": b"\x5b"}
+
+    def fn(s):
+        return FunctionObj("f", "x86", False, b"".join(ops[c] for c in s) + b"\xc3")
+
+    rows = scoring.diff(fn("nanbq"), fn("pbqqanapa")).rows
+    extra_pops = [m for m, t, c in rows if c == "pop ebx" and not t]
+    assert sorted(extra_pops) == [">", "o"]
