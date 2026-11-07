@@ -201,6 +201,38 @@ def test_a_brief_and_a_polishing_job_give_the_callees_prototypes_from_the_debug_
     assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0
 
 
+def test_polishing_names_the_offset_reads_the_header_has_fields_for_and_asks_once(demo):
+    """A 2000s Linux game's helper polished every other field into its name and left `*(char ***)((char *)pModel +
+    0x40)` for pModel->Geometries, twice. The job lists what each such read is, the first rewrite that keeps one is
+    sent back with them, and what was polished so is polished again at start."""
+    from decompnet import cfields
+
+    net, slug = _imported(demo, "named")
+    proj = net.project_row(slug)
+    fn = net.store.one("SELECT * FROM functions WHERE project_id=? ORDER BY vram LIMIT 1", proj["id"])
+    header = net._context(proj["id"], fn["unit"])["header"]
+    parsed = cfields.Header(header)
+    tag, field = next((name, f) for name in parsed.bodies if parsed.struct(name)
+                      for f in parsed.struct(name).fields if f.offset and f.count == 1 and parsed.struct(f.type) is None)
+    source = (f"int {fn['name']}(struct {tag} *p) {{ return *(int *)((char *)p + 0x{field.offset:x}); }}")
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET readable=1 WHERE project_id=?", (proj["id"],))
+        db.execute("UPDATE functions SET status='matched', readable=0, matched_source=? WHERE id=?", (source, fn["id"]))
+    agent, _ = net.local_agent("polisher")
+    job = net.readability.claim(agent, slug)
+    assert f"is p->{field.name} ({field.type})" in job
+    again = source.replace("int p", "int q") if "int p" in source else source.replace("*p)", "*q)").replace("p +", "q +")
+    said = net.readability.submit(agent, slug, fn["name"], again)
+    assert said.startswith("✋") and f"q->{field.name}" in said
+    assert "✋" not in net.readability.submit(agent, slug, fn["name"], again)  # (the second time it's judged)
+    with net.store.tx() as db:
+        db.execute("DELETE FROM claims")
+        db.execute("UPDATE functions SET readable=1, matched_source=? WHERE id=?", (source, fn["id"]))
+    net._update_cfg(slug, lambda c: c.update(untyped_reading=1))  # (polished again for the debug types already)
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 1
+    assert net.store.one("SELECT readable FROM functions WHERE id=?", fn["id"])["readable"] == 0
+
+
 def test_without_debug_information_briefs_show_what_calls_return_and_polishing_again_is_asked_for(demo):
     """A game with no debug information: what a function's calls return is the type its code shows across the game
     (structs.recover: one type per function's results), in the brief and the polishing job. Polishing again what
