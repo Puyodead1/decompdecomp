@@ -27,7 +27,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import scoring, structs
+from .. import cfields, scoring, structs
 from ..forks.project import ForkProject
 from ..network import GAME_CODE, IN_BUILD, Agent, NetworkError
 from .engine import layouts
@@ -82,7 +82,7 @@ DATA_READ, DATA_SHOWN = 32, 40  # bytes read of each, globals listed at most
 
 # memory read through a cast and an offset: `*(unsigned int *)(tex + 0x2c)`, `*(short *)((char *)e + 8)`
 OFFSET_READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*(?:\(\s*[\w\s]+\*+\s*\)\s*)?\w+\s*\+\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)")
-UNTYPED_READING = 1  # the version of reopen_untyped's reading, in the project's config
+UNTYPED_READING = 2  # the version of reopen_untyped's reading, in the project's config (2: reads the header names)
 LAYOUT_FUNCTIONS = 2  # functions whose code a guessed layout comes from, for reopen_untyped to polish again for it
 
 
@@ -96,7 +96,8 @@ class Readability:
         real one, on a game whose debug information says), and a PC game had 239 of its 692 readable functions with
         one, so polishing those again (`guesses`) is the user's to ask for."""
         proj = self.net.project_row(slug)
-        if (not guesses and self.net.cfg(proj).get("untyped_reading", 0) >= UNTYPED_READING) or self.net._link(slug):
+        done = self.net.cfg(proj).get("untyped_reading", 0)
+        if (not guesses and done >= UNTYPED_READING) or self.net._link(slug):
             return 0
         fork = not self.net.is_rom(proj)
         rows = self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' AND readable=1",
@@ -107,7 +108,12 @@ class Readability:
                 source = self._matching_c(proj, fn)
             except (OSError, NetworkError):
                 continue
-            if source and OFFSET_READ.search(source) and self._worth_polishing_again(proj, fn, fork, guesses):
+            if not source or not OFFSET_READ.search(source):
+                continue
+            # (2: the reads the header names, which polishing now lists; the rest were polished again under 1 and
+            # would only be again)
+            if self._named_reads(proj, fn, source) or (
+                    (guesses or done < 1) and self._worth_polishing_again(proj, fn, fork, guesses)):
                 again.append(fn["id"])
         if dry:  # (how many: what the Polish launcher offers)
             return len(again)
@@ -126,6 +132,7 @@ class Readability:
         self.net = net
         self._tidying: dict[tuple[int, str], tuple[int, float]] = {}  # (project, unit) -> (agent, until)
         self._tidy_lock = threading.Lock()  # (helpers claim at once: one file, one helper)
+        self._named_asked: set[int] = set()  # functions whose rewrite was sent back once for reads the header names
 
     def _untidy(self, proj) -> list[str]:
         """The project's source files (units) to tidy, most functions first: every function of the game's in them
@@ -302,6 +309,11 @@ class Readability:
         # Without debug information, the struct layouts the code itself says (structs.py: its arguments', what it
         # returns, what its calls return) are the same help
         known = self._types_known(proj, fn, fork)
+        named = self._named_reads(proj, fn, self._matching_c(proj, fn))
+        if named:
+            known += ["", "### Reads through offsets that the header names", *named,
+                      "Write each by name (`pModel->Geometries[i].geometries`): a field read compiles to the same code "
+                      "as the offset it's at."]
         if known:
             names += ("- use the types below (the game's debug information's, or the layouts its code shows): struct "
                       "pointers and their fields by name instead of ints, casts and offsets, declared in the shared "
@@ -347,6 +359,22 @@ class Readability:
         except Exception:  # (a heuristic over the game's code: never in the way)
             logging.getLogger("decompdecomp").exception("the types for %s", fn["name"])
             return False
+
+    def _named_reads(self, proj, fn, source: str) -> list[str]:
+        """The reads `source` makes through a byte pointer and an offset that the function's header names
+        (cfields.py)."""
+        if not source or not cfields.READ.search(source):
+            return []
+        try:
+            if self.net.is_rom(proj):
+                ctx = self.net._context(proj["id"], fn["unit"])
+                header = ctx["header"] if ctx else ""
+            else:
+                header = self.net.forks.permuter_header(proj["slug"], fn["name"])
+            return cfields.named_reads(source, header)
+        except Exception:  # (help for the job, never in its way)
+            logging.getLogger("decompdecomp").exception("the named reads of %s", fn["name"])
+            return []
 
     def _types_known(self, proj, fn, fork: bool) -> list[str]:
         """The brief's lines on the function's types: its debug information and its callees' (ROM mode), and the
@@ -397,6 +425,16 @@ class Readability:
             raise NetworkError(f"{fn['name']} is held by {self.net._agent_name(claim['agent_id'])}")
         if " ".join(source.split()) == " ".join(self._matching_c(proj, fn).split()):
             raise NetworkError("that's the C it has already: rename, type and comment it first")
+        # Once per function: a helper polished every other field into its name and left `*(char ***)((char *)pModel
+        # + 0x40)` for pModel->Geometries, twice, though the job listed the types. A second time it's judged as it
+        # is: the named form may not have matched
+        named = self._named_reads(proj, fn, source)
+        if named and fn["id"] not in self._named_asked:
+            self._named_asked.add(fn["id"])
+            return ("✋ Not judged yet: it still reads through offsets that the header names:\n" + "\n".join(named)
+                    + "\nWrite them by name (a field read compiles to the same code as its offset), then "
+                    f"make_readable(\"{fn['name']}\", source) again. If the named form doesn't match, send this one "
+                    "again and it's judged as it is.")
         if not self.net.is_rom(proj):  # the project's own file, judged and committed (or put back) as any compile
             res = self.net.forks.attempt(agent, proj["slug"], fn["name"], source, comment=True)
             if not res.get("matched"):
