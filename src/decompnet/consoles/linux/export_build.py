@@ -111,7 +111,7 @@ def build_function(fn: dict, data: bytes) -> bytes:
     if not res.ok:
         fail(f"{src.relative_to(ROOT)} doesn't compile:\n{res.log[-3000:]}")
     obj = work / f"{fn['name']}.o"
-    obj.write_bytes(res.obj)
+    obj.write_bytes(unaligned_text(res.obj))
     elf = ELFFile(BytesIO(res.obj))
     # where the function sits in its .text: its offset modulo 16, after the code its prelude puts before it
     pad = next(s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == fn["name"])
@@ -135,6 +135,20 @@ def build_function(fn: dict, data: bytes) -> bytes:
         fail(f"{fn['name']} doesn't link:\n{(res.stdout + res.stderr)[-3000:]}")
     text = ELFFile(BytesIO((work / out).read_bytes())).get_section_by_name(".text").data()
     return text[pad:pad + fn["size"]]
+
+
+def unaligned_text(obj: bytes) -> bytes:
+    """The object with its .text aligned to 1, so ld puts it exactly where the script says. The judge takes the
+    function's bytes from its symbol and relocates them at its address: one whose file's C defines functions before
+    it can sit at another offset modulo 16 in its object than in the game (a 2000s Linux game's 86-byte function
+    with no loop, after three others), and ld rounded the 16-aligned .text up to the next 16, 12 bytes off."""
+    elf = ELFFile(BytesIO(obj))
+    out = bytearray(obj)
+    for i, section in enumerate(elf.iter_sections()):
+        if section.name == ".text":
+            at = elf["e_shoff"] + i * elf["e_shentsize"] + 32  # Elf32_Shdr.sh_addralign
+            out[at:at + 4] = (1).to_bytes(4, "little")
+    return bytes(out)
 
 
 def toolchain(fn: dict) -> str:

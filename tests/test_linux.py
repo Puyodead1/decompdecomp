@@ -361,11 +361,26 @@ def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_progr
     net, slug = _imported(demo, "export")
     assert _match(net, slug, "entity_default_hp")["matched"]
     assert _match(net, slug, "clamp_s32")["matched"]
+    assert _match(net, slug, "abs_s32")["matched"]  # (straight-line code: the same bytes anywhere)
     res = net.export_rom(slug, log=lambda *_: None)
-    assert res["identical"] and res["matched"] == 2, res["log"]
+    assert res["identical"] and res["matched"] == 3, res["log"]
     out = Path(res["path"])
-    assert "(2 of" in res["log"] and (out / "build" / "program").read_bytes() == demo[0].read_bytes()
+    assert "(3 of" in res["log"] and (out / "build" / "program").read_bytes() == demo[0].read_bytes()
     assert ".own0" in (out / "build" / "obj" / "entity_default_hp.ld").read_text()
+
+    # code before a function in its C (the file's other functions) can leave it at another offset modulo 16 in its
+    # object than in the game: the judge relocates its bytes where they are, and so does the build (a loop's
+    # .p2align 4 makes the object's .text 16-aligned, ld rounded it up, and a Linux game's export put a function 12
+    # bytes off)
+    [src] = (out / "src").glob("*/abs_s32.c")
+    original = src.read_text()
+    lines = original.splitlines(keepends=True)
+    at = next(i for i, line in enumerate(lines) if "abs_s32" in line and "(" in line)
+    src.write_text("".join(lines[:at]) + ('int sum_before(int *p, int n) { int s = 0; while (n--) s += *p++; return s; }\n'
+                                       'int one_before(void) { return 1; }\n') + "".join(lines[at:]))
+    ok = subprocess.run([sys.executable, "build.py", "check", "abs_s32"], cwd=out, capture_output=True, text=True)
+    assert ok.returncode == 0, ok.stderr
+    src.write_text(original)
 
     # a function written in the tree is checked against the original; a wrong one is refused
     [src] = (out / "src").glob("*/clamp_s32.c")
