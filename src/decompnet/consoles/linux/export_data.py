@@ -442,8 +442,8 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
                                          rf"\s*\*\s*\)\s*\(?\s*&?{re.escape(names[address])}\b", code)] or [4])
         nxt = min([b for b in wanted[k + 1:]] + [program.next_symbol(address), address + 32])
         # (as far as the C reads it, a pool's strings; not over the next variable, which is laid out after it)
-        size = max(width, min(nxt - address, 32), min(_read_through(program, code, names[address], address, width),
-                                                      program.next_symbol(address) - address))
+        through = min(_read_through(program, code, names[address], address, width), program.next_symbol(address) - address)
+        size = max(width, through, _pool_start(program, address, max(width, through), min(nxt - address, 32)))
         if out and out[-1].address + out[-1].size > address:  # (inside the one before, read wider: part of it)
             continue
         data = program.read(address, size)
@@ -453,6 +453,20 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
         text = f"char {name}[{size}] = {{ {', '.join(str(b if b < 128 else b - 256) for b in data)} }};"
         out.append(Definition(name, address, size, ".rodata", 0, text, f"extern char {name}[];", _key(f"char {name}[];")))
     return out
+
+
+def _pool_start(program: Program, address: int, read: int, size: int) -> int:
+    """Where the bytes after a constant stop being its own: past the `read` bytes the C reads, padding then a
+    string nobody names is the next file's string pool (a 4-byte float, 12 bytes of padding, then another file's
+    "/proc/interrupts"), so the copy ends at that string, not 32 bytes on, cut through it."""
+    data = program.read(address, size)
+    if data is None:
+        return size
+    for at in range(max(read, 1), size - 3):
+        text = data[at:].split(b"\0")[0]  # (printable to its NUL or the window's end: not a double's 66 66 66 ee)
+        if at % 4 == 0 and data[at - 1] == 0 and len(text) >= 4 and all(32 <= c < 127 for c in text):
+            return at
+    return size
 
 
 def _read_through(program: Program, code: str, name: str, address: int, width: int) -> int:
