@@ -416,6 +416,194 @@ def test_a_global_matched_c_reads_by_its_address_is_named_and_still_matches(demo
     assert net.readability.name_addresses(slug, log=lambda *_: None) == 0
 
 
+def test_rom_modes_tidy_moves_what_matched_functions_declare_alike_into_the_header_and_they_still_match(demo):
+    """The declarations each matched function made for itself go into the shared header once (tidy.py), every
+    function judged again with it."""
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    net, slug = _imported(demo, "tidy")
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    for name in ("rng_next", "abs_s32"):
+        net.claim(agent, slug, name)
+        source = "extern int tidy_helper(int);\n" + GAME_DEFINES + csource.get(DEMO_GAME.read_text(), name)
+        assert net.attempt(agent, name, source, slug)["matched"]
+    res = net.readability.tidy_declarations(slug, log=lambda *_: None)
+    assert res["moved"] >= 1
+    proj = net.project_row(slug)
+    assert "int tidy_helper(int);" in net._context(proj["id"])["header"]
+    for name in ("rng_next", "abs_s32"):
+        fn = net._function(name, slug)
+        assert "tidy_helper" not in fn["matched_source"]
+        assert net.readability._still_matches(proj, fn, net._context(proj["id"])["header"], fn["matched_source"])
+
+
+def test_a_rename_judged_while_a_polish_saves_keeps_the_polish_and_its_function_is_repaired(demo):
+    """A helper sent rename_symbol and make_readable together: the rename judged the C it had read, the polish was
+    saved meanwhile, and the rename then wrote its old copy, renamed (or the polish wrote the old name over it): a
+    Linux game's function defined its old name under its new one. The rename now renames the C as it is, a polish
+    judged before a rename is sent again, and a function left so is renamed in its C at start."""
+    from decompnet.forks import csource
+    from decompnet.network import write_renamed
+
+    from .test_consoles import DEMO_GAME
+
+    net, slug = _imported(demo, "renamerace")
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.claim(agent, slug, "rng_next")
+    source = GAME_DEFINES + csource.get(DEMO_GAME.read_text(), "rng_next")
+    assert net.attempt(agent, "rng_next", source, slug)["matched"]
+    fn = net._function("rng_next", slug)
+    polished = "/* the game's random numbers */\n" + fn["matched_source"]
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET matched_source=? WHERE id=?", (polished, fn["id"]))
+        write_renamed(db, {fn["id"]: fn["matched_source"].replace("rng_next", "rng")}, {fn["id"]: fn["matched_source"]},
+                      lambda text: text.replace("rng_next", "rng"))
+    assert net.store.one("SELECT matched_source FROM functions WHERE id=?", fn["id"])["matched_source"] == \
+        polished.replace("rng_next", "rng")
+
+    # a polish judged before a rename committed isn't saved
+    proj = net.project_row(slug)
+    since = net.store.one("SELECT MAX(id) AS id FROM events WHERE project_id=?", proj["id"])["id"]
+    with net.store.tx() as db:
+        net._event(db, proj["id"], None, "rename", "abs_s32 → absolute")
+    said = net.readability._readable(proj, fn, agent, "/* x */\n" + source, since)
+    assert said.startswith("✋") and "/* x */" not in net._function("rng_next", slug)["matched_source"]
+
+    # one left defining its old name: renamed in its C at start, as it still matches
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET matched_source=? WHERE id=?", (source, fn["id"]))
+        db.execute("UPDATE functions SET name='rng_two' WHERE id=?", (fn["id"],))
+        db.execute("UPDATE symbols SET name='rng_two' WHERE project_id=? AND name='rng_next'", (proj["id"],))
+        net._event(db, proj["id"], None, "rename", "rng_next → rng_two")
+    net._syms.pop(proj["id"], None)
+    assert net.readability.repair_renamed(slug, log=lambda *_: None) == ["rng_two"]
+    assert "rng_two(" in net._function("rng_two", slug)["matched_source"]
+
+
+def test_a_function_built_with_fpic_gets_fpic_and_is_open_again_if_it_was_set_aside(demo):
+    import json
+
+    from decompnet import consoles
+
+    net, slug = _imported(demo, "pic")
+    proj = net.project_row(slug)
+    fn = net._function("abs_s32", slug)
+    pic = bytes.fromhex("5589e553e8000000005b81c300000000") + bytes(fn["target"])[16:]
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=?, status='asm', meta=? WHERE id=?",
+                   (pic, json.dumps({"not_c": {"a": {}}, "asm_code": "PIC"}), fn["id"]))
+    assert consoles.get("linux").add_pic(net, slug, log=lambda *_: None) == 1
+    ranges = net.cfg(net.project_row(slug))["compiler_ranges"]
+    assert ranges[0]["start"] == fn["vram"] and "-fPIC" in ranges[0]["flags"]
+    again = net._function("abs_s32", slug)
+    assert again["status"] == "open" and "not_c" not in json.loads(again["meta"])
+    assert consoles.get("linux").add_pic(net, slug, log=lambda *_: None) == 0  # (once)
+    assert "got" in net.cfg(net.project_row(slug))  # (the program's GOT, recorded at import)
+    del proj
+
+
+RELINK_START = """\
+.text
+.globl sys_write
+.type sys_write,@function
+sys_write:
+    pushl %ebx
+    movl 8(%esp), %ebx
+    movl 12(%esp), %ecx
+    movl 16(%esp), %edx
+    movl $4, %eax
+    int $0x80
+    popl %ebx
+    ret
+.size sys_write,.-sys_write
+.globl sys_exit
+.type sys_exit,@function
+sys_exit:
+    movl 4(%esp), %ebx
+    movl $1, %eax
+    int $0x80
+.size sys_exit,.-sys_exit
+"""
+RELINK_FUNCTIONS = {
+    "length": "int length(const char *s) { int n = 0; while (s[n]) n++; return n; }\n",
+    "say": "static int calls;\nvoid say(const char *s) { calls++; sys_write(1, s, length(s)); }\n",
+    "name_of": 'const char *name_of(int k) { switch (k) { case 0: return "zero\\n"; case 1: return "one\\n"; '
+               'case 2: return "two\\n"; case 3: return "three\\n"; case 4: return "four\\n"; default: '
+               'return "many\\n"; } }\n',
+    "greet": 'void greet(void) { say("hello\\n"); }\n',
+    "count": "static int calls;\nint count(void) { return calls; }\n",
+    "start": "extern void (*table[])(void);\nvoid start(void) { int i; for (i = 0; i < 2; i++) table[i](); "
+             "for (i = 0; i < 6; i++) say(name_of(i)); sys_exit(count()); }\n",
+}
+RELINK_DECLARATIONS = ("int sys_write(int, const char *, int);\nvoid sys_exit(int);\nint length(const char *);\n"
+                       "void say(const char *);\nconst char *name_of(int);\nvoid greet(void);\nint count(void);\n")
+
+
+def test_the_export_relinks_a_new_program_from_the_c_and_a_function_may_grow(tmp_path):
+    """The export's build links a new program from the C (build.py relink): its functions laid out anew, the data
+    where the program has it with its pointers to functions (a table in .data) following them, each function's
+    statics the program's own (two functions share one), a switch's jump table its own. It runs as the original
+    does, and a function changed to do more (longer than it was) runs in it: what a mod is."""
+    import subprocess
+    import sys
+
+    from decompnet import toolchains
+    from decompnet.app.engine import RomNetwork
+    from decompnet.compiler import compile_source, run_in
+    from decompnet.project import compiler_config
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    build = tmp_path / "build"
+    build.mkdir()
+    cfg = compiler_config(build, {"compiler": {"toolchain": gcc, "flags": ["-O2", "-g"]}})
+    program_c = (RELINK_DECLARATIONS + "".join(v.replace("static int calls;\n", "") for v in RELINK_FUNCTIONS.values())
+                 + "void (*table[])(void) = { greet, greet };\n")
+    program_c = "static int calls;\n" + program_c
+    res = compile_source(cfg, "", program_c)
+    assert res.ok, res.log
+    (build / "prog.o").write_bytes(res.obj)
+    (build / "start.s").write_text(RELINK_START)
+    tc = toolchains.ensure(gcc, log=lambda *_: None)
+    tool = f'LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" "{tc}/binutils/usr/bin/'
+    linked = run_in(cfg, build, ["/bin/sh", "-c", f'{tool}as" -o start.o start.s && {tool}ld" -m elf_i386 -e start '
+                                                  f'-o relinkdemo start.o prog.o'])
+    assert linked.returncode == 0, linked.stderr
+    program = build / "relinkdemo"
+    program.chmod(0o755)
+    original = subprocess.run([str(program)], capture_output=True, timeout=30)
+    assert original.stdout == b"hello\nhello\nzero\none\ntwo\nthree\nfour\nmany\n" and original.returncode == 8
+
+    work = tmp_path / "home"
+    work.mkdir()
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    for name, source in RELINK_FUNCTIONS.items():
+        net.claim(agent, slug, name)
+        result = net.attempt(agent, name, RELINK_DECLARATIONS + source, slug)
+        assert result["matched"], (name, result["text"])
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"] and res["relinked"], res["log"]
+    out = Path(res["path"])
+    relinked = out / "build" / "relinkdemo"
+    ran = subprocess.run([str(relinked)], capture_output=True, timeout=30)
+    assert (ran.stdout, ran.returncode) == (original.stdout, original.returncode)
+    assert (out / "asm" / "sys_write.s").exists()  # (what isn't C, as assembly that moves with the rest)
+
+    # a mod: say() does more, and is longer than the original's
+    [say] = (out / "src").glob("*/say.c")
+    say.write_text(say.read_text().replace("sys_write(1, s, length(s));",
+                                           'sys_write(1, "> ", 2); sys_write(1, s, length(s));'))
+    again = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
+    assert again.returncode == 0, again.stderr
+    modded = subprocess.run([str(relinked)], capture_output=True, timeout=30)
+    assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 8
+
+
 def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():
     """Ghidra's types where the program's header doesn't have them, its names for addresses as the project's, a part
     of a variable read through a pointer of its size; a draft that reads a register no C names is none."""
@@ -847,6 +1035,53 @@ def test_a_call_to_a_static_helper_of_the_same_object_goes_to_the_games_function
     elsewhere = types.SimpleNamespace(resolve=lambda n: {"helper": helper + 0x40}.get(n), label=lambda a: hex(a))
     wrong = x86_link.link(res.obj, "outer", x86_link.X86Target("outer", vram, bytes(game)), elsewhere, lambda *a: None)
     assert not wrong.exact and any("you call helper" in p for p in wrong.problems)
+
+
+def test_code_built_with_fpic_matches_through_the_programs_got_and_plt(tmp_path):
+    """glibc's atexit, linked into a Linux game from libc_nonshared.a, is -fPIC code: it finds the GOT from its own
+    address, reads __dso_handle's address from the GOT entry the program's dynamic relocation names, and calls
+    __cxa_atexit through the PLT. The judge read none of those relocations, so five agents agreed no C makes it."""
+    import types
+
+    from elftools.elf.elffile import ELFFile
+
+    from decompnet import toolchains
+    from decompnet.compiler import compile_source
+    from decompnet.elfobj import _function_symbols
+    from decompnet.project import compiler_config
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    cfg = compiler_config(tmp_path, {"compiler": {"toolchain": gcc, "flags": ["-O2", "-fPIC"]}})
+    res = compile_source(cfg, "", "extern void *__dso_handle __attribute__ ((__weak__));\n"
+                         "extern int __cxa_atexit(void (*)(void *), void *, void *);\n"
+                         "int atexit(void (*func)(void)) { return __cxa_atexit((void (*)(void *))func, (void *)0, "
+                         "&__dso_handle == (void *)0 ? (void *)0 : __dso_handle); }\n")
+    assert res.ok, res.log
+    elf = ELFFile(__import__("io").BytesIO(res.obj))
+    shndx, start, size = _function_symbols(elf)["atexit"]
+    code = elf.get_section(shndx).data()[start:start + size]
+    vram, got, slot, stub = 0x809D650, 0x80BEA38, 0x80BEC74, 0x8049E30  # where the program has them
+    game = bytearray(code)
+    for rsec in elf.iter_sections():
+        if getattr(rsec, "iter_relocations", None) and rsec["sh_info"] == shndx:
+            for rel in rsec.iter_relocations():
+                at, kind = rel["r_offset"] - start, rel["r_info_type"]
+                addend = int.from_bytes(code[at:at + 4], "little", signed=True)
+                value = {10: got + addend - (vram + at), 3: slot - got + addend,
+                         4: stub + addend - (vram + at)}[kind]
+                game[at:at + 4] = (value & 0xFFFFFFFF).to_bytes(4, "little")
+    symbols = types.SimpleNamespace(resolve=lambda n: {"__cxa_atexit": stub, "atexit": vram}.get(n),
+                                    label=lambda a: f"0x{a:08X}")
+    target = x86_link.X86Target("atexit", vram, bytes(game), got=got, got_slots={slot: "__dso_handle"})
+    linked = x86_link.link(res.obj, "atexit", target, symbols, lambda *a: None)
+    assert linked.exact, linked.problems
+    # another GOT entry (__gmon_start__'s) is refused, and without the program's GOT nothing is guessed
+    other = x86_link.X86Target("atexit", vram, bytes(game), got=got, got_slots={slot: "__gmon_start__"})
+    assert not x86_link.link(res.obj, "atexit", other, symbols, lambda *a: None).exact
+    assert not x86_link.link(res.obj, "atexit", x86_link.X86Target("atexit", vram, bytes(game)), symbols,
+                             lambda *a: None).exact
 
 
 def test_flags_a_debug_build_or_another_machine_used_are_tried():

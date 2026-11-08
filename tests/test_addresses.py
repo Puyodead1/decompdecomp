@@ -52,8 +52,7 @@ void f(Wave *w) {
 
 def test_each_address_is_named_for_what_the_game_holds_there():
     """A read-only string is its literal, a float or double constant its value, a global (or its field, by the
-    header's struct) its name, a function its name; a writable buffer that starts with text is the buffer, an
-    integer constant stays (GCC makes it an immediate), and a name the tools made up is the number again."""
+    header's struct) its name, a function its name; a writable buffer that starts with text is the buffer."""
     found = addresses.proposals(SOURCE, _program())
     out = addresses.apply(SOURCE, found)
     assert 'printf("Hello \\"you\\"\\n");' in out
@@ -64,9 +63,15 @@ def test_each_address_is_named_for_what_the_game_holds_there():
     assert "w->timer = *(int *)&timer;" in out and "extern char timer[];" in out
     assert "cb = (void *)tick;" in out and "void tick();" not in out  # (the header declares it)
     assert "s = (char *)&buf;" in out
-    assert "n = *(int *)0x8001010;" in out and "u = *(int *)0x8002900;" in out
+    # what nothing names (an integer constant GCC would make an immediate, a name the tools made up) is the
+    # address's generated name, which the judge and the export resolve to it
+    assert "n = *(int *)D_08001010;" in out and "u = *(int *)D_08002900;" in out
+    assert "extern char D_08001010[];" in out
     assert out.index('#include "common.h"') < out.index("extern char buf[];") < out.index("void f(")
-    assert addresses.numbers(out) == 2
+    assert addresses.numbers(out) == 0
+    # and a named one that doesn't match (GCC sees the global it already reads) has it to fall back on
+    [timer] = [p for p in found if p.text == "*(int *)&timer"]
+    assert timer.fallback.text == "*(int *)D_08002020"
 
 
 def test_literals_are_exact():

@@ -33,6 +33,7 @@ MAX_SIZE = 256 << 20
 LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
 LIBRARY_MARCHES = ("", "amdfam10", "k8", "core2", "pentium4", "i686")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
+PIC_PROLOGUE = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
 DEBUG_LINES = 1  # the version of what add_line_tables reads into a project imported before it
 
 
@@ -123,9 +124,62 @@ class Linux(Console):
             return {}
         return {m: d for m, d in zip(mangled, out) if d and d != m}
 
+    def after_import(self, net, slug: str, *, chosen: bool, log=print) -> None:
+        self.add_got(net, slug, log=log)
+
+    def add_got(self, net, slug: str, log=print) -> None:
+        """Where the program's GOT is and what its entries hold (split.got_info), for the judge of -fPIC code: a
+        program imported before has none, and glibc's atexit, linked in from libc_nonshared.a, could never match."""
+        proj = net.project_row(slug)
+        cfg = net.cfg(proj)
+        program = Path(proj["root"]) / cfg.get("rom", {}).get("program", "")
+        if "got" in cfg or net._link(slug) or not cfg.get("rom", {}).get("program") or not program.is_file():
+            return
+        from .split import got_info, read_program
+
+        info = got_info(read_program(program.read_bytes()))
+        net._update_cfg(slug, lambda c: c.update(got=info))
+        self.add_pic(net, slug, log=log)
+
+    def add_pic(self, net, slug: str, log=print) -> int:
+        """Functions built with -fPIC (their code starts by finding the GOT: `call +0; pop %ebx; add $GOT, %ebx`,
+        glibc's atexit from libc_nonshared.a among them) get a compiler range with -fPIC added, and those agents set
+        aside before the judge read -fPIC code are open again: five agents of two models had agreed no C makes
+        glibc's own atexit.c, because nothing could match it. Returns how many."""
+        from ...project import compiler_for
+
+        proj = net.project_row(slug)
+        cfg = net.cfg(proj)
+        rows = [r for r in net.store.all("SELECT id, name, vram, size, status, meta, target FROM functions WHERE "
+                                         "project_id=?", proj["id"]) if PIC_PROLOGUE.search(bytes(r["target"] or b"")[:24])]
+        ranges = []
+        for r in rows:
+            current = compiler_for(cfg, r["vram"])
+            if "-fPIC" not in (current.get("flags") or []):
+                ranges.append({"start": r["vram"], "end": r["vram"] + r["size"], "toolchain": current["toolchain"],
+                               "flags": [*(current.get("flags") or []), "-fPIC"]})
+        if ranges:
+            net._update_cfg(slug, lambda c: c.update(compiler_ranges=ranges + list(c.get("compiler_ranges") or [])))
+        reopened = 0
+        with net.store.tx() as db:
+            for r in rows:
+                meta = json.loads(r["meta"] or "{}")
+                if r["status"] != "asm" or meta.get("set_aside"):
+                    continue
+                meta = {k: v for k, v in meta.items() if k not in ("not_c", "asm_code", "asm_twin")}
+                reopened += db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
+                                       (json.dumps(meta), r["id"])).rowcount
+                net._event(db, proj["id"], None, "reopen",
+                           f"{r['name']}: open again (built with -fPIC, which the judge reads now)")
+        if ranges or reopened:
+            log(f"{slug}: {len(ranges)} functions built with -fPIC are compiled so now ({reopened} set aside before "
+                "are open again)")
+        return len(ranges)
+
     def on_start(self, net, slug: str, log=print) -> None:
         """A C++ program imported before its functions had their names as written (meta "demangled") gets them, and
-        one imported before its STABS line tables were read gets those (add_line_tables)."""
+        one imported before its STABS line tables were read gets those (add_line_tables), and its GOT (add_got)."""
+        self.add_got(net, slug, log=log)
         self.add_line_tables(net, slug, log=log)
         proj = net.project_row(slug)
         if net.cfg(proj).get("demangled"):  # (done once: a C program's names stay as they are)
@@ -255,8 +309,10 @@ class Linux(Console):
     def target_from_row(self, fn: dict, cfg: dict):
         from ...arch.x86_link import X86Target
 
+        got = cfg.get("got") or {}
         return X86Target(fn["name"], fn["vram"], fn["target"],
-                         X86Target.relocs_from_json(json.loads(fn["relocs"] or "[]")))
+                         X86Target.relocs_from_json(json.loads(fn["relocs"] or "[]")), got.get("base"),
+                         {int(k, 16): v for k, v in (got.get("slots") or {}).items()})
 
     def target_object(self, fn: dict, cfg: dict, symbols):
         from ...arch.x86_link import canonical_target

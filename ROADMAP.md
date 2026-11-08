@@ -161,8 +161,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   only template code (boost, the C++ library) instantiated in the game's own files isn't matched from its source yet.
   On a 2008 C++ program: 5,245 functions (Ogre's and boost's code in its files, luabind, Lua, OIS, TinyXML, libogg,
   libvorbis, libtheora, libpng, zlib), each library tried with its own builds (-O0 -march=amdfam10 in its tree, its
-  configure's flags in decompdecomp-flags.txt). Left: position-independent code (-fPIC: a library's objects for a
-  shared library, 143 functions there, libpng's), whose GOT relocations the x86 judge doesn't link yet.
+  configure's flags in decompdecomp-flags.txt). The x86 judge links -fPIC code's GOT and PLT relocations (GOTPC,
+  GOT32, PLT32) against the program's GOT and its dynamic relocations, and a function that starts by finding the GOT
+  gets -fPIC (glibc's atexit from libc_nonshared.a matches). Left: the 143 -fPIC functions of that 2008 program's
+  libpng, tried with the library's own flags.
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.
@@ -172,8 +174,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
   than one GCC.
-- A whole relink in the export (the program's dynamic sections, PLT and GOT as the 2001 linker laid them out), for
-  when all of a program's code is C.
+- The relink's data: the export's `build.py relink` links a new program from the C (its code laid out anew above the
+  data, the toolchain's crt files, libraries stubbed from the program's import table; a 2001 game's relinked program
+  runs as the original does, and with a function made longer), but `.rodata`, `.data` and `.bss` stay at their
+  addresses as the program's bytes, only their pointers to functions following the code. Left: the data as C (its
+  pointers to data named, so it can move too), C++ programs' own static constructors (the original's `.ctors`),
+  `.init_array`, thread-local storage and PIE programs.
 - Pieces of functions joined to their function (no ROM console has it yet).
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 

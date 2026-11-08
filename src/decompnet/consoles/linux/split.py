@@ -157,6 +157,30 @@ def split(path: Path, units: dict[int, str] | None = None, log=print) -> SplitRe
 
 
 PLT_ENTRY = 16  # i386: an entry of the PLT (and PLT0 before them), 16 bytes
+R_386_GLOB_DAT = 6
+
+
+def got_info(elf) -> dict:
+    """Where the program's GOT is and which symbol each entry the dynamic linker fills holds, for the judge of code
+    built with -fPIC: {"base": address, "slots": {"0x80bec74": "__dso_handle"}}. The symbol table's
+    _GLOBAL_OFFSET_TABLE_ is absolute (the import keeps none of those), and a weak symbol nobody defines has no
+    address to compare an entry with: its R_386_GLOB_DAT says which entry is its."""
+    base = None
+    symtab = elf.get_section_by_name(".symtab")
+    if symtab is not None:
+        base = next((s["st_value"] for s in symtab.iter_symbols() if s.name == "_GLOBAL_OFFSET_TABLE_"), None)
+    if base is None:
+        got = elf.get_section_by_name(".got.plt") or elf.get_section_by_name(".got")
+        base = got["sh_addr"] if got is not None else None
+    slots = {}
+    for rel in elf.iter_sections():
+        if rel["sh_type"] != "SHT_REL" or not hasattr(rel, "iter_relocations") or not rel["sh_link"]:
+            continue
+        symbols = elf.get_section(rel["sh_link"])
+        for r in rel.iter_relocations():
+            if r["r_info_type"] == R_386_GLOB_DAT and (sym := symbols.get_symbol(r["r_info_sym"])) is not None:
+                slots[f"0x{r['r_offset']:x}"] = re.sub(r"\W", "_", sym.name.split("@")[0])
+    return {"base": base, "slots": slots}
 
 
 def plt_stubs(elf) -> dict[str, int]:
