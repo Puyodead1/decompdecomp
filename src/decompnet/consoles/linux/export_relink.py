@@ -3,6 +3,7 @@
 `move`, the capstone module).
 
     python3 tools/relink.py rules              build/rules.mk: how each function is built (its C, else asm/)
+    python3 tools/relink.py asm NAME            asm/NAME.s, from your copy's bytes (what isn't C yet)
     python3 tools/relink.py fixup RAW OUT NAME  a function's object as the program takes it (its statics the game's)
     python3 tools/relink.py data OUT            data/program.s: the program's data, every global and pointer named
     python3 tools/relink.py stubs DIR           the libraries it imports from, as stubs to link against
@@ -119,10 +120,83 @@ def dynamic(elf: Elf) -> bool:
 
 # ------------------------------------------------------------------------------------------------------------ rules
 
+def archive_defines(path: Path) -> set[str]:
+    """The global symbols each object of an ar archive (libc_nonshared.a) defines."""
+    raw = path.read_bytes()
+    if raw[:8] != b"!<arch>\n":
+        return set()
+    out, at = set(), 8
+    while at + 60 <= len(raw):
+        name, size = raw[at:at + 16].decode("latin-1").strip(), int(raw[at + 48:at + 58].decode().strip() or 0)
+        body = raw[at + 60:at + 60 + size]
+        if body[:4] == b"\x7fELF" and not name.startswith("/"):
+            obj = Elf(body)
+            out |= {sym["name"] for sym in obj.symbols(obj.section(".symtab"))
+                    if sym["name"] and sym["bind"] in (1, 2) and sym["shndx"] not in (SHN_UNDEF, SHN_COMMON)}
+        at += 60 + size + (size & 1)
+    return out
+
+
+def from_library() -> set[str]:
+    """The program's functions its link brings itself: libc_nonshared.a's (glibc's atexit, PIC code whose GOT
+    offset is the original's) and the crt objects'. Never exported as C or bytes: the toolchain's copy is the one."""
+    nonshared = TC / "crt" / "libc_nonshared.a"
+    names = archive_defines(nonshared) if nonshared.exists() else set()
+    for path in sum(crt_files(), []) if (TC / "crt" / "crt1.o").exists() else []:
+        crt = Elf(path.read_bytes())
+        names |= {s["name"] for s in crt.symbols(crt.section(".symtab")) if s["name"] and s["shndx"] != SHN_UNDEF}
+    return names
+
+
+def built() -> list[dict]:
+    """The functions the relinked program takes from this tree (not the ones its libraries bring)."""
+    library = from_library()
+    return [fn for fn in B["functions"] if fn["name"] not in library]
+
+
+PIC = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
+
+
+def assembly(name: str, code: bytes, refs: dict[int, str]) -> str:
+    """A function that isn't C as GNU assembly: its bytes, each word in `refs` by name."""
+    lines, i = [f".text\n.globl {name}\n.type {name},@function\n{name}:\n"], 0
+    while i < len(code):
+        if i in refs:
+            lines.append(f".long {refs[i]}\n")
+            i += 4
+            continue
+        stop = min([len(code), i + 16] + [a for a in refs if a > i])
+        lines.append(f".byte {', '.join(str(b) for b in code[i:stop])}\n")
+        i = stop
+    return "".join(lines)
+
+
+def write_asm(name: str) -> None:
+    """asm/NAME.s from your copy's bytes and build.json's references (asm/ is your copy's code: never in git)."""
+    raw, elf = game()
+    fn = next((f for f in B["functions"] if f["name"] == name), None)
+    if fn is None:
+        fail(f"no function named {name} in build.json")
+    text = elf.section(".text")
+    at = text["offset"] + fn["vram"] - text["addr"]
+    code = raw[at:at + fn["size"]]
+    if PIC.search(code[:24]):  # (its GOT offset is the original's: raw, it reads past the relinked program)
+        fail(f"{name} is code built with -fPIC: as bytes it would read the original's GOT; it needs its C")
+    out = ROOT / "asm" / f"{name}.s"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(assembly(name, code, {int(k): v for k, v in (fn.get("refs") or {}).items()}), encoding="utf-8")
+
+
 def rules() -> None:
-    """build/rules.mk: each function's object from its C (with its flags), else from asm/, and the list of them."""
+    """build/rules.mk: each function's object from its C (with its flags), else from asm/ (written from your copy
+    when it isn't there), and the list of them."""
     lines, objs = [], []
-    for fn in B["functions"]:
+    raw, elf = game()
+    text = elf.section(".text")
+    for fn in built():
+        at = text["offset"] + fn["vram"] - text["addr"]
+        if source_of(fn) is None and PIC.search(raw[at:at + min(fn["size"], 24)]):
+            fail(f"{fn['name']} is code built with -fPIC and isn't C yet: as bytes it would read the original's GOT")
         obj = f"build/relink/{fn['name']}.o"
         src = source_of(fn)
         if src is not None:
@@ -132,8 +206,9 @@ def rules() -> None:
                          f"\t$(CC) {rel} $@.raw -Iinclude $(PRELUDE) {flags}\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ {fn['name']}\n")
         else:
-            asm = fn.get("s") or f"asm/{fn['name']}.s"
-            lines.append(f"{obj}: {asm} | build/relink $(TOOLCHAIN_READY)\n\t$(AS) -o $@ {asm}\n")
+            asm = f"asm/{fn['name']}.s"
+            lines.append(f"{asm}: | {B['image']}\n\t$(PY) tools/relink.py asm {fn['name']}\n"
+                         f"{obj}: {asm} | build/relink $(TOOLCHAIN_READY)\n\t$(AS) -o $@ {asm}\n")
         objs.append(obj)
     print("OBJS := " + " \\\n  ".join(objs) + "\n\n" + "\n".join(lines))
 
@@ -205,9 +280,23 @@ def plt(elf: Elf) -> dict[int, str]:
     return {stubs["addr"] + 16 * (n + 1): syms[si]["name"].split("@")[0] for n, (_, si, _) in enumerate(elf.rels(rel))}
 
 
+def copied(elf: Elf) -> set[int]:
+    """The .dynsym entries the program's R_386_COPY relocations copy into its .bss (stdout, __ctype_toupper): defined
+    there, so not UNDEF, but imports all the same (as globals of its own, the relinked program called
+    setvbuf(stdout=NULL))."""
+    dynsym = elf.section(".dynsym")
+    if dynsym is None:
+        return set()
+    return {si for rs in elf.sections if rs["type"] == 9 and rs["link"] == dynsym["index"]
+            for _, si, rtype in elf.rels(rs) if rtype == 5}
+
+
 def imported(elf: Elf) -> set[str]:
     dynsym = elf.section(".dynsym")
-    return {s["name"] for s in elf.symbols(dynsym) if s["name"] and s["shndx"] == SHN_UNDEF} if dynsym else set()
+    if dynsym is None:
+        return set()
+    copies = copied(elf)
+    return {s["name"] for k, s in enumerate(elf.symbols(dynsym)) if s["name"] and (s["shndx"] == SHN_UNDEF or k in copies)}
 
 
 def crt_defined(elf: Elf) -> set[str]:
@@ -226,8 +315,10 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
     starts = {f["vram"]: f["name"] for f in B["functions"]}
     skip = set(starts.values()) | imported(elf) | crt_defined(elf)
     spans = [(s["addr"], s["addr"] + s["size"]) for n in DATA if (s := elf.section(n)) is not None]
+    text = elf.section(".text")
+    asm = sorted((f["vram"], f["vram"] + f["size"], f["name"]) for f in B["functions"] if source_of(f) is None)
     labels: dict[int, list[str]] = {}
-    assigns = []
+    assigns, stray = [], []
     for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
         if name in skip:
             continue
@@ -235,8 +326,18 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
             assigns.append(f"{name} = {starts[addr]};")
         elif any(lo <= addr < hi for lo, hi in spans):
             labels.setdefault(addr, []).append(name)
+        elif text is not None and text["addr"] <= addr < text["addr"] + text["size"]:
+            # the old code isn't loaded: a name there is a place in a function still in assembly, or an error
+            inner = next((f"{n} + {addr - lo}" for lo, hi, n in asm if lo < addr < hi), None)
+            if inner is None:
+                stray.append(f"{name} (0x{addr:X})")
+            else:
+                assigns.append(f"{name} = {inner};")
         else:
             assigns.append(f"{name} = 0x{addr:X};")
+    if stray:
+        fail("these name places in the original's code that no function of this tree has, and the relinked program "
+             "doesn't load it: " + ", ".join(stray[:20]))
     return labels, assigns
 
 
@@ -381,9 +482,10 @@ def stubs(out_dir: str) -> None:
             at += nxt
     plain = next((lib for lib in libs if lib not in {v[0] for v in index.values()}), libs[0] if libs else None)
     by_lib: dict[str, dict[str | None, list[dict]]] = {lib: {} for lib in libs}
+    copies = copied(elf)
     for k, sym in enumerate(syms):
-        if not sym["name"] or sym["shndx"] != SHN_UNDEF or sym["bind"] == 2:  # (weak: nobody need define it)
-            continue
+        if not sym["name"] or (sym["shndx"] != SHN_UNDEF and k not in copies) or (sym["bind"] == 2 and k not in copies):
+            continue  # (weak: nobody need define it)
         v = struct.unpack_from("<H", elf.raw, versym["offset"] + k * 2)[0] & 0x7FFF if versym else 0
         lib, ver = index.get(v, (plain, None))
         by_lib.setdefault(lib, {}).setdefault(ver, []).append(sym)
@@ -538,7 +640,8 @@ def link(out_path: str, mode: str = "") -> None:
     ld_script = ROOT / "build" / "relink" / "program.ld"
     script(str(ld_script), move_data)
     first, last, extra, kind = ld_script.with_suffix(".inputs").read_text(encoding="utf-8").split("\n")[:4]
-    objs = [f"build/relink/{fn['name']}.o" for fn in B["functions"]]
+    old_code(elf)
+    objs = [f"build/relink/{fn['name']}.o" for fn in built()]
     listing = ROOT / "build" / "relink" / "objects.txt"
     listing.write_text("\n".join(objs) + "\n", encoding="utf-8")
     ld = str(TC.resolve() / "binutils" / "usr" / "bin" / "ld")
@@ -562,6 +665,28 @@ def link(out_path: str, mode: str = "") -> None:
     from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None)
     print(f"{out_path}: relinked, a new program from the C ({from_c} of {total} functions from C, the rest from asm/; "
           f"the data from data/program.s, {'laid out after the code' if move_data else 'where the game has it'})")
+
+
+def old_code(elf: Elf) -> None:
+    """Refuse C that writes an address in the original's code as a number (`(void (*)())0x805bc24`): the relinked
+    program doesn't load that code, so it would jump into nothing. Its name is the same bytes after linking."""
+    text = elf.section(".text")
+    lo, hi = text["addr"], text["addr"] + text["size"]
+    starts = {f["vram"]: f["name"] for f in B["functions"]}
+    found = []
+    for fn in B["functions"]:
+        src = source_of(fn)
+        if src is None:
+            continue
+        for n, line in enumerate(src.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            for m in re.finditer(r"\b0x([0-9a-fA-F]{6,8})\b", line):
+                addr = int(m.group(1), 16)
+                if lo <= addr < hi:
+                    hint = f" (that's {starts[addr]})" if addr in starts else ""
+                    found.append(f"{src.relative_to(ROOT)}:{n}: 0x{addr:x}{hint}")
+    if found:
+        fail("the C writes addresses in the original's code as numbers; write the functions' names (the same bytes "
+             "after linking):\n  " + "\n  ".join(found[:30]))
 
 
 def wrap(tree: str, runtime: str) -> None:
@@ -596,7 +721,7 @@ def wrap(tree: str, runtime: str) -> None:
 if __name__ == "__main__":
     args = sys.argv[1:]
     commands = {"rules": (rules, 0), "fixup": (fixup, 3), "data": (write_data, 1), "stubs": (stubs, 1),
-                "move": (move, 1), "wrap": (wrap, 2)}
+                "move": (move, 1), "wrap": (wrap, 2), "asm": (write_asm, 1)}
     if args[:1] == ["link"] and len(args) in (2, 3):
         link(args[1], args[2] if len(args) == 3 else "")
     elif args and args[0] in commands and len(args) - 1 == commands[args[0]][1]:

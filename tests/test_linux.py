@@ -535,7 +535,11 @@ twice:
     addl %eax, %eax
     ret
 .size twice,.-twice
-"""
+.globl answer
+answer:
+    movl $30, %eax
+    ret
+"""  # (answer: hand-written, no .type or .size, as a .s file's labels are: no function lists it)
 RELINK_FUNCTIONS = {
     "length": "int length(const char *s) { int n = 0; while (s[n]) n++; return n; }\n",
     "say": "static int calls;\nvoid say(const char *s) { calls++; write(1, s, length(s)); }\n",
@@ -545,13 +549,17 @@ RELINK_FUNCTIONS = {
     "greet": "void greet(void) { say(greeting); }\n",  # (the header declares greeting)
     "count": "static int calls;\nint count(void) { return calls; }\n",
     "setup": "static int ready;\nvoid setup(void) __attribute__((constructor));\nvoid setup(void) { ready = twice(2); }\n",
-    "main": "static int ready;\nextern void (*table[])(void);\nint main(void) { int i; for (i = 0; i < 2; i++) table[i](); "
-            "for (i = 0; i < 6; i++) say(name_of(i)); return count() + ready; }\n",
+    "bye": 'void bye(void) { write(1, "bye\\n", 4); }\n',
+    "main": "static int ready;\nextern void (*table[])(void);\nextern int (*asked)(void);\nextern void *stdout;\n"
+            "int main(void) { int i; atexit(bye); for (i = 0; i < 2; i++) table[i](); "
+            "for (i = 0; i < 6; i++) say(name_of(i)); return count() + ready + asked() + (stdout ? 0 : 100); }\n",
 }
 RELINK_DECLARATIONS = ("int write(int, const void *, unsigned int);\nint twice(int);\nint length(const char *);\n"
-                       "void say(const char *);\nconst char *name_of(int);\nvoid greet(void);\nint count(void);\n")
+                       "void say(const char *);\nconst char *name_of(int);\nvoid greet(void);\nint count(void);\n"
+                       "int atexit(void (*)(void));\nvoid bye(void);\n")
 RELINK_DATA = ('const char *greeting = "hello\\n";\n'  # (a pointer in .data to a string in .rodata)
-               "void (*table[])(void) = { greet, greet };\n")  # (pointers in .data to functions)
+               "void (*table[])(void) = { greet, greet };\n"  # (pointers in .data to functions)
+               "extern int answer(void);\nint (*asked)(void) = answer;\n")  # (and to hand-written code)
 
 
 def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data_may_move(tmp_path):
@@ -560,6 +568,7 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     program's own (two functions share one), a switch's jump table its own, its constructor list carried over (a C
     constructor, as a C++ program's globals are made), what isn't C assembled from asm/. It runs as the original
     does; with a function changed to do more (longer than it was), and with the data moved too (relink --move)."""
+    import json
     import subprocess
     import sys
 
@@ -580,8 +589,10 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     build.mkdir()
     cfg = compiler_config(build, {"compiler": {"toolchain": gcc, "flags": ["-O2", "-g"]}})
     program_c = ("static int calls, ready;\n" + RELINK_DECLARATIONS + "extern void (*table[])(void);\n"
+                 + "extern int (*asked)(void);\nextern void *stdout;\n"
                  + "".join(v.replace("static int calls;\n", "").replace("static int ready;\n", "")
                            .replace("extern const char *greeting;\n", "").replace("extern void (*table[])(void);\n", "")
+                           .replace("extern int (*asked)(void);\n", "").replace("extern void *stdout;\n", "")
                            for v in RELINK_FUNCTIONS.values()) + RELINK_DATA)
     res = compile_source(cfg, "", "extern const char *greeting;\n" + program_c)
     assert res.ok, res.log
@@ -591,7 +602,8 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     crt = tc / "crt"
     linked = run_in(cfg, build, ["/bin/sh", "-c", f'{tool}as" -o twice.o twice.s && {tool}ld" -m elf_i386 '
                                  f'-dynamic-linker /lib/ld-linux.so.2 -o relinkdemo {crt}/crt1.o {crt}/crti.o {begin} '
-                                 f'prog.o twice.o {runtime}/libc.so.6 {begin.with_name("crtend.o")} {crt}/crtn.o'])
+                                 f'prog.o twice.o {crt}/libc_nonshared.a {runtime}/libc.so.6 '
+                                 f'{begin.with_name("crtend.o")} {crt}/crtn.o'])  # (atexit: libc_nonshared.a's, -fPIC)
     assert linked.returncode == 0, linked.stderr
     program = build / "relinkdemo"
     program.chmod(0o755)
@@ -600,7 +612,7 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
         return subprocess.run([str(runtime / "ld-linux.so.2"), "--library-path", str(runtime), str(path)],
                               capture_output=True, timeout=30)
     original = run(program)
-    assert original.stdout == b"hello\nhello\nzero\none\ntwo\nthree\nfour\nmany\n" and original.returncode == 12
+    assert original.stdout == b"hello\nhello\nzero\none\ntwo\nthree\nfour\nmany\nbye\n" and original.returncode == 42
 
     work = tmp_path / "home"
     work.mkdir()
@@ -616,7 +628,11 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     out = Path(res["path"])
     relinked = out / "build" / "relinkdemo"
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
-    assert (out / "asm" / "twice.s").exists() and (out / "Makefile").exists()
+    assert (out / "asm" / "twice.s").exists() and (out / "asm" / "answer.s").exists() and (out / "Makefile").exists()
+    assert not (out / "build" / "relink" / "atexit.o").exists()  # (libc_nonshared.a's: never its bytes)
+    assert not (out / "asm" / "atexit.s").exists() and not (out / "asm" / "_start.s").exists()
+    built = (out / "build" / "relinkdemo").read_bytes()
+    assert b"stdout" in built  # (copied, as the original's: an import, not a global of its own)
     assert "tools/*/" in (out / ".gitignore").read_text()  # (the compiler make downloads stays out of git)
     data = (out / "data" / "program.s").read_text()
     assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
@@ -627,13 +643,29 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert moved.returncode == 0, moved.stderr
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
+    # a fresh checkout has no asm/ (your copy's code): make writes it from baserom
+    import shutil
+
+    shutil.rmtree(out / "asm")
+    again = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
+    assert again.returncode == 0 and (out / "asm" / "answer.s").exists(), again.stderr
+
+    # C that writes an address in the old code as a number is refused, with the name to write
+    [greet_c] = (out / "src").glob("*/greet.c")
+    kept = greet_c.read_text()
+    greet_at = next(f["vram"] for f in json.loads((out / "build.json").read_text())["functions"] if f["name"] == "greet")
+    greet_c.write_text(kept + f"void *where(void) {{ return (void *)0x{greet_at:x}; }}\n")
+    refused = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
+    assert refused.returncode != 0 and "that's greet" in refused.stderr + refused.stdout
+    greet_c.write_text(kept)
+
     # a mod: say() does more, and is longer than the original's
     [say] = (out / "src").glob("*/say.c")
     say.write_text(say.read_text().replace("write(1, s, length(s));", 'write(1, "> ", 2); write(1, s, length(s));'))
     again = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
     assert again.returncode == 0, again.stderr
     modded = run(relinked)
-    assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 12
+    assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 42
 
 
 def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():

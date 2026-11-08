@@ -88,3 +88,12 @@ def test_the_x86_judge_compares_a_loaded_constant_as_far_as_the_code_loads_it():
 
     code = bytes.fromhex("d905c0900a08" "dd05c8900a08" "68d0900a08" "8d05d8900a08")
     assert load_widths(code) == {2: 4, 8: 8}
+
+
+def test_a_callbacks_address_is_its_functions_name():
+    """`(void (*)())0x805bc24` and qsort's `(int (*)(const void *, const void *))0x8080c24` stayed numbers: a
+    relinked program jumped into code it doesn't load."""
+    source = "void f(void) { cb = (void (*)())0x8003000; qsort(a, n, 4, (int (*)(const void *, const void *))0x8003000); }"
+    out = addresses.apply(source, addresses.proposals(source, _program()))
+    assert out == "void f(void) { cb = (void (*)())tick; qsort(a, n, 4, (int (*)(const void *, const void *))tick); }"
+    assert addresses.numbers(source) == 2 and addresses.numbers(out) == 0

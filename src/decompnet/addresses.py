@@ -27,6 +27,9 @@ _CAST = r"\(\s*(?P<type>(?:(?:const|volatile|unsigned|signed|struct|union)\s+)*\
 _NUMBER = r"(?P<addr>0x[0-9a-fA-F]{5,8})[uUlL]*"
 # `*(float *)0x80a4e44`, `*((double *) 0x80a1f18)`: a read of what is at the address
 DEREFS = (re.compile(rf"\*\s*\(\s*{_CAST}\s*{_NUMBER}\s*\)"), re.compile(rf"\*\s*{_CAST}\s*{_NUMBER}(?![\w\[(])"))
+# `(void (*)())0x805bc24`, `(int (*)(const void *, const void *))0x8080c24`: a function's address, as a callback
+FUNCTION_CAST = re.compile(r"\(\s*(?P<cast>[A-Za-z_][\w\s*]*?\(\s*\*\s*\)\s*\([^()]*\))\s*\)\s*"
+                           r"(?P<addr>0x[0-9a-fA-F]{5,8})[uUlL]*(?![\w\[(])")
 # `(char *) 0x80aa0c0`, `(void *)0x8051234`: the address itself
 POINTER = re.compile(rf"(?<![\w)\]]){_CAST}\s*{_NUMBER}(?![\w\[(])")
 READ_ONLY = (".rodata", ".rdata", ".sdata2", ".sbss2", ".rodata1")  # the sections whose names say they're constants
@@ -222,6 +225,13 @@ def proposals(source: str, program: Program) -> list[Proposal]:
         p.fallback = fallback
         return p
 
+    for m in FUNCTION_CAST.finditer(source):
+        named = _named(program.symbols, int(m.group("addr"), 16))
+        if named is not None and named[0].kind == "func" and not named[1] and free(m.start(), m.end()):
+            sym = named[0]
+            declare = None if _declared(top, sym.name) else f"void {sym.name}();"
+            found.append(Proposal(m.start(), m.end(), f"({m.group('cast')}){sym.name}", declare, "function"))
+            taken.append((m.start(), m.end()))
     for pattern, deref in ((DEREFS[0], True), (DEREFS[1], True), (POINTER, False)):
         for m in pattern.finditer(source):
             if not free(m.start(), m.end()):
@@ -248,4 +258,4 @@ def apply(source: str, chosen: list[Proposal]) -> str:
 
 def numbers(source: str) -> int:
     """How many addresses `source` still writes as numbers (cast, then a hexadecimal address)."""
-    return len(POINTER.findall(source))
+    return len(POINTER.findall(source)) + len(FUNCTION_CAST.findall(source))

@@ -294,19 +294,27 @@ def place(image: bytearray, fn: dict, code: bytes) -> None:
 
 
 def build() -> None:
+    """Every function with C built and put in place, several at a time (each is its own compile and link: a 2001
+    game's 1,589 took 26 minutes one after another, saying nothing), the count printed as it goes."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     data = original()
     image = bytearray(data)
-    done, wrong = 0, []
-    for fn in B["functions"]:
-        if source_of(fn) is None:
-            continue
-        code = build_function(fn, data)
-        t = B["text"]
-        at = t["offset"] + fn["vram"] - t["vram"]
-        if code != data[at:at + fn["size"]]:
-            wrong.append(fn["name"])
-        place(image, fn, code)
-        done += 1
+    todo = [fn for fn in B["functions"] if source_of(fn) is not None]
+    done, wrong, step = 0, [], max(len(todo) // 20, 1)
+    t = B["text"]
+    with ThreadPoolExecutor(max_workers=max(os.cpu_count() or 1, 1)) as pool:
+        jobs = {pool.submit(build_function, fn, data): fn for fn in todo}
+        for job in as_completed(jobs):
+            fn, code = jobs[job], job.result()
+            at = t["offset"] + fn["vram"] - t["vram"]
+            if code != data[at:at + fn["size"]]:
+                wrong.append(fn["name"])
+            place(image, fn, code)
+            done += 1
+            if done % step == 0 or done == len(todo):
+                print(f"  {done} of {len(todo)} functions built and checked", flush=True)
     out = ROOT / B["output"]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(bytes(image))
