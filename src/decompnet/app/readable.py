@@ -54,7 +54,7 @@ GIVEN_UP = ("SELECT p.detail FROM events p WHERE p.project_id=? AND p.kind='poli
 TODO = f"status='matched' AND readable=0 AND {GAME_CODE} AND name NOT IN ({GIVEN_UP})"
 
 
-ADDRESS_NAMING = 3  # what name_addresses tries (2: generated names too, 3: callbacks' casts): tried again
+ADDRESS_NAMING = 4  # what name_addresses tries (2: generated names too, 3: callbacks' casts, 4: a macro's reads and an address in arithmetic): tried again
 
 
 def _digest(source: str) -> str:

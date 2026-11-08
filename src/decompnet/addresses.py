@@ -32,6 +32,11 @@ FUNCTION_CAST = re.compile(r"\(\s*(?P<cast>[A-Za-z_][\w\s*]*?\(\s*\*\s*\)\s*\([^
                            r"(?P<addr>0x[0-9a-fA-F]{5,8})[uUlL]*(?![\w\[(])")
 # `(char *) 0x80aa0c0`, `(void *)0x8051234`: the address itself
 POINTER = re.compile(rf"(?<![\w)\]]){_CAST}\s*{_NUMBER}(?![\w\[(])")
+# `#define F(a) (*(float *)(a))`: a macro that reads what is at its argument, written `F(0x809e0e0)`
+DEREF_MACRO = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(?P<name>\w+)\((?P<arg>\w+)\)[ \t]*\(?[ \t]*\*[ \t]*" + _CAST
+                         + r"[ \t]*\(?[ \t]*(?P=arg)[ \t]*\)?[ \t]*\)?[ \t]*$", re.M)
+# `0x80be4d4 + i * 4`: an address as a number in arithmetic (a table's start)
+BARE = re.compile(r"(?<![\w.$])(?P<addr>0x[0-9a-fA-F]{6,8})[uUlL]*(?![\w\[(])")
 READ_ONLY = (".rodata", ".rdata", ".sdata2", ".sbss2", ".rodata1")  # the sections whose names say they're constants
 CODE = (".text", ".init", ".fini", ".plt")
 STRING_BYTES = set(range(32, 127)) | {9, 10, 13, 27}
@@ -240,7 +245,69 @@ def proposals(source: str, program: Program) -> list[Proposal]:
             if p is not None:
                 found.append(p)
                 taken.append((m.start(), m.end()))
+    quiet = _comments_and_strings(source)
+    # a macro that reads what is at its argument, as the read it is
+    macros = {m.group("name"): m for m in DEREF_MACRO.finditer(program.header + "\n" + source)}
+    if macros:
+        call = re.compile(rf"(?<![\w.])(?:{'|'.join(map(re.escape, macros))})\s*\(\s*{_NUMBER}\s*\)")
+        for m in call.finditer(source):
+            if not free(m.start(), m.end()) or quiet(m.start()):
+                continue
+            macro = macros[re.match(r"\w+", m.group(0)).group(0)]
+            p = proposal(_Read(m, macro.group("type"), macro.group("stars")), True)
+            if p is not None:
+                found.append(p)
+                taken.append((m.start(), m.end()))
+    # an address in arithmetic, as the address of what is there: `(int)&table`
+    for m in BARE.finditer(source):
+        if not free(m.start(), m.end()) or quiet(m.start()):
+            continue
+        address = int(m.group("addr"), 16)
+        section = program.section(address) or ""
+        if not section or section.startswith(CODE):
+            continue
+        named = _named(program.symbols, address)
+        if named is not None and named[0].kind != "func":
+            sym, off = named
+            declare = None if _declared(top, sym.name) else f"extern char {sym.name}[];"
+            text = f"(int)&{sym.name}" if not off else f"((int)&{sym.name} + 0x{off:x})"
+            fallback = Proposal(m.start(), m.end(), f"(int)D_{address:08X}", None if _declared(top, f"D_{address:08X}")
+                                else f"extern char D_{address:08X}[];", "generated")
+            found.append(Proposal(m.start(), m.end(), text, declare, "global", fallback))
+        else:
+            found.append(Proposal(m.start(), m.end(), f"(int)D_{address:08X}", None if _declared(top, f"D_{address:08X}")
+                                  else f"extern char D_{address:08X}[];", "generated"))
+        taken.append((m.start(), m.end()))
     return sorted(found, key=lambda p: p.start)
+
+
+class _Read:
+    """A macro's read of an address (`F(0x809e0e0)`) as the cast and number a dereference has."""
+
+    def __init__(self, m, type_: str, stars: str):
+        self.m, self.groups = m, {"type": type_, "stars": stars, "addr": m.group("addr")}
+
+    def group(self, name):
+        return self.groups[name]
+
+    def start(self):
+        return self.m.start()
+
+    def end(self):
+        return self.m.end()
+
+
+def _comments_and_strings(source: str):
+    """Whether an offset of `source` is in a comment or a string literal."""
+    import bisect
+
+    spans = [(m.start(), m.end()) for m in re.finditer(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"', source, re.S)]
+    starts = [a for a, _ in spans]
+
+    def inside(at: int) -> bool:
+        k = bisect.bisect_right(starts, at) - 1
+        return k >= 0 and spans[k][0] <= at < spans[k][1]
+    return inside
 
 
 def apply(source: str, chosen: list[Proposal]) -> str:
@@ -257,5 +324,11 @@ def apply(source: str, chosen: list[Proposal]) -> str:
 
 
 def numbers(source: str) -> int:
-    """How many addresses `source` still writes as numbers (cast, then a hexadecimal address)."""
-    return len(POINTER.findall(source)) + len(FUNCTION_CAST.findall(source))
+    """How many addresses `source` still writes as numbers: cast, then a hexadecimal address; and one a macro reads
+    or arithmetic uses (`F(0x809e0e0)`, `0x80be4d4 + i * 4`), outside comments and strings: what may be an address
+    (proposals says which is)."""
+    quiet = _comments_and_strings(source)
+    cast = {m.start("addr") for m in POINTER.finditer(source)} | {m.start("addr") for m in FUNCTION_CAST.finditer(source)}
+    bare = sum(1 for m in BARE.finditer(source) if m.start("addr") not in cast and not quiet(m.start())
+               and int(m.group("addr"), 16) >= 0x1000000)
+    return len(cast) + bare

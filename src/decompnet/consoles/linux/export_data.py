@@ -71,7 +71,16 @@ class Program:
         self.globals: dict[int, list] = {}  # address -> global symbols there (STB_GLOBAL, defined)
         self.symbols: dict[str, object] = {}
         self.object_sizes: dict[int, int] = {}  # address -> the size of the data symbol there
+        # each source file's own local symbols (they follow its STT_FILE entry): a static a header defines is one
+        # per file that includes it, and the debug information gives the header's entries once, the first file's
+        self.locals: dict[str, dict[str, int]] = {}
+        current = None
         for sym in self.elf.get_section_by_name(".symtab").iter_symbols():
+            if sym["st_info"]["type"] == "STT_FILE":
+                current = self.locals.setdefault(sym.name.rsplit("/", 1)[-1], {})
+            elif current is not None and sym.name and sym["st_info"]["bind"] == "STB_LOCAL" \
+                    and sym["st_info"]["type"] == "STT_OBJECT":
+                current.setdefault(sym.name, sym["st_value"])
             if sym.name and sym["st_shndx"] != "SHN_UNDEF":
                 self.symbols.setdefault(sym.name, sym)
                 if sym["st_info"]["type"] == "STT_OBJECT" and sym["st_size"]:
@@ -125,6 +134,29 @@ class Program:
                     return out
             self._pointed = Index()
         return self._pointed
+
+    def variable_at(self, address: int) -> bool:
+        """Whether a variable of any source file's debug information is at `address` (or covers it)."""
+        if getattr(self, "_variables", None) is None:
+            spans = []
+            for unit in self.sources:
+                for _, a, t, _, _ in variables(self, unit, {}):
+                    spans.append((a, a + max(self.header.size(t), 1)))
+            self._variables = sorted(spans)
+        import bisect
+
+        k = bisect.bisect_right(self._variables, (address, float("inf"))) - 1
+        return k >= 0 and self._variables[k][0] <= address < self._variables[k][1]
+
+    def next_symbol(self, address: int) -> int:
+        """The next address after `address` a symbol of the program is at."""
+        if getattr(self, "_starts", None) is None:
+            self._starts = sorted({s["st_value"] for s in self.elf.get_section_by_name(".symtab").iter_symbols()
+                                   if s["st_value"]})
+        import bisect
+
+        k = bisect.bisect_right(self._starts, address)
+        return self._starts[k] if k < len(self._starts) else address + 32
 
     def address_of(self, name: str) -> int | None:
         sym = self.symbols.get(name)
@@ -212,9 +244,11 @@ def variables(program: Program, unit: str, functions: dict[int, str]) -> list[tu
         sym = program.symbols.get(v.name)
         if sym is not None and sym["st_info"]["type"] == "STT_OBJECT":
             out.append((v.name, sym["st_value"], program.sized(v.type, sym["st_value"]), v.line, "G"))
+    mine = program.locals.get(unit.rsplit("/", 1)[-1], {})
     for v in source.statics:
-        if v.address:
-            out.append((v.name, v.address, program.sized(v.type, v.address), v.line, "S"))
+        address = mine.get(v.name, v.address)  # (this file's copy of a static its header defines)
+        if address:
+            out.append((v.name, address, program.sized(v.type, address), v.line, "S"))
     for f in source.functions:
         for v in f.locals:
             if v.where == "static" and v.address:
@@ -224,10 +258,11 @@ def variables(program: Program, unit: str, functions: dict[int, str]) -> list[tu
 
 
 def file_data(program: Program, unit: str, functions: dict[int, str], code: str, shared: str,
-              taken: dict[int, str], syms) -> FileData:
+              taken: dict[int, str], syms, as_globals: bool = False, elsewhere: set[str] = frozenset()) -> FileData:
     """The definitions of the file's variables (none for what its functions' C defines already: `taken`, the
     addresses of their statics), the names its C reads them by otherwise (D_080B8B81), and what the initializers
-    need declared."""
+    need declared. `as_globals`: its statics global too (a file of data alone, src/<file>/data.c, beside a source
+    file's functions one file each: they reach them by name)."""
     h = program.header
     found = FileData()
     own: dict[int, tuple[str, int]] = {}  # address -> (name, size), what this file defines
@@ -244,12 +279,14 @@ def file_data(program: Program, unit: str, functions: dict[int, str], code: str,
             return found
         if not re.fullmatch(r"[A-Za-z_]\w*", name):
             name = re.sub(r"\W", "_", name)
-        elsewhere = syms.resolve(name) if syms is not None else None
+        other = syms.resolve(name) if syms is not None else None
         kept = cdata.constant(h, t) if section == ".rodata" else t
         # a name the C means another global by, or the shared header declares as another type (the C reads
         # `version.Coins` of a `char *version`): a name of its own, and the C's name made the same address
-        if (elsewhere is not None and elsewhere != address) or (name in in_header and {_sizeless(k) for k in in_header[name]}
+        if (other is not None and other != address) or (name in in_header and {_sizeless(k) for k in in_header[name]}
                                                                  != {_sizeless(key_of(h.declaration(kept, name) + ";"))}):
+            name = f"{name}_{address:08X}"
+        if any(name == other for other, _ in own.values()):  # (two inner blocks' `static float x0;`: two variables)
             name = f"{name}_{address:08X}"
         own[address] = (name, size)
         plan.append((name, address, t, line, storage, size, section))
@@ -310,7 +347,7 @@ def file_data(program: Program, unit: str, functions: dict[int, str], code: str,
     for name, address, t, line, storage, size, section in plan:
         kept = cdata.constant(h, t) if section == ".rodata" else t
         decl = h.declaration(kept, name)
-        static = "static " if storage != "G" else ""
+        static = "static " if storage != "G" and not as_globals else ""
         if section == ".bss":
             text = f"{static}{decl};"
         else:
@@ -329,7 +366,8 @@ def file_data(program: Program, unit: str, functions: dict[int, str], code: str,
     from ...rom.symbols import AUTO_NAME
 
     names = {d.name for d in found.definitions}
-    for word in set(re.findall(r"\b[A-Za-z_]\w*\b", code)):
+    # (and what the rest of the tree's C reads them by: another file's function naming this one's static)
+    for word in set(re.findall(r"\b[A-Za-z_]\w*\b", code)) | set(elsewhere):
         if word in names:
             continue
         m = AUTO_NAME.match(word)
@@ -337,8 +375,16 @@ def file_data(program: Program, unit: str, functions: dict[int, str], code: str,
         if address is None:
             continue
         hit = mine(address)
-        if hit is not None and (m or word in program.symbols):
+        if hit is not None:  # (a project symbol's name: `texComb_267`, the program's `texComb.267`)
             found.aliases[word] = hit
+    # a constant the C reads by its address's name (`*(double *)D_080A9C88`: a function's own, in the game's pool,
+    # that no variable is): its bytes as this file's, read-only data no other file's C can change, so a copy of it
+    # is the same thing (the build has no copy of the program's to read it from)
+    for d in constants(program, code, mine, syms):
+        found.definitions.append(d)
+        own[d.address] = (d.name, d.size)
+        found.aliases[d.name[:-len("_data")]] = (d.name, 0)
+    starts[:] = sorted(own)
     globals_ = {d.name for d in found.definitions if not d.forward.startswith("static")}
     for word in [w for w, (base, _) in found.aliases.items() if base in globals_]:
         found.link_aliases[word] = found.aliases.pop(word)
@@ -367,6 +413,44 @@ def mark_used(data: FileData, names) -> bool:
             d.text = d.text.replace(f"static {decl}", f"static {decl} __attribute__((used))", 1)
             changed = True
     return changed
+
+
+WIDTHS = {"char": 1, "short": 2, "int": 4, "long": 4, "float": 4, "double": 8, "long long": 8}
+
+
+def constants(program: Program, code: str, mine, syms) -> list[Definition]:
+    """The read-only constants `code` reads by an address's generated name (D_080A9C88) that are no variable's:
+    each a `char` array of the program's bytes, up to the next thing anything names (or as far as the C reads it)."""
+    from ...rom.symbols import AUTO_NAME
+    from ...tidy import _key
+
+    names: dict[int, str] = {}  # address -> the name the C reads it by (D_080A9C88, or a name given it: gl_modulate_f)
+    for word in set(re.findall(r"\b[A-Za-z_]\w*\b", code)):
+        m = AUTO_NAME.match(word)
+        address = int(m.group(1), 16) if m else syms.resolve(word) if syms is not None else None
+        sym = None if m else syms.by_name.get(word)
+        if address is not None and (m is None or word.startswith("D_")) and (m or (sym is not None and sym.kind != "func")):
+            names.setdefault(address, word)
+    wanted = sorted(a for a in names if program.section(a) == ".rodata" and mine(a) is None
+                    and not program.variable_at(a))
+    if not wanted:
+        return []
+    out = []
+    for k, address in enumerate(wanted):
+        width = max([WIDTHS.get(" ".join(t.split()).replace("unsigned ", "").replace("signed ", ""), 1)
+                     for t in re.findall(rf"\(\s*((?:unsigned\s+|signed\s+)?(?:char|short|int|long long|long|float|double))"
+                                         rf"\s*\*\s*\)\s*\(?\s*&?{re.escape(names[address])}\b", code)] or [4])
+        nxt = min([b for b in wanted[k + 1:]] + [program.next_symbol(address), address + 32])
+        size = max(width, min(nxt - address, 32))
+        if out and out[-1].address + out[-1].size > address:  # (inside the one before, read wider: part of it)
+            continue
+        data = program.read(address, size)
+        if data is None:
+            continue
+        name = f"{names[address]}_data"  # (the C's D_080A9C88, declared as whatever it reads: the same address)
+        text = f"char {name}[{size}] = {{ {', '.join(str(b if b < 128 else b - 256) for b in data)} }};"
+        out.append(Definition(name, address, size, ".rodata", 0, text, f"extern char {name}[];", _key(f"char {name}[];")))
+    return out
 
 
 def forward(data: FileData) -> str:

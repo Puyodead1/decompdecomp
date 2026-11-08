@@ -53,7 +53,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file; and `make`, without decompdecomp, links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and `make`, without decompdecomp and, where all of it is source, without your copy, links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -240,10 +240,14 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (a newer GCC's merged constants, `.init_array` and extra imports made what the 2001 linker and runtime take).
   A source file's data is C too (cdata.py, consoles/linux/export_data.py: each global, static and function's static
   with the debug information's type and the program's value, where the file defined it, every value and pointer
-  judged against the program's; 73 of the 2001 game's 76 whole files, the other three have none). Left: the build
-  without your copy at all (the files that aren't whole yet, hand-written assembly as source, what no debug
-  information lists in data/program.s), the data laid out exactly as the game's where GCC 2.95's constant pool
-  order differs (53 of the 73 are), source files and data for the PC's projects too (its PDB's object files and
+  judged against the program's). And a tree whose code and data are all source builds without your copy at all
+  (`build.json`'s `standalone`): what isn't C is GNU assembly checked to assemble to its bytes (arch/x86_gas.py:
+  hand-written code in src/asm/, a function no C makes yet at its place in its file), a file whose functions stay
+  one file each has its variables in a file of their own (src/<file>/data.c), a file of data alone is its C, the
+  constants C reads by an address's name are its file's, and the numbers C still writes for a variable's address
+  follow it (the linker map). The 2001 game builds from a checkout with no copy of it, `make port` too, and runs
+  like the original as far as the sandbox lets it. Left: the data laid out exactly as the game's where GCC 2.95's
+  constant pool order differs, source files and data for the PC's projects too (its PDB's object files and
   types), `.init_array`'s programs (GCC 4.7 and later) tried, thread-local storage and PIE programs, and C++
   exception tables for code still in assembly.
 - Pieces of functions joined to their function (no ROM console has it yet).

@@ -177,6 +177,16 @@ def _without_copies(cs: list[Chunk], own: set[str]) -> list[Chunk]:
     return out
 
 
+def _top_level_asm(source: str) -> str:
+    """A function's GNU assembly as top-level asm in C, aligned as GCC aligns a function, and back in whatever
+    section GCC was in after it (`.previous`)."""
+    lines = [line for line in source.splitlines() if line.strip() and line.strip() != ".text"]
+    body = "".join(f'    "{line.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34)).replace(chr(9), chr(92) + "t")}\\n"\n'
+                   for line in [".text", ".align 4"] + lines + [".previous"])
+    name = next((line[:-1] for line in lines if line.endswith(":") and not line.startswith(".")), "it")
+    return f"/* {name} isn't C yet: its code as the program has it */\n__asm__(\n{body});\n"
+
+
 def _loose(key: str) -> str:
     """A declaration as far as C tells two apart: `int (*asked)(void);` is `int (*asked)();`, `char s[15];` is
     `char s[];`."""
@@ -284,7 +294,7 @@ def prototype(chunk: Chunk) -> str | None:
 def merge(functions: list[tuple[str, str]], include: str, own_header: str | None = None, context=None,
           statics_at: dict[str, dict[str, int]] | None = None, as_called: bool = False, shared: str = "",
           own_data: dict[str, str] | None = None, forward: str = "", placed: list[tuple[int, str]] = (),
-          func_lines: dict[str, int] | None = None) -> Merged:
+          func_lines: dict[str, int] | None = None, asm_pieces: dict[str, str] | None = None) -> Merged:
     """The source file of `functions` ((name, its matched C), in the file's order) as one C file starting with
     `#include "<include>"`, then its own header `own_header` where it declares anything (else those declarations
     are the C file's). `context` (re.Pattern): an include of the shared header the agents wrote themselves
@@ -302,8 +312,12 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     variables it defines itself, so its functions' definitions of them go and a function that declared one another
     way has its own declaration of it (as for a guess); `forward` declares them (and what their values name) before
     the functions; `placed` ((line, definition)) goes before the first function whose `func_lines` entry is after it, as
-    the file had them."""
+    the file had them. `asm_pieces` ({name: GNU assembly}): a function that isn't C yet, at its place in the file
+    as top-level assembly (GCC writes it out where it is, between the functions)."""
     own_data = own_data or {}
+    asm_pieces = asm_pieces or {}
+    order = [name for name, _ in functions]  # (with the functions in assembly, at their places)
+    functions = [(name, source) for name, source in functions if name not in asm_pieces]
     own = [name for name, _ in functions]
     sources = {name: context.sub("", source) if context is not None else source for name, source in functions}
     parsed = [(name, _one_per_name(_without_copies(chunks(sources[name]), set(own)))) for name in own]
@@ -473,7 +487,14 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     defined_as = {name: _key(proto) for name in own if (proto := prototype(defs[name])) is not None}
     body = []
     pending = sorted(placed, key=lambda p: p[0])
+    asm_left = [n for n in order if n in asm_pieces]
+
+    def asm_before(name: str | None) -> None:
+        while asm_left and (name is None or order.index(asm_left[0]) < order.index(name)):
+            body.append("\n" + _top_level_asm(asm_pieces[asm_left.pop(0)]))
+
     for name, cs in parsed:
+        asm_before(name)
         here = (func_lines or {}).get(name)  # (the file's data defined before this function: before its macros too)
         while here is not None and pending and pending[0][0] < here:
             body.append("\n" + pending.pop(0)[1].rstrip("\n") + "\n")
@@ -513,6 +534,7 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
         body.append("\n" + text)
         body += [f"#undef {c.names[0]}\n" for c in mine]
 
+    asm_before(None)
     if pending:
         body.append("\n" + "\n".join(text.rstrip("\n") for _, text in pending) + "\n")
     header = "".join(header_decls + prototypes_h)
