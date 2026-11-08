@@ -32,7 +32,7 @@ TOOLCHAIN_READY := $(TC)/crt/crt1.o
 STUBS := build/relink/stubs
 PORT_CC ?= gcc -m32
 PORT_FLAGS ?= -O2 -std=gnu89 -fno-pie -fno-pic -fno-stack-protector -fcf-protection=none -fcommon \\
-  -fno-strict-aliasing -fdata-sections -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
+  -fno-strict-aliasing -fdata-sections -fno-toplevel-reorder -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
 PORT_STUBS := build/port/stubs
 
 all: build/$(PROGRAM)

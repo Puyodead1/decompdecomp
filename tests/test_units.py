@@ -115,3 +115,16 @@ def test_a_files_data_is_defined_where_the_file_had_it_and_its_functions_guesses
         c.index("int second(void) {")
     assert "hook__second" not in c  # (its `int (*hook)(void)` is the definition's type)
     assert 'extern char *hook__third __asm__("hook");' in c and "return *hook__third;" in c
+
+
+def test_a_function_that_returned_what_was_left_in_eax_returns_it():
+    """GCC 2.95 left a call's value in %eax at the end of a function that never returned it (a texture's id), so
+    the game got it; a newer GCC doesn't: the function's last expression returned, where its type isn't void."""
+    from decompnet.units import returned
+
+    src = "int texInit(char *name, long flags)\n{\n    if (x) { y(); }\n    load(fix, 0);     /* dropped */\n}\n"
+    assert "    return load(fix, 0);" in returned(src, "texInit")
+    assert returned("void *f(void) { g(); }\n", "f") == "void *f(void) { return g(); }\n"
+    for kept in ("void f(void) { g(); }\n", "int f(void) { return g(); }\n", "int f(void) { if (a) { g(); } }\n",
+                 "int f(void) { out: g(); }\n", "int f(void) { int x; }\n", "int f(void) { }\n"):
+        assert returned(kept, "f") is None, kept

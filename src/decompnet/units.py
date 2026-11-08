@@ -100,6 +100,58 @@ def chunks(source: str) -> list[Chunk]:
     return found
 
 
+_NOT_A_VALUE = re.compile(r"(?:return|goto|break|continue|if|else|for|while|do|switch|case|default|"
+                         r"__asm__|asm)\b|\w+\s*:(?!:)")
+
+
+def returned(source: str, name: str) -> str | None:
+    """`source` with function `name`'s last statement returned, where it is an expression and the function's type
+    isn't void: what GCC 2.95 left in %eax returned it by accident (`load_grx_now_if_not_loaded(fix, 0);` at the end
+    of a function that returns the texture), which a newer GCC doesn't keep (`-Wreturn-type`). None where it isn't
+    that; the caller judges it still compiles to the same code."""
+    pieces = chunks(source)
+    at = 0
+    for chunk in pieces:
+        if chunk.kind == "func" and name in chunk.names and chunk.body >= 0:
+            break
+        at += len(chunk.text)
+    else:
+        return None
+    text = _mask(chunk.text)
+    head = text[:chunk.body]
+    if re.search(rf"\bvoid\s+{re.escape(name)}\s*\(", head) or re.search(r"\b(?:__)?inline(?:__)?\b", head):
+        return None
+    depth, start, last, k = 0, -1, None, chunk.body
+    while k < len(text):
+        c = text[k]
+        if c in "\"'":
+            q, k = c, k + 1
+            while k < len(text) and text[k] != q:
+                k += 2 if text[k] == "\\" else 1
+        elif c in "({[":
+            depth += 1
+            if depth == 1:
+                start = k + 1
+        elif c in ")}]":
+            depth -= 1
+            if depth == 0:
+                break
+            if depth == 1 and c == "}":
+                start, last = k + 1, None
+        elif c == ";" and depth == 1:
+            last, start = (start, k), k + 1
+        k += 1
+    if last is None or depth != 0 or text[last[1] + 1:k].strip():
+        return None
+    begin = last[0] + len(text[last[0]:last[1]]) - len(text[last[0]:last[1]].lstrip())
+    statement = text[begin:last[1]]
+    if not statement.strip() or _NOT_A_VALUE.match(statement) or re.match(r"[A-Za-z_][\w\s*]*\s+\**[A-Za-z_]\w*\s*(?:=|\[|$)",
+                                                                       statement):
+        return None  # (a declaration, a jump, a label, a block)
+    where = at + begin
+    return source[:where] + "return " + source[where:]
+
+
 def _mask(source: str) -> str:
     """`source` with its comments blanked, every offset (and line) where it was."""
     return cfields._COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
