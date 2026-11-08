@@ -1304,3 +1304,82 @@ def test_the_export_card_counts_what_the_export_kept_as_the_programs_bytes_apart
     functions the export kept as the program's bytes."""
     js = (Path(__file__).parents[1] / "src/decompnet/app/static/js/steering.js").read_text()
     assert "ex.matched + kept < ov.matched" in js and "ov.matched - ex.matched - kept" in js
+
+
+def test_a_source_files_variables_sit_as_far_apart_as_the_game_has_them(tmp_path):
+    """GCC 2.95 aligns an array of 32 bytes or more to 32, the game's compiler didn't: C that reads past one variable
+    into the next (a table of ammunition reached through the array before it) read the wrong row in the relink.
+    Each variable alone in its section at the game's alignment, the shared .bss laid out as the game's, and the
+    linker script putting each as far from the file's first as the game has it (export_relink.py)."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_make
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    tree = tmp_path / "tree"
+    (tree / "src").mkdir(parents=True)
+    (tree / "src" / "t.c").write_text(
+        "static int pad[10] = {1};\nstatic int head[9] = {21, 23, 20};\nstatic short table[3][9] = {{5, 6}, {7}};\n"
+        "static int count;\nstatic int zbig[16];\n"
+        "int f(int i) { return ((short *)((char *)head + 0x24))[i] + count + zbig[i] + pad[i]; }\n")
+    # (as the game's compiler laid them out: no gaps)
+    variables = [["pad", 0x8049000, 40, ".data"], ["head", 0x8049028, 36, ".data"], ["table", 0x804904C, 54, ".data"],
+                 ["count", 0x804A004, 4, ".bss"], ["zbig", 0x804A008, 64, ".bss"]]
+    build = {"toolchain": gcc, "functions": [{"name": "f", "vram": 0x8048100, "size": 64, "c": "src/t.c"}],
+             "units": [{"name": "t", "c": "src/t.c", "functions": ["f"], "data": {"variables": variables, "defines": []}}],
+             "symbols": {}}
+    (tree / "build.json").write_text(json.dumps(build))
+    (tree / "tools").mkdir()
+    (tree / "tools" / "cc.sh").write_text(toolchains.registry()[gcc].cmd[2])
+    shutil.copyfile(Path(export_make.__file__).with_name("export_relink.py"), tree / "tools" / "relink.py")
+    (tree / "build" / "relink").mkdir(parents=True)
+    env = {**os.environ, "TC": str(tc)}
+    raw, obj = "build/relink/file-t.o.raw", "build/relink/file-t.o"
+    subprocess.run(["sh", "tools/cc.sh", str(tc), "src/t.c", raw, "-O2", "-fdata-sections"], cwd=tree, env=env, check=True)
+    subprocess.run([sys.executable, "tools/relink.py", "fixup", raw, obj, "file:t"], cwd=tree, env=env, check=True)
+    laid = json.loads(subprocess.run(
+        [sys.executable, "-c", "import json, sys; sys.path.insert(0, 'tools'); import relink; "
+                               "print(json.dumps(relink.placed_as_game()))"],
+        cwd=tree, env=env, capture_output=True, text=True, check=True).stdout)
+    (tree / "t.ld").write_text(f"SECTIONS {{\n  . = 0x8048000;\n  .text : {{ *(.text) }}\n"
+                               f"  .data : {{\n{laid['.data']}    *(.data) *(.data.*) }}\n"
+                               f"  .bss : {{\n{laid['.bss']}    *(.bss) *(COMMON) }}\n"
+                               f"  /DISCARD/ : {{ *(.comment) *(.note*) }}\n}}\n")
+    ld = tc / "binutils" / "usr" / "bin" / "ld"
+    lib = {**env, "LD_LIBRARY_PATH": f"{tc}/binutils/usr/lib:{tc}/lib"}
+    subprocess.run([str(ld), "-m", "elf_i386", "-T", "t.ld", "-e", "f", "-o", "t.out", obj], cwd=tree, env=lib, check=True)
+    at = {p[2]: int(p[0], 16) for p in (line.split() for line in subprocess.run(
+        ["nm", "t.out"], cwd=tree, capture_output=True, text=True).stdout.splitlines()) if len(p) == 3}
+    assert (at["head"] - at["pad"], at["table"] - at["head"], at["zbig"] - at["count"]) == (0x28, 0x24, 4)
+    assert at["pad"] % 32 == 0  # (where the game has the first, modulo 32)
+    # and what the code reads past head is table's first row, as in the game
+    out = subprocess.run(["objdump", "-d", "t.out"], cwd=tree, capture_output=True, text=True).stdout
+    assert f"{at['head'] + 0x24:x}" in out
+
+
+def test_the_ports_copy_reads_a_files_own_variable_by_its_name_not_another_object(tmp_path):
+    """A function's other name for the file's static (`extern Block *Tmu0__tmuReset __asm__("Tmu0");`) is another
+    object to a newer GCC, which may keep the static's value in a register across a write through it: make port's
+    copy reads the static itself, as the type the function declared it."""
+    import subprocess
+    import sys
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "relink.py").write_bytes(
+        (Path(debuginfo.__file__).with_name("export_relink.py")).read_bytes())
+    (tmp_path / "build.json").write_text(json.dumps({"functions": [], "units": [], "symbols": {}}))
+    code = ("static int table[4];\nint f(void)\n{\n    extern char table__f[] __asm__(\"table\");  /* note */\n"
+            "    extern short later__f[2] __asm__(\"later\");\n    return table__f[1] + later__f[0];\n}\n"
+            "static short later[2];\n")
+    out = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import relink; "
+                          f"print(relink.through_aliases({code!r}), end='')"], cwd=tmp_path, capture_output=True,
+                         text=True, check=True).stdout
+    assert "    #define table__f (*(char (*)[])&table)  /* note */" in out
+    assert 'extern short later__f[2] __asm__("later");' in out  # (declared after: left as it is)

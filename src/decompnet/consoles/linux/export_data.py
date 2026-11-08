@@ -441,7 +441,9 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
                      for t in re.findall(rf"\(\s*((?:unsigned\s+|signed\s+)?(?:char|short|int|long long|long|float|double))"
                                          rf"\s*\*\s*\)\s*\(?\s*&?{re.escape(names[address])}\b", code)] or [4])
         nxt = min([b for b in wanted[k + 1:]] + [program.next_symbol(address), address + 32])
-        size = max(width, min(nxt - address, 32), _read_through(program, code, names[address], address, width))
+        # (as far as the C reads it, a pool's strings; not over the next variable, which is laid out after it)
+        size = max(width, min(nxt - address, 32), min(_read_through(program, code, names[address], address, width),
+                                                      program.next_symbol(address) - address))
         if out and out[-1].address + out[-1].size > address:  # (inside the one before, read wider: part of it)
             continue
         data = program.read(address, size)

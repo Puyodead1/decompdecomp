@@ -257,18 +257,19 @@ def rules() -> None:
     OBJDIR = "build/relink"
     lines, objs = [], []
     raw = text = None  # (your copy: only for what's still its bytes, asm/)
+    # (a source file's variables each in a section of its own, which code compiles the same with: game_layout)
     for obj, fn in objects():
         if "/data-" in obj:  # a source file's variables alone
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}\n"
+                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
             objs.append(obj)
             continue
         if "functions" in fn:  # a source file, compiled whole
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}\n"
+                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ file:{fn['name']}\n")
             objs.append(obj)
             continue
@@ -336,6 +337,7 @@ def named(src: str, out: str, own: str) -> None:
             used.add(ref[len("__named_"):])
         return f"((int){ref} + {value - lo})" if value > lo else f"((int){ref})"
 
+    code = through_aliases(code)
     token = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\b0[xX][0-9a-fA-F]+[uUlL]*\b', re.S)
     lines = []
     for line in code.splitlines(keepends=True):
@@ -345,6 +347,26 @@ def named(src: str, out: str, own: str) -> None:
 
 
 # ------------------------------------------------------------------------------------------------------------ fixup
+
+ALIAS = re.compile(r'^([ \t]*)extern\s+([^;(){}]*?)\b(\w+)\s*((?:\[[^\]]*\])*)\s*__asm__\("(\w+)"\)\s*;', re.M)
+
+
+def through_aliases(code: str) -> str:
+    """The C's other names for one of the file's own variables (`extern Block *Tmu0__tmuReset __asm__("Tmu0");`, a
+    function that declared it as another type) as that variable read as the type: to a newer GCC the alias is
+    another object, so it may keep the static's value in a register across a write through the other name, or drop
+    the static. Only where the variable is declared before (a definition, or a declaration at file scope)."""
+    def spelled(m: re.Match) -> str:
+        lead, kind, name, dims, target = m.groups()
+        before = code[:m.start()]
+        if not re.search(rf"^(?!extern\b[^;]*__asm__)[^\s#][^;(){{}}]*\b{re.escape(target)}\b\s*(?:\[[^\]]*\]\s*)*"
+                         rf"(?:__attribute__\s*\(\(.*?\)\)\s*)?[=;]", before, re.M):
+            return m.group(0)
+        kind = " ".join(kind.split())
+        view = f"(*({kind} (*){dims})&{target})" if dims else f"(*({kind} *)&{target})"
+        return f"{lead}#define {name} {view}"
+    return ALIAS.sub(spelled, code)
+
 
 def numbered(statics: dict[str, int], names: list[str]) -> dict[str, int]:
     """`statics` ({name: the game's address}) by the names this object has: a function's static is `grvtx.123` as
@@ -365,6 +387,88 @@ def numbered(statics: dict[str, int], names: list[str]) -> dict[str, int]:
         if len(here) == len(theirs):
             out.update({h: statics[t] for h, t in zip(here, theirs)})
     return out
+
+
+def alone(elf: Elf, names) -> dict[str, dict]:
+    """The sections that hold one variable each (-fdata-sections: `.data.scrnHit`), by the variable's name."""
+    wanted = set(names)
+    symtab = elf.section(".symtab")
+    if symtab is None:
+        return {}
+    count: dict[int, int] = {}
+    syms = elf.symbols(symtab)
+    for sym in syms:  # (a name the C reads it by, `.set` to it, is no other variable)
+        if sym["type"] == 1 and sym["name"] in wanted and 0 < sym["shndx"] < len(elf.sections):
+            count[sym["shndx"]] = count.get(sym["shndx"], 0) + 1
+    return {sym["name"]: elf.sections[sym["shndx"]] for sym in syms
+            if sym["type"] == 1 and sym["name"] in wanted and sym["value"] == 0 and count.get(sym["shndx"]) == 1}
+
+
+def game_layout(data: bytearray, elf: Elf, variables) -> None:
+    """Each variable alone in its section made only its own size, aligned no more than the game has it: GCC 2.95
+    aligns an array of 32 bytes or more to 32 (and pads its section to the next one's), the game's compiler didn't,
+    so a file's variables sat apart; with the linker script placing each as far from the file's first as the game
+    has it (script), C that reads past one into the next (`scrnHit` indexed as a table to reach `initMaxAmmo`,
+    right after it in the game) reads what the game's code read."""
+    found = alone(elf, [v[0] for v in variables])
+    for name, old, size, _ in variables:
+        sec = found.get(name)
+        if sec is None or not old:
+            continue
+        header = elf.shoff + sec["index"] * elf.shentsize
+        if sec["size"] > max(size, 1):
+            struct.pack_into("<I", data, header + 20, max(size, 1))
+        struct.pack_into("<I", data, header + 32, max(1, min(sec["align"] or 1, old & -old)))
+
+
+def shared_bss(data: bytearray, elf: Elf, variables) -> None:
+    """GCC 2.95's .bss: the file's uninitialized statics in one section (no -fdata-sections for those), each aligned
+    as it aligns them: laid out as the game has them, from the first, every symbol and every place the code adds to
+    the section moved with its variable (script places the section as far from the file's other variables as the
+    game has it). Only where everything in it is one of the file's variables."""
+    sec = elf.section(".bss")
+    symtab = elf.section(".symtab")
+    if sec is None or symtab is None or sec["type"] != 8:
+        return
+    game = {name: old for name, old, _, where in variables if where == ".bss" and old}
+    syms = elf.symbols(symtab)
+    everything = [sym for sym in syms if sym["shndx"] == sec["index"] and sym["type"] != 3]  # (not the section's)
+    inside = [sym for sym in everything if sym["type"] == 1 and sym["name"] in game]
+    if not inside:
+        return
+    first = min(game[sym["name"]] for sym in inside)
+    spans = sorted((sym["value"], max(sym["size"], 1), game[sym["name"]] - first) for sym in inside)
+    # (and the names the C reads one by, `.set` to it: each moves with the variable it's in)
+    if any(not any(value <= sym["value"] < value + size for value, size, _ in spans)
+           for sym in everything if sym not in inside):
+        return
+
+    def moved(offset: int) -> int:
+        for value, size, new in spans:  # (inside one; else just past one's end, a loop's limit; else the first's)
+            if value <= offset < value + size:
+                return new + offset - value
+        for value, size, new in spans:
+            if offset == value:
+                return new
+        ends = [(value + size, new + size) for value, size, new in spans if value + size <= offset]
+        end = max(ends, default=(spans[0][0], spans[0][2]))
+        return end[1] + offset - end[0]
+    for sym in everything:
+        struct.pack_into("<I", data, sym["at"] + 4, game[sym["name"]] - first if sym in inside else moved(sym["value"]))
+    section_symbols = {k for k, sym in enumerate(syms) if sym["type"] == 3 and sym["shndx"] == sec["index"]}
+    for rs in elf.sections:
+        if rs["type"] != 9:
+            continue
+        target = elf.sections[rs["info"]]
+        for off, si, rtype in elf.rels(rs):
+            if si in section_symbols and rtype in (1, 2):  # (R_386_32, R_386_PC32: the addend in place)
+                at = target["offset"] + off
+                addend = struct.unpack_from("<i", data, at)[0]
+                pc = 4 if rtype == 2 else 0  # (PC32's addend is the place's offset minus 4)
+                struct.pack_into("<i", data, at, moved(addend + pc) - pc)
+    header = elf.shoff + sec["index"] * elf.shentsize
+    struct.pack_into("<I", data, header + 20, max(new + size for _, size, new in spans))
+    struct.pack_into("<I", data, header + 32, max(1, min(sec["align"] or 1, first & -first)))
 
 
 def fixup(raw_path: str, out_path: str, name: str) -> None:
@@ -446,6 +550,8 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
             struct.pack_into("<H", data, sym["at"] + 14, SHN_UNDEF)
         elif sym["bind"] == 1 and sym["name"] not in own and sym["shndx"] not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
             data[sym["at"] + 12] = (2 << 4) | sym["type"]  # STB_WEAK
+    game_layout(data, elf, (fn.get("data") or {}).get("variables") or [])
+    shared_bss(data, elf, (fn.get("data") or {}).get("variables") or [])
     Path(out_path).write_bytes(bytes(data))
 
 
@@ -767,6 +873,40 @@ def write_stubs(out: Path, libs: list[str], by_lib: dict, imported_names: set[st
 
 # ----------------------------------------------------------------------------------------------------------- script
 
+def placed_as_game() -> dict[str, str]:
+    """For each of the program's sections, the lines that put each source file's variables as far apart as the game
+    has them (each alone in its section, made its own size: game_layout), from the first; a variable the C makes bigger than the game's goes after the one before it, not over it."""
+    out = {n: "" for n in DATA}
+    k = 0
+    for obj, entry in objects():
+        variables = ((entry.get("data") or {}).get("variables")) or []
+        if len(variables) < 2 or not (ROOT / obj).exists():
+            continue
+        elf = Elf((ROOT / obj).read_bytes())
+        found = {name: sec["name"] for name, sec in alone(elf, [v[0] for v in variables]).items()}
+        game = {name: old for name, old, _, _ in variables if old}
+        bss = elf.section(".bss")
+        if bss is not None and bss["size"] and elf.section(".symtab") is not None:  # (shared_bss's section)
+            starts = [game[sym["name"]] - sym["value"] for sym in elf.symbols(elf.section(".symtab"))
+                      if sym["shndx"] == bss["index"] and sym["type"] == 1 and sym["name"] in game]
+            if starts and len(set(starts)) == 1:
+                found[".bss"] = ".bss"
+                game[".bss"] = starts[0]
+                variables = [*variables, (".bss", starts[0], bss["size"], ".bss")]
+        for section in DATA:
+            here = sorted((old, name) for name, old, _, sec in variables if sec == section and name in found and old)
+            if len(here) < 2:
+                continue
+            first = here[0][0]
+            # (where the game has the first modulo 32: so is each after it, at the alignment the game gave it)
+            lines = [f"    . = ALIGN(32) + 0x{first & 31:X};\n    __layout_{k} = .;\n"]
+            lines += [f"    . = (. > __layout_{k} + 0x{old - first:X}) ? . : __layout_{k} + 0x{old - first:X};\n"
+                      f"    {obj}({found[name]})\n" for old, name in here]  # (the 2001 linker has no MAX)
+            out[section] += "".join(lines)
+            k += 1
+    return out
+
+
 def script(out_path: str, move: bool) -> None:
     """The linker script: the program's dynamic sections first, the data where the game has it (or, `move`, after the
     code), the code from above the data, where it may grow."""
@@ -802,6 +942,7 @@ def script(out_path: str, move: bool) -> None:
     phdrs = (("  headers PT_PHDR PHDRS ;\n  interp PT_INTERP ;\n" if dyn else "") + "  text PT_LOAD FILEHDR PHDRS ;\n"
              + ("  rodata PT_LOAD ;\n" if dyn and not move else "") + ("  data PT_LOAD ;\n" if not move else "")
              + "  code PT_LOAD ;\n  more PT_LOAD ;\n" + ("  dynamic PT_DYNAMIC ;\n" if dyn else ""))
+    laid = placed_as_game()
     text = f"""OUTPUT_FORMAT("elf32-i386")
 OUTPUT_ARCH(i386)
 ENTRY({"_start" if dyn else entry})
@@ -825,10 +966,12 @@ SECTIONS
   .plt : {{ *(.plt) }}
   .text : {{ *(.text) *(.text.*) *(.gnu.linkonce.t.*) }} =0x9090
   .fini : {{ KEEP (*(.fini)) }} =0x9090
-  .rodata : {{ *(.rodata) *(.rodata.*) *(.gnu.linkonce.r.*) }}
+  .rodata : {{
+{laid[".rodata"]}    *(.rodata) *(.rodata.*) *(.gnu.linkonce.r.*) }}
 {moved[".rodata"]}  .gcc_except_table : {{ *(.gcc_except_table) }}
   . = ALIGN(0x1000) + (. & 0xFFF);
-  .data : {{ *(.data) *(.data.*) *(.gnu.linkonce.d.*) }} :more
+  .data : {{
+{laid[".data"]}    *(.data) *(.data.*) *(.gnu.linkonce.d.*) }} :more
 {moved[".data"]}  .eh_frame : {{ KEEP (*(.eh_frame)) }}
 {ctors}  .preinit_array : {{ PROVIDE (__preinit_array_start = .); KEEP (*(.preinit_array)) PROVIDE (__preinit_array_end = .); }}
   .init_array : {{ PROVIDE (__init_array_start = .); KEEP (*(.init_array)) PROVIDE (__init_array_end = .); }}
@@ -838,7 +981,8 @@ SECTIONS
   .dynamic : {{ *(.dynamic) }} :more {":dynamic" if dyn else ""}
   _edata = .;
   __bss_start = .;
-  .bss : {{ *(.dynbss) *(.bss) *(.bss.*) *(.gnu.linkonce.b.*) *(COMMON) . = ALIGN(4); }} :more
+  .bss : {{ *(.dynbss)
+{laid[".bss"]}    *(.bss) *(.bss.*) *(.gnu.linkonce.b.*) *(COMMON) . = ALIGN(4); }} :more
 {moved[".bss"]}  _end = .;
   /DISCARD/ : {{ *(.comment) *(.note*) *(.stab*) }}
 }}

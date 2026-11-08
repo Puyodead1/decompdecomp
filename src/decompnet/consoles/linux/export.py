@@ -417,7 +417,7 @@ def _symbol_value(obj: bytes, name: str) -> int:
 
 def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: str, hdr: str, syms, read,
                statics_at: dict[str, dict[str, int]] | None = None, program=None, asm_pieces=None,
-               elsewhere: set[str] = frozenset()):
+               elsewhere: set[str] = frozenset(), sources=None):
     """A source file of the program as one C file, compiled whole and judged against the game's span of it: (the
     merged C, its compiler, its statics, its data) or (None, why, None, None). Tried with each compiler its
     functions are matched with (a file the compiler ranges cut in two is one compile in the game), each call as
@@ -433,8 +433,17 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
     compilers = list(dict.fromkeys((c["toolchain"], tuple(c.get("flags") or []))
                                    for c in (compiler_for(cfg, r["vram"]) for r in rows)))
     targets = [net._rom_target(r) for r in rows]
-    sources = [(r["name"], r["matched_source"] or "") for r in rows]
     asm_pieces = asm_pieces or {}
+    if sources is None:
+        sources = [(r["name"], r["matched_source"] or "") for r in rows]
+        # first with each function that returns what GCC 2.95 left in %eax returning it (units.returned): the same
+        # code where the file still matches, and a newer GCC's (make port) gets the value too
+        fixed = [(name, units.returned(c, name) or c) for name, c in sources]
+        if fixed != sources:
+            found = _unit_file(net, proj, cfg, console, rows, include, own_header, hdr, syms, read, statics_at,
+                               program, asm_pieces, elsewhere, fixed)
+            if found[0] is not None:
+                return found
 
     def attempt(merged, toolchain, flags, header=hdr, definitions=None):
         text = merged.c.replace(f'#include "{include}"\n', "", 1)  # (the compiler includes it first: context.h)
@@ -871,7 +880,8 @@ in the program and checks the result against your original, byte for byte.
 | `build.json`, `build.py` | Where each function is; `build.py` (decompdecomp) checks the C against your copy, as `build/program`. |
 
 `build/{program}` is every function compiled as written and laid out by the linker above the program's data, where
-it may grow, with the compiler's own crt files and the libraries it imports. That's the one to change: edit any
+it may grow, with the compiler's own crt files and the libraries it imports. A source file's variables sit as far
+apart as the program has them (C that reads past one into the next reads what the program read), in both builds. That's the one to change: edit any
 function (make it longer, add one in its file), run `make`, and run `build/{program}` where your copy runs.
 
 Keep going with any tool: write a function as `src/<source file>/<name>.c`, run `python build.py check <name>`,
