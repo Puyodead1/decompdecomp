@@ -643,12 +643,19 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert moved.returncode == 0, moved.stderr
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
-    # a fresh checkout has no asm/ (your copy's code): make writes it from baserom
+    # a fresh checkout: no build/, asm/ or data/ (your copy's), and no compiler yet. One `make` downloads it
+    # (here the download is a copy of decompdecomp's), then writes the rules (they depend on its libc_nonshared.a),
+    # asm/ and data/ from baserom, and links: it once failed before the download and left an empty build/rules.mk
     import shutil
 
-    shutil.rmtree(out / "asm")
-    again = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
-    assert again.returncode == 0 and (out / "asm" / "answer.s").exists(), again.stderr
+    for gone in ("build", "asm", "data"):
+        shutil.rmtree(out / gone)
+    fresh = tmp_path / "fresh-tc"
+    (out / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
+    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=out, capture_output=True, text=True)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert (out / "asm" / "answer.s").exists() and (fresh / "crt" / "crt1.o").exists()
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
     # C that writes an address in the old code as a number is refused, with the name to write
     [greet_c] = (out / "src").glob("*/greet.c")
