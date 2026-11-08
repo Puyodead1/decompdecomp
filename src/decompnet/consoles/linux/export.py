@@ -811,7 +811,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
           data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"])
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
-    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\ntools/*/\ntools/.downloads/\n", encoding="utf-8")
+    (out / ".gitignore").write_text("/build/\n/baserom*\n/asm/\n/data/\n/tools/*/\n/tools/.downloads/\n", encoding="utf-8")
 
     log("building the exported project to check it rebuilds the program byte for byte")
     proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
