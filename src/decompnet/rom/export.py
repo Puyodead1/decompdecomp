@@ -312,7 +312,7 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
     matched = sum(1 for f in functions if f["kind"] == "c")
     _write_docs(out, proj["name"], console.name, base, matched, len(functions), as_fallback)
     # everything made from the game itself stays local: build.py regenerates it from your copy
-    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\nassets/\n*.ld\n*_auto.txt\n.splat/\n*.d\n",
+    (out / ".gitignore").write_text("/build/\n/baserom*\n/asm/\n/assets/\n*.ld\n*_auto.txt\n.splat/\n*.d\n",
                                     encoding="utf-8")
 
     # 6. prove it

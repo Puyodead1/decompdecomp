@@ -702,18 +702,24 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
 
     # a fresh checkout, without your copy of the program and without the compiler yet: one `make` downloads it
     # (here the download is a copy of decompdecomp's), writes the rules (they depend on its libc_nonshared.a) and
-    # builds the program from the tree alone
-    import shutil
-
-    shutil.rmtree(out / "build")
-    (out / "baserom").rename(tmp_path / "baserom.kept")
+    # builds the program from the tree alone. A real clone of the tree as committed, so what .gitignore keeps out
+    # is missing there too (src/asm/ was, under an unanchored `asm/`)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
+    subprocess.run(git + ["init", "-q"], cwd=out, check=True)
+    subprocess.run(git + ["add", "-A"], cwd=out, check=True)
+    subprocess.run(git + ["commit", "-qm", "tree"], cwd=out, check=True)
+    tracked = subprocess.run(["git", "ls-files"], cwd=out, capture_output=True, text=True).stdout.split()
+    assert "src/asm/twice.s" in tracked and not any(t.startswith(("baserom", "build/")) for t in tracked)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(out), str(clone)], check=True)
     fresh = tmp_path / "fresh-tc"
-    (out / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
-    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=out, capture_output=True, text=True)
+    (clone / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
+    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=clone, capture_output=True,
+                           text=True)
     assert first.returncode == 0, first.stdout + first.stderr
     assert "from this tree alone" in first.stdout and (fresh / "crt" / "crt1.o").exists()
-    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
-    (tmp_path / "baserom.kept").rename(out / "baserom")
+    cloned = clone / relinked.relative_to(out)
+    assert (run(cloned).stdout, run(cloned).returncode) == (original.stdout, original.returncode)
 
     # C that writes an address in the old code as a number is refused, with the name to write
     greet_c = program_file
