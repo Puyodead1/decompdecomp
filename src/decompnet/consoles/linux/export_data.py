@@ -428,7 +428,7 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
     for word in set(re.findall(r"\b[A-Za-z_]\w*\b", code)):
         m = AUTO_NAME.match(word)
         address = int(m.group(1), 16) if m else syms.resolve(word) if syms is not None else None
-        sym = None if m else syms.by_name.get(word)
+        sym = None if m or syms is None else syms.by_name.get(word)
         if address is not None and (m is None or word.startswith("D_")) and (m or (sym is not None and sym.kind != "func")):
             names.setdefault(address, word)
     wanted = sorted(a for a in names if program.section(a) == ".rodata" and mine(a) is None
@@ -441,7 +441,7 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
                      for t in re.findall(rf"\(\s*((?:unsigned\s+|signed\s+)?(?:char|short|int|long long|long|float|double))"
                                          rf"\s*\*\s*\)\s*\(?\s*&?{re.escape(names[address])}\b", code)] or [4])
         nxt = min([b for b in wanted[k + 1:]] + [program.next_symbol(address), address + 32])
-        size = max(width, min(nxt - address, 32))
+        size = max(width, min(nxt - address, 32), _read_through(program, code, names[address], address, width))
         if out and out[-1].address + out[-1].size > address:  # (inside the one before, read wider: part of it)
             continue
         data = program.read(address, size)
@@ -451,6 +451,22 @@ def constants(program: Program, code: str, mine, syms) -> list[Definition]:
         text = f"char {name}[{size}] = {{ {', '.join(str(b if b < 128 else b - 256) for b in data)} }};"
         out.append(Definition(name, address, size, ".rodata", 0, text, f"extern char {name}[];", _key(f"char {name}[];")))
     return out
+
+
+def _read_through(program: Program, code: str, name: str, address: int, width: int) -> int:
+    """How far past `address` the C reads through its name: `D_0809F05A + 0x87` is a string of the pool the name
+    starts (a file's strings reached as offsets from its first), so the copy holds it whole, to its NUL. Cut at 32
+    bytes, the strings after the first came from wherever the new link put the next data (an assert's path read
+    as garbage, so fopen failed)."""
+    end = 0
+    for m in re.finditer(rf"\b{re.escape(name)}\s*(?:\+\s*(0[xX][0-9a-fA-F]+|\d+)|\[\s*(0[xX][0-9a-fA-F]+|\d+)\s*\])",
+                         code):
+        off = int(m.group(1) or m.group(2), 0)
+        tail = next((t for n in (1024, 256, 64, 16, 1) if (t := program.read(address + off, n)) is not None), b"")
+        nul = tail.find(b"\0")
+        string = 0 <= nul and all(32 <= c < 127 or c in (9, 10, 13) for c in tail[:nul])
+        end = max(end, off + (nul + 1 if string and nul else width))
+    return end
 
 
 def forward(data: FileData) -> str:

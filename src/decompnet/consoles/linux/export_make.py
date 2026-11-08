@@ -13,7 +13,8 @@ MAKEFILE = """\
 #   make move         the same, its data laid out after the code too
 #   make toolchain    the compiler into tools/ (pinned downloads, each checked against its SHA-256)
 #   make port         build/port/{program}: the same C built by the system's GCC (PORT_CC, PORT_FLAGS: no matching
-#                     there), against the program's own C library headers from the toolchain, linked the same way
+#                     there), against the program's own C library headers from the toolchain, linked the same way;
+#                     each file from a copy (build/port/*.o.c) whose numbers that are the program's variables are names
 # Needs make, python3, curl or wget, tar and ar. `python build.py` (with decompdecomp installed) checks that the C
 # still rebuilds your copy byte for byte; building doesn't need it.
 PROGRAM := {program}

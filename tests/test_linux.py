@@ -739,6 +739,14 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     numbered = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
     assert numbered.returncode == 0 and "follow their variables" in numbered.stdout, numbered.stdout + numbered.stderr
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    if m32:  # (the port's copy writes it by name: a newer GCC folds numbers and drops statics only they read)
+        port = subprocess.run(["make", "-s", f"TC={tc}", f"PY={sys.executable}", "port"], cwd=out, capture_output=True,
+                              text=True)
+        assert port.returncode == 0, port.stdout + port.stderr
+        copy = next((out / "build" / "port").glob("*.o.c")).parent / f"{'file-' if not partial else ''}{program_file.stem}.o.c"
+        assert f"0x{calls_at:x}" not in copy.read_text() and "calls" in copy.read_text().split("int count(void)")[1]
+        ported = run(out / "build" / "port" / "relinkdemo")
+        assert (ported.stdout, ported.returncode) == (original.stdout, original.returncode)
     program_file.write_text(kept)
 
     # a mod: say() does more, and is longer than the original's
