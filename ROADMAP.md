@@ -231,12 +231,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
   than one GCC.
-- The relink's data: the export's `build.py relink` links a new program from the C (its code laid out anew above the
-  data, the toolchain's crt files, libraries stubbed from the program's import table; a 2001 game's relinked program
-  runs as the original does, and with a function made longer), but `.rodata`, `.data` and `.bss` stay at their
-  addresses as the program's bytes, only their pointers to functions following the code. Left: the data as C (its
-  pointers to data named, so it can move too), C++ programs' own static constructors (the original's `.ctors`),
-  `.init_array`, thread-local storage and PIE programs.
+- The relink's data as typed C: the export's `build.py relink` links a new program from the C, its data written as
+  `data/program.s` (every global labelled, every pointer named: to functions, strings, data; the constructor lists),
+  pinned where the program has it or moved after the code (`--move`); a 2001 game relinked both ways runs as the
+  original does, and with a function made longer. Left: that data as C with its globals' types (from the debug
+  information's structs), `.init_array`'s programs (GCC 4.7 and later) tried, thread-local storage and PIE programs,
+  and C++ exception tables for code still in assembly.
 - Pieces of functions joined to their function (no ROM console has it yet).
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 

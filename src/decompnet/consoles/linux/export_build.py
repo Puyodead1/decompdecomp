@@ -3,7 +3,7 @@
 
     python build.py              build every decompiled function into a copy of the program, compare
     python build.py check NAME   check one function's C (src/<source file>/NAME.c) against the original
-    python build.py relink       only link a new program from the C (build/<program>)
+    python build.py relink       only link a new program from the C (build/<program>; --move: its data moves too)
     python build.py status       how many functions are C so far
 
 Each function with C is compiled with Slackware 8.0's GCC 2.95.3 (as it was where it lies: at its address modulo 16,
@@ -417,39 +417,78 @@ def for_relink(obj: bytes, fn: dict, known: set[str]) -> bytes:
     return bytes(data)
 
 
-def _blob(game, data: bytes, starts: dict[int, str], imports: dict[int, str], asm: list[dict] = ()) -> tuple[str, int]:
-    """The program's .rodata, .data and .bss where it has them, as assembly: each word that pointed at a function (or
-    an import's PLT stub) now names it, and one into a function that is still assembly (its switch's jump table: its
-    bytes are the original's, so the offset holds) names that place in it. Returns the text and how many words point
-    into the old code elsewhere (a C function's own old table: its C has its own)."""
+DATA = (".rodata", ".data", ".bss")  # the program's data, written as data/program.s
+LISTS = (".ctors", ".dtors", ".init_array", ".fini_array", ".preinit_array")  # what runs before and after main
+
+
+def _data_source(game, starts: dict[int, str], imports: dict[int, str], asm: list[dict], labels: dict[int, list[str]],
+                 own_lists: set[str]) -> tuple[str, int]:
+    """The program's data as assembly that names what it points at: its globals labelled (`GameSettings:`), each word
+    that pointed at a function, an import's PLT stub, or anywhere in its data written as that (`.long greet`,
+    `.long __orig_rodata+0x1a4`), one into a function still in assembly (its switch's jump table) as that place in
+    it; its constructor and destructor lists (a C++ program's globals, `__attribute__((constructor))`) by name,
+    but for the functions whose C makes its own entry (`own_lists`). So the data can move with the code, and be
+    changed. Returns the text and how many words still point into the old code (a C function's own old table)."""
     import bisect
 
     inner = sorted((f["vram"], f["vram"] + f["size"], f["name"]) for f in asm)
     lows = [lo_ for lo_, _, _ in inner]
+    secs = {n: game.get_section_by_name(n) for n in DATA}
+    spans = [(sec["sh_addr"], sec["sh_addr"] + sec["sh_size"], f"__orig_{n[1:]}") for n, sec in secs.items() if sec]
+    text_sec = game.get_section_by_name(".text")
+    lo, hi = text_sec["sh_addr"], text_sec["sh_addr"] + text_sec["sh_size"]
 
-    def in_asm(word: int) -> str | None:
+    def named(word: int) -> str | None:
+        if word in starts:
+            return starts[word]
+        if word in imports:
+            return imports[word]
         k = bisect.bisect_right(lows, word) - 1
         if k >= 0 and inner[k][0] < word < inner[k][1]:
             return f"{inner[k][2]}+{word - inner[k][0]}"
+        if word in labels:
+            return labels[word][0]
+        for start, end, label in spans:
+            if start <= word <= end:  # (one past the end too: a loop's limit)
+                return f"{label}+{word - start}"
         return None
-    text_sec = game.get_section_by_name(".text")
-    lo, hi = text_sec["sh_addr"], text_sec["sh_addr"] + text_sec["sh_size"]
+
     out, stray = [], 0
-    for name, flags in ((".rodata", "a"), (".data", "aw")):
-        sec = game.get_section_by_name(name)
+    for name in DATA:
+        sec = secs[name]
         if sec is None:
             continue
-        raw, addr = sec.data(), sec["sh_addr"]
-        out.append(f'.section .orig{name},"{flags}"\n')
+        addr, size = sec["sh_addr"], sec["sh_size"]
+        nobits = sec["sh_type"] == "SHT_NOBITS"
+        flags = '"aw",@nobits' if nobits else ('"a"' if name == ".rodata" else '"aw"')
+        out.append(f".section .orig{name},{flags}\n.globl __orig_{name[1:]}\n__orig_{name[1:]}:\n")
+        marks = sorted(a for a in labels if addr <= a < addr + size)
+        raw = b"" if nobits else sec.data()
         i, run = 0, []
-        while i < len(raw):
-            word = int.from_bytes(raw[i:i + 4], "little") if i + 4 <= len(raw) and (addr + i) % 4 == 0 else None
-            named = (starts.get(word) or imports.get(word) or in_asm(word)) if word is not None else None
-            if named:
-                if run:
-                    out.append(f".byte {','.join(map(str, run))}\n")
-                    run = []
-                out.append(f".long {named}\n")
+
+        def flush(run=run):
+            if run:
+                out.append(f".byte {','.join(map(str, run))}\n")
+                run.clear()
+        m = 0
+        while i < size:
+            while m < len(marks) and marks[m] - addr <= i:
+                if marks[m] - addr == i:
+                    flush()
+                    out.append("".join(f".globl {n}\n{n}:\n" for n in labels[marks[m]]))
+                m += 1
+            if nobits:
+                stop = (marks[m] - addr) if m < len(marks) else size
+                out.append(f".skip {stop - i}\n")
+                i = stop
+                continue
+            following = marks[m] - addr if m < len(marks) else size  # (a word may not run over a label)
+            word = int.from_bytes(raw[i:i + 4], "little") if i + 4 <= min(size, following) and (addr + i) % 4 == 0 \
+                else None
+            target = named(word) if word is not None else None
+            if target:
+                flush()
+                out.append(f".long {target}\n")
                 i += 4
                 continue
             if word is not None and lo <= word < hi:
@@ -457,14 +496,56 @@ def _blob(game, data: bytes, starts: dict[int, str], imports: dict[int, str], as
             run.append(raw[i])
             i += 1
             if len(run) == 32:
-                out.append(f".byte {','.join(map(str, run))}\n")
-                run = []
-        if run:
-            out.append(f".byte {','.join(map(str, run))}\n")
-    bss = game.get_section_by_name(".bss")
-    if bss is not None:
-        out.append(f'.section .orig.bss,"aw",@nobits\n.skip {bss["sh_size"]}\n')
+                flush()
+        flush()
+    for name in LISTS:  # (the original's entries, between crtbegin.o's start and crtend.o's end marker)
+        sec = game.get_section_by_name(name)
+        if sec is None or not sec["sh_size"]:
+            continue
+        words = [int.from_bytes(sec.data()[k:k + 4], "little") for k in range(0, sec["sh_size"] - 3, 4)]
+        entries = [w for w in words if w not in (0, 0xFFFFFFFF) and starts.get(w) not in own_lists]
+        if entries:
+            out.append(f'.section {name},"aw"\n' + "".join(f".long {named(w) or hex(w)}\n" for w in entries))
     return "".join(out), stray
+
+
+def _translate(program: Path, old: dict[str, tuple[int, int]]) -> int:
+    """The relinked program's code with the old data addresses its C still writes as numbers (and its statics,
+    patched as the game's) moved with the data: every absolute operand in a data section's old span becomes the same
+    place in the section where it is now. Returns how many."""
+    import capstone
+
+    data = bytearray(program.read_bytes())
+    elf = ELFFile(BytesIO(bytes(data)))
+    symtab = elf.get_section_by_name(".symtab")
+    now = {s.name: s["st_value"] for s in symtab.iter_symbols() if s.name.startswith("__orig_")}
+    moves = [(start, end, now[label] - start) for label, (start, end) in old.items() if label in now
+             and now[label] != start]
+    if not moves:
+        return 0
+    text = elf.get_section_by_name(".text")
+    base, off = text["sh_addr"], text["sh_offset"]
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    md.skipdata = True
+    done = 0
+    for ins in md.disasm(bytes(text.data()), base):
+        if ins.id == 0:
+            continue
+        for field, value in ((ins.imm_offset, next((o.imm for o in ins.operands if o.type == capstone.x86.X86_OP_IMM), None)),
+                             (ins.disp_offset, next((o.mem.disp for o in ins.operands if o.type == capstone.x86.X86_OP_MEM
+                                                     and o.mem.base == 0), None))):
+            if not field or value is None or ins.size - field < 4:
+                continue
+            value &= 0xFFFFFFFF
+            for start, end, delta in moves:
+                if start <= value <= end:
+                    at = off + ins.address - base + field
+                    data[at:at + 4] = ((value + delta) & 0xFFFFFFFF).to_bytes(4, "little")
+                    done += 1
+                    break
+    program.write_bytes(bytes(data))
+    return done
 
 
 def _link_stubs(game, cc_cfg, work: Path, tc: Path) -> list[str]:
@@ -514,8 +595,9 @@ def _link_stubs(game, cc_cfg, work: Path, tc: Path) -> list[str]:
     return made
 
 
-def relink() -> Path:
-    """build/<program>: a new program from the C, the data where the game has it (see above)."""
+def relink(move: bool = False) -> Path:
+    """build/<program>: a new program from the C (see above). `move`: its data laid out after the code too, not
+    where the game has it (python build.py relink --move)."""
     data = original()
     game = ELFFile(BytesIO(data))
     tcid = B.get("toolchain") or "gcc-2.95.3-linux"
@@ -536,10 +618,10 @@ def relink() -> Path:
     if not dynamic:  # (a static program: all of its code is its functions, crt and library ones too)
         if starts.get(game["e_entry"]) is None:
             fail(f"the program starts at 0x{game['e_entry']:X}, where none of its functions is")
-        for name in (".init", ".fini", ".ctors", ".dtors"):
-            if (sec := game.get_section_by_name(name)) is not None and sec["sh_size"]:
+        for name in (".init", ".fini", *LISTS):
+            if (sec := game.get_section_by_name(name)) is not None and sec["sh_size"] > 8:
                 fail(f"a static program's {name} can't be relinked yet")
-    objs, from_c = [], 0
+    objs, from_c, own_lists = [], 0, set()
     for fn in B["functions"]:
         src = source_of(fn)
         if src is not None:
@@ -547,6 +629,8 @@ def relink() -> Path:
             if not res.ok:
                 fail(f"{src.relative_to(ROOT)} doesn't compile:\n{res.log[-3000:]}")
             (work / f"{fn['name']}.o").write_bytes(for_relink(res.obj, fn, set(B["symbols"])))
+            if any(ELFFile(BytesIO(res.obj)).get_section_by_name(n) is not None for n in LISTS):
+                own_lists.add(fn["name"])  # (its C makes its own constructor entry)
             from_c += 1
         else:
             asm = ROOT / (fn.get("s") or f"asm/{fn['name']}.s")
@@ -556,10 +640,6 @@ def relink() -> Path:
             _run(cc_cfg, work, f"{_tool(tc, 'as')} -o {fn['name']}.o {fn['name']}.s", f"asm/{fn['name']}.s doesn't assemble")
         objs.append(f"{fn['name']}.o")
     plt = _plt(game)
-    blob, stray = _blob(game, data, starts, {addr: name for name, addr in plt.items()},
-                        [f for f in B["functions"] if source_of(f) is None])
-    (work / "data.s").write_text(blob, encoding="utf-8")
-    _run(cc_cfg, work, f"{_tool(tc, 'as')} -o data.o data.s", "the program's data doesn't assemble")
     libs = _link_stubs(game, cc_cfg, work, tc) if dynamic else []
     runtime = [crt / "crt1.o", crt / "crti.o", begin] if dynamic else []
     ending = [begin.with_name("crtend.o"), crt / "crtn.o"] if dynamic else []
@@ -567,19 +647,39 @@ def relink() -> Path:
     for f in runtime + ending:
         defined |= {s.name for s in ELFFile(BytesIO(f.read_bytes())).get_section_by_name(".symtab").iter_symbols()
                     if s.name and s["st_shndx"] != "SHN_UNDEF"}
-    assigns = []
+    ro, da, bss = (game.get_section_by_name(n) for n in DATA)
+    spans = {f"__orig_{n[1:]}": (sec["sh_addr"], sec["sh_addr"] + sec["sh_size"]) for n, sec in zip(DATA, (ro, da, bss))
+             if sec is not None}
+    assigns, labels = [], {}
     for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
         if name in names or name in imported or name in defined:
             continue
-        assigns.append(f"{name} = {starts[addr]};" if addr in starts else f"{name} = 0x{addr:X};")
-    ro, da, bss = (game.get_section_by_name(n) for n in (".rodata", ".data", ".bss"))
+        if addr in starts:
+            assigns.append(f"{name} = {starts[addr]};")
+        elif any(start <= addr < end for start, end in spans.values()):
+            labels.setdefault(addr, []).append(name)  # (a label in data/program.s: it moves with the data)
+        else:
+            assigns.append(f"{name} = 0x{addr:X};")
+    # the program's data as a source file: written from your copy the first time, then yours to change
+    source = ROOT / "data" / "program.s"
+    if not source.exists():
+        text, stray = _data_source(game, starts, {addr: name for name, addr in plt.items()},
+                                   [f for f in B["functions"] if source_of(f) is None], labels, own_lists)
+        source.parent.mkdir(exist_ok=True)
+        source.write_text(text, encoding="utf-8")
+        note = f"; {stray} words still point into the old code, at C functions' own old tables" if stray else ""
+        print(f"data/program.s: the program's data, written from your copy ({sum(map(len, labels.values()))} globals "
+              f"named{note})")
+    shutil.copyfile(source, work / "data.s")
+    _run(cc_cfg, work, f"{_tool(tc, 'as')} -o data.o data.s", "data/program.s doesn't assemble")
     end = max(s["sh_addr"] + s["sh_size"] for s in (ro, da, bss) if s is not None)
     code = (end + 0xFFFFF) & ~0xFFFFF  # (above the game's data: the code may grow)
     # (a static program has no dynamic sections for the headers' segment: its read-only data goes there instead)
-    pinned = "".join(f"  .orig{n} 0x{s['sh_addr']:X} : {{ data.o(.orig{n}) }} :{seg}\n"
-                     for n, s, seg in ((".rodata", ro, "rodata" if dynamic else "text"), (".data", da, "data"),
-                                       (".bss", bss, "data"))
-                     if s is not None)
+    pinned = "" if move else "".join(f"  .orig{n} 0x{s['sh_addr']:X} : {{ data.o(.orig{n}) }} :{seg}\n"
+                                     for n, s, seg in ((".rodata", ro, "rodata" if dynamic else "text"),
+                                                       (".data", da, "data"), (".bss", bss, "data"))
+                                     if s is not None)
+    moved = {n: f"  .orig{n} : {{ data.o(.orig{n}) }}\n" if move else "" for n in DATA}
     entry = "_start" if dynamic else starts[game["e_entry"]]
     # (crtbegin.o's list start first, crtend.o's end marker last)
     ctors = "".join(f"  .{k} : {{ KEEP ({begin}(.{k})) KEEP (*(EXCLUDE_FILE ({ending[0]}) .{k})) KEEP (*(.{k})) }}\n"
@@ -592,8 +692,7 @@ PHDRS
 """ + ("""  headers PT_PHDR PHDRS ;
   interp PT_INTERP ;
 """ if dynamic else "") + """  text PT_LOAD FILEHDR PHDRS ;
-""" + ("  rodata PT_LOAD ;\n" if dynamic else "") + """  data PT_LOAD ;
-  code PT_LOAD ;
+""" + ("  rodata PT_LOAD ;\n" if dynamic and not move else "") + ("  data PT_LOAD ;\n" if not move else "") + """  code PT_LOAD ;
   more PT_LOAD ;
 """ + ("  dynamic PT_DYNAMIC ;\n" if dynamic else "") + f"""}}
 SECTIONS
@@ -611,19 +710,23 @@ SECTIONS
 {pinned}  . = 0x{code:X};
   .init : {{ KEEP (*(.init)) }} :code =0x9090
   .plt : {{ *(.plt) }}
-  .text : {{ *(.text) }} =0x9090
+  .text : {{ *(.text) *(.text.*) *(.gnu.linkonce.t.*) }} =0x9090
   .fini : {{ KEEP (*(.fini)) }} =0x9090
-  .rodata : {{ *(.rodata) *(.rodata.*) }}
+  .rodata : {{ *(.rodata) *(.rodata.*) *(.gnu.linkonce.r.*) }}
+{moved[".rodata"]}  .gcc_except_table : {{ *(.gcc_except_table) }}
   . = ALIGN(0x1000) + (. & 0xFFF);
-  .data : {{ *(.data) *(.data.*) }} :more
-  .eh_frame : {{ KEEP (*(.eh_frame)) }}
-{ctors}
+  .data : {{ *(.data) *(.data.*) *(.gnu.linkonce.d.*) }} :more
+{moved[".data"]}  .eh_frame : {{ KEEP (*(.eh_frame)) }}
+{ctors}  .preinit_array : {{ PROVIDE (__preinit_array_start = .); KEEP (*(.preinit_array)) PROVIDE (__preinit_array_end = .); }}
+  .init_array : {{ PROVIDE (__init_array_start = .); KEEP (*(.init_array)) PROVIDE (__init_array_end = .); }}
+  .fini_array : {{ PROVIDE (__fini_array_start = .); KEEP (*(.fini_array)) PROVIDE (__fini_array_end = .); }}
+  .jcr : {{ KEEP (*(.jcr)) }}
   .got : {{ *(.got.plt) *(.got) }}
   .dynamic : {{ *(.dynamic) }} :more {":dynamic" if dynamic else ""}
   _edata = .;
   __bss_start = .;
-  .bss : {{ *(.dynbss) *(.bss) *(.bss.*) *(COMMON) . = ALIGN(4); }} :more
-  _end = .;
+  .bss : {{ *(.dynbss) *(.bss) *(.bss.*) *(.gnu.linkonce.b.*) *(COMMON) . = ALIGN(4); }} :more
+{moved[".bss"]}  _end = .;
   /DISCARD/ : {{ *(.comment) *(.note*) *(.stab*) }}
 }}
 """ + "\n".join(assigns) + "\n"
@@ -641,8 +744,11 @@ SECTIONS
     final = ROOT / "build" / out
     shutil.copyfile(work / out, final)
     final.chmod(0o755)
+    shifted = _translate(final, spans) if move else 0
     print(f"build/{out}: relinked, a new program from the C ({from_c} of {len(B['functions'])} functions from C, the "
-          f"rest from asm/; its data where the game has it{f', {stray} words of it still pointing into the old code' if stray else ''})")
+          f"rest from asm/; the data from data/program.s, "
+          + (f"laid out after the code: {shifted} addresses the C still wrote as the old data's moved with it)"
+             if move else "where the game has it)"))
     return final
 
 
@@ -667,8 +773,8 @@ if __name__ == "__main__":
         check(args[1])
     elif args[:1] == ["status"]:
         status()
-    elif args[:1] == ["relink"]:
-        relink()
+    elif args[:1] == ["relink"] and set(args[1:]) <= {"--move"}:
+        relink(move="--move" in args)
     elif not args:
         build()
         relink()
