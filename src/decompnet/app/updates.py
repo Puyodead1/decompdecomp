@@ -75,7 +75,10 @@ def version_key(v: str) -> tuple[int, ...]:
     nums = tuple(int(x or 0) for x in m.group(1, 2, 3))
     pre = re.match(r"[-._]?(alpha|beta|rc|a|b|c)[-._]?(\d*)", m.group(4).strip().lower())
     stage = {"alpha": 0, "a": 0, "beta": 1, "b": 1, "rc": 2, "c": 2}[pre.group(1)] if pre else 3
-    return nums + (stage, int(pre.group(2) or 0) if pre else 0)
+    # a fork's own releases on one upstream version: 1.0.9-alpha.4+puyo.22 after +puyo.20 (the local part, ignored,
+    # made each the same version and nothing an update)
+    local = re.search(r"\+\D*(\d+)", v)
+    return nums + (stage, int(pre.group(2) or 0) if pre else 0, int(local.group(1)) if local else 0)
 
 
 def _get(url: str, timeout: float = 15) -> bytes:

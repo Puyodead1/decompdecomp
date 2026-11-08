@@ -312,3 +312,11 @@ def test_settings_switch_between_releases_and_a_branch(monkeypatch):
         if t.name == "update":
             t.join(10)
     assert installed == ["release"]
+
+
+def test_a_forks_own_releases_on_one_upstream_version_are_updates():
+    """A fork releases 1.0.9-alpha.4+puyo.20, +puyo.22 and so on, all on upstream's 1.0.9-alpha.4: ignoring the part
+    after `+` made each the same version, and none an update (the fork's installer names that version, and tag)."""
+    order = ["1.0.9-alpha.4", "1.0.9-alpha.4+puyo.20", "1.0.9a4+puyo.22", "1.0.9-alpha.5", "1.0.9"]
+    keys = [updates.version_key(v) for v in order]
+    assert keys == sorted(keys) and len(set(keys)) == len(keys)
