@@ -627,6 +627,14 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert res["identical"] and res["relinked"], res["log"]
     out = Path(res["path"])
     relinked = out / "build" / "relinkdemo"
+    # its source file is one C file again: the functions in their order, the static two share once, each function
+    # declared as defined in the file's header, its constructor still one; built whole, it's the original's code
+    assert res["units"] == 1, res["unit_fallback"]
+    [program_file] = (out / "src").glob("*.c")
+    whole = program_file.read_text()
+    assert whole.count("static int calls;") == 1 and whole.index("int length(") < whole.index("int main(")
+    assert "__attribute__((constructor))" in whole and not list((out / "src").glob("*/*.c"))
+    assert "void say(const char *s);" in (out / "include" / f"{program_file.stem}.h").read_text()
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
     assert (out / "asm" / "twice.s").exists() and (out / "asm" / "answer.s").exists() and (out / "Makefile").exists()
     assert not (out / "build" / "relink" / "atexit.o").exists()  # (libc_nonshared.a's: never its bytes)
@@ -637,6 +645,24 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     data = (out / "data" / "program.s").read_text()
     assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
     assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
+
+    # the same C built by the system's GCC (`make port`, against the program's own C library headers), linked the
+    # same way: a newer GCC's merged strings and .init_array (the constructor) as the 2001 linker and runtime take
+    # them, and what it calls that the program never imported in the port's own stubs
+    import shutil as _shutil
+
+    probe = tmp_path / "m32.c"
+    probe.write_text("#include <stdio.h>\nint main(void) { puts(\"x\"); return 0; }\n")
+    gcc = _shutil.which("gcc")
+    m32 = gcc and subprocess.run([gcc, "-m32", "-nostdinc", "-isystem", subprocess.run(
+        [gcc, "-print-file-name=include"], capture_output=True, text=True).stdout.strip(), f"-I{tc}/include", "-c",
+        str(probe), "-o", str(tmp_path / "m32.o")], capture_output=True).returncode == 0
+    if m32:
+        port = subprocess.run(["make", "-s", f"TC={tc}", f"PY={sys.executable}", "port"], cwd=out, capture_output=True,
+                              text=True)
+        assert port.returncode == 0, port.stdout + port.stderr
+        ported = run(out / "build" / "port" / "relinkdemo")
+        assert (ported.stdout, ported.returncode) == (original.stdout, original.returncode)
 
     # the data moves too: its pointers follow it, and so do the statics the C reads as the program's
     moved = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
@@ -658,7 +684,7 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
     # C that writes an address in the old code as a number is refused, with the name to write
-    [greet_c] = (out / "src").glob("*/greet.c")
+    greet_c = program_file
     kept = greet_c.read_text()
     greet_at = next(f["vram"] for f in json.loads((out / "build.json").read_text())["functions"] if f["name"] == "greet")
     greet_c.write_text(kept + f"void *where(void) {{ return (void *)0x{greet_at:x}; }}\n")
@@ -667,7 +693,7 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     greet_c.write_text(kept)
 
     # a mod: say() does more, and is longer than the original's
-    [say] = (out / "src").glob("*/say.c")
+    say = program_file
     say.write_text(say.read_text().replace("write(1, s, length(s));", 'write(1, "> ", 2); write(1, s, length(s));'))
     again = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
     assert again.returncode == 0, again.stderr

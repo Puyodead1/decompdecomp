@@ -12,6 +12,8 @@ MAKEFILE = """\
 #   make              the program (the first time, the compiler is downloaded into tools/: `make toolchain`)
 #   make move         the same, its data laid out after the code too
 #   make toolchain    the compiler into tools/ (pinned downloads, each checked against its SHA-256)
+#   make port         build/port/{program}: the same C built by the system's GCC (PORT_CC, PORT_FLAGS: no matching
+#                     there), against the program's own C library headers from the toolchain, linked the same way
 # Needs make, python3, curl or wget, tar and ar. `python build.py` (with decompdecomp installed) checks that the C
 # still rebuilds your copy byte for byte; building doesn't need it.
 PROGRAM := {program}
@@ -27,6 +29,10 @@ PRELUDE := {prelude}
 HEADERS := $(wildcard include/*.h)
 TOOLCHAIN_READY := $(TC)/crt/crt1.o
 STUBS := build/relink/stubs
+PORT_CC ?= gcc -m32
+PORT_FLAGS ?= -O2 -std=gnu89 -fno-pie -fno-pic -fno-stack-protector -fcf-protection=none -fcommon \\
+  -fno-strict-aliasing -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
+PORT_STUBS := build/port/stubs
 
 all: build/$(PROGRAM)
 
@@ -34,12 +40,12 @@ toolchain: $(TOOLCHAIN_READY)
 $(TOOLCHAIN_READY):
 \tsh tools/toolchain.sh $(TC)
 
-build/relink:
+build/relink build/port:
 \tmkdir -p $@
 
 # (after the toolchain: which functions its libc_nonshared.a brings decides the rules; written whole or not at all,
 # an empty one left by a failure was never made again)
-build/rules.mk: build.json tools/relink.py $(wildcard src/*/*.c) $(wildcard asm/*.s) | build/relink $(TOOLCHAIN_READY)
+build/rules.mk: build.json tools/relink.py $(wildcard src/*.c src/*/*.c) $(wildcard asm/*.s) | build/relink $(TOOLCHAIN_READY)
 \t$(PY) tools/relink.py rules > $@.tmp
 \tmv $@.tmp $@
 -include build/rules.mk
@@ -50,7 +56,7 @@ data/program.s: | $(OBJS) $(TOOLCHAIN_READY)
 build/relink/data.o: data/program.s | $(TOOLCHAIN_READY)
 \t$(AS) -o $@ data/program.s
 
-$(STUBS)/stubs.txt: build.json | build/relink $(TOOLCHAIN_READY)
+$(STUBS)/stubs.txt: build.json $(OBJS) | build/relink $(TOOLCHAIN_READY)
 \t$(PY) tools/relink.py stubs $(STUBS)
 \twhile read lib stem; do \\
 \t  $(CC) $(STUBS)/$$stem.c $(STUBS)/$$stem.o -fPIC -O0 || exit 1; \\
@@ -64,10 +70,23 @@ build/$(PROGRAM): $(OBJS) build/relink/data.o $(STUBS)/stubs.txt
 move: $(OBJS) build/relink/data.o $(STUBS)/stubs.txt
 \t$(PY) tools/relink.py link build/$(PROGRAM) move
 
-clean:
-\trm -r -f build/relink build/rules.mk build/rules.mk.tmp build/$(PROGRAM)
+# the port's own stubs: a newer GCC calls what the program never imported (puts for printf, sincos)
+$(PORT_STUBS)/stubs.txt: build.json $(PORT_OBJS) | build/port $(TOOLCHAIN_READY)
+\tOBJDIR=build/port $(PY) tools/relink.py stubs $(PORT_STUBS)
+\twhile read lib stem; do \\
+\t  $(CC) $(PORT_STUBS)/$$stem.c $(PORT_STUBS)/$$stem.o -fPIC -O0 || exit 1; \\
+\t  map=; [ -s $(PORT_STUBS)/$$stem.map ] && map="--version-script $(PORT_STUBS)/$$stem.map"; \\
+\t  $(LD) -m elf_i386 -shared -soname $$lib $$map -o $(PORT_STUBS)/$$lib $(PORT_STUBS)/$$stem.o || exit 1; \\
+\tdone < $(PORT_STUBS)/stubs.txt
 
-.PHONY: all toolchain move clean
+port: build/port/$(PROGRAM)
+build/port/$(PROGRAM): $(PORT_OBJS) build/relink/data.o $(PORT_STUBS)/stubs.txt
+\tOBJDIR=build/port $(PY) tools/relink.py link $@
+
+clean:
+\trm -r -f build/relink build/port build/rules.mk build/rules.mk.tmp build/$(PROGRAM)
+
+.PHONY: all toolchain move port clean
 .DELETE_ON_ERROR:
 """
 
