@@ -190,7 +190,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
     matched = sum(1 for f in functions if f.get("c"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"])
-    (out / ".gitignore").write_text("build/\nbaserom*\n", encoding="utf-8")
+    # (asm/ and data/ are your copy's code and data, written from it: never in git)
+    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\n", encoding="utf-8")
 
     log("building the exported project to check it rebuilds the program byte for byte")
     proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
@@ -223,7 +224,8 @@ result against your original, byte for byte.
 | :-- | :-- |
 | `src/<source file>/<function>.c` | Decompiled functions, one per file, each matching the original. |
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own. |
-| `asm/<function>.s` | What isn't C yet, as assembly. |
+| `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
+| `data/program.s` | The program's data, every global and pointer named (written from your copy by the first relink). |
 | `build.json`, `build.py` | Where each function is and how it's built: `build/program` is the original rebuilt byte for byte, `build/{program}` the relinked program. |
 
 `python build.py` then links a new program from the C, `build/{program}`: every function compiled as written and
@@ -234,12 +236,14 @@ it imports. That's the one to change: edit any function (make it longer, add one
 Keep going with any tool: write a function as `src/<source file>/<name>.c`, run `python build.py check <name>`,
 then `python build.py`. When it says *identical*, the program still matches.
 
-## What isn't C yet
+## The data, and what isn't C yet
 
-The program's data (`.rodata`, `.data`, `.bss`) stays where the original has it, as its own bytes: each word in it
-that pointed at a function points at that function wherever it now is, and each function's statics are the
-program's. Code can move and grow; data can't move yet (written as C, with its pointers named, it could).
-What's in `asm/` isn't C yet either: assembly that names what it calls, so it moves with the rest.
+The first relink writes the program's data as `data/program.s`, from your copy: every global labelled by name, every
+word that pointed at a function, a string or other data written as that (`.long greet`, `.long __orig_rodata+0x1a4`),
+its constructor and destructor lists (a C++ program's globals) by name. Change it like any source. The data stays
+where the original has it; `python build.py relink --move` lays it out after the code instead, the addresses the C
+still writes as numbers moved with it. What's in `asm/` isn't C yet: assembly that names what it calls, so it moves
+with the rest. `asm/` and `data/` are made from your copy: keep them out of git (`.gitignore` does).
 
 The program's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}

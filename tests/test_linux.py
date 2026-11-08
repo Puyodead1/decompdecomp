@@ -504,48 +504,40 @@ def test_a_function_built_with_fpic_gets_fpic_and_is_open_again_if_it_was_set_as
     del proj
 
 
-RELINK_START = """\
+RELINK_ASM = """\
 .text
-.globl sys_write
-.type sys_write,@function
-sys_write:
-    pushl %ebx
-    movl 8(%esp), %ebx
-    movl 12(%esp), %ecx
-    movl 16(%esp), %edx
-    movl $4, %eax
-    int $0x80
-    popl %ebx
+.globl twice
+.type twice,@function
+twice:
+    movl 4(%esp), %eax
+    addl %eax, %eax
     ret
-.size sys_write,.-sys_write
-.globl sys_exit
-.type sys_exit,@function
-sys_exit:
-    movl 4(%esp), %ebx
-    movl $1, %eax
-    int $0x80
-.size sys_exit,.-sys_exit
+.size twice,.-twice
 """
 RELINK_FUNCTIONS = {
     "length": "int length(const char *s) { int n = 0; while (s[n]) n++; return n; }\n",
-    "say": "static int calls;\nvoid say(const char *s) { calls++; sys_write(1, s, length(s)); }\n",
+    "say": "static int calls;\nvoid say(const char *s) { calls++; write(1, s, length(s)); }\n",
     "name_of": 'const char *name_of(int k) { switch (k) { case 0: return "zero\\n"; case 1: return "one\\n"; '
                'case 2: return "two\\n"; case 3: return "three\\n"; case 4: return "four\\n"; default: '
                'return "many\\n"; } }\n',
-    "greet": 'void greet(void) { say("hello\\n"); }\n',
+    "greet": "void greet(void) { say(greeting); }\n",  # (the header declares greeting)
     "count": "static int calls;\nint count(void) { return calls; }\n",
-    "start": "extern void (*table[])(void);\nvoid start(void) { int i; for (i = 0; i < 2; i++) table[i](); "
-             "for (i = 0; i < 6; i++) say(name_of(i)); sys_exit(count()); }\n",
+    "setup": "static int ready;\nvoid setup(void) __attribute__((constructor));\nvoid setup(void) { ready = twice(2); }\n",
+    "main": "static int ready;\nextern void (*table[])(void);\nint main(void) { int i; for (i = 0; i < 2; i++) table[i](); "
+            "for (i = 0; i < 6; i++) say(name_of(i)); return count() + ready; }\n",
 }
-RELINK_DECLARATIONS = ("int sys_write(int, const char *, int);\nvoid sys_exit(int);\nint length(const char *);\n"
+RELINK_DECLARATIONS = ("int write(int, const void *, unsigned int);\nint twice(int);\nint length(const char *);\n"
                        "void say(const char *);\nconst char *name_of(int);\nvoid greet(void);\nint count(void);\n")
+RELINK_DATA = ('const char *greeting = "hello\\n";\n'  # (a pointer in .data to a string in .rodata)
+               "void (*table[])(void) = { greet, greet };\n")  # (pointers in .data to functions)
 
 
-def test_the_export_relinks_a_new_program_from_the_c_and_a_function_may_grow(tmp_path):
-    """The export's build links a new program from the C (build.py relink): its functions laid out anew, the data
-    where the program has it with its pointers to functions (a table in .data) following them, each function's
-    statics the program's own (two functions share one), a switch's jump table its own. It runs as the original
-    does, and a function changed to do more (longer than it was) runs in it: what a mod is."""
+def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data_may_move(tmp_path):
+    """The export's build links a new program from the C (build.py relink): its functions laid out anew, its data
+    written as data/program.s with each pointer named (to functions, to its strings), each function's statics the
+    program's own (two functions share one), a switch's jump table its own, its constructor list carried over (a C
+    constructor, as a C++ program's globals are made), what isn't C assembled from asm/. It runs as the original
+    does; with a function changed to do more (longer than it was), and with the data moved too (relink --move)."""
     import subprocess
     import sys
 
@@ -555,27 +547,38 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_may_grow(tmp
     from decompnet.project import compiler_config
 
     gcc = "gcc-2.95.3-linux"
-    if toolchains.installed(gcc) is None:
-        pytest.skip(f"needs {gcc}")
+    if toolchains.installed(gcc) is None or toolchains.installed("runtime-i386") is None:
+        pytest.skip(f"needs {gcc} and its runtime")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    runtime = Path(toolchains.ensure("runtime-i386", log=lambda *_: None))
+    begin = next(iter(sorted(tc.glob("gcc/usr/lib/**/crtbegin.o"))), None)
+    if not (tc / "crt" / "crt1.o").exists() or begin is None:
+        pytest.skip(f"{gcc} has no C runtime objects (an install before they were part of it)")
     build = tmp_path / "build"
     build.mkdir()
     cfg = compiler_config(build, {"compiler": {"toolchain": gcc, "flags": ["-O2", "-g"]}})
-    program_c = (RELINK_DECLARATIONS + "".join(v.replace("static int calls;\n", "") for v in RELINK_FUNCTIONS.values())
-                 + "void (*table[])(void) = { greet, greet };\n")
-    program_c = "static int calls;\n" + program_c
-    res = compile_source(cfg, "", program_c)
+    program_c = ("static int calls, ready;\n" + RELINK_DECLARATIONS + "extern void (*table[])(void);\n"
+                 + "".join(v.replace("static int calls;\n", "").replace("static int ready;\n", "")
+                           .replace("extern const char *greeting;\n", "").replace("extern void (*table[])(void);\n", "")
+                           for v in RELINK_FUNCTIONS.values()) + RELINK_DATA)
+    res = compile_source(cfg, "", "extern const char *greeting;\n" + program_c)
     assert res.ok, res.log
     (build / "prog.o").write_bytes(res.obj)
-    (build / "start.s").write_text(RELINK_START)
-    tc = toolchains.ensure(gcc, log=lambda *_: None)
+    (build / "twice.s").write_text(RELINK_ASM)
     tool = f'LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" "{tc}/binutils/usr/bin/'
-    linked = run_in(cfg, build, ["/bin/sh", "-c", f'{tool}as" -o start.o start.s && {tool}ld" -m elf_i386 -e start '
-                                                  f'-o relinkdemo start.o prog.o'])
+    crt = tc / "crt"
+    linked = run_in(cfg, build, ["/bin/sh", "-c", f'{tool}as" -o twice.o twice.s && {tool}ld" -m elf_i386 '
+                                 f'-dynamic-linker /lib/ld-linux.so.2 -o relinkdemo {crt}/crt1.o {crt}/crti.o {begin} '
+                                 f'prog.o twice.o {runtime}/libc.so.6 {begin.with_name("crtend.o")} {crt}/crtn.o'])
     assert linked.returncode == 0, linked.stderr
     program = build / "relinkdemo"
     program.chmod(0o755)
-    original = subprocess.run([str(program)], capture_output=True, timeout=30)
-    assert original.stdout == b"hello\nhello\nzero\none\ntwo\nthree\nfour\nmany\n" and original.returncode == 8
+
+    def run(path: Path) -> subprocess.CompletedProcess:
+        return subprocess.run([str(runtime / "ld-linux.so.2"), "--library-path", str(runtime), str(path)],
+                              capture_output=True, timeout=30)
+    original = run(program)
+    assert original.stdout == b"hello\nhello\nzero\none\ntwo\nthree\nfour\nmany\n" and original.returncode == 12
 
     work = tmp_path / "home"
     work.mkdir()
@@ -590,18 +593,24 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_may_grow(tmp
     assert res["identical"] and res["relinked"], res["log"]
     out = Path(res["path"])
     relinked = out / "build" / "relinkdemo"
-    ran = subprocess.run([str(relinked)], capture_output=True, timeout=30)
-    assert (ran.stdout, ran.returncode) == (original.stdout, original.returncode)
-    assert (out / "asm" / "sys_write.s").exists()  # (what isn't C, as assembly that moves with the rest)
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    assert (out / "asm" / "twice.s").exists()
+    data = (out / "data" / "program.s").read_text()
+    assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
+    assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
+
+    # the data moves too: its pointers follow it, and so do the statics the C reads as the program's
+    moved = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
+    assert moved.returncode == 0, moved.stderr
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
     # a mod: say() does more, and is longer than the original's
     [say] = (out / "src").glob("*/say.c")
-    say.write_text(say.read_text().replace("sys_write(1, s, length(s));",
-                                           'sys_write(1, "> ", 2); sys_write(1, s, length(s));'))
-    again = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
+    say.write_text(say.read_text().replace("write(1, s, length(s));", 'write(1, "> ", 2); write(1, s, length(s));'))
+    again = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
     assert again.returncode == 0, again.stderr
-    modded = subprocess.run([str(relinked)], capture_output=True, timeout=30)
-    assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 8
+    modded = run(relinked)
+    assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 12
 
 
 def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():
