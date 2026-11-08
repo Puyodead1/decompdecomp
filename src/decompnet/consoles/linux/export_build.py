@@ -39,6 +39,13 @@ try:
     from decompnet.project import compiler_config
 except ImportError:
     sys.exit("This build uses decompdecomp's pinned tools: install decompdecomp first (https://github.com/n-delic/decompdecomp).")
+try:  # (what the export of this tree reads with: a tree exported by a newer decompdecomp than the one installed)
+    from decompnet.consoles.linux import export_data  # noqa: F401
+except ImportError:
+    import decompnet
+
+    sys.exit(f"This tree was exported by decompdecomp {B.get('decompdecomp', 'a newer version')}; the one installed is "
+             f"{getattr(decompnet, '__version__', 'older')}: update it (or `make`, which needs no decompdecomp).")
 
 
 def fail(msg: str) -> None:

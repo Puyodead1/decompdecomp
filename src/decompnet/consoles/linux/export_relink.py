@@ -451,13 +451,25 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
     asm = sorted((f["vram"], f["vram"] + f["size"], f["name"]) for f in B["functions"] if source_of(f) is None)
     labels: dict[int, list[str]] = {}
     assigns, stray = [], []
-    mine, _, _ = owned()
+    mine, _, own_spans = owned()
+    own_lows = [a for a, _, _ in own_spans]
+    every = sorted((a, a + max(size, 1)) for unit in list(UNITS.values()) + list(B.get("data_files") or [])
+                   for _, a, size, _ in ((unit.get("data") or {}).get("variables") or []))
+    every_lows = [a for a, _ in every]
     for unit in list(UNITS.values()) + list(B.get("data_files") or []):  # (a name the C reads a global by: the global)
         for alias, (base, off) in ((unit.get("data") or {}).get("link_aliases") or {}).items():
             assigns.append(f"{alias} = {base}{f' + {off}' if off else ''};")
     for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
         if name in skip or (name, addr) in mine:
             continue  # (and what a source file's C defines with its data)
+        # a name inside a variable that is C now (D_080BCB48, omdModels + 0x28): that variable's place, not this
+        # copy's; one whose variable has no global name isn't here at all (what reads it fails to link, loudly)
+        k = bisect.bisect_right(every_lows, addr) - 1
+        if k >= 0 and every[k][0] <= addr < every[k][1]:
+            j = bisect.bisect_right(own_lows, addr) - 1
+            if j >= 0 and own_spans[j][0] <= addr < own_spans[j][1]:
+                assigns.append(f"{name} = {own_spans[j][2]} + {addr - own_spans[j][0]};")
+            continue
         if addr in starts:
             assigns.append(f"{name} = {starts[addr]};")
         elif any(lo <= addr < hi for lo, hi in spans):
@@ -505,6 +517,9 @@ def write_data(out_path: str) -> None:
 
     _, own_names, own_spans = owned()
     own_lows = [a for a, _, _ in own_spans]
+    dead = sorted((a, a + max(size, 1)) for unit in list(UNITS.values()) + list(B.get("data_files") or [])
+                  for _, a, size, _ in ((unit.get("data") or {}).get("variables") or []))
+    dead_lows = [a for a, _ in dead]
 
     def named(word: int) -> str | None:
         if word in starts:
@@ -555,6 +570,10 @@ def write_data(out_path: str) -> None:
                 i = following
                 continue
             word = struct.unpack_from("<I", body, i)[0] if i + 4 <= following and (addr + i) % 4 == 0 else None
+            # (a variable that is C now: this copy of it is dead, its words written as they are)
+            k = bisect.bisect_right(dead_lows, addr + i) - 1
+            if k >= 0 and dead[k][0] <= addr + i < dead[k][1]:
+                word = None
             target = named(word) if word is not None else None
             if target:
                 flush()
@@ -848,6 +867,10 @@ def follow(program_path: str, map_path: Path) -> None:
             continue
         alone = re.match(r"^\s(\.\S+)$", line)  # (a long section name on a line of its own)
         pending = alone.group(1) if alone else None
+    path = Path(program_path)
+    data = bytearray(path.read_bytes())
+    elf = Elf(bytes(data))
+    linked = {sym["name"]: sym["value"] for sym in elf.symbols(elf.section(".symtab")) if sym["bind"] == 1 and sym["name"]}
     moves = []
     for obj, entry in objects():
         variables = ((entry.get("data") or {}).get("variables")) or []
@@ -857,16 +880,28 @@ def follow(program_path: str, map_path: Path) -> None:
         by_name = {sym["name"]: sym for sym in o.symbols(o.section(".symtab")) if sym["name"]}
         for name, old, size, _ in variables:
             sym = by_name.get(name)
-            if sym is None or not 0 < sym["shndx"] < len(o.sections):
+            if sym is None:
+                continue
+            if sym["shndx"] == SHN_COMMON and sym["bind"] == 1:  # (an uninitialized global: where the program has it)
+                if name in linked:
+                    moves.append((old, old + max(size, 1), linked[name] - old))
+                continue
+            if not 0 < sym["shndx"] < len(o.sections):
                 continue
             base = placed.get((obj, o.sections[sym["shndx"]]["name"]))
             if base is not None:
                 moves.append((old, old + max(size, 1), base + sym["value"] - old))
     moves.sort()
     lows = [lo for lo, _, _ in moves]
-    path = Path(program_path)
-    data = bytearray(path.read_bytes())
-    elf = Elf(bytes(data))
+
+    def moved(value: int) -> int | None:
+        """How far the variable holding `value` moved (or ending just before it, where no other one starts)."""
+        k = bisect.bisect_right(lows, value) - 1
+        if k >= 0 and moves[k][0] <= value < moves[k][1]:
+            return moves[k][2]
+        if k >= 0 and value == moves[k][1]:
+            return moves[k][2]
+        return None
     text = elf.section(".text")
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
@@ -875,17 +910,25 @@ def follow(program_path: str, map_path: Path) -> None:
     for ins in md.disasm(elf.data(text), text["addr"]):
         if ins.id == 0:
             continue
+        # (an address, or an array's start beside a register: `mov %ecx,0x8ec6804(%edx)`)
         for field, value in ((ins.imm_offset, next((o.imm for o in ins.operands if o.type == capstone.x86.X86_OP_IMM), None)),
                              (ins.disp_offset, next((o.mem.disp for o in ins.operands
-                                                     if o.type == capstone.x86.X86_OP_MEM and o.mem.base == 0), None))):
+                                                     if o.type == capstone.x86.X86_OP_MEM), None))):
             if not field or value is None or ins.size - field < 4:
                 continue
             value &= 0xFFFFFFFF
-            k = bisect.bisect_right(lows, value) - 1
-            if k >= 0 and moves[k][0] <= value < moves[k][1]:
-                struct.pack_into("<I", data, text["offset"] + ins.address - text["addr"] + field,
-                                 (value + moves[k][2]) & 0xFFFFFFFF)
-                done += 1
+            # (a newer GCC's too: a loop's limit one past a variable's end, `cmp $0x80be830`; an address negated,
+            # `-0x80be740(%edx,%eax,1)`)
+            for sign in (1, -1):
+                wanted = (value * sign) & 0xFFFFFFFF
+                delta = moved(wanted)
+                if delta is None and sign == -1:  # (`4 - Default_hsls`: a negated address, a small offset in it)
+                    delta = next((d for j in range(1, 64) if (d := moved(wanted + j)) is not None), None)
+                if delta is not None:
+                    struct.pack_into("<I", data, text["offset"] + ins.address - text["addr"] + field,
+                                     ((wanted + delta) * sign) & 0xFFFFFFFF)
+                    done += 1
+                    break
     path.write_bytes(bytes(data))
     if done:
         print(f"{program_path}: {done} addresses the C still writes as numbers follow their variables")
@@ -916,18 +959,20 @@ def link(out_path: str, mode: str = "") -> None:
                "-T", str(ld_script), "-o", out_path, *first.split(), *objs, *data_o, *extra.split(), *libs, *last.split()]
     else:
         cmd = [ld, "-m", "elf_i386", "-static", "-T", str(ld_script), "-o", out_path, *objs, *data_o]
-    if STANDALONE:  # (where each object's sections went: the numbers its C still writes follow its variables)
-        cmd[1:1] = ["-Map", str(ROOT / OBJDIR / "program.map")]
+    # (where each object's sections went: the numbers C still writes for a variable now C follow it)
+    cmd[1:1] = ["-Map", str(ROOT / OBJDIR / "program.map")]
     env = {**os.environ, "LD_LIBRARY_PATH": f"{TC.resolve()}/binutils/usr/lib:{TC.resolve()}/lib"
            + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")}
     res = subprocess.run([c for c in cmd if c], cwd=ROOT, env=env, capture_output=True, text=True)
     if res.returncode != 0:
         fail(f"the program doesn't link:\n{(res.stdout + res.stderr)[-3000:]}")
     os.chmod(out_path, 0o755)
+    # (first the variables that are C now, where the link put them; then, moving data/program.s, the rest: a number
+    # in one of those moved first would be taken to its dead copy)
+    if any((u.get("data") or {}).get("variables") for u in list(UNITS.values()) + list(B.get("data_files") or [])):
+        follow(out_path, ROOT / OBJDIR / "program.map")
     if move_data and not STANDALONE:
         move(out_path)
-    if STANDALONE:
-        follow(out_path, ROOT / OBJDIR / "program.map")
     total = len(B["functions"])
     from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None and not fn.get("asm"))
     with_data = sum(1 for u in UNITS.values() if u.get("data"))
