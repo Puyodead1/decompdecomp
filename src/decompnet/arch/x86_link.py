@@ -4,8 +4,11 @@ function's address in the game and compared with it byte for byte.
 What a candidate's object refers to is checked against what the original's bytes refer to there, relocation by
 relocation: a call or jump (R_386_PC32) must reach the same function, an address (R_386_32) the same symbol, and
 data the candidate brings itself (a string literal, a float constant in .rodata) must be the game's own data where
-the original's code points (arm._verify_own, shared). Then the original's bytes stand in for those words, and the
-rest must be the same bytes.
+the original's code points (arm._verify_own, shared). Code built with -fPIC (glibc's own atexit, linked into the
+program from libc_nonshared.a) finds the GOT from its own address (R_386_GOTPC: the program's GOT), reads a global's
+address from the GOT entry the program's dynamic relocation names (R_386_GOT32) and calls through the PLT
+(R_386_PLT32: the import's stub). Then the original's bytes stand in for those words, and the rest must be the same
+bytes.
 
 The function sits in its object at the offset it has in the game modulo 16 (the console's compile prelude): GCC 2.95
 pads a loop's start only when that costs at most 7 bytes, measured from the start of the object, so the same C in
@@ -21,7 +24,7 @@ from elftools.elf.relocation import RelocationSection
 
 from ..rom.link import LinkResult
 
-R_386_32, R_386_PC32 = 1, 2
+R_386_32, R_386_PC32, R_386_GOT32, R_386_PLT32, R_386_GOTPC = 1, 2, 3, 4, 10
 ALIGN = 16  # the alignment GCC 2.95 gives an object's .text (its loops' .p2align 4)
 
 
@@ -33,6 +36,8 @@ class X86Target:
     vram: int
     code: bytes
     relocs: list[tuple[int, int, int]] = field(default_factory=list)
+    got: int | None = None  # the program's _GLOBAL_OFFSET_TABLE_, for -fPIC code
+    got_slots: dict[int, str] = field(default_factory=dict)  # a GOT entry's address -> the symbol it holds
 
     def to_json(self) -> list:
         return [list(r) for r in self.relocs]
@@ -107,7 +112,22 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
             sname, sym, is_section = _sym_name(elf, symtab, rel["r_info_sym"])
             addend = int.from_bytes(code[at:at + 4], "little", signed=True)
             original = int.from_bytes(tcode[at:at + 4], "little")
-            if rtype == R_386_PC32:
+            if rtype == R_386_GOTPC:  # (the GOT's distance from here: `add $_GLOBAL_OFFSET_TABLE_+3, %ebx`)
+                if target.got is None or (target.got + addend - target.vram - at) & 0xFFFFFFFF != original:
+                    problem("your code finds the GOT where the original doesn't (code built with -fPIC finds it as "
+                            "the original does)")
+                    continue
+                code[at:at + 4] = tcode[at:at + 4]
+            elif rtype == R_386_GOT32:  # (an offset into the GOT: the entry holding the symbol's address)
+                slot = None if target.got is None else (target.got + original - addend) & 0xFFFFFFFF
+                held = symbols.resolve(sname)
+                if slot is None or not (target.got_slots.get(slot) == sname or (
+                        held is not None and read(slot, 4) == held.to_bytes(4, "little"))):
+                    problem(f"you read {sname}'s address from the GOT where the original reads "
+                            f"{target.got_slots.get(slot, 'another entry') if slot is not None else 'it'}")
+                    continue
+                code[at:at + 4] = tcode[at:at + 4]
+            elif rtype in (R_386_PC32, R_386_PLT32):  # (a PLT32 call reaches the import's stub, as a plain one)
                 dest = (target.vram + at + 4 + int.from_bytes(tcode[at:at + 4], "little", signed=True)) & 0xFFFFFFFF
                 if _defined(sym) and sym["st_shndx"] == shndx:  # within its own object's code (a static helper)
                     inner = (0 if is_section else sym["st_value"]) + addend + 4 - start

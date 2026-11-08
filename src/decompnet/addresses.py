@@ -33,6 +33,7 @@ READ_ONLY = (".rodata", ".rdata", ".sdata2", ".sbss2", ".rodata1")  # the sectio
 CODE = (".text", ".init", ".fini", ".plt")
 STRING_BYTES = set(range(32, 127)) | {9, 10, 13, 27}
 LONGEST = 4096  # a string's bytes read at most
+TEXT_POINTERS = {"char", "const char", "signed char", "unsigned char", "u8", "s8", "void", "const void"}
 FLOATS = {"float": ("<f", 4, "f"), "f32": ("<f", 4, "f"), "double": ("<d", 8, ""), "f64": ("<d", 8, "")}
 
 
@@ -52,7 +53,8 @@ class Proposal:
     end: int
     text: str  # what replaces source[start:end]
     declare: str | None = None  # a declaration the source needs first
-    what: str = ""  # "string", "constant", "global", "function"
+    what: str = ""  # "string", "constant", "global", "function", "generated"
+    fallback: Proposal | None = None  # tried when this one doesn't match: the address's generated name
 
 
 def _string(read, address: int) -> bytes | None:
@@ -180,7 +182,7 @@ def proposals(source: str, program: Program) -> list[Proposal]:
                 if text is None:
                     return None
                 return Proposal(m.start(), m.end(), f"({text})" if text.startswith("-") else text, None, "constant")
-            if not deref and stars == "*" and type_ in ("char", "const char"):
+            if not deref and stars == "*" and type_ in TEXT_POINTERS:
                 data = _string(program.read, address)
                 return None if data is None else Proposal(m.start(), m.end(), c_string(data), None, "string")
             return None
@@ -199,11 +201,32 @@ def proposals(source: str, program: Program) -> list[Proposal]:
         cast = f"({m.group('type')} {stars})"
         return Proposal(m.start(), m.end(), f"*{cast}{where}" if deref else f"{cast}{where}", declare, "global")
 
+    def generated(m, deref: bool) -> Proposal | None:
+        """The address's generated name (D_080A4E44, which the judge and the export resolve to it): where nothing
+        else names it (a static, a string read as a word), or where GCC must see another object than the global it
+        is (C that reads `vect_ix` and, through the number, the same int again matches only so)."""
+        address = int(m.group("addr"), 16)
+        section = program.section(address) or ""
+        if not section or section.startswith(CODE):
+            return None
+        name = f"D_{address:08X}"
+        cast = f"({m.group('type')} {m.group('stars')})"
+        return Proposal(m.start(), m.end(), f"*{cast}{name}" if deref else f"{cast}{name}",
+                        None if _declared(top, name) else f"extern char {name}[];", "generated")
+
+    def proposal(m, deref: bool) -> Proposal | None:
+        p = symbolic(m, deref)
+        fallback = generated(m, deref)
+        if p is None:
+            return fallback
+        p.fallback = fallback
+        return p
+
     for pattern, deref in ((DEREFS[0], True), (DEREFS[1], True), (POINTER, False)):
         for m in pattern.finditer(source):
             if not free(m.start(), m.end()):
                 continue
-            p = symbolic(m, deref)
+            p = proposal(m, deref)
             if p is not None:
                 found.append(p)
                 taken.append((m.start(), m.end()))

@@ -341,7 +341,7 @@ function renderSource(ov) {
   const kept = (ex && ex.fallback) || 0;
   const stale = ex && ex.matched != null && ex.matched + kept < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
-    : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
+    : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}${ex.relinked ? " · relinks into a new program you can change" : ex.relinked === false ? " · ✕ the relink failed (its log)" : ""}</div>
        <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions in C` : ""}${kept ? ` · ${kept.toLocaleString()} matched kept as the program's bytes (README.md says why)` : ""}${stale ? ` · <b>${(ov.matched - ex.matched - kept).toLocaleString()} new matches since</b>` : ""}</div>
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";

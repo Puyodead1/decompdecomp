@@ -44,12 +44,14 @@ class GuiMixin:
         # still matches, so the tree can be relinked and moved once it's all C)
         log("naming the strings, constants, globals and functions matched C still writes as addresses")
         self.readability.name_addresses(slug, log=log)
+        log("gathering the declarations matched functions made for themselves into the shared header")
+        self.readability.tidy_declarations(slug, log=log)
         res = self.console(proj).export_project(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
             cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": res.get("identical"),
                              "matched": res.get("matched"), "functions": res.get("functions"),
-                             "fallback": len(res.get("fallback") or [])}
+                             "fallback": len(res.get("fallback") or []), "relinked": res.get("relinked")}
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         return res
 

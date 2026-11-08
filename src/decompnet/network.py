@@ -205,6 +205,17 @@ def model_key(agent_name: str) -> str:
     return base if base and last in EFFORT_WORDS else model_of(agent_name.lower())
 
 
+def write_renamed(db, rewritten: dict[int, str], judged: dict[int, str], swap) -> None:
+    """A rename's matched sources, written: each the C it judged, renamed, unless the function's C changed while the
+    rename was judged (a helper's make_readable of it, sent alongside): then that C, renamed. Writing the C read
+    minutes before left a Linux game's function defining its old name under its new one, which nothing matched."""
+    for fid, src in rewritten.items():
+        row = db.execute("SELECT matched_source FROM functions WHERE id=?", (fid,)).fetchone()
+        if row is not None and row["matched_source"] is not None and row["matched_source"] != judged.get(fid):
+            src = swap(row["matched_source"])
+        db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", (src, src, fid))
+
+
 class NetworkError(Exception):
     """An error meant to be shown to the agent as-is."""
 
@@ -1673,8 +1684,8 @@ class Network:
                     version = self._next_version(db, proj["id"])
                     db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                                "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, header, agent.id, msg, time.time(), u))
-                for fid, src in rewritten.items():
-                    db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", (src, src, fid))
+                write_renamed(db, rewritten, {r["id"]: r["matched_source"] for r in matched},
+                              lambda text: word.sub(new, text))  # noqa: B023  called within this pass of the loop
                 for r in db.execute("SELECT id, best_source FROM functions WHERE project_id=? AND status='open' "
                                     "AND best_source IS NOT NULL", (proj["id"],)).fetchall():
                     db.execute("UPDATE functions SET best_source=? WHERE id=?", (word.sub(new, r["best_source"]), r["id"]))

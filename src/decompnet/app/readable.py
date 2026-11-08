@@ -28,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import addresses, cfields, scoring, structs
+from .. import addresses, cfields, scoring, structs, tidy
 from ..forks.project import ForkProject
 from ..network import GAME_CODE, IN_BUILD, Agent, NetworkError
 from .engine import layouts
@@ -54,10 +54,13 @@ GIVEN_UP = ("SELECT p.detail FROM events p WHERE p.project_id=? AND p.kind='poli
 TODO = f"status='matched' AND readable=0 AND {GAME_CODE} AND name NOT IN ({GIVEN_UP})"
 
 
+ADDRESS_NAMING = 2  # what name_addresses tries (2: generated names too): C it tried before is tried again
+
+
 def _digest(source: str) -> str:
     import hashlib
 
-    return hashlib.sha1(source.encode()).hexdigest()[:16]
+    return hashlib.sha1(f"{ADDRESS_NAMING}\n{source}".encode()).hexdigest()[:16]
 
 
 def _left_as_it_is(name: str, without: str) -> str:
@@ -181,12 +184,121 @@ class Readability:
                 "as addresses by name now, and still match")
         return changed
 
+    def repair_renamed(self, slug: str, log=print) -> list[str]:
+        """Matched functions whose C still defines a name a rename gave up (a make_readable saved alongside the rename,
+        before write_renamed): the rename applied to their C, kept where it matches. A Linux game's
+        shmdRenderScrolledTex defined shmdRender__was and showed as no longer matching. Returns their names."""
+        proj = self.net.project_row(slug)
+        if not self.net.is_rom(proj) or self.net._link(slug):
+            return []
+        renames: dict[str, list[str]] = {}
+        for e in self.net.store.all("SELECT detail FROM events WHERE project_id=? AND kind='rename' ORDER BY id",
+                                    proj["id"]):
+            m = re.fullmatch(r"(\w+) → (\w+)", e["detail"] or "")
+            if m:
+                renames.setdefault(m.group(2), []).append(m.group(1))
+        fixed = []
+        units = self.net._unit_contexts(proj["id"])
+        for fn in self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' AND "
+                                     "matched_source IS NOT NULL", proj["id"]):
+            source, name = fn["matched_source"], fn["name"]
+            if name not in renames or re.search(rf"\b{re.escape(name)}\s*\(", source):
+                continue
+            old = next((o for o in reversed(renames[name]) if re.search(rf"\b{re.escape(o)}\s*\(", source)), None)
+            if old is None:
+                continue
+            renamed = re.sub(rf"\b{re.escape(old)}\b", name, source)
+            header = self.net._context(proj["id"], self.net._effective_unit(fn, units))["header"]
+            if not self._still_matches(proj, fn, header, renamed):
+                continue
+            with self.net.progress._project_lock(slug), self.net.store.tx() as db:
+                if db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=? AND matched_source=?",
+                              (renamed, renamed, fn["id"], source)).rowcount:
+                    fixed.append(name)
+        if fixed:
+            log(f"{slug}: {', '.join(fixed)} defined the name a rename gave up; renamed in their C too, and they match")
+        return fixed
+
+    def tidy_declarations(self, slug: str, log=print) -> dict:
+        """ROM mode's tidy: the declarations matched functions make for themselves (a callee's prototype, a
+        global's extern, a struct), moved into the shared header once (tidy.py says which), every function judged
+        again with the new header and C. What a function then no longer matches with stays its own, and the plan is
+        made again without it, until every one matches. Project mode tidies a file with a helper (TIDY A FILE);
+        here every function's C is judged alone after one header, so the move is mechanical. Returns the counts."""
+        proj = self.net.project_row(slug)
+        if not self.net.is_rom(proj) or self.net._link(slug) or self.net._unit_contexts(proj["id"]):
+            # (a project whose source files have headers of their own is left to them: which one a declaration
+            # belongs in is the helpers' call)
+            return {}
+        for _ in range(3):  # (a helper's edit_context meanwhile: made again on top of it)
+            ctx = self.net._context(proj["id"])
+            rows = self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' AND "
+                                      "matched_source IS NOT NULL ORDER BY vram", proj["id"])
+            # (the names a function needed its own copy of last time stay where they are: no round finds them again)
+            keep: set[str] = set(self.net.cfg(proj).get("tidy_keep") or [])
+            if not tidy.plan([dict(r) for r in rows], ctx["header"], keep).sources:
+                return {}
+            # (what doesn't match before is no tidy's doing: judged once, and left out)
+            failing = {name for name, _ in self.net.regression_test(proj, ctx["header"], only=rows)}
+            rows = [r for r in rows if r["name"] not in failing]
+            functions = [dict(r) for r in rows]
+            before = sum(len(tidy.items(f["matched_source"])) for f in functions)
+            for _ in range(20):
+                plan = tidy.plan(functions, ctx["header"], keep)
+                if not plan.sources:
+                    return {"declarations": before, "moved": 0, "left": before}
+                header = plan.header(ctx["header"])
+                broken = self.net.regression_test(proj, header, sources=plan.sources, only=rows)
+                if not broken:
+                    break
+                names = {n for n, _ in broken}
+                moved = {name for _, item in plan.moved for name in item.names}
+                kept = len(keep)
+                said = {name: set(re.findall(r"(?:conflicting types for|redefinition of|redeclaration of|previous "
+                                             r"declaration of) [`']([\w ]+)'", why)) for name, why in broken}
+                for f in functions:  # what the compiler names (a callee's prototype the callers agreed on, which its
+                    if f["name"] in names:  # own definition contradicts); else what it declares itself, if it moved;
+                        named = {n for n in moved if n in said.get(f["name"], ()) or n.split()[-1] in said.get(f["name"], ())}
+                        own = {name for item in tidy.items(f["matched_source"]) for name in item.names} & moved
+                        used = {n for n in moved if re.search(rf"\b{re.escape(n.split()[-1])}\b", f["matched_source"])}
+                        keep |= named or own or used  # else what it uses that moved (a prototype it now sees)
+                if len(keep) == kept:  # (nothing to put back: the header alone broke them)
+                    keep |= moved
+            else:
+                return {}
+            with self.net.progress._project_lock(slug), self.net.store.tx() as db:
+                if self.net._latest_version(db, proj["id"], "") != ctx["version"]:
+                    continue
+                version = self.net._next_version(db, proj["id"])
+                message = f"tidy: {len(plan.moved)} declarations the functions made for themselves, gathered here"
+                db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                           "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, header, None, message, time.time(), ""))
+                for f in functions:
+                    if f["id"] in plan.sources:
+                        db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=? AND "
+                                   "matched_source=?", (plan.sources[f["id"]], plan.sources[f["id"]], f["id"],
+                                                        f["matched_source"]))
+                self.net._event(db, proj["id"], None, "context", f"v{version}: {message}")
+            kept_names = sorted(keep)
+            self.net._update_cfg(slug, lambda c, k=kept_names: c.update(tidy_keep=k))
+            left = sum(len(tidy.items(plan.sources.get(f["id"], f["matched_source"]))) for f in functions)
+            log(f"{slug}: {len(plan.moved)} declarations matched functions made for themselves are in the shared "
+                f"header now ({before} before, {left} left in the functions' files), and every function still matches")
+            return {"declarations": before, "moved": len(plan.moved), "left": left, "functions": len(plan.sources)}
+        return {}
+
     def _program(self, proj):
         segments = self.net._rom(proj)[1]
 
+        symbols = self.net.symbols(proj["id"])
+        # uninitialised data has no bytes in the image, so no segment: its symbols say where it is
+        bss = [(s.address, s.address + max(s.size, 1)) for s in symbols.by_name.values() if s.kind == "bss"]
+        lo, hi = (min(a for a, _ in bss), max(b for _, b in bss)) if bss else (0, 0)
+
         def section(address: int) -> str | None:
-            return next((s.name for s in segments if s.contains(address)), None)
-        return addresses.Program(self.net.reader(proj), section, self.net.symbols(proj["id"]), "",
+            found = next((s.name for s in segments if s.contains(address)), None)
+            return found or (".bss" if lo <= address < hi else None)
+        return addresses.Program(self.net.reader(proj), section, symbols, "",
                                  bool(self.net.cfg(proj).get("big_endian", True)))
 
     def _named_addresses(self, proj, fn, header: str, program) -> str | None:
@@ -199,9 +311,11 @@ class Readability:
         if matches(found):
             return addresses.apply(source, found)
         kept: list = []
-        for p in found:  # one at a time, each on top of those kept (a folded constant, a merged string's order)
-            if matches(kept + [p]):
-                kept.append(p)
+        for p in found:  # one at a time, each on top of those kept (a folded constant, a merged string's order),
+            for choice in (p, p.fallback):  # else as its generated name
+                if choice is not None and matches(kept + [choice]):
+                    kept.append(choice)
+                    break
         return addresses.apply(source, kept) if kept else None
 
     def _still_matches(self, proj, fn, header: str, source: str) -> bool:
@@ -544,6 +658,9 @@ class Readability:
                     + "\nWrite them by name (a field read compiles to the same code as its offset), then "
                     f"make_readable(\"{fn['name']}\", source) again. If the named form doesn't match, send this one "
                     "again and it's judged as it is.")
+        # what happened before it's judged: a rename or a header edit committed while it is (a helper sends
+        # make_readable and rename_symbol together) wasn't judged with this C, nor this C with it
+        since = self.net.store.one("SELECT COALESCE(MAX(id), 0) AS id FROM events WHERE project_id=?", proj["id"])["id"]
         if not self.net.is_rom(proj):  # the project's own file, judged and committed (or put back) as any compile
             res = self.net.forks.attempt(agent, proj["slug"], fn["name"], source, comment=True)
             if not res.get("matched"):
@@ -564,11 +681,18 @@ class Readability:
             note = "\n".join(f"- {p}" for p in problems)
             return (f"❌ It no longer matches (score {d.score}): the matching C stays. Keep the statements' shape and "
                     f"change names, types and comments only.\n{d.render()}" + (f"\n{note}" if note else ""))
-        return self._readable(proj, fn, agent, source)
+        return self._readable(proj, fn, agent, source, since)
 
-    def _readable(self, proj, fn, agent: Agent, source: str) -> str:
-        """A rewrite that still matches: it's the function's C now, and the function counts as readable."""
+    def _readable(self, proj, fn, agent: Agent, source: str, since: int | None = None) -> str:
+        """A rewrite that still matches: it's the function's C now, and the function counts as readable. `since`:
+        the last event before it was judged (ROM mode): a rename or header edit after it means it was judged
+        against what no longer is, and the rename wrote this function's C without it, so it's sent again."""
         with self.net.progress._project_lock(proj["slug"]), self.net.store.tx() as db:
+            if since is not None and db.execute(
+                    "SELECT 1 FROM events WHERE project_id=? AND id>? AND kind IN ('rename', 'context') LIMIT 1",
+                    (proj["id"], since)).fetchone():
+                return (f"✋ Not saved: a name or the shared header changed while {fn['name']} was judged. Read it "
+                        f"again (get_function) and make_readable(\"{fn['name']}\", source) with the current names.")
             self.net.progress.check_result()
             db.execute("UPDATE functions SET matched_source=?, best_source=?, readable=1 WHERE id=?",
                        (source, source, fn["id"]))

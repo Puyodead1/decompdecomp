@@ -104,8 +104,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 if net.is_rom(row):
                     net.rangechecks.reopen(row["slug"])
                 net.readability.reopen_untyped(row["slug"], log=jobs.logger.info)
-                net.readability.name_addresses(row["slug"], log=jobs.logger.info)
+                net.readability.repair_renamed(row["slug"], log=jobs.logger.info)
                 net.console(row).on_start(net, row["slug"], log=jobs.logger.info)
+                # (the long ones last: each judges matched functions again)
+                net.readability.name_addresses(row["slug"], log=jobs.logger.info)
+                net.readability.tidy_declarations(row["slug"], log=jobs.logger.info)
             except Exception:  # never stands between the user and the app
                 jobs.logger.exception("%s's console work at start failed", row["slug"])
     threading.Thread(target=consoles_start, daemon=True, name="consoles-start").start()

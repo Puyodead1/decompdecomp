@@ -9,7 +9,7 @@ import re
 import time
 
 from ... import arch
-from ...network import Agent, NetworkError
+from ...network import Agent, NetworkError, write_renamed
 from ...rom.symbols import IDENT, Symbol, SymbolTable
 from .common import _ADDRESS
 
@@ -245,8 +245,7 @@ class EditMixin:
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                            "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, header, agent.id, msg, time.time(), u))
-            for fid, src in rewritten.items():
-                db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", (src, src, fid))
+            write_renamed(db, rewritten, {r["id"]: r["matched_source"] for r in matched}, swap)
             for r in db.execute("SELECT id, best_source FROM functions WHERE project_id=? AND status='open' "
                                 "AND best_source IS NOT NULL", (proj["id"],)).fetchall():
                 db.execute("UPDATE functions SET best_source=? WHERE id=?", (swap(r["best_source"]), r["id"]))

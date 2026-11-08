@@ -47,13 +47,13 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS, DWARF 1; the compiler of each object file | names (types and prototypes: —) | ✓ symbol table, DWARF 1 | — | — | ✓ PDB (Visual C++ 6.0's PDB 2.0, MSF 7.00), linker map, COFF symbols | — (an XBE has none) | — | ✓ symbol table, STABS or DWARF 2+: source files, types, prototypes, locals | — |
 | Twins across your games | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ (between PC projects) | ✓ (as PC's; not run on two Xbox games yet) | — | ran (a game's programs shared only functions under 32 bytes) | — |
 | Shared knowledge (two models agree) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Tidy each source file once it's polished (shared types in one header, names, dead declarations) | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Tidy each source file once it's polished (shared types in one header, names, dead declarations) | the functions' own declarations, into the shared header | the functions' own declarations, into the shared header | the functions' own declarations, into the shared header | the functions' own declarations, into the shared header | the functions' own declarations, into the shared header | the functions' own declarations, into the shared header | ✓ | ✓ | ✓ | ✓ | the functions' own declarations, into the shared header | ✓ |
 | Polish matched code (still matching) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Real names for the game's symbols (`rename_symbol`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | dtk and ds-decomp projects |
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (each function rebuilt where it lies in a copy of the program) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each function lies, and relinked into a new program whose code may grow: `build.py relink`) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -160,9 +160,11 @@ Where to start on a gap:
   can't take one in yet.
 - **Function-end reports** cut MIPS functions (`engine._cut`) and, in project mode, a console's own
   (`Console.cut_function`: PC's functions.json). DS and GameCube projects need theirs.
-- **Tidying a ROM project**: its C is the database's, one function at a time, with one shared header per segment
-  (`edit_context`), so there's no file to tidy (`app/readable.py`, `_untidy`). The header is the place to start: its
-  types and names, then the functions' C that uses them, each still matching.
+- **Tidying a ROM project**: its C is the database's, one function at a time, after one shared header, so there's no
+  file to tidy (`app/readable.py`, `_untidy`). What's done: the declarations each function made for itself (externs,
+  prototypes, its own structs) gathered into the header once, every function judged again (`tidy_declarations`,
+  `tidy.py`; a Linux game's 4,697 down to about 2,500, the rest two functions' different guesses at one type). Left:
+  those guesses made one (a helper's call), and a project whose segments have headers of their own.
 - **Struct layouts** read MIPS and x86 loads and stores (`arch/mips_fields.py`, `arch/x86_fields.py`); another
   processor adds its reader as its `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's
   fifth to eighth arguments (t0-t3), and a pointer into the middle of a struct handed to a callee (`&this->pos`). On
@@ -216,8 +218,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   only template code (boost, the C++ library) instantiated in the game's own files isn't matched from its source yet.
   On a 2008 C++ program: 5,245 functions (Ogre's and boost's code in its files, luabind, Lua, OIS, TinyXML, libogg,
   libvorbis, libtheora, libpng, zlib), each library tried with its own builds (-O0 -march=amdfam10 in its tree, its
-  configure's flags in decompdecomp-flags.txt). Left: position-independent code (-fPIC: a library's objects for a
-  shared library, 143 functions there, libpng's), whose GOT relocations the x86 judge doesn't link yet.
+  configure's flags in decompdecomp-flags.txt). The x86 judge links -fPIC code's GOT and PLT relocations (GOTPC,
+  GOT32, PLT32) against the program's GOT and its dynamic relocations, and a function that starts by finding the GOT
+  gets -fPIC (glibc's atexit from libc_nonshared.a matches). Left: the 143 -fPIC functions of that 2008 program's
+  libpng, tried with the library's own flags.
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.
@@ -227,8 +231,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   words, and the header's real types don't compile with them: most of the 2001 game's drafts that fail).
 - The compiler map, the judge's survey and range checks read MIPS code: an x86 version for programs built by more
   than one GCC.
-- A whole relink in the export (the program's dynamic sections, PLT and GOT as the 2001 linker laid them out), for
-  when all of a program's code is C.
+- The relink's data: the export's `build.py relink` links a new program from the C (its code laid out anew above the
+  data, the toolchain's crt files, libraries stubbed from the program's import table; a 2001 game's relinked program
+  runs as the original does, and with a function made longer), but `.rodata`, `.data` and `.bss` stay at their
+  addresses as the program's bytes, only their pointers to functions following the code. Left: the data as C (its
+  pointers to data named, so it can move too), C++ programs' own static constructors (the original's `.ctors`),
+  `.init_array`, thread-local storage and PIE programs.
 - Pieces of functions joined to their function (no ROM console has it yet).
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 

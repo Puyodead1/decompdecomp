@@ -3,6 +3,7 @@
 
     python build.py              build every decompiled function into a copy of the program, compare
     python build.py check NAME   check one function's C (src/<source file>/NAME.c) against the original
+    python build.py relink       only link a new program from the C (build/<program>)
     python build.py status       how many functions are C so far
 
 Each function with C is compiled with Slackware 8.0's GCC 2.95.3 (as it was where it lies: at its address modulo 16,
@@ -14,8 +15,11 @@ provides the pinned tools.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import re
+import shutil
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -58,14 +62,15 @@ def source_of(fn: dict) -> Path | None:
     return found[0] if found else None
 
 
-def config(fn: dict, work: Path):
-    import dataclasses
-
+def config(fn: dict, work: Path, placed: bool = True):
+    """How the function is compiled: `placed`, at its address modulo 16 (the matching build); else as written (the
+    relinked program, where the code moves)."""
     cfg = compiler_config(work, {"compiler": {"toolchain": toolchain(fn), "flags": fn.get("flags") or ["-O2"]}})
     pad = fn["vram"] % ALIGN
     # (or where the code before it in its file put it, after code that grew as gas relaxed it: build.json says)
-    placed = fn.get("prelude") or (f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else "")
-    return dataclasses.replace(cfg, prelude=cfg.prelude + placed, include_dirs=(*cfg.include_dirs, str(ROOT / "include")))
+    space = fn.get("prelude") or (f'__asm__(".text\\n\\t.space {pad}\\n");\n' if pad else "")
+    return dataclasses.replace(cfg, prelude=cfg.prelude + (space if placed else ""),
+                               include_dirs=(*cfg.include_dirs, str(ROOT / "include")))
 
 
 def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list[tuple[int, str, int]]]:
@@ -227,7 +232,43 @@ def build_function(fn: dict, data: bytes) -> bytes:
     start = t["offset"] + fn["vram"] - pad - t["vram"]
     for at, _, _ in scattered:  # (the game's address of a constant checked to be the object's: own_data)
         text[at:at + 4] = data[start + at:start + at + 4]
+    _pic(elf, text, fn["vram"] - pad, program)
     return bytes(text[pad:pad + fn["size"]])
+
+
+def _pic(elf, text: bytearray, base: int, program: dict) -> None:
+    """Code built with -fPIC (glibc's atexit) linked as the program has it: the GOT where the program's is, a
+    global's address read from the GOT entry the program's dynamic relocation gives it, a call through the import's
+    PLT stub (linked alone, ld would make a GOT of its own)."""
+    from elftools.elf.relocation import RelocationSection
+
+    got = B.get("got") or {}
+    slots = {name: int(addr, 16) for addr, name in (got.get("slots") or {}).items()}
+    obj = elf.get_section_by_name(".text").data()
+    ti = next(i for i, s_ in enumerate(elf.iter_sections()) if s_.name == ".text")
+    for rs in elf.iter_sections():
+        if not isinstance(rs, RelocationSection) or rs["sh_info"] != ti:
+            continue
+        symtab = elf.get_section(rs["sh_link"])
+        for r in rs.iter_relocations():
+            kind, at = r["r_info_type"], r["r_offset"]
+            if kind not in (3, 4, 10):
+                continue
+            name = symtab.get_symbol(r["r_info_sym"]).name
+            addend = int.from_bytes(obj[at:at + 4], "little", signed=True)
+            if kind == 10:  # R_386_GOTPC
+                if got.get("base") is None:
+                    fail("this code is built with -fPIC, and build.json doesn't say where the program's GOT is: export again")
+                value = got["base"] + addend - (base + at)
+            elif kind == 3:  # R_386_GOT32
+                if name not in slots:
+                    fail(f"the program's GOT has no entry for {name}")
+                value = slots[name] - got["base"] + addend
+            else:  # R_386_PLT32
+                if name not in program:
+                    fail(f"{name} isn't a function the program has")
+                value = program[name] + addend - (base + at)
+            text[at:at + 4] = (value & 0xFFFFFFFF).to_bytes(4, "little")
 
 
 def unaligned_text(obj: bytes) -> bytes:
@@ -299,6 +340,322 @@ def check(name: str) -> None:
     print(f"{name}: matches")
 
 
+# ---------------------------------------------------------------------------------------------------- relinking
+# A new program from the C: every function compiled as written (no padding to the place it had: the code moves),
+# laid out by ld from CODE_BASE where it may grow, linked with the toolchain's own crt files and the libraries the
+# program imports from (stubs made from your copy's import table, the versions it asked for; it runs with the real
+# ones). The data isn't C yet: .rodata, .data and .bss stay at their addresses, every word in them that pointed at a
+# function now pointing at it where it is, and each function's own statics are the game's (build.json "statics").
+
+SHF_WRITE, SHN_UNDEF, SHN_COMMON = 1, 0, 0xFFF2
+
+
+def _tool(tc: Path, name: str) -> str:
+    return f'LD_LIBRARY_PATH="{tc}/binutils/usr/lib:{tc}/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" "{tc}/binutils/usr/bin/{name}"'
+
+
+def _run(cfg, work: Path, command: str, what: str) -> None:
+    res = run_in(cfg, work, ["/bin/sh", "-c", command])
+    if res.returncode != 0:
+        fail(f"{what}:\n{(res.stdout + res.stderr)[-3000:]}")
+
+
+def for_relink(obj: bytes, fn: dict, known: set[str]) -> bytes:
+    """A function's object as the relinked program takes it: what it reads and writes of its own statics is the
+    game's (the address patched in, the relocation gone), its common symbols the game's globals of their names, and
+    what else its file's C defines (a helper beside it) weak, so the program's own wins."""
+    from elftools.elf.relocation import RelocationSection
+
+    data = bytearray(obj)
+    elf = ELFFile(BytesIO(obj))
+    sections = list(elf.iter_sections())
+    symtab = elf.get_section_by_name(".symtab")
+    syms = list(symtab.iter_symbols())
+    statics = fn.get("statics") or {}
+    writable = {i for i, sec in enumerate(sections) if sec["sh_flags"] & SHF_WRITE and sec["sh_flags"] & 2}
+    covering: dict[int, list] = {}
+    for sym in syms:
+        if sym["st_shndx"] in writable and sym["st_info"]["type"] == "STT_OBJECT" and sym.name in statics:
+            covering.setdefault(sym["st_shndx"], []).append((sym["st_value"], max(sym["st_size"], 1), sym.name))
+
+    def game_address(sym, addend: int) -> int | None:
+        if sym["st_shndx"] not in writable:
+            return None
+        if sym["st_info"]["type"] == "STT_SECTION":
+            for value, size, name in covering.get(sym["st_shndx"], ()):
+                if value <= addend < value + size:
+                    return statics[name] + addend - value
+            return None
+        return statics[sym.name] + addend if sym.name in statics else None
+
+    shoff, entsz = elf["e_shoff"], elf["e_shentsize"]
+    for i, rs in enumerate(sections):
+        if not isinstance(rs, RelocationSection) or rs["sh_info"] in writable:
+            continue
+        target = sections[rs["sh_info"]]
+        kept = []
+        for r in rs.iter_relocations():
+            at = target["sh_offset"] + r["r_offset"]
+            addend = int.from_bytes(data[at:at + 4], "little", signed=True)
+            sym = syms[r["r_info_sym"]]
+            addr = game_address(sym, addend) if r["r_info_type"] == 1 else None
+            if addr is None:
+                kept.append((r["r_offset"], r["r_info"]))
+            else:
+                data[at:at + 4] = (addr & 0xFFFFFFFF).to_bytes(4, "little")
+        for k, (off, info) in enumerate(kept):
+            data[rs["sh_offset"] + k * 8:rs["sh_offset"] + k * 8 + 8] = off.to_bytes(4, "little") + info.to_bytes(4, "little")
+        data[shoff + i * entsz + 20:shoff + i * entsz + 24] = (len(kept) * 8).to_bytes(4, "little")  # sh_size
+    for k, sym in enumerate(syms):
+        at = symtab["sh_offset"] + k * 16
+        bind = sym["st_info"]["bind"]
+        if sym["st_shndx"] == "SHN_COMMON" and sym.name in known:  # (a tentative definition: the game's global)
+            data[at + 4:at + 12] = bytes(8)
+            data[at + 14:at + 16] = SHN_UNDEF.to_bytes(2, "little")
+        elif bind == "STB_GLOBAL" and sym.name != fn["name"] and isinstance(sym["st_shndx"], int) and sym["st_shndx"]:
+            data[at + 12] = (2 << 4) | (data[at + 12] & 0xF)  # STB_WEAK
+    return bytes(data)
+
+
+def _blob(game, data: bytes, starts: dict[int, str], imports: dict[int, str], asm: list[dict] = ()) -> tuple[str, int]:
+    """The program's .rodata, .data and .bss where it has them, as assembly: each word that pointed at a function (or
+    an import's PLT stub) now names it, and one into a function that is still assembly (its switch's jump table: its
+    bytes are the original's, so the offset holds) names that place in it. Returns the text and how many words point
+    into the old code elsewhere (a C function's own old table: its C has its own)."""
+    import bisect
+
+    inner = sorted((f["vram"], f["vram"] + f["size"], f["name"]) for f in asm)
+    lows = [lo_ for lo_, _, _ in inner]
+
+    def in_asm(word: int) -> str | None:
+        k = bisect.bisect_right(lows, word) - 1
+        if k >= 0 and inner[k][0] < word < inner[k][1]:
+            return f"{inner[k][2]}+{word - inner[k][0]}"
+        return None
+    text_sec = game.get_section_by_name(".text")
+    lo, hi = text_sec["sh_addr"], text_sec["sh_addr"] + text_sec["sh_size"]
+    out, stray = [], 0
+    for name, flags in ((".rodata", "a"), (".data", "aw")):
+        sec = game.get_section_by_name(name)
+        if sec is None:
+            continue
+        raw, addr = sec.data(), sec["sh_addr"]
+        out.append(f'.section .orig{name},"{flags}"\n')
+        i, run = 0, []
+        while i < len(raw):
+            word = int.from_bytes(raw[i:i + 4], "little") if i + 4 <= len(raw) and (addr + i) % 4 == 0 else None
+            named = (starts.get(word) or imports.get(word) or in_asm(word)) if word is not None else None
+            if named:
+                if run:
+                    out.append(f".byte {','.join(map(str, run))}\n")
+                    run = []
+                out.append(f".long {named}\n")
+                i += 4
+                continue
+            if word is not None and lo <= word < hi:
+                stray += 1
+            run.append(raw[i])
+            i += 1
+            if len(run) == 32:
+                out.append(f".byte {','.join(map(str, run))}\n")
+                run = []
+        if run:
+            out.append(f".byte {','.join(map(str, run))}\n")
+    bss = game.get_section_by_name(".bss")
+    if bss is not None:
+        out.append(f'.section .orig.bss,"aw",@nobits\n.skip {bss["sh_size"]}\n')
+    return "".join(out), stray
+
+
+def _link_stubs(game, cc_cfg, work: Path, tc: Path) -> list[str]:
+    """Shared libraries to link against, one per library the program needs, holding what it imports from each at
+    the versions it asked for (objects with their sizes, for the copies the linker makes): the run uses the real
+    ones. (A newer glibc's IFUNCs are data to a 2001 linker: memset was copied into .bss.)"""
+    from elftools.elf.dynamic import DynamicSection
+    from elftools.elf.gnuversions import GNUVerNeedSection, GNUVerSymSection
+
+    dynsym = game.get_section_by_name(".dynsym")
+    need = next((s for s in game.iter_sections() if isinstance(s, GNUVerNeedSection)), None)
+    versym = next((s for s in game.iter_sections() if isinstance(s, GNUVerSymSection)), None)
+    needed = [t.needed for s in game.iter_sections() if isinstance(s, DynamicSection)
+              for t in s.iter_tags() if t.entry.d_tag == "DT_NEEDED"]
+    index = {}
+    for vn, auxs in (need.iter_versions() if need is not None else ()):
+        for aux in auxs:
+            index[aux["vna_other"]] = (vn.name, aux.name)
+    libs: dict[str, dict[str, list]] = {lib: {} for lib in needed}
+    plain = next((lib for lib in needed if lib not in {v[0] for v in index.values()}), needed[0] if needed else None)
+    for k, sym in enumerate(dynsym.iter_symbols()):
+        if not sym.name or sym["st_shndx"] != "SHN_UNDEF" or sym["st_info"]["bind"] == "STB_WEAK":
+            continue
+        lib, ver = index.get(versym.get_symbol(k)["ndx"] if versym is not None else 0, (plain, None))
+        libs.setdefault(lib, {}).setdefault(ver, []).append(sym)
+    made = []
+    for lib in needed:
+        source, script, prev = [], [], None
+        for ver, syms in sorted(libs.get(lib, {}).items(), key=lambda kv: (kv[0] is not None, kv[0] or "")):
+            for sym in syms:
+                source.append(f"char {sym.name}[{max(sym['st_size'], 1)}] = {{ 1 }};"
+                              if sym["st_info"]["type"] == "STT_OBJECT" else f"int {sym.name}() {{ return 0; }}")
+            if ver is not None:
+                names = "; ".join(sym.name for sym in syms)
+                script.append(f"{ver} {{ global: {names}; }}{(' ' + prev) if prev else ''};")
+                prev = ver
+        stem = re.sub(r"\W", "_", lib)
+        res = compile_source(cc_cfg, "", "\n".join(source) + "\nint __decompdecomp_stub;\n", trusted=True)
+        if not res.ok:
+            fail(f"a stub of {lib} doesn't compile:\n{res.log[-2000:]}")
+        (work / f"{stem}.o").write_bytes(res.obj)
+        version = f"--version-script {stem}.map " if script else ""
+        (work / f"{stem}.map").write_text("\n".join(script) + "\n", encoding="utf-8")
+        _run(cc_cfg, work, f"{_tool(tc, 'ld')} -m elf_i386 -shared -soname {lib} {version}-o {lib} {stem}.o",
+             f"a stub of {lib} doesn't link")
+        made.append(lib)
+    return made
+
+
+def relink() -> Path:
+    """build/<program>: a new program from the C, the data where the game has it (see above)."""
+    data = original()
+    game = ELFFile(BytesIO(data))
+    tcid = B.get("toolchain") or "gcc-2.95.3-linux"
+    tc = Path(toolchains.ensure(tcid, log=lambda *_: None))
+    crt = tc / "crt"
+    begin = next(iter(sorted(tc.glob("gcc/usr/lib/**/crtbegin.o"))), None)
+    if game.get_section_by_name(".interp") is not None and (not (crt / "crt1.o").exists() or begin is None):
+        fail(f"{tcid} has no C runtime objects to link a program with: update decompdecomp")
+    work = ROOT / "build" / "relink"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    cc_cfg = compiler_config(work, {"compiler": {"toolchain": tcid, "flags": ["-O0", "-fPIC"]}})
+    starts = {f["vram"]: f["name"] for f in B["functions"]}
+    names = set(starts.values())
+    dynsym = game.get_section_by_name(".dynsym")
+    dynamic = game.get_section_by_name(".interp") is not None
+    imported = {s.name for s in dynsym.iter_symbols() if s.name and s["st_shndx"] == "SHN_UNDEF"} if dynsym else set()
+    if not dynamic:  # (a static program: all of its code is its functions, crt and library ones too)
+        if starts.get(game["e_entry"]) is None:
+            fail(f"the program starts at 0x{game['e_entry']:X}, where none of its functions is")
+        for name in (".init", ".fini", ".ctors", ".dtors"):
+            if (sec := game.get_section_by_name(name)) is not None and sec["sh_size"]:
+                fail(f"a static program's {name} can't be relinked yet")
+    objs, from_c = [], 0
+    for fn in B["functions"]:
+        src = source_of(fn)
+        if src is not None:
+            res = compile_source(config(fn, work, placed=False), "", src.read_text(encoding="utf-8"), trusted=True)
+            if not res.ok:
+                fail(f"{src.relative_to(ROOT)} doesn't compile:\n{res.log[-3000:]}")
+            (work / f"{fn['name']}.o").write_bytes(for_relink(res.obj, fn, set(B["symbols"])))
+            from_c += 1
+        else:
+            asm = ROOT / (fn.get("s") or f"asm/{fn['name']}.s")
+            if not asm.exists():
+                fail(f"{fn['name']} is neither C nor assembly (asm/{fn['name']}.s): export again")
+            shutil.copyfile(asm, work / f"{fn['name']}.s")
+            _run(cc_cfg, work, f"{_tool(tc, 'as')} -o {fn['name']}.o {fn['name']}.s", f"asm/{fn['name']}.s doesn't assemble")
+        objs.append(f"{fn['name']}.o")
+    plt = _plt(game)
+    blob, stray = _blob(game, data, starts, {addr: name for name, addr in plt.items()},
+                        [f for f in B["functions"] if source_of(f) is None])
+    (work / "data.s").write_text(blob, encoding="utf-8")
+    _run(cc_cfg, work, f"{_tool(tc, 'as')} -o data.o data.s", "the program's data doesn't assemble")
+    libs = _link_stubs(game, cc_cfg, work, tc) if dynamic else []
+    runtime = [crt / "crt1.o", crt / "crti.o", begin] if dynamic else []
+    ending = [begin.with_name("crtend.o"), crt / "crtn.o"] if dynamic else []
+    defined = set()
+    for f in runtime + ending:
+        defined |= {s.name for s in ELFFile(BytesIO(f.read_bytes())).get_section_by_name(".symtab").iter_symbols()
+                    if s.name and s["st_shndx"] != "SHN_UNDEF"}
+    assigns = []
+    for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
+        if name in names or name in imported or name in defined:
+            continue
+        assigns.append(f"{name} = {starts[addr]};" if addr in starts else f"{name} = 0x{addr:X};")
+    ro, da, bss = (game.get_section_by_name(n) for n in (".rodata", ".data", ".bss"))
+    end = max(s["sh_addr"] + s["sh_size"] for s in (ro, da, bss) if s is not None)
+    code = (end + 0xFFFFF) & ~0xFFFFF  # (above the game's data: the code may grow)
+    # (a static program has no dynamic sections for the headers' segment: its read-only data goes there instead)
+    pinned = "".join(f"  .orig{n} 0x{s['sh_addr']:X} : {{ data.o(.orig{n}) }} :{seg}\n"
+                     for n, s, seg in ((".rodata", ro, "rodata" if dynamic else "text"), (".data", da, "data"),
+                                       (".bss", bss, "data"))
+                     if s is not None)
+    entry = "_start" if dynamic else starts[game["e_entry"]]
+    # (crtbegin.o's list start first, crtend.o's end marker last)
+    ctors = "".join(f"  .{k} : {{ KEEP ({begin}(.{k})) KEEP (*(EXCLUDE_FILE ({ending[0]}) .{k})) KEEP (*(.{k})) }}\n"
+                    for k in ("ctors", "dtors")) if dynamic else ""
+    script = f"""OUTPUT_FORMAT("elf32-i386")
+OUTPUT_ARCH(i386)
+ENTRY({entry})
+PHDRS
+{{
+""" + ("""  headers PT_PHDR PHDRS ;
+  interp PT_INTERP ;
+""" if dynamic else "") + """  text PT_LOAD FILEHDR PHDRS ;
+""" + ("  rodata PT_LOAD ;\n" if dynamic else "") + """  data PT_LOAD ;
+  code PT_LOAD ;
+  more PT_LOAD ;
+""" + ("  dynamic PT_DYNAMIC ;\n" if dynamic else "") + f"""}}
+SECTIONS
+{{
+  . = 0x{min(s_["sh_addr"] for s_ in game.iter_sections() if s_["sh_addr"]) & ~0xFFF:X} + SIZEOF_HEADERS;
+  .interp : {{ *(.interp) }} :text {":interp" if dynamic else ""}
+  .hash : {{ *(.hash) }} :text
+  .dynsym : {{ *(.dynsym) }}
+  .dynstr : {{ *(.dynstr) }}
+  .gnu.version : {{ *(.gnu.version) }}
+  .gnu.version_d : {{ *(.gnu.version_d) }}
+  .gnu.version_r : {{ *(.gnu.version_r) }}
+  .rel.dyn : {{ *(.rel.init) *(.rel.text) *(.rel.fini) *(.rel.rodata) *(.rel.data) *(.rel.ctors) *(.rel.dtors) *(.rel.got) *(.rel.bss) }}
+  .rel.plt : {{ *(.rel.plt) }}
+{pinned}  . = 0x{code:X};
+  .init : {{ KEEP (*(.init)) }} :code =0x9090
+  .plt : {{ *(.plt) }}
+  .text : {{ *(.text) }} =0x9090
+  .fini : {{ KEEP (*(.fini)) }} =0x9090
+  .rodata : {{ *(.rodata) *(.rodata.*) }}
+  . = ALIGN(0x1000) + (. & 0xFFF);
+  .data : {{ *(.data) *(.data.*) }} :more
+  .eh_frame : {{ KEEP (*(.eh_frame)) }}
+{ctors}
+  .got : {{ *(.got.plt) *(.got) }}
+  .dynamic : {{ *(.dynamic) }} :more {":dynamic" if dynamic else ""}
+  _edata = .;
+  __bss_start = .;
+  .bss : {{ *(.dynbss) *(.bss) *(.bss.*) *(COMMON) . = ALIGN(4); }} :more
+  _end = .;
+  /DISCARD/ : {{ *(.comment) *(.note*) *(.stab*) }}
+}}
+""" + "\n".join(assigns) + "\n"
+    (work / "program.ld").write_text(script, encoding="utf-8")
+    (work / "objects.txt").write_text("\n".join(objs) + "\n", encoding="utf-8")
+    libgcc = begin.with_name("libgcc.a") if begin is not None else Path("-")
+    out = B.get("program") or "program.relinked"
+    if dynamic:
+        link = (f"{_tool(tc, 'ld')} -m elf_i386 -dynamic-linker /lib/ld-linux.so.2 -rpath-link . -T program.ld "
+                f"-o {out} {runtime[0]} {runtime[1]} {runtime[2]} $(cat objects.txt) data.o {crt / 'libc_nonshared.a'} "
+                f"{' '.join(libs)} {libgcc if libgcc.exists() else ''} {ending[0]} {ending[1]}")
+    else:
+        link = f"{_tool(tc, 'ld')} -m elf_i386 -static -T program.ld -o {out} $(cat objects.txt) data.o"
+    _run(cc_cfg, work, link, "the program doesn't link")
+    final = ROOT / "build" / out
+    shutil.copyfile(work / out, final)
+    final.chmod(0o755)
+    print(f"build/{out}: relinked, a new program from the C ({from_c} of {len(B['functions'])} functions from C, the "
+          f"rest from asm/; its data where the game has it{f', {stray} words of it still pointing into the old code' if stray else ''})")
+    return final
+
+
+def _plt(game) -> dict[str, int]:
+    """Each import's PLT stub in the original: the n-th R_386_JUMP_SLOT is the n-th entry after PLT0."""
+    rel, plt = game.get_section_by_name(".rel.plt"), game.get_section_by_name(".plt")
+    if rel is None or plt is None:
+        return {}
+    syms = game.get_section(rel["sh_link"])
+    return {syms.get_symbol(r["r_info_sym"]).name.split("@")[0]: plt["sh_addr"] + 16 * (n + 1)
+            for n, r in enumerate(rel.iter_relocations())}
+
+
 def status() -> None:
     have = sum(1 for f in B["functions"] if source_of(f) is not None)
     print(f"{have} of {len(B['functions'])} functions are C")
@@ -310,7 +667,10 @@ if __name__ == "__main__":
         check(args[1])
     elif args[:1] == ["status"]:
         status()
+    elif args[:1] == ["relink"]:
+        relink()
     elif not args:
         build()
+        relink()
     else:
         sys.exit(__doc__)

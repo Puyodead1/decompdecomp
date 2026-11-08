@@ -34,6 +34,49 @@ def _unit_name(unit: str | None) -> str:
     return re.sub(r"\W", "_", Path(unit or "program").stem) or "program"
 
 
+def _statics(obj: bytes, placements: dict[str, dict[int, int]]) -> dict[str, int]:
+    """The writable data the function's C defines itself (a file's statics, `x.12` for one inside a function), by
+    name, where the game keeps it: the relinked program reads and writes the game's, shared by the file's functions,
+    not a copy of its own. Names, not offsets: a static someone adds moves the others' offsets."""
+    elf = ELFFile(BytesIO(obj))
+    out = {}
+    for name, offsets in placements.items():
+        sec = elf.get_section_by_name(name)
+        bases = {addr - off for off, addr in offsets.items()}
+        if sec is None or not sec["sh_flags"] & 1 or len(bases) != 1:  # (SHF_WRITE)
+            continue
+        base, index = bases.pop(), elf.get_section_index(name)
+        for sym in elf.get_section_by_name(".symtab").iter_symbols():
+            if sym.name and sym["st_shndx"] == index and sym["st_info"]["type"] == "STT_OBJECT":
+                out[sym.name] = base + sym["st_value"]
+    return out
+
+
+def _assembly(row, syms) -> str:
+    """A function that isn't C as GNU assembly: its bytes, each call, jump and address out of it by name (the
+    relinked program moves the code, so a number would point at nothing)."""
+    import json as _json
+
+    code, vram, name = bytes(row["target"]), row["vram"], row["name"]
+    refs = {}
+    for at, kind, dest in _json.loads(row["relocs"] or "[]"):
+        if kind == 2 and vram <= dest < vram + len(code):
+            continue  # (a jump inside it: the same distance wherever it is)
+        label, off = (name, dest - vram) if vram <= dest < vram + len(code) else syms.name_at(dest)
+        target = f"{label}{f'+{off}' if off else ''}"
+        refs[at] = f"{target} - . - 4" if kind == 2 else target
+    lines, i = [f".text\n.globl {name}\n.type {name},@function\n{name}:\n"], 0
+    while i < len(code):
+        if i in refs:
+            lines.append(f".long {refs[i]}\n")
+            i += 4
+            continue
+        stop = min([len(code), i + 16] + [a for a in refs if a > i])
+        lines.append(f".byte {', '.join(str(b) for b in code[i:stop])}\n")
+        i = stop
+    return "".join(lines)
+
+
 def _unplaceable(obj: bytes, scattered: set[str]) -> bool:
     """Whether a section the game keeps apart holds an address the build can't give the game's value: one into the
     function's own code (a switch's jump table, beside strings the game merged with its file's) it can. (One into
@@ -100,6 +143,9 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         if scattered and _unplaceable(compiled.obj, scattered):
             fallback.append((row["name"], "its own data isn't laid out like the game's"))
             continue
+        statics = _statics(compiled.obj, linked.placements)
+        if statics:
+            f["statics"] = statics
         if unit not in headers and hdr == common:  # (a source file with nothing of its own: the shared one)
             headers[unit] = "common.h"
         elif unit not in headers:
@@ -114,37 +160,50 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         if compiled.layout:  # it matches where the code before it in its file put it (x86_link.layouts)
             f["prelude"] = compiled.layout
 
+    # what isn't C yet, as assembly that names what it calls and reads: the relinked program moves the code
+    asm = out / "asm"
+    by_vram = {r["vram"]: r for r in rows}
+    for f in functions:
+        if not f.get("c"):
+            asm.mkdir(exist_ok=True)
+            (asm / f"{f['name']}.s").write_text(_assembly(by_vram[f["vram"]], syms), encoding="utf-8")
+            f["s"] = f"asm/{f['name']}.s"
+
     names = {f["name"] for f in functions if f.get("c")}
     symbols = {s.name: s.address for s in syms.by_name.values() if s.name not in names and s.address}
     for f in functions:  # (automatic names matched C uses that no symbol has: their address is in the name)
-        if f.get("c"):
-            for word in set(re.findall(r"\b[A-Za-z]\w*_[0-9A-Fa-f]{1,8}\b", (out / f["c"]).read_text(encoding="utf-8"))):
+        if f.get("c") or f.get("s"):  # (and the assembly's)
+            for word in set(re.findall(r"\b[A-Za-z]\w*_[0-9A-Fa-f]{1,8}\b",
+                                       (out / (f.get("c") or f["s"])).read_text(encoding="utf-8"))):
                 if (m := AUTO_NAME.match(word)) and word not in names:
                     symbols.setdefault(word, int(m.group(1), 16))
     build = {
         "title": proj["name"], "platform": console.id, "image": "baserom", "output": "build/program",
+        "program": re.sub(r"[^\w.-]", "_", Path(cfg["rom"].get("program") or cfg["rom"]["file"]).name),
         "sha1": hashlib.sha1(image).hexdigest(), "toolchain": cfg["compiler"]["toolchain"],
         "text": {"vram": text["sh_addr"], "offset": text["sh_offset"], "size": text["sh_size"]},
         "functions": functions, "symbols": dict(sorted(symbols.items(), key=lambda kv: kv[1])),
+        "got": cfg.get("got"),  # (where -fPIC code finds the GOT, and what each entry holds)
     }
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
     matched = sum(1 for f in functions if f.get("c"))
-    _docs(out, proj["name"], matched, len(functions), fallback)
+    _docs(out, proj["name"], matched, len(functions), fallback, build["program"])
     (out / ".gitignore").write_text("build/\nbaserom*\n", encoding="utf-8")
 
     log("building the exported project to check it rebuilds the program byte for byte")
     proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
                           encoding="utf-8", errors="replace")
-    identical = proc.returncode == 0 and "identical" in proc.stdout
-    if not identical:
+    identical = "identical to the original" in proc.stdout
+    relinked = proc.returncode == 0 and "relinked" in proc.stdout
+    if not (identical and relinked):
         log((proc.stdout + proc.stderr)[-3000:])
-    return {"path": str(out), "identical": identical, "matched": matched, "functions": len(functions),
-            "fallback": fallback, "log": (proc.stdout + proc.stderr)[-3000:]}
+    return {"path": str(out), "identical": identical, "relinked": relinked, "matched": matched,
+            "functions": len(functions), "fallback": fallback, "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
-def _docs(out: Path, title: str, matched: int, total: int, fallback) -> None:
+def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program") -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
     (out / "README.md").write_text(f"""# {title} (decompilation)
 
@@ -164,11 +223,23 @@ result against your original, byte for byte.
 | :-- | :-- |
 | `src/<source file>/<function>.c` | Decompiled functions, one per file, each matching the original. |
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own. |
-| `build.json`, `build.py` | Where each function is and how it's built. `build/program` is the rebuilt program. |
+| `asm/<function>.s` | What isn't C yet, as assembly. |
+| `build.json`, `build.py` | Where each function is and how it's built: `build/program` is the original rebuilt byte for byte, `build/{program}` the relinked program. |
+
+`python build.py` then links a new program from the C, `build/{program}`: every function compiled as written and
+laid out by the linker above the program's data, where it may grow, with Slackware 8.0's crt files and the libraries
+it imports. That's the one to change: edit any function (make it longer, add one in its file), run
+`python build.py relink`, and run `build/{program}` where your copy runs.
 
 Keep going with any tool: write a function as `src/<source file>/<name>.c`, run `python build.py check <name>`,
-then `python build.py`. When it says *identical*, the program still matches. Once all of its code is C, the program
-can be relinked whole, changed and moved to other platforms.
+then `python build.py`. When it says *identical*, the program still matches.
+
+## What isn't C yet
+
+The program's data (`.rodata`, `.data`, `.bss`) stays where the original has it, as its own bytes: each word in it
+that pointed at a function points at that function wherever it now is, and each function's statics are the
+program's. Code can move and grow; data can't move yet (written as C, with its pointers named, it could).
+What's in `asm/` isn't C yet either: assembly that names what it calls, so it moves with the rest.
 
 The program's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
@@ -180,4 +251,6 @@ share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
   `python build.py check <name>`: it compiles it, links it at its address, compares it with the original and
   records it in `build.json`.
 - Shared types and prototypes go in `include/`. Never edit `baserom` to force a match.
+- `python build.py relink` links a new program from the C (build/<program>): changes that don't match (a mod, a
+  fix) go there; the program's data stays where the original has it.
 """, encoding="utf-8")
