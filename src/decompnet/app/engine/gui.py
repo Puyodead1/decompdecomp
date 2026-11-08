@@ -33,6 +33,9 @@ EVENT_ROWS = ("SELECT e.id, e.kind, e.detail, e.created_at, a.name AS agent, p.s
 
 
 
+BROKEN = ("doesn't compile any more", "no longer matches")  # an export's reasons that mean its C must be redone
+
+
 class GuiMixin:
     def export_rom(self, slug: str, log=print) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
@@ -47,6 +50,15 @@ class GuiMixin:
         log("gathering the declarations matched functions made for themselves into the shared header")
         self.readability.tidy_declarations(slug, log=log)
         res = self.console(proj).export_project(self, slug, Path(proj["root"]) / "source", log=log)
+        # a matched function the export found broken (a header edit since, a rename that missed its C) goes back to
+        # the agents, its C their starting point, instead of staying "matched" as the program's bytes in every export
+        broken: dict[str, list[str]] = {}
+        for name, why in res.get("fallback") or []:
+            if why in BROKEN:
+                broken.setdefault(why, []).append(name)
+        for why, names in broken.items():
+            self._reopen(proj, names, f"the export found it {why}")
+            log(f"{len(names)} matched function(s) {why}: open again for the agents ({', '.join(names[:5])})")
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
             cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": res.get("identical"),

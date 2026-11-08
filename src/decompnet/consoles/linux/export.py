@@ -27,6 +27,7 @@ from ...limits import capped
 from ...project import compiler_for
 from ...rom.export import exported_header, exported_source
 from ...rom.symbols import AUTO_NAME
+from . import export_make
 
 
 def _unit_name(unit: str | None) -> str:
@@ -187,11 +188,13 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     }
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")
+    export_make.write(out, build)
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
     matched = sum(1 for f in functions if f.get("c"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"])
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
-    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\n", encoding="utf-8")
+    # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
+    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\ntools/*/\ntools/.downloads/\n", encoding="utf-8")
 
     log("building the exported project to check it rebuilds the program byte for byte")
     proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
@@ -216,7 +219,12 @@ result against your original, byte for byte.
 ## Build
 
 1. Put your own copy of the program here as `baserom` (it is in `.gitignore`; never commit it).
-2. `python build.py` (needs decompdecomp installed, for Slackware 8.0's GCC 2.95.3 and binutils).
+2. `make`: builds `build/{program}`, the program linked anew from the C. The first time it downloads the compiler the
+   program was built with into `tools/` (`make toolchain`: pinned archives, each checked against its SHA-256; where
+   the system has no 32-bit loader, a 32-bit C runtime too). Needs make, python3, curl or wget, tar and ar; not
+   decompdecomp.
+3. `python build.py` (with decompdecomp installed) checks that the C still rebuilds your copy byte for byte, as
+   `build/program`, and then runs `make`.
 
 ## Layout
 
@@ -226,12 +234,12 @@ result against your original, byte for byte.
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own. |
 | `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
 | `data/program.s` | The program's data, every global and pointer named (written from your copy by the first relink). |
-| `build.json`, `build.py` | Where each function is and how it's built: `build/program` is the original rebuilt byte for byte, `build/{program}` the relinked program. |
+| `Makefile`, `tools/` | The build: `make` links `build/{program}`; `tools/relink.py` its steps, `tools/toolchain.sh` the compiler's download. |
+| `build.json`, `build.py` | Where each function is; `build.py` (decompdecomp) checks the C against your copy, as `build/program`. |
 
-`python build.py` then links a new program from the C, `build/{program}`: every function compiled as written and
-laid out by the linker above the program's data, where it may grow, with Slackware 8.0's crt files and the libraries
-it imports. That's the one to change: edit any function (make it longer, add one in its file), run
-`python build.py relink`, and run `build/{program}` where your copy runs.
+`build/{program}` is every function compiled as written and laid out by the linker above the program's data, where
+it may grow, with the compiler's own crt files and the libraries it imports. That's the one to change: edit any
+function (make it longer, add one in its file), run `make`, and run `build/{program}` where your copy runs.
 
 Keep going with any tool: write a function as `src/<source file>/<name>.c`, run `python build.py check <name>`,
 then `python build.py`. When it says *identical*, the program still matches.
@@ -241,8 +249,8 @@ then `python build.py`. When it says *identical*, the program still matches.
 The first relink writes the program's data as `data/program.s`, from your copy: every global labelled by name, every
 word that pointed at a function, a string or other data written as that (`.long greet`, `.long __orig_rodata+0x1a4`),
 its constructor and destructor lists (a C++ program's globals) by name. Change it like any source. The data stays
-where the original has it; `python build.py relink --move` lays it out after the code instead, the addresses the C
-still writes as numbers moved with it. What's in `asm/` isn't C yet: assembly that names what it calls, so it moves
+where the original has it; `make move` lays it out after the code instead, the addresses the C
+still writes as numbers moved with it (`make move`; it reads the code with Python's capstone). What's in `asm/` isn't C yet: assembly that names what it calls, so it moves
 with the rest. `asm/` and `data/` are made from your copy: keep them out of git (`.gitignore` does).
 
 The program's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
@@ -255,6 +263,6 @@ share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
   `python build.py check <name>`: it compiles it, links it at its address, compares it with the original and
   records it in `build.json`.
 - Shared types and prototypes go in `include/`. Never edit `baserom` to force a match.
-- `python build.py relink` links a new program from the C (build/<program>): changes that don't match (a mod, a
-  fix) go there; the program's data stays where the original has it.
+- `make` links a new program from the C (build/<program>), without decompdecomp: changes that don't match (a mod,
+  a fix) go there. `python build.py` checks the matching first.
 """, encoding="utf-8")

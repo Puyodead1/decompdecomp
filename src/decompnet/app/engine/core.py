@@ -150,6 +150,14 @@ class Core(Network):
         # what the console's work did, it said in the feed ("8 pieces of functions ... joined"): in the answer too
         done = [r["detail"] for r in self.store.all("SELECT detail FROM events WHERE project_id=? AND id>? AND "
                                                      "kind='analysis' ORDER BY id", row["id"], last)]
+        if self.is_rom(row):  # matched C that doesn't match any more (a header edit, a rename that missed it): redone
+            units = self._unit_contexts(row["id"])
+            broken = self.regression_test(row, None, header_for=lambda fn: self._context(
+                row["id"], self._effective_unit(fn, units))["header"])
+            if broken:
+                self._reopen(row, [name for name, _ in broken], "Check again found it no longer matches")
+                done.append(f"{len(broken)} matched function{'' if len(broken) == 1 else 's'} no longer matched: "
+                            f"open again for the agents ({', '.join(name for name, _ in broken[:5])})")
         n = self.not_c_from_notes(slug) + self.twins.set_aside_asm(self.project_row(slug))
         self._update_cfg(slug, lambda cfg: cfg.update(checked=__version__))
         if n:
