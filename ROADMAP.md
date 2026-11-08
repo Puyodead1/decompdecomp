@@ -177,9 +177,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
 - The relink's data as typed C: the export's `build.py relink` links a new program from the C, its data written as
   `data/program.s` (every global labelled, every pointer named: to functions, strings, data; the constructor lists),
   pinned where the program has it or moved after the code (`--move`); a 2001 game relinked both ways runs as the
-  original does, and with a function made longer. Left: that data as C with its globals' types (from the debug
-  information's structs), `.init_array`'s programs (GCC 4.7 and later) tried, thread-local storage and PIE programs,
-  and C++ exception tables for code still in assembly.
+  original does, and with a function made longer. Its source files are C files again (units.py: each file's matched
+  functions merged in their order, what they declared for themselves once, the file compiled whole and judged
+  against the game's span of it; 76 of a 2001 game's 79), and `make port` builds the same C with the system's GCC
+  (a newer GCC's merged constants, `.init_array` and extra imports made what the 2001 linker and runtime take).
+  Left: that data as C with its globals' types (from the debug information's structs, judged file by file),
+  source files for the PC's projects too (its PDB's object files), `.init_array`'s programs (GCC 4.7 and later)
+  tried, thread-local storage and PIE programs, and C++ exception tables for code still in assembly.
 - Pieces of functions joined to their function (no ROM console has it yet).
 - egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
 

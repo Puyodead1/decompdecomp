@@ -2,9 +2,11 @@
 """The relinked program's pieces, for the Makefile: no decompdecomp, nothing but Python's standard library (and, for
 `move`, the capstone module).
 
-    python3 tools/relink.py rules              build/rules.mk: how each function is built (its C, else asm/)
+    python3 tools/relink.py rules              build/rules.mk: how each source file and function is built (its
+                                               C, else asm/)
     python3 tools/relink.py asm NAME            asm/NAME.s, from your copy's bytes (what isn't C yet)
-    python3 tools/relink.py fixup RAW OUT NAME  a function's object as the program takes it (its statics the game's)
+    python3 tools/relink.py fixup RAW OUT NAME  an object as the program takes it (its statics the game's); NAME a
+                                               function, or file:NAME a source file
     python3 tools/relink.py data OUT            data/program.s: the program's data, every global and pointer named
     python3 tools/relink.py stubs DIR           the libraries it imports from, as stubs to link against
     python3 tools/relink.py link OUT [move]     link the program (the linker script first)
@@ -26,9 +28,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 TC = Path(os.environ.get("TC") or ROOT / "tools" / (B.get("toolchain") or "gcc-2.95.3-linux"))
+UNITS = {u["name"]: u for u in B.get("units") or []}  # (the source files that are one C file each)
+# where the C's objects are: build/relink, or build/port (`make port`: the same C built by the system's GCC); what
+# isn't C yet and the data are the same objects for both
+OBJDIR = os.environ.get("OBJDIR") or "build/relink"
 DATA = (".rodata", ".data", ".bss")
 LISTS = (".ctors", ".dtors", ".init_array", ".fini_array", ".preinit_array")
-SHF_WRITE, SHF_ALLOC = 1, 2
+SHF_WRITE, SHF_ALLOC, SHF_MERGE, SHF_STRINGS = 1, 2, 0x10, 0x20
+SHT_INIT_ARRAY, SHT_FINI_ARRAY = 14, 15
 SHN_UNDEF, SHN_ABS, SHN_COMMON = 0, 0xFFF1, 0xFFF2
 
 
@@ -45,6 +52,7 @@ class Elf:
         self.raw = data
         (self.type, self.machine, _, self.entry, _, self.shoff, _, _, _, _, self.shentsize, shnum,
          shstrndx) = struct.unpack_from("<HHIIIIIHHHHHH", data, 16)
+        self.shstrndx = shstrndx
         self.sections = []
         for i in range(shnum):
             name, typ, flags, addr, off, size, link, info, align, entsize = struct.unpack_from(
@@ -154,6 +162,19 @@ def built() -> list[dict]:
     return [fn for fn in B["functions"] if fn["name"] not in library]
 
 
+def objects() -> list[tuple[str, dict]]:
+    """Each object the program is linked from: (its path, the source file's entry or the function's), a source
+    file's where it is one C file, else each function's."""
+    names = {fn["name"] for fn in built()}
+    out = []
+    for unit in UNITS.values():
+        if any(name not in names for name in unit["functions"]):
+            fail(f"{unit['c']} defines functions the C library brings itself: put them in a file of their own")
+        out.append((f"{OBJDIR}/file-{unit['name']}.o", unit))
+    return out + [(f"{OBJDIR if source_of(fn) is not None else 'build/relink'}/{fn['name']}.o", fn)
+                  for fn in built() if not fn.get("in")]
+
+
 PIC = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
 
 
@@ -189,15 +210,33 @@ def write_asm(name: str) -> None:
 
 def rules() -> None:
     """build/rules.mk: each function's object from its C (with its flags), else from asm/ (written from your copy
-    when it isn't there), and the list of them."""
+    when it isn't there), and the list of them (OBJS); and PORT_OBJS, the C built by the system's GCC instead
+    ($(PORT_CC) $(PORT_FLAGS), `make port`), with the same assembly."""
+    global OBJDIR
+    OBJDIR = "build/port"
+    port, port_lines = [], []
+    for obj, fn in objects():
+        if obj.startswith("build/port/"):
+            src = fn["c"] if "functions" in fn else source_of(fn).relative_to(ROOT).as_posix()
+            name = f"file:{fn['name']}" if "functions" in fn else fn["name"]
+            port_lines.append(f"{obj}: {src} $(HEADERS) | build/port\n\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -c {src} "
+                              f"-o $@.raw\n\t$(PY) tools/relink.py fixup $@.raw $@ {name}\n")
+        port.append(obj)
+    OBJDIR = "build/relink"
     lines, objs = [], []
     raw, elf = game()
     text = elf.section(".text")
-    for fn in built():
+    for obj, fn in objects():
+        if "functions" in fn:  # a source file, compiled whole
+            flags = " ".join(fn.get("flags") or ["-O2"])
+            lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
+                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}\n"
+                         f"\t$(PY) tools/relink.py fixup $@.raw $@ file:{fn['name']}\n")
+            objs.append(obj)
+            continue
         at = text["offset"] + fn["vram"] - text["addr"]
         if source_of(fn) is None and PIC.search(raw[at:at + min(fn["size"], 24)]):
             fail(f"{fn['name']} is code built with -fPIC and isn't C yet: as bytes it would read the original's GOT")
-        obj = f"build/relink/{fn['name']}.o"
         src = source_of(fn)
         if src is not None:
             flags = " ".join(fn.get("flags") or ["-O2"])
@@ -211,6 +250,7 @@ def rules() -> None:
                          f"{obj}: {asm} | build/relink $(TOOLCHAIN_READY)\n\t$(AS) -o $@ {asm}\n")
         objs.append(obj)
     print("OBJS := " + " \\\n  ".join(objs) + "\n\n" + "\n".join(lines))
+    print("PORT_OBJS := " + " \\\n  ".join(port) + "\n\n" + "\n".join(port_lines))
 
 
 # ------------------------------------------------------------------------------------------------------------ fixup
@@ -223,7 +263,12 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
     obj = Path(raw_path).read_bytes()
     elf = Elf(obj)
     data = bytearray(obj)
-    fn = next((f for f in B["functions"] if f["name"] == name), {"name": name})
+    if name.startswith("file:"):  # (a source file: every function of it is its own)
+        fn = UNITS[name[5:]]
+        own = set(fn["functions"])
+    else:
+        fn = next((f for f in B["functions"] if f["name"] == name), {"name": name})
+        own = {name}
     statics = fn.get("statics") or {}
     known = set(B["symbols"])
     symtab = elf.section(".symtab")
@@ -260,11 +305,25 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
         for k, (off, info) in enumerate(kept):
             struct.pack_into("<II", data, rs["offset"] + k * 8, off, info)
         struct.pack_into("<I", data, elf.shoff + rs["index"] * elf.shentsize + 20, len(kept) * 8)
+    # a newer compiler's merged constants (.rodata.str1.1, .rodata.cst8: SHF_MERGE, SHF_STRINGS) as plain data: the
+    # 2001 linker resolved every reference into them to 0 (fopen(name, NULL))
+    names = elf.sections[elf.shstrndx]
+    for sec in elf.sections:
+        header = elf.shoff + sec["index"] * elf.shentsize
+        if sec["flags"] & (SHF_MERGE | SHF_STRINGS):
+            struct.pack_into("<I", data, header + 8, sec["flags"] & ~(SHF_MERGE | SHF_STRINGS))
+        # and its constructor list (.init_array) as the old C runtime's: crtbegin.o runs .ctors, and glibc 2.2's
+        # startup never reads .init_array, which the 2001 linker doesn't know either ("file not recognized")
+        if sec["type"] in (SHT_INIT_ARRAY, SHT_FINI_ARRAY) and sec["name"] in (".init_array", ".fini_array"):
+            struct.pack_into("<I", data, header + 4, 1)  # SHT_PROGBITS
+            at = names["offset"] + sec["name_off"]  # (".rel.init_array" shares it: it becomes ".rel.ctors")
+            data[at:at + len(sec["name"])] = (".ctors" if sec["type"] == SHT_INIT_ARRAY else ".dtors").encode().ljust(
+                len(sec["name"]), b"\0")
     for sym in syms:
         if sym["shndx"] == SHN_COMMON and sym["name"] in known:  # (a tentative definition: the game's global)
             struct.pack_into("<II", data, sym["at"] + 4, 0, 0)
             struct.pack_into("<H", data, sym["at"] + 14, SHN_UNDEF)
-        elif sym["bind"] == 1 and sym["name"] != name and sym["shndx"] not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
+        elif sym["bind"] == 1 and sym["name"] not in own and sym["shndx"] not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
             data[sym["at"] + 12] = (2 << 4) | sym["type"]  # STB_WEAK
     Path(out_path).write_bytes(bytes(data))
 
@@ -344,11 +403,11 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
 def own_lists() -> set[str]:
     """The functions whose C makes its own constructor entry (`__attribute__((constructor))`): not listed twice."""
     out = set()
-    for fn in B["functions"]:
-        raw = ROOT / "build" / "relink" / f"{fn['name']}.o.raw"
+    for obj, fn in objects():
+        raw = ROOT / f"{obj}.raw"
         if raw.exists():
             if any(Elf(raw.read_bytes()).section(n) is not None for n in LISTS):
-                out.add(fn["name"])
+                out |= set(fn.get("functions") or [fn["name"]])
     return out
 
 
@@ -455,6 +514,39 @@ def needed(elf: Elf) -> list[str]:
     return out
 
 
+MATH = re.compile(r"(?:a?(?:sin|cos|tan)h?|atan2|sincos|exp2?|expm1|log(?:10|2|1p)?|pow|sqrt|cbrt|hypot|ceil|floor|"
+                  r"fabs|fmod|round|trunc|l?l?rint|l?l?round|nearbyint|copysign|ldexp|frexp|modf)[fl]?")
+
+
+def extra_imports(elf: Elf, imported_names: set[str], libs: list[str]) -> dict[str, str]:
+    """What the objects call that the original never imported, and the library that has it (C a newer compiler
+    builds calls puts for printf("...\n"), sincos for sin and cos of one angle): {name: library}, by the
+    toolchain's own libc.a and libm.a. A name neither has stays undefined: the link says so."""
+    undefined, defined = set(), set()
+    for obj, _ in objects():
+        path = ROOT / obj
+        if not path.exists():
+            continue
+        o = Elf(path.read_bytes())
+        for sym in o.symbols(o.section(".symtab")):
+            if sym["name"] and sym["bind"] in (1, 2):
+                (undefined if sym["shndx"] == SHN_UNDEF else defined).add(sym["name"])
+    known = defined | imported_names | set(B["symbols"]) | {f["name"] for f in B["functions"]} | from_library()
+    wanted = {n for n in undefined - known if not n.startswith(("_GLOBAL_OFFSET_TABLE_", "__"))}
+    if not wanted:
+        return {}
+    libc = next((lib for lib in libs if lib.startswith("libc.so")), "libc.so.6")
+    libm = next((lib for lib in libs if lib.startswith("libm.so")), "libm.so.6")
+    if not (TC / "crt" / "libc.a").exists():  # (no archive to ask: the math library's by name, else the C library's)
+        return {name: libm if MATH.fullmatch(name) else libc for name in wanted}
+    found = {}
+    for archive, lib in (("libm.a", libm), ("libc.a", libc)):
+        if (TC / "crt" / archive).exists():
+            for name in wanted & archive_defines(TC / "crt" / archive):
+                found.setdefault(name, lib)
+    return found
+
+
 def stubs(out_dir: str) -> None:
     """The libraries the program imports from, as stubs to link against: one per library it needs, holding what it
     imports from each at the versions it asked for (objects with their sizes, for the copies the linker makes): the
@@ -489,6 +581,10 @@ def stubs(out_dir: str) -> None:
         v = struct.unpack_from("<H", elf.raw, versym["offset"] + k * 2)[0] & 0x7FFF if versym else 0
         lib, ver = index.get(v, (plain, None))
         by_lib.setdefault(lib, {}).setdefault(ver, []).append(sym)
+    for name, lib in extra_imports(elf, {s["name"] for s in syms}, libs).items():
+        if lib not in libs:
+            libs.append(lib)
+        by_lib.setdefault(lib, {}).setdefault(None, []).append({"name": name, "type": 2, "size": 0})
     listing = []
     for lib in libs:
         source, script, prev = [], [], None
@@ -637,17 +733,17 @@ def link(out_path: str, mode: str = "") -> None:
 
     move_data = mode == "move"
     _, elf = game()
-    ld_script = ROOT / "build" / "relink" / "program.ld"
+    ld_script = ROOT / OBJDIR / "program.ld"
     script(str(ld_script), move_data)
     first, last, extra, kind = ld_script.with_suffix(".inputs").read_text(encoding="utf-8").split("\n")[:4]
     old_code(elf)
-    objs = [f"build/relink/{fn['name']}.o" for fn in built()]
-    listing = ROOT / "build" / "relink" / "objects.txt"
+    objs = [obj for obj, _ in objects()]
+    listing = ROOT / OBJDIR / "objects.txt"
     listing.write_text("\n".join(objs) + "\n", encoding="utf-8")
     ld = str(TC.resolve() / "binutils" / "usr" / "bin" / "ld")
     if kind == "dynamic":
-        stubs_dir = ROOT / "build" / "relink" / "stubs"
-        libs = [f"build/relink/stubs/{line.split()[0]}" for line in
+        stubs_dir = ROOT / OBJDIR / "stubs"
+        libs = [f"{OBJDIR}/stubs/{line.split()[0]}" for line in
                 (stubs_dir / "stubs.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
         cmd = [ld, "-m", "elf_i386", "-dynamic-linker", "/lib/ld-linux.so.2", "-rpath-link", str(stubs_dir),
                "-T", str(ld_script), "-o", out_path, *first.split(), *objs, "build/relink/data.o", *extra.split(), *libs, *last.split()]
@@ -663,7 +759,8 @@ def link(out_path: str, mode: str = "") -> None:
         move(out_path)
     total = len(B["functions"])
     from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None)
-    print(f"{out_path}: relinked, a new program from the C ({from_c} of {total} functions from C, the rest from asm/; "
+    print(f"{out_path}: relinked, a new program from the C ({from_c} of {total} functions from C, {len(UNITS)} source "
+          f"files whole, the rest from asm/; "
           f"the data from data/program.s, {'laid out after the code' if move_data else 'where the game has it'})")
 
 
@@ -674,8 +771,7 @@ def old_code(elf: Elf) -> None:
     lo, hi = text["addr"], text["addr"] + text["size"]
     starts = {f["vram"]: f["name"] for f in B["functions"]}
     found = []
-    for fn in B["functions"]:
-        src = source_of(fn)
+    for src in dict.fromkeys(source_of(fn) for fn in B["functions"]):
         if src is None:
             continue
         for n, line in enumerate(src.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
