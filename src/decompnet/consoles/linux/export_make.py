@@ -37,11 +37,14 @@ $(TOOLCHAIN_READY):
 build/relink:
 \tmkdir -p $@
 
-build/rules.mk: build.json tools/relink.py $(wildcard src/*/*.c) $(wildcard asm/*.s) | build/relink
-\t$(PY) tools/relink.py rules > $@
+# (after the toolchain: which functions its libc_nonshared.a brings decides the rules; written whole or not at all,
+# an empty one left by a failure was never made again)
+build/rules.mk: build.json tools/relink.py $(wildcard src/*/*.c) $(wildcard asm/*.s) | build/relink $(TOOLCHAIN_READY)
+\t$(PY) tools/relink.py rules > $@.tmp
+\tmv $@.tmp $@
 -include build/rules.mk
 
-data/program.s: | $(OBJS)
+data/program.s: | $(OBJS) $(TOOLCHAIN_READY)
 \t$(PY) tools/relink.py data $@
 
 build/relink/data.o: data/program.s | $(TOOLCHAIN_READY)
@@ -62,9 +65,10 @@ move: $(OBJS) build/relink/data.o $(STUBS)/stubs.txt
 \t$(PY) tools/relink.py link build/$(PROGRAM) move
 
 clean:
-\trm -r -f build/relink build/rules.mk build/$(PROGRAM)
+\trm -r -f build/relink build/rules.mk build/rules.mk.tmp build/$(PROGRAM)
 
 .PHONY: all toolchain move clean
+.DELETE_ON_ERROR:
 """
 
 TOOLCHAIN_SH = """\
