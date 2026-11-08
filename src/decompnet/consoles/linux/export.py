@@ -179,7 +179,8 @@ def _unplaceable(obj: bytes, scattered: set[str]) -> bool:
     return False
 
 
-def judge_unit(console, obj: bytes, rows: list, targets: list, syms, read) -> tuple[str, dict[str, dict[int, int]]]:
+def judge_unit(console, obj: bytes, rows: list, targets: list, syms, read, placed=None) -> \
+        tuple[str, dict[str, dict[int, int]]]:
     """Whether a source file's object is the game's code from its first function to its last, judged as one piece
     the way the judge links a function: each function where the game has it from the first (its offset in the
     object), and the whole span, padding between functions included, the game's bytes once linked at its address,
@@ -212,7 +213,7 @@ def judge_unit(console, obj: bytes, rows: list, targets: list, syms, read) -> tu
     if code is None:
         return "the game has no code there", {}
     target = dataclasses.replace(targets[0], code=code, relocs=[])
-    linked = console.link_function(bytes(whole), first["name"], target, syms, read)
+    linked = console.link_function(bytes(whole), first["name"], target, syms, read, placed)
     if not linked.exact:
         at = next((i for i, (a, b) in enumerate(zip(linked.candidate.code, code)) if a != b), None) if linked.candidate else None
         inside = max((r for r in rows if at is not None and r["vram"] <= first["vram"] + at), key=lambda r: r["vram"],
@@ -222,65 +223,118 @@ def judge_unit(console, obj: bytes, rows: list, targets: list, syms, read) -> tu
     return "", linked.placements
 
 
+def _symbol_value(obj: bytes, name: str) -> int:
+    symtab = ELFFile(BytesIO(obj)).get_section_by_name(".symtab")
+    return next(s["st_value"] for s in symtab.iter_symbols() if s.name == name)
+
+
 def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: str, hdr: str, syms, read,
-               statics_at: dict[str, dict[str, int]] | None = None):
+               statics_at: dict[str, dict[str, int]] | None = None, program=None):
     """A source file of the program as one C file, compiled whole and judged against the game's span of it: (the
-    merged C, its own header's declarations, its statics) or (None, why, None). Tried with each compiler its
+    merged C, its compiler, its statics, its data) or (None, why, None, None). Tried with each compiler its
     functions are matched with (a file the compiler ranges cut in two is one compile in the game), each call as
-    its function is defined first and then as each function declared it (units.merge's `as_called`)."""
+    its function is defined first and then as each function declared it (units.merge's `as_called`). Then with its
+    data as C (export_data.py, `program`): its data is {"sections": where each data section is, "defines": the
+    names its object defines}, or {"problem": why its data stays the program's bytes}."""
     from ... import units
     from ...compiler import compile_source
     from ...project import compiler_config
     from ...rom.export import CONTEXT_INCLUDE
+    from . import export_data
 
     compilers = list(dict.fromkeys((c["toolchain"], tuple(c.get("flags") or []))
                                    for c in (compiler_for(cfg, r["vram"]) for r in rows)))
-    problems: dict[bool, str] = {}
-    for as_called in (False, True):
-        merged = units.merge([(r["name"], r["matched_source"]) for r in rows], include, own_header, CONTEXT_INCLUDE,
-                             statics_at, as_called, hdr)
-        if merged.c is None:
-            return None, merged.problem, None
+    targets = [net._rom_target(r) for r in rows]
+    sources = [(r["name"], r["matched_source"]) for r in rows]
+
+    def attempt(merged, toolchain, flags, header=hdr, definitions=None):
         text = merged.c.replace(f'#include "{include}"\n', "", 1)  # (the compiler includes it first: context.h)
         text = text.replace(f'#include "{own_header}"\n', merged.header, 1)
+        config = compiler_config(Path(proj["root"]), {**cfg, "compiler": {"toolchain": toolchain, "flags": list(flags)}})
+        # (each piece was an agent's C, checked when it was judged: the file is longer than one function may be)
+        compiled = compile_source(net._placed(config, proj, rows[0]), header, text, trusted=True)
+        if not compiled.ok:
+            errors = [line for line in compiled.log.splitlines() if re.search(r":\d+: ", line) and not re.search(
+                r"warning|previous|In function|Each undeclared|for each function", line)]
+            return None, f"it doesn't compile as one file ({(errors or ['?'])[0][:160]})", {}
+        placed = export_data.placer(compiled.obj, definitions) if definitions else None
+        problem, placements = judge_unit(console, compiled.obj, rows, targets, syms, read, placed)
+        return (compiled.obj if not problem else None), problem, placements
+
+    problems: dict[bool, str] = {}
+    for as_called in (False, True):
+        merged = units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr)
+        if merged.c is None:
+            return None, merged.problem, None, None
         for toolchain, flags in compilers:
-            config = compiler_config(Path(proj["root"]), {**cfg, "compiler": {"toolchain": toolchain, "flags": list(flags)}})
-            # (each piece was an agent's C, checked when it was judged: the file is longer than one function may be)
-            compiled = compile_source(net._placed(config, proj, rows[0]), hdr, text, trusted=True)
-            if not compiled.ok:
-                errors = [line for line in compiled.log.splitlines() if re.search(r":\d+: ", line) and not re.search(
-                    r"warning|previous|In function|Each undeclared|for each function", line)]
-                problem = f"it doesn't compile as one file ({(errors or ['?'])[0][:160]})"
-            else:
-                problem, placements = judge_unit(console, compiled.obj, rows, [net._rom_target(r) for r in rows],
-                                                 syms, read)
-                if not problem:
-                    return merged, (toolchain, list(flags)), _statics(compiled.obj, placements)
-            problems.setdefault(as_called, problem)
+            obj, problem, placements = attempt(merged, toolchain, flags)
+            if obj is None:
+                problems.setdefault(as_called, problem)
+                continue
+            statics = _statics(obj, placements)
+            if program is None:
+                return merged, (toolchain, list(flags)), statics, None
+            # and its data as C
+            functions = {r["vram"]: r["name"] for r in rows}
+            taken = {addr for found in (statics_at or {}).values() for addr in found.values()}
+            data = export_data.file_data(program, rows[0]["unit"], functions, merged.c + merged.header, hdr, taken,
+                                         syms)
+            if data.problem:
+                return merged, (toolchain, list(flags)), statics, {"problem": data.problem}
+            if not data.definitions:
+                return merged, (toolchain, list(flags)), statics, None
+            source = program.sources.get(rows[0]["unit"])
+            lines = {functions[f.address]: f.line for f in (source.functions if source else []) if f.address in functions}
+            forward = export_data.forward(data)
+            def merge_with_data(as_called=as_called, data=data, forward=forward, lines=lines):
+                return units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
+                                   own_data={d.name: d.key for d in data.definitions}, forward=forward,
+                                   placed=[(d.line, d.text) for d in data.definitions], func_lines=lines)
+            with_data = merge_with_data()
+            # (a static a function declares as another type, under another name for the same symbol, is used as far
+            # as a newer GCC knows: else it drops or folds it, not seeing that name is the static)
+            if with_data.c is not None and export_data.mark_used(data, re.findall(r'__asm__\("(\w+)"\)', with_data.c)):
+                with_data = merge_with_data()
+            if with_data.c is None:
+                return merged, (toolchain, list(flags)), statics, {"problem": with_data.problem}
+            # (the shared header without its externs of the file's statics, as the file will include it: a static's
+            # first declaration decides its place in .bss: _static_headers)
+            statics_here = {d.name for d in data.definitions if d.forward.startswith("static")}
+            obj2, problem, placements2 = attempt(with_data, toolchain, flags,
+                                                 export_data.without_externs(hdr, statics_here), data.definitions)
+            if obj2 is None:
+                return merged, (toolchain, list(flags)), statics, {"problem": f"with its data, {problem}"}
+            text_at = rows[0]["vram"] - _symbol_value(obj2, rows[0]["name"])
+            def resolve(name: str) -> int | None:  # (and the program's own symbols: a hand-written label)
+                found = syms.resolve(name)
+                return found if found is not None else program.address_of(name)
+            # and what the functions' own C defines (their statics), where the code reads it: checked alike
+            definitions = data.definitions + export_data.read_by_code(obj2, data.definitions, placements2)
+            problem, laid_out = export_data.judge_data(obj2, definitions, resolve, read, text_at)
+            if problem:
+                return merged, (toolchain, list(flags)), statics, {"problem": problem}
+            defines = [d.name for d in data.definitions if d.forward.startswith("extern")] + sorted(data.aliases)
+            link_aliases = {n: [base, off] for n, (base, off) in sorted(data.link_aliases.items())}
+            return with_data, (toolchain, list(flags)), {}, {
+                "laid_out": laid_out, "defines": defines,
+                "variables": [[d.name, d.address, d.size, d.section] for d in definitions],
+                "aliases": {n: [base, off] for n, (base, off) in sorted(data.aliases.items())},
+                "link_aliases": link_aliases}
     if problems.get(True) and problems[True] != problems.get(False):
-        return None, f"{problems[False]}; with each call as its function declared it, {problems[True]}", None
-    return None, problems[False], None
+        return None, f"{problems[False]}; with each call as its function declared it, {problems[True]}", None, None
+    return None, problems[False], None, None
 
 
 def _static_headers(out: Path) -> int:
     """Each C file that defines a name `static` the header it includes declares `extern` (three files' own
     `static V2Vertex grvtx[4]` beside the shared header's `extern V2Vertex grvtx[4];`, from the debug information,
     which lists one) includes a copy of that header without the declaration: GCC 2.95 let it pass, a newer GCC
-    refuses the file. The same code either way. How many files it took."""
+    refuses the file, and a static's first declaration decides its place (export_data.py judges the file so). The
+    same code either way. How many files it took."""
     from ... import units
+    from . import export_data
 
-    declared: dict[str, dict[str, list[int]]] = {}  # header -> name -> its extern lines
-
-    def externs(header: str) -> dict[str, list[int]]:
-        if header not in declared:
-            lines = (out / "include" / header).read_text(encoding="utf-8").splitlines()
-            found: dict[str, list[int]] = {}
-            for k, line in enumerate(lines):
-                if line.startswith("extern ") and line.rstrip().endswith(";") and "(" not in line:
-                    for name in units.chunks(line + "\n")[0].names:
-                        found.setdefault(name, []).append(k)
-            declared[header] = found
-        return declared[header]
+    texts: dict[str, str] = {}
     made, n = {}, 0
     for path in sorted((out / "src").rglob("*.c")):
         text = path.read_text(encoding="utf-8")
@@ -288,21 +342,21 @@ def _static_headers(out: Path) -> int:
         if not m or not (out / "include" / m.group(1)).exists():
             continue
         header = m.group(1)
+        if header not in texts:
+            texts[header] = (out / "include" / header).read_text(encoding="utf-8")
         mine = {name for c in units.chunks(text) if c.kind == "static" for name in c.names}
-        clash = sorted(mine & set(externs(header)))
+        clash = sorted(mine & set(export_data.header_declarations(texts[header])))
         if not clash:
             continue
         key = (header, tuple(clash))
         if key not in made:
-            gone = {k for name in clash for k in externs(header)[name]}
-            lines = (out / "include" / header).read_text(encoding="utf-8").splitlines()
             variant = f"{Path(header).stem}_{path.stem}.h"
             k = 2
             while (out / "include" / variant).exists():
                 variant, k = f"{Path(header).stem}_{path.stem}{k}.h", k + 1
             (out / "include" / variant).write_text(
                 f"/* {header} without what {path.stem}.c defines static itself: {', '.join(clash)} */\n"
-                + "\n".join(line for k, line in enumerate(lines) if k not in gone) + "\n", encoding="utf-8")
+                + export_data.without_externs(texts[header], set(clash)), encoding="utf-8")
             made[key] = variant
         path.write_text(text.replace(m.group(0), f'#include "{made[key]}"\n', 1), encoding="utf-8")
         n += 1
@@ -374,7 +428,10 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     # each source file whose functions all match as one C file, compiled whole and judged against the game's span
     # of it (the function files stay where it doesn't, and why is in the README)
     log("putting the matched functions back into their source files")
-    unit_list, unit_fallback = [], []
+    unit_list, unit_fallback, data_fallback = [], [], []
+    from . import export_data
+
+    program = export_data.Program(image)
     by_name = {f["name"]: f for f in functions}
     taken = {p.name for p in (out / "include").iterdir()}
     groups: dict = {}
@@ -396,9 +453,9 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         stem = _unit_name(unit)
         name = stem if f"{stem}.h" not in taken and not (out / "src" / f"{stem}.c").exists() else f"{stem}_file"
         hdr = net._context(proj["id"], net._effective_unit(members[0], units))["header"]
-        merged, why, statics = _unit_file(net, proj, cfg, console, members, headers[net._effective_unit(members[0], units)],
-                                          f"{name}.h", hdr, syms, read,
-                                          {r["name"]: by_name[r["name"]].get("statics") or {} for r in members})
+        merged, why, statics, data = _unit_file(
+            net, proj, cfg, console, members, headers[net._effective_unit(members[0], units)], f"{name}.h", hdr, syms,
+            read, {r["name"]: by_name[r["name"]].get("statics") or {} for r in members}, program)
         if merged is None:
             unit_fallback.append((unit, why))
             continue
@@ -426,8 +483,13 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
                  "size": last["vram"] + len(last["target"]) - first["vram"], "toolchain": toolchain, "flags": flags}
         if statics:
             entry["statics"] = statics
+        if data and "problem" in data:
+            data_fallback.append((unit, data["problem"]))
+        elif data:
+            entry["data"] = data
         unit_list.append(entry)
-    log(f"{len(unit_list)} of {len([u for u in groups if u is not None])} source files are one C file each")
+    log(f"{len(unit_list)} of {len([u for u in groups if u is not None])} source files are one C file each, "
+        f"{sum(1 for u in unit_list if 'data' in u)} with their data as C")
 
     _static_headers(out)
 
@@ -474,7 +536,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     export_make.write(out, build)
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
     matched = sum(1 for f in functions if f.get("c"))
-    _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback)
+    _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
+          data_fallback, sum(1 for u in unit_list if "data" in u))
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
     (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\ntools/*/\ntools/.downloads/\n", encoding="utf-8")
@@ -488,20 +551,23 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         log((proc.stdout + proc.stderr)[-3000:])
     return {"path": str(out), "identical": identical, "relinked": relinked, "matched": matched,
             "functions": len(functions), "fallback": fallback, "units": len(unit_list), "unit_fallback": unit_fallback,
+            "data": sum(1 for u in unit_list if "data" in u), "data_fallback": data_fallback,
             "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
 def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program", whole: int = 0,
-          unit_fallback=()) -> None:
+          unit_fallback=(), data_fallback=(), with_data: int = 0) -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
     notes += "".join(f"\n- `{u}`: one file per function in `src/{_unit_name(u)}/` for now: {why}"
                      for u, why in unit_fallback)
+    notes += "".join(f"\n- `{u}`: its data stays the program's (data/program.s) for now: {why}" for u, why in data_fallback)
     (out / "README.md").write_text(f"""# {title} (decompilation)
 
 A matching decompilation of {title}, a Linux (32-bit x86) program, started with [decompdecomp](https://github.com/n-delic/decompdecomp).
 {matched} of {total} functions are C that GCC 2.95.3 compiles to exactly the original code; the rest is still the
 program's own bytes. {whole} of the program's source files are back together, each one C file that compiles to the
-original file's code, function after function. `build.py` rebuilds every decompiled file and function where it lies
+original file's code, function after function; {with_data} of them define their data too, each variable with its
+type and the program's value. `build.py` rebuilds every decompiled file and function where it lies
 in the program and checks the result against your original, byte for byte.
 
 ## Build
@@ -525,7 +591,7 @@ in the program and checks the result against your original, byte for byte.
 | `src/<source file>/<function>.c` | The functions of a file that isn't back together yet (README's notes say why), one per file. |
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own, `<source file>.h` what a source file declares for itself (its functions, and what it uses from elsewhere). |
 | `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
-| `data/program.s` | The program's data, every global and pointer named (written from your copy by the first relink). |
+| `data/program.s` | The program's data that isn't C yet, every global and pointer named (written from your copy by the first relink). |
 | `Makefile`, `tools/` | The build: `make` links `build/{program}`; `tools/relink.py` its steps, `tools/toolchain.sh` the compiler's download. |
 | `build.json`, `build.py` | Where each function is; `build.py` (decompdecomp) checks the C against your copy, as `build/program`. |
 
@@ -539,9 +605,15 @@ functions). When it says *identical*, the program still matches.
 
 ## The data, and what isn't C yet
 
-The first relink writes the program's data as `data/program.s`, from your copy: every global labelled by name, every
+A source file whose data is C defines its globals, statics and its functions' statics itself, each with its type
+and the program's value (`static Settings settings = {{ .volume = 7, .name = "default" }};`), where the file
+defined it among its functions; each value is checked against your copy's, every pointer in it too. Those are the
+real ones: the relinked program takes them from the file's object, change them there.
+
+The rest of the program's data (files whose data isn't C yet, what no file's debug information lists) is written by
+the first relink as `data/program.s`, from your copy: every global labelled by name, every
 word that pointed at a function, a string or other data written as that (`.long greet`, `.long __orig_rodata+0x1a4`),
-its constructor and destructor lists (a C++ program's globals) by name. Change it like any source. The data stays
+its constructor and destructor lists (a C++ program's globals) by name. Change it like any source. That data stays
 where the original has it; `make move` lays it out after the code instead, the addresses the C
 still writes as numbers moved with it (`make move`; it reads the code with Python's capstone). What's in `asm/` isn't C yet: assembly that names what it calls, so it moves
 with the rest. `asm/` and `data/` are made from your copy: keep them out of git (`.gitignore` does).

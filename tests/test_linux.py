@@ -642,8 +642,13 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     built = (out / "build" / "relinkdemo").read_bytes()
     assert b"stdout" in built  # (copied, as the original's: an import, not a global of its own)
     assert "tools/*/" in (out / ".gitignore").read_text()  # (the compiler make downloads stays out of git)
+    # its data is C too: each global with its type and the program's value, a pointer by what it points at (a
+    # string, functions, hand-written code); data/program.s has the rest, nothing twice
+    assert res["data"] == 1, res["data_fallback"]
+    assert 'char *greeting = "hello\\n";' in whole and "greet, " in whole and "answer;" in whole
+    assert "__asm__(\"asked\")" not in whole  # (main's `int (*asked)(void)` is the definition's type: no alias)
     data = (out / "data" / "program.s").read_text()
-    assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
+    assert "greeting:" not in data and "table:" not in data
     assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
 
     # the same C built by the system's GCC (`make port`, against the program's own C library headers), linked the

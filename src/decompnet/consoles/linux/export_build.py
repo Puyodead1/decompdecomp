@@ -85,7 +85,8 @@ def config(fn: dict, work: Path, placed: bool = True):
                                include_dirs=(*cfg.include_dirs, str(ROOT / "include")))
 
 
-def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list[tuple[int, str, int]]]:
+def own_data(elf, data: bytes, fn: dict, pad: int, variables=None) -> \
+        tuple[dict[str, int], list[tuple[int, str, int]], list[int]]:
     """Where the function's own constants (strings, jump tables, floats) go: where the original's code points at
     them. Each word the object relocates against one of its own sections holds, in the original, the address the
     game keeps that constant at, so the section's place is that address less the offset into it.
@@ -93,7 +94,11 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
     A section whose constants the game keeps apart (GCC merges a file's equal strings: a function's "%s\n" is the
     copy an earlier function of the game's file has) can't go to one place: its words are the game's addresses, each
     checked to hold the same bytes as the object's constant (scattered: (offset in .text, section, offset in it)),
-    as the judge checks them. 105 functions of a Linux game's 1,588 were left as the program's bytes for that."""
+    as the judge checks them. 105 functions of a Linux game's 1,588 were left as the program's bytes for that.
+
+    `variables(section, offset)`: where the game has a byte of a variable the source file's C defines (its data as
+    C, checked by data_check): a word the code reads it by must be that address, and is the game's word after
+    (trusted: offsets in .text)."""
     from elftools.elf.relocation import RelocationSection
 
     t = B["text"]
@@ -101,6 +106,7 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
     text_idx = next(i for i, s in enumerate(elf.iter_sections()) if s.name == ".text")
     found: dict[str, set[int]] = {}
     refs: list[tuple[int, str, int]] = []
+    trusted: list[int] = []
     for rsec in elf.iter_sections():
         if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != text_idx:
             continue
@@ -117,6 +123,12 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
             obj_text = elf.get_section(text_idx).data()
             addend = int.from_bytes(obj_text[at:at + 4], "little") + (sym["st_value"] if sym["st_info"]["type"] ==
                                                                        "STT_OBJECT" else 0)
+            where = variables(section, addend) if variables is not None else None
+            if where is not None:
+                if where != int.from_bytes(data[start + at:start + at + 4], "little"):
+                    fail(f"{fn['name']} reads {section}+0x{addend:X} where the program reads another address")
+                trusted.append(at)
+                continue
             found.setdefault(section, set()).add(int.from_bytes(data[start + at:start + at + 4], "little") - addend)
             refs.append((at, section, addend))
     placed = {section: next(iter(bases)) for section, bases in found.items() if len(bases) == 1}
@@ -137,7 +149,12 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
             sec = elf.get_section_by_name(section)
             if sec["sh_type"] == "SHT_NOBITS":
                 continue
-            ends = sorted({a for _, s2, a in refs if s2 == section and a > addend} | {sec["sh_size"]})
+            # (up to the next constant the code reads, or the next variable of the file's: its data as C)
+            symbols = elf.get_section_by_name(".symtab")
+            starts = {s_["st_value"] for s_ in symbols.iter_symbols() if s_["st_shndx"] == elf.get_section_index(section)
+                      and s_["st_info"]["type"] == "STT_OBJECT"} if symbols else set()
+            ends = sorted({a for _, s2, a in refs if s2 == section and a > addend} | {a for a in starts if a > addend}
+                          | {sec["sh_size"]})
             want = bytearray(sec.data()[addend:ends[0]])
             where = where_of[(section, addend)]
             # the addresses it holds itself (a switch's jump table: words into the function's code), relocated
@@ -155,7 +172,7 @@ def own_data(elf, data: bytes, fn: dict, pad: int) -> tuple[dict[str, int], list
             want = bytes(want[:width] if width else want[:significant(bytes(want), where, [w for w in later if w > where])])
             if file_bytes(game, data, where, len(want)) != want:
                 fail(f"{fn['name']}'s {section}+0x{addend:X} isn't the program's data at 0x{where:X}")
-    return placed, scattered
+    return placed, scattered, trusted
 
 
 def _relocations(elf, section: str) -> list[tuple[int, int, int]]:
@@ -223,7 +240,19 @@ def build_function(fn: dict, data: bytes) -> bytes:
     elf = ELFFile(BytesIO(res.obj))
     # where the function sits in its .text: its offset modulo 16, after the code its prelude puts before it
     pad = next(s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == fn["name"])
-    placed, scattered = own_data(elf, data, fn, pad)
+    variables = None
+    if fn.get("data"):  # (the file's data as C: its variables where the game has them, checked as the export did)
+        from decompnet.consoles.linux import export_data
+
+        definitions = [export_data.Definition(n, a, size, sec, 0, "", "", "") for n, a, size, sec in fn["data"]["variables"]]
+        variables = export_data.placer(res.obj, definitions)
+        game_elf = ELFFile(BytesIO(data))
+        problem, _ = export_data.judge_data(res.obj, definitions, {**B["symbols"], **FUNCTIONS}.get,
+                                            lambda a, n: file_bytes(game_elf, data, a, n) if n else b"",
+                                            fn["vram"] - pad)
+        if problem:
+            fail(f"{source_of(fn).relative_to(ROOT)}: {problem}")
+    placed, scattered, trusted = own_data(elf, data, fn, pad, variables)
     own = "".join(f"  .own{i} 0x{addr:X} : {{ {obj.name}({section}) }}\n"
                   for i, (section, addr) in enumerate(placed.items()))
     # every name but the function's own at the program's address, those the C defines too: a C file that defines the
@@ -246,7 +275,7 @@ def build_function(fn: dict, data: bytes) -> bytes:
     text = bytearray(ELFFile(BytesIO((work / out).read_bytes())).get_section_by_name(".text").data())
     t = B["text"]
     start = t["offset"] + fn["vram"] - pad - t["vram"]
-    for at, _, _ in scattered:  # (the game's address of a constant checked to be the object's: own_data)
+    for at in [a for a, _, _ in scattered] + trusted:  # (the game's address of what was checked: own_data)
         text[at:at + 4] = data[start + at:start + at + 4]
     _pic(elf, text, fn["vram"] - pad, program)
     return bytes(text[pad:pad + fn["size"]])

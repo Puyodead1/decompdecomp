@@ -96,3 +96,22 @@ def test_the_merged_file_compiles_with_the_programs_gcc(tmp_path):
         res = subprocess.run([gcc, "-std=gnu89", "-fsyntax-only", "-w", str(tmp_path / "audit.c")],
                              capture_output=True, text=True)
         assert res.returncode == 0, res.stderr
+
+
+def test_a_files_data_is_defined_where_the_file_had_it_and_its_functions_guesses_read_it():
+    """The file's variables (export_data.py) go before the first function after them; a function's own definition of
+    one goes, a function that declared it as the definition has it (or `(void)` for `()`) needs nothing, and one that
+    guessed another type reads it under its own name for the same symbol."""
+    functions = [("first", "static int count;\nint first(void) { return count; }\n"),
+                 ("second", "extern int (*hook)(void);\nint second(void) { return hook(); }\n"),
+                 ("third", "extern char *hook;\nint third(void) { return *hook; }\n")]
+    merged = units.merge(functions, "common.h", None, own_data={"count": "int count;", "hook": "int (*hook)();"},
+                         forward="static int count;\nextern int (*hook)();\n",
+                         placed=[(15, "int (*hook)() = 0;"), (5, "static int count = 3;")],
+                         func_lines={"first": 10, "second": 20, "third": 30})
+    c = merged.c
+    assert c.count("static int count = 3;") == 1 and "static int count;\nint first" not in c
+    assert c.index("static int count = 3;") < c.index("int first(void) {") < c.index("int (*hook)() = 0;") < \
+        c.index("int second(void) {")
+    assert "hook__second" not in c  # (its `int (*hook)(void)` is the definition's type)
+    assert 'extern char *hook__third __asm__("hook");' in c and "return *hook__third;" in c

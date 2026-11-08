@@ -76,8 +76,12 @@ def layouts(vram: int) -> list[str]:
     return [prelude(vram, grown) for grown in (4, 8, 12)]
 
 
-def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
-    """Link a compiled x86 function at the target's address and compare it with the game, byte for byte."""
+def link(obj: bytes, name: str, target: X86Target, symbols, read, placed=None) -> LinkResult:
+    """Link a compiled x86 function at the target's address and compare it with the game, byte for byte.
+    `placed(section, offset)`: where the game has that byte of data the object defines (a source file's variables
+    written as C, export_data.py, each checked against the game's value there itself): a reference to it must be
+    that address, its bytes aren't compared again as the function's own constants are (up to the next one the code
+    reads, which is another variable where the file's data is laid out otherwise)."""
     from ..elfobj import FunctionObj, _function_symbols
     from .arm import _defined, _sym_name, _verify_own
 
@@ -172,11 +176,21 @@ def link(obj: bytes, name: str, target: X86Target, symbols, read) -> LinkResult:
             else:
                 problem(f"relocation type {rtype} isn't supported yet")
 
+    kept = dict(own)
+    if placed is not None:
+        for key, original in list(own.items()):
+            where = placed(elf.get_section(key[0]).name, key[1])
+            if where is None:
+                continue
+            if where != original:
+                problem(f"{elf.get_section(key[0]).name}+0x{key[1]:X} is the game's 0x{where:X}, where the original "
+                        f"reads 0x{original:08X}")
+            del own[key]
     _local_calls(elf, shndx, start, code, tcode, target, symbols, name, problem)
     _verify_own(elf, elf.get_section_by_name(".symtab"), name, shndx, start, target, symbols, read, own, problem,
                 abs32=R_386_32, thumb=False, widths=widths)
     placements: dict[str, dict[int, int]] = {}
-    for (sec_idx, offset), original in own.items():
+    for (sec_idx, offset), original in {**kept, **own}.items():
         placements.setdefault(elf.get_section(sec_idx).name, {})[offset] = original
     linked = bytes(code)
     exact = not problems and linked == tcode

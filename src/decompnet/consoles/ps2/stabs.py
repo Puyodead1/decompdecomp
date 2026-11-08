@@ -433,10 +433,10 @@ def read_file(name: str, stabs: list[tuple], registers=None) -> SourceInfo:
                 current.locals.append(Variable(name, reader.type(), "static", value, line=line))
                 continue
             elif letter == "G":
-                info.globals.append(Variable(name, reader.type()))
+                info.globals.append(Variable(name, reader.type(), line=line))
                 continue
             elif letter == "S":
-                info.statics.append(Variable(name, reader.type(), "static", value))
+                info.statics.append(Variable(name, reader.type(), "static", value, line=line))
                 continue
             else:
                 continue
