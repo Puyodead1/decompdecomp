@@ -724,6 +724,17 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert refused.returncode != 0 and "that's greet" in refused.stderr + refused.stdout
     greet_c.write_text(kept)
 
+    # C that writes a variable's address as a number (as matched C does where no name matches): the relinked program
+    # has the variable elsewhere, and the number follows it there (count() returns calls, which the exit code adds)
+    calls_at = next(a for unit in json.loads((out / "build.json").read_text())["units"]
+                    for n, a, _, _ in unit["data"]["variables"] if n == "calls")
+    program_file.write_text(kept.replace("int count(void) { return calls; }",
+                                         f"int count(void) {{ return *(int *)0x{calls_at:x}; }}"))
+    numbered = subprocess.run([sys.executable, "build.py", "relink"], cwd=out, capture_output=True, text=True)
+    assert numbered.returncode == 0 and "follow their variables" in numbered.stdout, numbered.stdout + numbered.stderr
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    program_file.write_text(kept)
+
     # a mod: say() does more, and is longer than the original's
     say = program_file
     say.write_text(say.read_text().replace("write(1, s, length(s));", 'write(1, "> ", 2); write(1, s, length(s));'))

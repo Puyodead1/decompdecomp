@@ -245,7 +245,9 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   hand-written code in src/asm/, a function no C makes yet at its place in its file), a file whose functions stay
   one file each has its variables in a file of their own (src/<file>/data.c), a file of data alone is its C, the
   constants C reads by an address's name are its file's, and the numbers C still writes for a variable's address
-  follow it (the linker map). The 2001 game builds from a checkout with no copy of it, `make port` too, and runs
+  follow it (the linker map: an address, an array's start beside a register, a newer GCC's loop limit one past its
+  end and its negated addresses), in every build, with your copy's data or without; no stale address is left in
+  either program (a report's checker, run on the 2001 game). The 2001 game builds from a checkout with no copy of it, `make port` too, and runs
   like the original as far as the sandbox lets it. Left: the data laid out exactly as the game's where GCC 2.95's
   constant pool order differs, source files and data for the PC's projects too (its PDB's object files and
   types), `.init_array`'s programs (GCC 4.7 and later) tried, thread-local storage and PIE programs, and C++

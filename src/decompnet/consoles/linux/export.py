@@ -776,6 +776,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
                     symbols.setdefault(word, int(m.group(1), 16))
     build = {
         "title": proj["name"], "platform": console.id, "image": "baserom", "output": "build/program",
+        "decompdecomp": __import__("decompnet").__version__,  # (build.py's checks need this one or later)
         "program": re.sub(r"[^\w.-]", "_", Path(cfg["rom"].get("program") or cfg["rom"]["file"]).name),
         "sha1": hashlib.sha1(image).hexdigest(), "toolchain": cfg["compiler"]["toolchain"],
         "text": {"vram": text["sh_addr"], "offset": text["sh_offset"], "size": text["sh_size"]},
