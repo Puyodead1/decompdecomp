@@ -59,3 +59,31 @@ def test_strings_and_numbers_are_exact():
     h = Header([SourceInfo("t.c", types=[THING])])
     const = cdata.constant(h, Type(kind="array", count=2, target=Type(kind="pointer", target=CHAR, size=4), size=8))
     assert h.declaration(const, "names") == "char *const names[2]"  # (the array's elements: .rodata)
+
+
+def test_a_constant_holds_every_string_the_c_reaches_as_an_offset_from_its_name():
+    """A file's strings read as `D_0809F05A + 0x87` (one label, each string's offset in the pool): the copy is cut
+    at 32 bytes no more, or the strings after it are whatever the new link put there (an assert's fopen failed)."""
+    from decompnet.consoles.linux import export_data
+
+    pool = b"GameInit\0gameloop.c\0" + bytes(108) + b"%sstartseg.txt\0rt\0" + bytes(64)
+    base = 0x0809F05A
+
+    class Pool:
+        def section(self, address):
+            return ".rodata" if base <= address < base + len(pool) else None
+
+        def variable_at(self, address):
+            return None
+
+        def next_symbol(self, address):
+            return base + len(pool)
+
+        def read(self, address, size):
+            at = address - base
+            return pool[at:at + size] if 0 <= at and at + size <= len(pool) else None
+
+    code = ("#define str_function (D_0809F05A)\n#define str_startseg (D_0809F05A + 0x80)\n"
+            "#define str_rt (D_0809F05A + 0x8f)\nvoid f(void) { g(str_function, str_startseg, str_rt); }\n")
+    [found] = export_data.constants(Pool(), code, lambda a: None, None)
+    assert found.size == 0x8f + 3 and found.text.startswith("char D_0809F05A_data[146] = { 71, 97,")

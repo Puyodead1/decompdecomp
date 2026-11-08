@@ -244,13 +244,14 @@ def rules() -> None:
     OBJDIR = "build/port"
     port, port_lines = [], []
     for obj, fn in objects():
-        if obj.startswith("build/port/") and "/data-" in obj:
-            port_lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/port\n\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -c "
-                              f"{fn['c']} -o $@.raw\n\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
-        elif obj.startswith("build/port/"):
-            src = fn["c"] if "functions" in fn else source_of(fn).relative_to(ROOT).as_posix()
-            name = f"file:{fn['name']}" if "functions" in fn else fn["name"]
-            port_lines.append(f"{obj}: {src} $(HEADERS) | build/port\n\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -c {src} "
+        if obj.startswith("build/port/"):
+            # (from a copy with the program's addresses written by name: named)
+            data = "/data-" in obj
+            src = fn["c"] if data or "functions" in fn else source_of(fn).relative_to(ROOT).as_posix()
+            name = f"data:{fn['name']}" if data else f"file:{fn['name']}" if "functions" in fn else fn["name"]
+            own = fn["name"] if data or "functions" in fn else "-"
+            port_lines.append(f"{obj}: {src} $(HEADERS) | build/port\n\t$(PY) tools/relink.py named {src} $@.c {own}\n"
+                              f"\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -iquote {Path(src).parent.as_posix()} -c $@.c "
                               f"-o $@.raw\n\t$(PY) tools/relink.py fixup $@.raw $@ {name}\n")
         port.append(obj)
     OBJDIR = "build/relink"
@@ -294,6 +295,53 @@ def rules() -> None:
         objs.append(obj)
     print("OBJS := " + " \\\n  ".join(objs) + "\n\n" + "\n".join(lines))
     print("PORT_OBJS := " + " \\\n  ".join(port) + "\n\n" + "\n".join(port_lines))
+
+
+def named(src: str, out: str, own: str) -> None:
+    """`make port`'s copy of a source file: each number the C writes that is an address of a variable of the
+    program's (`*(GLmatrix *)0x80be300`, `#define PUSTULE ((T *)0x80b8fe8)`) written by that variable's name, so
+    the system's GCC links it where the variable is. GCC 2.95's code (what the judge matches) is the same only with
+    the number, and the link follows it there (follow); but a newer GCC drops a static only the number reads (the
+    port had nothing at 0x80be300), and folds numbers into others (a loop's limit 8 past `Pustules` is inside
+    whatever the original had next): from the address alone the follow can't tell. `own` is the source file's entry
+    (its statics are names here), "-" for a function's own file."""
+    entries = list(UNITS.values()) + list(B.get("data_files") or [])
+    mine = next((e for e in entries if e["name"] == own), None)
+    code = (ROOT / src).read_text(encoding="utf-8", errors="replace")
+    spans = []  # (old address, end, how the C names it)
+    for entry in entries:
+        data = entry.get("data") or {}
+        globals_ = set(data.get("defines") or [])
+        for name, old, size, _ in data.get("variables") or []:
+            if "." in name:
+                continue
+            if name in globals_:
+                spans.append((old, old + max(size, 1), f"__named_{name}"))
+            elif entry is mine and re.search(rf"^static\b[^;=(]*\b{re.escape(name)}\b", code, re.M):
+                spans.append((old, old + max(size, 1), f"&{name}"))  # (a file-scope static of its own)
+    spans.sort()
+    lows = [lo for lo, _, _ in spans]
+    used: set[str] = set()
+
+    def spelled(m: re.Match) -> str:
+        text = m.group(0)
+        if not re.fullmatch(r"0[xX][0-9a-fA-F]+[uUlL]*", text):
+            return text  # (a comment or a string)
+        value = int(text.rstrip("uUlL"), 16)
+        k = bisect.bisect_right(lows, value) - 1
+        if k < 0 or not spans[k][0] <= value < spans[k][1]:
+            return text
+        lo, _, ref = spans[k]
+        if ref.startswith("__named_"):
+            used.add(ref[len("__named_"):])
+        return f"((int){ref} + {value - lo})" if value > lo else f"((int){ref})"
+
+    token = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\b0[xX][0-9a-fA-F]+[uUlL]*\b', re.S)
+    lines = []
+    for line in code.splitlines(keepends=True):
+        lines.append(line if re.match(r"\s*#\s*(?:if|elif)\b", line) else token.sub(spelled, line))
+    head = "".join(f'extern char __named_{n}[] __asm__("{n}");\n' for n in sorted(used))
+    Path(out).write_text(f'{head}# 1 "{src}"\n' + "".join(lines), encoding="utf-8")
 
 
 # ------------------------------------------------------------------------------------------------------------ fixup
@@ -1047,7 +1095,7 @@ def wrap(tree: str, runtime: str) -> None:
 if __name__ == "__main__":
     args = sys.argv[1:]
     commands = {"rules": (rules, 0), "fixup": (fixup, 3), "data": (write_data, 1), "stubs": (stubs, 1),
-                "move": (move, 1), "wrap": (wrap, 2), "asm": (write_asm, 1)}
+                "move": (move, 1), "wrap": (wrap, 2), "asm": (write_asm, 1), "named": (named, 3)}
     if args[:1] == ["link"] and len(args) in (2, 3):
         link(args[1], args[2] if len(args) == 3 else "")
     elif args and args[0] in commands and len(args) - 1 == commands[args[0]][1]:
