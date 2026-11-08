@@ -416,6 +416,28 @@ def test_a_global_matched_c_reads_by_its_address_is_named_and_still_matches(demo
     assert net.readability.name_addresses(slug, log=lambda *_: None) == 0
 
 
+def test_a_matched_function_the_export_finds_broken_goes_back_to_the_agents(demo):
+    """Matched C that no longer compiles (a header edit since, a rename that missed it) was kept as "matched" and
+    written into every export as the program's bytes, with no way to send it back: the export opens it again, its C
+    the next agent's start."""
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    net, slug = _imported(demo, "broken")
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    net.claim(agent, slug, "rng_next")
+    assert net.attempt(agent, "rng_next", GAME_DEFINES + csource.get(DEMO_GAME.read_text(), "rng_next"), slug)["matched"]
+    fn = net._function("rng_next", slug)
+    with net.store.tx() as db:  # (what a rename that missed it leaves)
+        db.execute("UPDATE functions SET matched_source=? WHERE id=?",
+                   (fn["matched_source"].replace("g_rng_state", "g_rng_gone"), fn["id"]))
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert ("rng_next", "doesn't compile any more") in res["fallback"]
+    again = net._function("rng_next", slug)
+    assert again["status"] == "open" and "g_rng_gone" in again["best_source"]
+
+
 def test_rom_modes_tidy_moves_what_matched_functions_declare_alike_into_the_header_and_they_still_match(demo):
     """The declarations each matched function made for itself go into the shared header once (tidy.py), every
     function judged again with it."""
@@ -594,7 +616,8 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     out = Path(res["path"])
     relinked = out / "build" / "relinkdemo"
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
-    assert (out / "asm" / "twice.s").exists()
+    assert (out / "asm" / "twice.s").exists() and (out / "Makefile").exists()
+    assert "tools/*/" in (out / ".gitignore").read_text()  # (the compiler make downloads stays out of git)
     data = (out / "data" / "program.s").read_text()
     assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
     assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
