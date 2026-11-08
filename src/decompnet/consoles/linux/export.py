@@ -95,6 +95,127 @@ def assembly(name: str, code: bytes, refs: dict[int, str]) -> str:
     return "".join(lines)
 
 
+def _unaligned_text(obj: bytes) -> bytes:
+    """The object with its .text aligned to 1 (as build.py's unaligned_text)."""
+    elf = ELFFile(BytesIO(obj))
+    out = bytearray(obj)
+    for i, section in enumerate(elf.iter_sections()):
+        if section.name == ".text":
+            at = elf["e_shoff"] + i * elf["e_shentsize"] + 32  # Elf32_Shdr.sh_addralign
+            out[at:at + 4] = (1).to_bytes(4, "little")
+    return bytes(out)
+
+
+def assembly_source(name: str, code: bytes, vram: int, refs: dict[int, str], names: dict[str, int], toolchain: str,
+                    work: Path) -> str | None:
+    """A function that isn't C as GNU assembly (arch/x86_gas.py), assembled and linked where the program has it
+    with the toolchain's own as and ld and compared with its bytes: what comes out otherwise stays bytes, an
+    instruction at a time, and is checked again. None where it doesn't come out as the program's code."""
+    import tempfile
+
+    from ... import toolchains
+    from ...arch import x86_gas
+    from ...compiler import run_in
+    from ...project import compiler_config
+
+    if toolchains.installed(toolchain) is None:
+        return None
+    tc = toolchains.ensure(toolchain, log=lambda *_: None)
+    keep: set[int] = set()
+    starts = [i.address for i in x86_gas.instructions(code, vram)]
+    for _ in range(len(starts) + 1):
+        text = x86_gas.source(name, code, vram, refs, keep)
+        used = set(re.findall(r"[A-Za-z_][\w.]*", " ".join(refs.values()))) - {name}
+        assigns = "".join(f"{n} = 0x{names[n]:X};\n" for n in sorted(used) if n in names)
+        with tempfile.TemporaryDirectory(prefix="asm-", dir=work) as tmp:
+            d = Path(tmp)
+            (d / "f.s").write_text(text, encoding="utf-8")
+            (d / "f.ld").write_text(f"SECTIONS {{\n  .text 0x{vram:X} : {{ f.o(.text) }}\n  /DISCARD/ : {{ *(.comment) "
+                                    f"*(.note*) }}\n}}\n{assigns}", encoding="utf-8")
+            cfg = compiler_config(d, {"compiler": {"toolchain": toolchain}})
+            env = f'export LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"; '
+            res = run_in(cfg, d, ["/bin/sh", "-c", env + f'"{tc}/binutils/usr/bin/as" -o f.o f.s'])
+            if res.returncode == 0 and (d / "f.o").exists():
+                # (its .text aligned to 1, so ld puts it exactly at the function's address, which needn't be a word's)
+                (d / "f.o").write_bytes(_unaligned_text((d / "f.o").read_bytes()))
+                res = run_in(cfg, d, ["/bin/sh", "-c", env + f'"{tc}/binutils/usr/bin/ld" -m elf_i386 -e 0 -T f.ld '
+                                      '-o f.elf f.o'])
+            built = None
+            if res.returncode == 0 and (d / "f.elf").exists():
+                linked = ELFFile(BytesIO((d / "f.elf").read_bytes()))
+                sec = linked.get_section_by_name(".text")
+                built = sec.data() if sec is not None else None
+                # (as long as the function is: .size, not the padding gas puts after it)
+                size = next((s_["st_size"] for s_ in linked.get_section_by_name(".symtab").iter_symbols()
+                             if s_.name == name), 0)
+                if built is not None and size:
+                    built = built[:size]
+        if built is not None and built[:len(code)] == code and len(built) - len(code) < 16:
+            return text  # (the assembler pads its .text to its alignment, with a no-op of its own)
+        if built is None:
+            return None
+        wrong = {max((s for s in starts if s <= at), default=0) for at in range(min(len(built), len(code)))
+                 if built[at] != code[at]}
+        if len(built) < len(code) or (wrong and len(built) - len(code) >= 16):
+            # (an instruction gas made another length, `movl %eax, (%esp)` without the original's zero offset: the
+            # rest has moved, so only the first that differs is known to)
+            if wrong:
+                wrong = {min(wrong)}
+        if not wrong - keep:
+            return None
+        keep |= wrong
+    return None
+
+
+def _layout(elf, functions: list[dict]) -> dict:
+    """The program's layout as the relink's linker script needs it: whether it's dynamic, the function it starts at,
+    its lowest address, where the relinked code goes (above its data), and its data sections."""
+    data = [[s.name, s["sh_addr"], s["sh_addr"] + s["sh_size"]] for s in elf.iter_sections()
+            if s.name in (".rodata", ".data", ".bss") and s["sh_addr"]]
+    end = max((hi for _, _, hi in data), default=0)
+    starts = {f["vram"]: f["name"] for f in functions}
+    return {"dynamic": elf.get_section_by_name(".interp") is not None, "entry": starts.get(elf["e_entry"]),
+            "low": min(s["sh_addr"] for s in elf.iter_sections() if s["sh_addr"]) & ~0xFFF,
+            "code": (end + 0xFFFFF) & ~0xFFFFF, "data": data}
+
+
+def _imports(elf) -> dict:
+    """What the program imports, for the relink's stubs: {"needed": [libraries], "symbols": [[name, library,
+    version or "", kind (1 data, 2 function), size]]}, an import the dynamic linker copies into the program (R_386_COPY:
+    stdout) among them."""
+    from elftools.elf.dynamic import DynamicSection
+    from elftools.elf.gnuversions import GNUVerNeedSection, GNUVerSymSection
+    from elftools.elf.relocation import RelocationSection
+
+    needed = [t.needed for s in elf.iter_sections() if isinstance(s, DynamicSection) for t in s.iter_tags()
+              if t.entry.d_tag == "DT_NEEDED"]
+    dynsym = elf.get_section_by_name(".dynsym")
+    if dynsym is None:
+        return {"needed": needed, "symbols": []}
+    versions: dict[int, tuple[str, str]] = {}
+    versym = None
+    for s in elf.iter_sections():
+        if isinstance(s, GNUVerNeedSection):
+            for need, auxes in s.iter_versions():
+                for aux in auxes:
+                    versions[aux["vna_other"]] = (need.name, aux.name)
+        elif isinstance(s, GNUVerSymSection):
+            versym = s
+    copies = {r["r_info_sym"] for s in elf.iter_sections() if isinstance(s, RelocationSection)
+              and s["sh_link"] == elf.get_section_index(".dynsym") for r in s.iter_relocations() if r["r_info_type"] == 5}
+    plain = next((lib for lib in needed if lib not in {v[0] for v in versions.values()}), needed[0] if needed else "")
+    out = []
+    for k, sym in enumerate(dynsym.iter_symbols()):
+        undefined = sym["st_shndx"] == "SHN_UNDEF"
+        if not sym.name or (not undefined and k not in copies) or (sym["st_info"]["bind"] == "STB_WEAK" and k not in copies):
+            continue
+        ndx = versym.get_symbol(k)["ndx"] if versym is not None else 0
+        ndx = ndx & 0x7FFF if isinstance(ndx, int) else 0
+        lib, version = versions.get(ndx, (plain, ""))
+        out.append([sym.name, lib, version, 1 if sym["st_info"]["type"] == "STT_OBJECT" else 2, sym["st_size"]])
+    return {"needed": needed, "symbols": out}
+
+
 def _runtime_names(toolchain: str) -> set[str]:
     """What the toolchain's C runtime objects define (_start, _init): the relinked program's link brings them."""
     from ... import toolchains
@@ -223,13 +344,80 @@ def judge_unit(console, obj: bytes, rows: list, targets: list, syms, read, place
     return "", linked.placements
 
 
+def _data_numbers(out: Path, spans: list, followed: list) -> list[str]:
+    """Where the tree's C writes an address of the program's data as a number (`*(int *)0x80b9244`) that isn't in
+    one of its source files' variables (those the relink makes where the variable is: follow()), outside comments
+    and strings."""
+    found = []
+    for path in sorted((out / "src").rglob("*.c")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        text = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"', lambda m: re.sub(r"[^\n]", " ", m.group(0)), text,
+                      flags=re.S)
+        for n, line in enumerate(text.splitlines(), 1):
+            for m in re.finditer(r"\b0x([0-9a-fA-F]{6,8})\b", line):
+                address = int(m.group(1), 16)
+                if any(lo <= address < hi for _, lo, hi in spans) and not any(lo <= address < hi for lo, hi in followed):
+                    found.append(f"{path.relative_to(out)}:{n}")
+    return found
+
+
+def _data_file(net, proj, cfg, rows: list, by_name: dict, hdr: str, include: str, syms, read, program, out: Path,
+               stem: str, elsewhere: set[str] = frozenset(), unit: str | None = None):
+    """A source file whose functions stay one file each: its variables as C in a file of their own, global (its
+    functions reach them by name), compiled and judged as a whole file's data is. Its build.json entry, or why its
+    data stays the program's ("" where it has none)."""
+    from ...compiler import compile_source
+    from ...project import compiler_config
+    from . import export_data
+
+    unit = unit or rows[0]["unit"]
+    code = "\n".join(by_name[r["name"]].get("c") and (out / by_name[r["name"]]["c"]).read_text(encoding="utf-8") or ""
+                     for r in rows)
+    taken = {addr for r in rows for addr in (by_name[r["name"]].get("statics") or {}).values()}
+    # (beside functions one file each, its statics global, which they reach by name; a file of data alone keeps
+    # them static, its names the rest of the tree reads made the same addresses)
+    data = export_data.file_data(program, unit, {r["vram"]: r["name"] for r in rows}, code, hdr, taken,
+                                 syms, as_globals=bool(rows), elsewhere=elsewhere)
+    if data.problem or not data.definitions:
+        return data.problem
+    what = (f"The variables of {unit}, whose functions are one file each for now" if rows else
+            f"{unit}: data alone, no functions")
+    text = (f'#include "{include}"\n\n/* {what} */\n' + export_data.forward(data) + "\n"
+            + "\n".join(d.text for d in data.definitions) + "\n")
+    compiler = compiler_for(cfg, rows[0]["vram"]) if rows else cfg["compiler"]
+    config = compiler_config(Path(proj["root"]), {**cfg, "compiler": compiler})
+    compiled = compile_source(config, hdr, text.replace(f'#include "{include}"\n', "", 1), trusted=True)
+    if not compiled.ok:
+        errors = [line for line in compiled.log.splitlines() if re.search(r":\d+: ", line) and "warning" not in line]
+        return f"its data doesn't compile ({(errors or ['?'])[0][:160]})"
+
+    def resolve(name: str) -> int | None:
+        found = syms.resolve(name)
+        return found if found is not None else program.address_of(name)
+    problem, laid_out = export_data.judge_data(compiled.obj, data.definitions, resolve, read)
+    if problem:
+        return problem
+    path = out / "src" / stem / "data.c" if rows else out / "src" / f"{stem}.c"
+    if not rows and path.exists():
+        path = out / "src" / f"{stem}_data.c"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return {"name": stem, "c": path.relative_to(out).as_posix(), "unit": unit,
+            "toolchain": compiler["toolchain"], "flags": list(compiler.get("flags") or []),
+            "data": {"laid_out": laid_out, "defines": [d.name for d in data.definitions] + sorted(data.aliases),
+                     "variables": [[d.name, d.address, d.size, d.section] for d in data.definitions],
+                     "aliases": {n: [b, o] for n, (b, o) in sorted(data.aliases.items())},
+                     "link_aliases": {n: [b, o] for n, (b, o) in sorted(data.link_aliases.items())}}}
+
+
 def _symbol_value(obj: bytes, name: str) -> int:
     symtab = ELFFile(BytesIO(obj)).get_section_by_name(".symtab")
     return next(s["st_value"] for s in symtab.iter_symbols() if s.name == name)
 
 
 def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: str, hdr: str, syms, read,
-               statics_at: dict[str, dict[str, int]] | None = None, program=None):
+               statics_at: dict[str, dict[str, int]] | None = None, program=None, asm_pieces=None,
+               elsewhere: set[str] = frozenset()):
     """A source file of the program as one C file, compiled whole and judged against the game's span of it: (the
     merged C, its compiler, its statics, its data) or (None, why, None, None). Tried with each compiler its
     functions are matched with (a file the compiler ranges cut in two is one compile in the game), each call as
@@ -245,7 +433,8 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
     compilers = list(dict.fromkeys((c["toolchain"], tuple(c.get("flags") or []))
                                    for c in (compiler_for(cfg, r["vram"]) for r in rows)))
     targets = [net._rom_target(r) for r in rows]
-    sources = [(r["name"], r["matched_source"]) for r in rows]
+    sources = [(r["name"], r["matched_source"] or "") for r in rows]
+    asm_pieces = asm_pieces or {}
 
     def attempt(merged, toolchain, flags, header=hdr, definitions=None):
         text = merged.c.replace(f'#include "{include}"\n', "", 1)  # (the compiler includes it first: context.h)
@@ -261,65 +450,80 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
         problem, placements = judge_unit(console, compiled.obj, rows, targets, syms, read, placed)
         return (compiled.obj if not problem else None), problem, placements
 
+    def with_data(merged, toolchain, flags, as_called):
+        """The file with its data as C (export_data.py), compiled and judged: (its merged C, its data) or (None,
+        why its data can't be C)."""
+        functions = {r["vram"]: r["name"] for r in rows}
+        taken = {addr for found in (statics_at or {}).values() for addr in found.values()}
+        data = export_data.file_data(program, rows[0]["unit"], functions, merged.c + merged.header, hdr, taken, syms,
+                                     elsewhere=elsewhere)
+        if data.problem:
+            return None, data.problem
+        if not data.definitions:
+            return None, ""
+        source = program.sources.get(rows[0]["unit"])
+        lines = {functions[f.address]: f.line for f in (source.functions if source else []) if f.address in functions}
+        forward = export_data.forward(data)
+
+        def merge_with_data():
+            return units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
+                               own_data={d.name: d.key for d in data.definitions}, forward=forward,
+                               placed=[(d.line, d.text) for d in data.definitions], func_lines=lines,
+                               asm_pieces=asm_pieces)
+        done = merge_with_data()
+        # (a static a function declares as another type, under another name for the same symbol, is used as far
+        # as a newer GCC knows: else it drops or folds it, not seeing that name is the static)
+        if done.c is not None and export_data.mark_used(data, re.findall(r'__asm__\("(\w+)"\)', done.c)):
+            done = merge_with_data()
+        if done.c is None:
+            return None, done.problem
+        # (the shared header without its externs of the file's statics, as the file will include it: a static's
+        # first declaration decides its place in .bss: _static_headers)
+        statics_here = {d.name for d in data.definitions if d.forward.startswith("static")}
+        obj, problem, placements = attempt(done, toolchain, flags, export_data.without_externs(hdr, statics_here),
+                                           data.definitions)
+        if obj is None:
+            return None, f"with its data, {problem}"
+        text_at = rows[0]["vram"] - _symbol_value(obj, rows[0]["name"])
+
+        def resolve(name: str) -> int | None:  # (and the program's own symbols: a hand-written label)
+            found = syms.resolve(name)
+            return found if found is not None else program.address_of(name)
+        # and what the functions' own C defines (their statics), where the code reads it: checked alike
+        definitions = data.definitions + export_data.read_by_code(obj, data.definitions, placements)
+        problem, laid_out = export_data.judge_data(obj, definitions, resolve, read, text_at)
+        if problem:
+            return None, problem
+        defines = [d.name for d in data.definitions if d.forward.startswith("extern")] + sorted(data.aliases)
+        return done, {"laid_out": laid_out, "defines": defines,
+                      "variables": [[d.name, d.address, d.size, d.section] for d in definitions],
+                      "aliases": {n: [base, off] for n, (base, off) in sorted(data.aliases.items())},
+                      "link_aliases": {n: [base, off] for n, (base, off) in sorted(data.link_aliases.items())}}
+
     problems: dict[bool, str] = {}
     for as_called in (False, True):
-        merged = units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr)
+        merged = units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
+                             asm_pieces=asm_pieces)
         if merged.c is None:
             return None, merged.problem, None, None
         for toolchain, flags in compilers:
             obj, problem, placements = attempt(merged, toolchain, flags)
             if obj is None:
                 problems.setdefault(as_called, problem)
+                # (what the file's code reads as constants of its own may be its data: with that as C, the file may
+                # come out where it doesn't alone)
+                if program is not None:
+                    done, data = with_data(merged, toolchain, flags, as_called)
+                    if done is not None:
+                        return done, (toolchain, list(flags)), {}, data
                 continue
             statics = _statics(obj, placements)
             if program is None:
                 return merged, (toolchain, list(flags)), statics, None
-            # and its data as C
-            functions = {r["vram"]: r["name"] for r in rows}
-            taken = {addr for found in (statics_at or {}).values() for addr in found.values()}
-            data = export_data.file_data(program, rows[0]["unit"], functions, merged.c + merged.header, hdr, taken,
-                                         syms)
-            if data.problem:
-                return merged, (toolchain, list(flags)), statics, {"problem": data.problem}
-            if not data.definitions:
-                return merged, (toolchain, list(flags)), statics, None
-            source = program.sources.get(rows[0]["unit"])
-            lines = {functions[f.address]: f.line for f in (source.functions if source else []) if f.address in functions}
-            forward = export_data.forward(data)
-            def merge_with_data(as_called=as_called, data=data, forward=forward, lines=lines):
-                return units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
-                                   own_data={d.name: d.key for d in data.definitions}, forward=forward,
-                                   placed=[(d.line, d.text) for d in data.definitions], func_lines=lines)
-            with_data = merge_with_data()
-            # (a static a function declares as another type, under another name for the same symbol, is used as far
-            # as a newer GCC knows: else it drops or folds it, not seeing that name is the static)
-            if with_data.c is not None and export_data.mark_used(data, re.findall(r'__asm__\("(\w+)"\)', with_data.c)):
-                with_data = merge_with_data()
-            if with_data.c is None:
-                return merged, (toolchain, list(flags)), statics, {"problem": with_data.problem}
-            # (the shared header without its externs of the file's statics, as the file will include it: a static's
-            # first declaration decides its place in .bss: _static_headers)
-            statics_here = {d.name for d in data.definitions if d.forward.startswith("static")}
-            obj2, problem, placements2 = attempt(with_data, toolchain, flags,
-                                                 export_data.without_externs(hdr, statics_here), data.definitions)
-            if obj2 is None:
-                return merged, (toolchain, list(flags)), statics, {"problem": f"with its data, {problem}"}
-            text_at = rows[0]["vram"] - _symbol_value(obj2, rows[0]["name"])
-            def resolve(name: str) -> int | None:  # (and the program's own symbols: a hand-written label)
-                found = syms.resolve(name)
-                return found if found is not None else program.address_of(name)
-            # and what the functions' own C defines (their statics), where the code reads it: checked alike
-            definitions = data.definitions + export_data.read_by_code(obj2, data.definitions, placements2)
-            problem, laid_out = export_data.judge_data(obj2, definitions, resolve, read, text_at)
-            if problem:
-                return merged, (toolchain, list(flags)), statics, {"problem": problem}
-            defines = [d.name for d in data.definitions if d.forward.startswith("extern")] + sorted(data.aliases)
-            link_aliases = {n: [base, off] for n, (base, off) in sorted(data.link_aliases.items())}
-            return with_data, (toolchain, list(flags)), {}, {
-                "laid_out": laid_out, "defines": defines,
-                "variables": [[d.name, d.address, d.size, d.section] for d in definitions],
-                "aliases": {n: [base, off] for n, (base, off) in sorted(data.aliases.items())},
-                "link_aliases": link_aliases}
+            done, data = with_data(merged, toolchain, flags, as_called)
+            if done is None:
+                return merged, (toolchain, list(flags)), statics, {"problem": data} if data else None
+            return done, (toolchain, list(flags)), {}, data
     if problems.get(True) and problems[True] != problems.get(False):
         return None, f"{problems[False]}; with each call as its function declared it, {problems[True]}", None, None
     return None, problems[False], None, None
@@ -428,10 +632,14 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     # each source file whose functions all match as one C file, compiled whole and judged against the game's span
     # of it (the function files stay where it doesn't, and why is in the README)
     log("putting the matched functions back into their source files")
-    unit_list, unit_fallback, data_fallback = [], [], []
+    unit_list, unit_fallback, data_fallback, data_files = [], [], [], []
     from . import export_data
 
     program = export_data.Program(image)
+    # the names the tree's C reads a symbol by (a file's static another file's function reads): what a file whose
+    # data is C gives its variables too
+    elsewhere = {w for r in rows if r["status"] == "matched" and r["matched_source"]
+                 for w in set(re.findall(r"\b[A-Za-z_]\w*\b", r["matched_source"])) if syms.resolve(w) is not None}
     by_name = {f["name"]: f for f in functions}
     taken = {p.name for p in (out / "include").iterdir()}
     groups: dict = {}
@@ -439,6 +647,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         groups.setdefault(row["unit"], []).append(row)
     read = net.reader(proj)
     library = _runtime_names(cfg["compiler"]["toolchain"])
+    names_at = {s.name: s.address for s in syms.by_name.values() if s.address}
+    names_at.update({f["name"]: f["vram"] for f in functions})
     for unit, members in groups.items():
         if unit is None:
             continue
@@ -446,18 +656,36 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
             continue
         if not any(by_name[r["name"]].get("c") for r in members):
             continue  # (nothing of it is C: hand-written assembly, a library's)
-        if not all(by_name[r["name"]].get("c") for r in members):
+        # a function of it that isn't C yet: its assembly, at its place in the file (else one file per function)
+        asm_pieces = {}
+        for r in members:
+            if not by_name[r["name"]].get("c"):
+                written = assembly_source(r["name"], bytes(r["target"]), r["vram"], _refs(r, syms), names_at,
+                                          cfg["compiler"]["toolchain"], work)
+                if written is None:
+                    break
+                asm_pieces[r["name"]] = written
+        if not all(by_name[r["name"]].get("c") or r["name"] in asm_pieces for r in members):
             missing = [r["name"] for r in members if not by_name[r["name"]].get("c")]
             unit_fallback.append((unit, f"{', '.join(missing[:3])}{' ...' if len(missing) > 3 else ''} isn't C yet"))
             continue
         stem = _unit_name(unit)
         name = stem if f"{stem}.h" not in taken and not (out / "src" / f"{stem}.c").exists() else f"{stem}_file"
         hdr = net._context(proj["id"], net._effective_unit(members[0], units))["header"]
+        first_c = next(r for r in members if by_name[r["name"]].get("c"))
         merged, why, statics, data = _unit_file(
-            net, proj, cfg, console, members, headers[net._effective_unit(members[0], units)], f"{name}.h", hdr, syms,
-            read, {r["name"]: by_name[r["name"]].get("statics") or {} for r in members}, program)
+            net, proj, cfg, console, members, headers[net._effective_unit(first_c, units)], f"{name}.h", hdr, syms,
+            read, {r["name"]: by_name[r["name"]].get("statics") or {} for r in members}, program, asm_pieces,
+            elsewhere)
         if merged is None:
             unit_fallback.append((unit, why))
+            # its data as C all the same, a file of its own its functions reach by name (src/<file>/data.c)
+            found = _data_file(net, proj, cfg, members, by_name, hdr, headers[net._effective_unit(first_c, units)],
+                               syms, read, program, out, stem, elsewhere)
+            if isinstance(found, dict):
+                data_files.append(found)
+            elif found:
+                data_fallback.append((unit, found))
             continue
         toolchain, flags = why
         taken.add(f"{name}.h")
@@ -470,7 +698,10 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
                 f"#ifndef {guard}\n#define {guard}\n\n{merged.header}\n#endif\n", encoding="utf-8")
         for r in members:
             f = by_name[r["name"]]
-            (out / f["c"]).unlink()
+            if f.get("c"):
+                (out / f["c"]).unlink()
+            else:
+                f["asm"] = True  # (in its file as assembly: not C yet)
             f.update({"c": c_path.relative_to(out).as_posix(), "in": name})
             for gone in ("prelude", "statics"):
                 f.pop(gone, None)
@@ -488,6 +719,17 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         elif data:
             entry["data"] = data
         unit_list.append(entry)
+    # a source file of data alone (no functions: fonts.c's tables): its C is its variables
+    for unit in program.sources:
+        found_vars = export_data.variables(program, unit, {})
+        if unit in groups or not found_vars or all(v[0] in library for v in found_vars):
+            continue  # (glibc's init.c, _IO_stdin_used: the C runtime's, which the link brings)
+        found = _data_file(net, proj, cfg, [], by_name, common, "common.h", syms, read, program, out, _unit_name(unit),
+                           elsewhere, unit=unit)
+        if isinstance(found, dict):
+            data_files.append(found)
+        elif found:
+            data_fallback.append((unit, found))
     log(f"{len(unit_list)} of {len([u for u in groups if u is not None])} source files are one C file each, "
         f"{sum(1 for u in unit_list if 'data' in u)} with their data as C")
 
@@ -508,11 +750,21 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         functions.append(extra)
         pieces.append((extra, code, extra["refs"]))
     functions.sort(key=lambda f: f["vram"])
+    names_at = {s.name: s.address for s in syms.by_name.values() if s.address}
+    names_at.update({f["name"]: f["vram"] for f in functions})
     for f, code, refs in pieces:
+        f["refs"] = {str(k): v for k, v in refs.items()}
+        # as GNU assembly a person reads (src/asm/, the tree's own source: checked to assemble to your copy's
+        # bytes where it lies), else as your copy's bytes (asm/, made from it, never in git)
+        written = assembly_source(f["name"], code, f["vram"], refs, names_at, cfg["compiler"]["toolchain"], work)
+        if written is not None:
+            (out / "src" / "asm").mkdir(parents=True, exist_ok=True)
+            (out / "src" / "asm" / f"{f['name']}.s").write_text(written, encoding="utf-8")
+            f["s"] = f"src/asm/{f['name']}.s"
+            continue
         asm.mkdir(exist_ok=True)
         (asm / f"{f['name']}.s").write_text(assembly(f["name"], code, refs), encoding="utf-8")
         f["s"] = f"asm/{f['name']}.s"
-        f["refs"] = {str(k): v for k, v in refs.items()}
 
     names = {f["name"] for f in functions if f.get("c")}
     symbols = {s.name: s.address for s in syms.by_name.values() if s.name not in names and s.address}
@@ -527,17 +779,35 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         "program": re.sub(r"[^\w.-]", "_", Path(cfg["rom"].get("program") or cfg["rom"]["file"]).name),
         "sha1": hashlib.sha1(image).hexdigest(), "toolchain": cfg["compiler"]["toolchain"],
         "text": {"vram": text["sh_addr"], "offset": text["sh_offset"], "size": text["sh_size"]},
-        "functions": functions, "units": unit_list,
+        "functions": functions, "units": unit_list, "data_files": data_files,
         "symbols": dict(sorted(symbols.items(), key=lambda kv: kv[1])),
         "got": cfg.get("got"),  # (where -fPIC code finds the GOT, and what each entry holds)
+        # what the build needs of your copy otherwise: its layout and what it imports (the relink's linker script and
+        # stubs), so a tree whose code and data are all source builds without it
+        "layout": _layout(elf, functions), "imports": _imports(elf),
     }
+    # whether it does: every function C or assembly source, every source file's data C (or none to have)
+    # (a file one file per function: its data a file of its own, and none of its functions' statics the game's;
+    # and no address of your copy's data the C still writes as a number, which nothing would be at)
+    apart = {u for u, _ in unit_fallback}
+    followed = [(a, a + max(size, 1)) for unit in unit_list + data_files
+                for _, a, size, _ in ((unit.get("data") or {}).get("variables") or [])]
+    numbers = _data_numbers(out, build["layout"]["data"], followed)
+    build["standalone"] = all(f.get("c") or (f.get("s") or "").startswith("src/") or f["name"] in library
+                              for f in functions) and not data_fallback \
+        and all(not (f.get("unit") in apart and f.get("statics")) for f in functions) \
+        and apart <= {d["unit"] for d in data_files} | {u for u in apart if not program.sources.get(u) or not
+                                                         export_data.variables(program, u, {})} and not numbers
+    if numbers:
+        log(f"the C still writes {len(numbers)} addresses of the program's data as numbers (first {numbers[0]}): the "
+            "build takes that data from your copy")
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")
     export_make.write(out, build)
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
-    matched = sum(1 for f in functions if f.get("c"))
+    matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
-          data_fallback, sum(1 for u in unit_list if "data" in u))
+          data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"])
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
     (out / ".gitignore").write_text("build/\nbaserom*\nasm/\ndata/\ntools/*/\ntools/.downloads/\n", encoding="utf-8")
@@ -556,7 +826,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
 
 
 def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program", whole: int = 0,
-          unit_fallback=(), data_fallback=(), with_data: int = 0) -> None:
+          unit_fallback=(), data_fallback=(), with_data: int = 0, standalone: bool = False) -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
     notes += "".join(f"\n- `{u}`: one file per function in `src/{_unit_name(u)}/` for now: {why}"
                      for u, why in unit_fallback)
@@ -572,7 +842,10 @@ in the program and checks the result against your original, byte for byte.
 
 ## Build
 
-1. Put your own copy of the program here as `baserom` (it is in `.gitignore`; never commit it).
+1. {"`make` needs nothing of the program's: every function is C or assembly source (`src/asm/`) and every "
+   "variable C. To check the C against your own copy byte for byte (`python build.py`), put it here as "
+   "`baserom`" if standalone else "Put your own copy of the program here as `baserom`: what isn't source yet is "
+   "made from it (`asm/`, `data/program.s`)"} (it is in `.gitignore`; never commit it).
 2. `make`: builds `build/{program}`, the program linked anew from the C. The first time it downloads the compiler the
    program was built with into `tools/` (`make toolchain`: pinned archives, each checked against its SHA-256; where
    the system has no 32-bit loader, a 32-bit C runtime too). Needs make, python3, curl or wget, tar and ar; not
@@ -588,7 +861,8 @@ in the program and checks the result against your original, byte for byte.
 | Path | What it is |
 | :-- | :-- |
 | `src/<source file>.c` | A source file of the program, its functions in their original order, its statics defined once. |
-| `src/<source file>/<function>.c` | The functions of a file that isn't back together yet (README's notes say why), one per file. |
+| `src/<source file>/<function>.c` | The functions of a file that isn't back together yet (README's notes say why), one per file; `data.c` beside them its variables. |
+| `src/asm/<function>.s` | Code that isn't C: hand-written assembly, as GNU assembly that assembles to the original's bytes. |
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own, `<source file>.h` what a source file declares for itself (its functions, and what it uses from elsewhere). |
 | `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
 | `data/program.s` | The program's data that isn't C yet, every global and pointer named (written from your copy by the first relink). |

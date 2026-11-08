@@ -281,6 +281,24 @@ def build_function(fn: dict, data: bytes) -> bytes:
     return bytes(text[pad:pad + fn["size"]])
 
 
+def check_data_file(found: dict, data: bytes) -> None:
+    """src/<file>/data.c: compiled, each variable the program's value, its pointers pointing at what its do."""
+    from decompnet.consoles.linux import export_data
+
+    work = ROOT / "build" / "obj"
+    work.mkdir(parents=True, exist_ok=True)
+    cfg = config({**found, "vram": 0}, work, placed=False)
+    res = compile_source(cfg, "", (ROOT / found["c"]).read_text(encoding="utf-8"), trusted=True)
+    if not res.ok:
+        fail(f"{found['c']} doesn't compile:\n{res.log[-3000:]}")
+    definitions = [export_data.Definition(n, a, size, sec, 0, "", "", "") for n, a, size, sec in found["data"]["variables"]]
+    game = ELFFile(BytesIO(data))
+    problem, _ = export_data.judge_data(res.obj, definitions, {**B["symbols"], **FUNCTIONS}.get,
+                                        lambda a, n: file_bytes(game, data, a, n) if n else b"")
+    if problem:
+        fail(f"{found['c']}: {problem}")
+
+
 def _pic(elf, text: bytearray, base: int, program: dict) -> None:
     """Code built with -fPIC (glibc's atexit) linked as the program has it: the GOT where the program's is, a
     global's address read from the GOT entry the program's dynamic relocation gives it, a call through the import's
@@ -362,12 +380,14 @@ def build() -> None:
             done += 1
             if done % step == 0 or done == len(todo):
                 print(f"  {done} of {len(todo)} source files and functions built and checked", flush=True)
+    for found in B.get("data_files") or []:  # (a source file's variables alone: each the program's value)
+        check_data_file(found, data)
     out = ROOT / B["output"]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(bytes(image))
     out.chmod(0o755)
     if bytes(image) == data:
-        from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None)
+        from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None and not fn.get("asm"))
         print(f"{out.relative_to(ROOT)}: identical to the original ({from_c} of {len(B['functions'])} functions from "
               f"C, {len(UNITS)} source files whole)")
         return
@@ -436,7 +456,7 @@ def relink(move: bool = False) -> Path:
 
 
 def status() -> None:
-    have = sum(1 for f in B["functions"] if source_of(f) is not None)
+    have = sum(1 for f in B["functions"] if source_of(f) is not None and not f.get("asm"))
     print(f"{have} of {len(B['functions'])} functions are C")
 
 

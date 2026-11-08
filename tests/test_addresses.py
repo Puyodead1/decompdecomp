@@ -97,3 +97,13 @@ def test_a_callbacks_address_is_its_functions_name():
     out = addresses.apply(source, addresses.proposals(source, _program()))
     assert out == "void f(void) { cb = (void (*)())tick; qsort(a, n, 4, (int (*)(const void *, const void *))tick); }"
     assert addresses.numbers(source) == 2 and addresses.numbers(out) == 0
+
+
+def test_a_macros_read_and_an_address_in_arithmetic_are_named_too():
+    """`#define F(a) (*(float *)(a))` read as `F(0x809e0e0)`, and a table's start in arithmetic
+    (`*(int *)(0x80be4d4 + i * 4)`): numbers a program built without your copy has nothing at."""
+    source = ("#define F(a) (*(float *)(a))\nvoid f(int i) { x = F(0x8001010); y = *(int *)(0x8002010 + i * 4); "
+              "z = 0x8002900; /* 0x8002010 */ s = \"0x8002010\"; }\n")
+    out = addresses.apply(source, addresses.proposals(source, _program()))
+    assert "x = 1.5f;" in out and "y = *(int *)((int)&buf + i * 4);" in out and "z = (int)D_08002900;" in out
+    assert "/* 0x8002010 */" in out and '"0x8002010"' in out  # (comments and strings stay)

@@ -351,12 +351,17 @@ def _match(net, slug, name: str) -> dict:
     return net.attempt(agent, name, GAME_DEFINES + csource.get(DEMO_GAME.read_text(), name), slug)
 
 
-def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_program_keeps_it(demo):
+def test_a_switchs_jump_table_matches_and_the_export_rebuilds_it_where_the_program_keeps_it(demo, monkeypatch):
     """A switch's jump table is the function's own .rodata, its words relocations into the function's code: the
     judge places them at the function's address (they were compared unrelocated: 99.9%, never a match), and the
-    exported tree's build links the table where the program has it and rebuilds the program byte for byte."""
+    exported tree's build links the table where the program has it and rebuilds the program byte for byte. (Its
+    functions one file each: the export writes no assembly here, so the file isn't whole with the 3 matched.)"""
     import subprocess
     import sys
+
+    from decompnet.consoles.linux import export as linux_export
+
+    monkeypatch.setattr(linux_export, "assembly_source", lambda *a: None)
 
     net, slug = _imported(demo, "export")
     assert _match(net, slug, "entity_default_hp")["matched"]
@@ -562,12 +567,18 @@ RELINK_DATA = ('const char *greeting = "hello\\n";\n'  # (a pointer in .data to 
                "extern int answer(void);\nint (*asked)(void) = answer;\n")  # (and to hand-written code)
 
 
-def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data_may_move(tmp_path):
+@pytest.mark.parametrize("partial", ["", "in file", "bytes"], ids=["whole", "asm-in-file", "bytes"])
+def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data_may_move(tmp_path, partial,
+                                                                                           monkeypatch):
     """The export's build links a new program from the C (build.py relink): its functions laid out anew, its data
     written as data/program.s with each pointer named (to functions, to its strings), each function's statics the
     program's own (two functions share one), a switch's jump table its own, its constructor list carried over (a C
     constructor, as a C++ program's globals are made), what isn't C assembled from asm/. It runs as the original
-    does; with a function changed to do more (longer than it was), and with the data moved too (relink --move)."""
+    does; with a function changed to do more (longer than it was), and with the data moved too (relink --move).
+    Whole (every function matched): the hand-written code is assembly source, the data C, and the tree builds
+    without the program; so it does with count not C yet, as assembly in its file. Where count's assembly can't
+    be written ("bytes"), its file stays one file per function, count your copy's bytes (asm/) and the data
+    data/program.s."""
     import json
     import subprocess
     import sys
@@ -620,13 +631,29 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
     agent, _ = net.local_agent("claude-opus-5.5-1")
     for name, source in RELINK_FUNCTIONS.items():
+        if partial and name == "count":
+            continue
         net.claim(agent, slug, name)
         result = net.attempt(agent, name, RELINK_DECLARATIONS + source, slug)
         assert result["matched"], (name, result["text"])
+    if partial == "bytes":
+        from decompnet.consoles.linux import export as linux_export
+
+        written = linux_export.assembly_source
+        monkeypatch.setattr(linux_export, "assembly_source", lambda name, *a: None if name == "count" else written(name, *a))
     res = net.export_rom(slug, log=lambda *_: None)
     assert res["identical"] and res["relinked"], res["log"]
     out = Path(res["path"])
     relinked = out / "build" / "relinkdemo"
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    if partial == "in file":
+        [program_file] = (out / "src").glob("*.c")
+        assert "count isn't C yet" in program_file.read_text() and json.loads((out / "build.json").read_text())["standalone"]
+        assert res["units"] == 1 and res["data"] == 1 and res["matched"] == 7
+        return
+    if partial:
+        _partial_tree(out, res, run, original, tc, tmp_path)
+        return
     # its source file is one C file again: the functions in their order, the static two share once, each function
     # declared as defined in the file's header, its constructor still one; built whole, it's the original's code
     assert res["units"] == 1, res["unit_fallback"]
@@ -635,21 +662,20 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert whole.count("static int calls;") == 1 and whole.index("int length(") < whole.index("int main(")
     assert "__attribute__((constructor))" in whole and not list((out / "src").glob("*/*.c"))
     assert "void say(const char *s);" in (out / "include" / f"{program_file.stem}.h").read_text()
-    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
-    assert (out / "asm" / "twice.s").exists() and (out / "asm" / "answer.s").exists() and (out / "Makefile").exists()
+    # the hand-written code as assembly source a person reads, checked to assemble to the program's bytes
+    assert "addl %eax, %eax" in (out / "src" / "asm" / "twice.s").read_text() and (out / "src" / "asm" / "answer.s").exists()
+    assert not (out / "asm").exists() and (out / "Makefile").exists()
     assert not (out / "build" / "relink" / "atexit.o").exists()  # (libc_nonshared.a's: never its bytes)
-    assert not (out / "asm" / "atexit.s").exists() and not (out / "asm" / "_start.s").exists()
+    assert not (out / "src" / "asm" / "atexit.s").exists() and not (out / "src" / "asm" / "_start.s").exists()
     built = (out / "build" / "relinkdemo").read_bytes()
     assert b"stdout" in built  # (copied, as the original's: an import, not a global of its own)
     assert "tools/*/" in (out / ".gitignore").read_text()  # (the compiler make downloads stays out of git)
     # its data is C too: each global with its type and the program's value, a pointer by what it points at (a
-    # string, functions, hand-written code); data/program.s has the rest, nothing twice
+    # string, functions, hand-written code); nothing is your copy's any more
     assert res["data"] == 1, res["data_fallback"]
     assert 'char *greeting = "hello\\n";' in whole and "greet, " in whole and "answer;" in whole
     assert "__asm__(\"asked\")" not in whole  # (main's `int (*asked)(void)` is the definition's type: no alias)
-    data = (out / "data" / "program.s").read_text()
-    assert "greeting:" not in data and "table:" not in data
-    assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
+    assert json.loads((out / "build.json").read_text())["standalone"] and not (out / "data").exists()
 
     # the same C built by the system's GCC (`make port`, against the program's own C library headers), linked the
     # same way: a newer GCC's merged strings and .init_array (the constructor) as the 2001 linker and runtime take
@@ -674,19 +700,20 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert moved.returncode == 0, moved.stderr
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
-    # a fresh checkout: no build/, asm/ or data/ (your copy's), and no compiler yet. One `make` downloads it
-    # (here the download is a copy of decompdecomp's), then writes the rules (they depend on its libc_nonshared.a),
-    # asm/ and data/ from baserom, and links: it once failed before the download and left an empty build/rules.mk
+    # a fresh checkout, without your copy of the program and without the compiler yet: one `make` downloads it
+    # (here the download is a copy of decompdecomp's), writes the rules (they depend on its libc_nonshared.a) and
+    # builds the program from the tree alone
     import shutil
 
-    for gone in ("build", "asm", "data"):
-        shutil.rmtree(out / gone)
+    shutil.rmtree(out / "build")
+    (out / "baserom").rename(tmp_path / "baserom.kept")
     fresh = tmp_path / "fresh-tc"
     (out / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
     first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=out, capture_output=True, text=True)
     assert first.returncode == 0, first.stdout + first.stderr
-    assert (out / "asm" / "answer.s").exists() and (fresh / "crt" / "crt1.o").exists()
+    assert "from this tree alone" in first.stdout and (fresh / "crt" / "crt1.o").exists()
     assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    (tmp_path / "baserom.kept").rename(out / "baserom")
 
     # C that writes an address in the old code as a number is refused, with the name to write
     greet_c = program_file
@@ -704,6 +731,32 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     assert again.returncode == 0, again.stderr
     modded = run(relinked)
     assert modded.stdout.startswith(b"> hello\n> hello\n> zero\n") and modded.returncode == 42
+
+
+def _partial_tree(out: Path, res: dict, run, original, tc: Path, tmp_path: Path) -> None:
+    """The export with count not C yet: its file one file per function, count your copy's bytes in asm/, the data
+    data/program.s (every global labelled, a pointer by name); a fresh checkout makes them again from baserom."""
+    import shutil
+    import subprocess
+    import sys
+
+    assert res["units"] == 0 and not json.loads((out / "build.json").read_text())["standalone"]
+    assert list((out / "src").glob("*/greet.c")) and (out / "asm" / "count.s").exists()
+    data = (out / "data" / "program.s").read_text()
+    assert "greeting:" in data and ".long greet" in data and ".long __orig_rodata+" in data
+    assert ".section .ctors" not in data  # (setup's C makes its own entry: not twice)
+    relinked = out / "build" / "relinkdemo"
+    moved = subprocess.run([sys.executable, "build.py", "relink", "--move"], cwd=out, capture_output=True, text=True)
+    assert moved.returncode == 0, moved.stderr
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
+    for gone in ("build", "asm", "data"):
+        shutil.rmtree(out / gone)
+    fresh = tmp_path / "fresh-tc"
+    (out / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
+    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=out, capture_output=True, text=True)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert (out / "asm" / "count.s").exists() and (out / "data" / "program.s").exists()
+    assert (run(relinked).stdout, run(relinked).returncode) == (original.stdout, original.returncode)
 
 
 def test_ghidras_draft_is_made_c_that_compiles_after_the_programs_header():

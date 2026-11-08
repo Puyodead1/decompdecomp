@@ -31,7 +31,7 @@ TOOLCHAIN_READY := $(TC)/crt/crt1.o
 STUBS := build/relink/stubs
 PORT_CC ?= gcc -m32
 PORT_FLAGS ?= -O2 -std=gnu89 -fno-pie -fno-pic -fno-stack-protector -fcf-protection=none -fcommon \\
-  -fno-strict-aliasing -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
+  -fno-strict-aliasing -fdata-sections -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
 PORT_STUBS := build/port/stubs
 
 all: build/$(PROGRAM)
@@ -59,28 +59,28 @@ build/relink/data.o: data/program.s | $(TOOLCHAIN_READY)
 $(STUBS)/stubs.txt: build.json $(OBJS) | build/relink $(TOOLCHAIN_READY)
 \t$(PY) tools/relink.py stubs $(STUBS)
 \twhile read lib stem; do \\
-\t  $(CC) $(STUBS)/$$stem.c $(STUBS)/$$stem.o -fPIC -O0 || exit 1; \\
+\t  $(CC) $(STUBS)/$$stem.c $(STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
 \t  map=; [ -s $(STUBS)/$$stem.map ] && map="--version-script $(STUBS)/$$stem.map"; \\
 \t  $(LD) -m elf_i386 -shared -soname $$lib $$map -o $(STUBS)/$$lib $(STUBS)/$$stem.o || exit 1; \\
 \tdone < $(STUBS)/stubs.txt
 
-build/$(PROGRAM): $(OBJS) build/relink/data.o $(STUBS)/stubs.txt
+build/$(PROGRAM): $(OBJS) {data_o}$(STUBS)/stubs.txt
 \t$(PY) tools/relink.py link $@
 
-move: $(OBJS) build/relink/data.o $(STUBS)/stubs.txt
+move: $(OBJS) {data_o}$(STUBS)/stubs.txt
 \t$(PY) tools/relink.py link build/$(PROGRAM) move
 
 # the port's own stubs: a newer GCC calls what the program never imported (puts for printf, sincos)
 $(PORT_STUBS)/stubs.txt: build.json $(PORT_OBJS) | build/port $(TOOLCHAIN_READY)
 \tOBJDIR=build/port $(PY) tools/relink.py stubs $(PORT_STUBS)
 \twhile read lib stem; do \\
-\t  $(CC) $(PORT_STUBS)/$$stem.c $(PORT_STUBS)/$$stem.o -fPIC -O0 || exit 1; \\
+\t  $(CC) $(PORT_STUBS)/$$stem.c $(PORT_STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
 \t  map=; [ -s $(PORT_STUBS)/$$stem.map ] && map="--version-script $(PORT_STUBS)/$$stem.map"; \\
 \t  $(LD) -m elf_i386 -shared -soname $$lib $$map -o $(PORT_STUBS)/$$lib $(PORT_STUBS)/$$stem.o || exit 1; \\
 \tdone < $(PORT_STUBS)/stubs.txt
 
 port: build/port/$(PROGRAM)
-build/port/$(PROGRAM): $(PORT_OBJS) build/relink/data.o $(PORT_STUBS)/stubs.txt
+build/port/$(PROGRAM): $(PORT_OBJS) {data_o}$(PORT_STUBS)/stubs.txt
 \tOBJDIR=build/port $(PY) tools/relink.py link $@
 
 clean:
@@ -161,5 +161,7 @@ def write(out: Path, build: dict) -> None:
     (tools / "toolchain.sh").write_text(TOOLCHAIN_SH.format(toolchain=tid, parts="\n".join(lines(linux)),
                                                             runtime="\n".join(runtime_lines) or "  :"),
                                         encoding="utf-8")
-    (out / "Makefile").write_text(MAKEFILE.format(program=build["program"], toolchain=tid, prelude=prelude),
-                                  encoding="utf-8")
+    # (a tree whose code and data are all source links no data of your copy's: data/program.s isn't made)
+    data_o = "" if build.get("standalone") else "build/relink/data.o "
+    (out / "Makefile").write_text(MAKEFILE.format(program=build["program"], toolchain=tid, prelude=prelude,
+                                                  data_o=data_o), encoding="utf-8")

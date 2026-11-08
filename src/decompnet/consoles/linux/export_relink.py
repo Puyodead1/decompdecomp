@@ -32,6 +32,8 @@ UNITS = {u["name"]: u for u in B.get("units") or []}  # (the source files that a
 # where the C's objects are: build/relink, or build/port (`make port`: the same C built by the system's GCC); what
 # isn't C yet and the data are the same objects for both
 OBJDIR = os.environ.get("OBJDIR") or "build/relink"
+# every function C or assembly source and every source file's data C: built from the tree alone, no copy of yours
+STANDALONE = bool(B.get("standalone"))
 
 
 def owned() -> tuple[set[tuple[str, int]], dict[int, str], list[tuple[int, int, str]]]:
@@ -39,7 +41,7 @@ def owned() -> tuple[set[tuple[str, int]], dict[int, str], list[tuple[int, int, 
     in data/program.s; {address: a global name there}, for a pointer in the rest of the data; [(start, end, name)] of
     their variables, a pointer into one written as its name and offset where it has a global one)."""
     pairs, names, spans = set(), {}, []
-    for unit in UNITS.values():
+    for unit in list(UNITS.values()) + list(B.get("data_files") or []):
         data = unit.get("data") or {}
         where = {name: address for name, address, _, _ in data.get("variables", [])}
         defines = set(data.get("defines", []))
@@ -195,6 +197,8 @@ def objects() -> list[tuple[str, dict]]:
         if any(name not in names for name in unit["functions"]):
             fail(f"{unit['c']} defines functions the C library brings itself: put them in a file of their own")
         out.append((f"{OBJDIR}/file-{unit['name']}.o", unit))
+    for data in B.get("data_files") or []:  # (a source file's variables, its functions one file each)
+        out.append((f"{OBJDIR}/data-{data['name']}.o", data))
     return out + [(f"{OBJDIR if source_of(fn) is not None else 'build/relink'}/{fn['name']}.o", fn)
                   for fn in built() if not fn.get("in")]
 
@@ -240,7 +244,10 @@ def rules() -> None:
     OBJDIR = "build/port"
     port, port_lines = [], []
     for obj, fn in objects():
-        if obj.startswith("build/port/"):
+        if obj.startswith("build/port/") and "/data-" in obj:
+            port_lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/port\n\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -c "
+                              f"{fn['c']} -o $@.raw\n\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
+        elif obj.startswith("build/port/"):
             src = fn["c"] if "functions" in fn else source_of(fn).relative_to(ROOT).as_posix()
             name = f"file:{fn['name']}" if "functions" in fn else fn["name"]
             port_lines.append(f"{obj}: {src} $(HEADERS) | build/port\n\t$(PORT_CC) $(PORT_FLAGS) -Iinclude -c {src} "
@@ -248,9 +255,15 @@ def rules() -> None:
         port.append(obj)
     OBJDIR = "build/relink"
     lines, objs = [], []
-    raw, elf = game()
-    text = elf.section(".text")
+    raw = text = None  # (your copy: only for what's still its bytes, asm/)
     for obj, fn in objects():
+        if "/data-" in obj:  # a source file's variables alone
+            flags = " ".join(fn.get("flags") or ["-O2"])
+            lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
+                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}\n"
+                         f"\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
+            objs.append(obj)
+            continue
         if "functions" in fn:  # a source file, compiled whole
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
@@ -258,16 +271,22 @@ def rules() -> None:
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ file:{fn['name']}\n")
             objs.append(obj)
             continue
-        at = text["offset"] + fn["vram"] - text["addr"]
-        if source_of(fn) is None and PIC.search(raw[at:at + min(fn["size"], 24)]):
-            fail(f"{fn['name']} is code built with -fPIC and isn't C yet: as bytes it would read the original's GOT")
         src = source_of(fn)
+        if src is None and not (fn.get("s") or "").startswith("src/"):
+            if raw is None:
+                raw, elf = game()
+                text = elf.section(".text")
+            at = text["offset"] + fn["vram"] - text["addr"]
+            if PIC.search(raw[at:at + min(fn["size"], 24)]):
+                fail(f"{fn['name']} is code built with -fPIC and isn't C yet: as bytes it would read the original's GOT")
         if src is not None:
             flags = " ".join(fn.get("flags") or ["-O2"])
             rel = src.relative_to(ROOT).as_posix()
             lines.append(f"{obj}: {rel} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
                          f"\t$(CC) {rel} $@.raw -Iinclude $(PRELUDE) {flags}\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ {fn['name']}\n")
+        elif (fn.get("s") or "").startswith("src/"):  # (written as assembly source: the tree's own)
+            lines.append(f"{obj}: {fn['s']} | build/relink $(TOOLCHAIN_READY)\n\t$(AS) -o $@ {fn['s']}\n")
         else:
             asm = f"asm/{fn['name']}.s"
             lines.append(f"{asm}: | {B['image']}\n\t$(PY) tools/relink.py asm {fn['name']}\n"
@@ -278,6 +297,27 @@ def rules() -> None:
 
 
 # ------------------------------------------------------------------------------------------------------------ fixup
+
+def numbered(statics: dict[str, int], names: list[str]) -> dict[str, int]:
+    """`statics` ({name: the game's address}) by the names this object has: a function's static is `grvtx.123` as
+    GCC 2.95 numbered it, `grvtx.0` as a newer GCC does; both number them in the file's order, so the n-th `grvtx.*`
+    here is the n-th of build.json's."""
+    out = {k: v for k, v in statics.items() if "." not in k}
+    by_base: dict[str, list[str]] = {}
+    for k in statics:
+        if re.fullmatch(r"\w+\.\d+", k):
+            by_base.setdefault(k.split(".")[0], []).append(k)
+    mine: dict[str, list[str]] = {}
+    for n in names:
+        if re.fullmatch(r"\w+\.\d+", n):
+            mine.setdefault(n.split(".")[0], []).append(n)
+    for base, theirs in by_base.items():
+        here = sorted(mine.get(base, []), key=lambda n: int(n.split(".")[1]))
+        theirs = sorted(theirs, key=lambda n: int(n.split(".")[1]))
+        if len(here) == len(theirs):
+            out.update({h: statics[t] for h, t in zip(here, theirs)})
+    return out
+
 
 def fixup(raw_path: str, out_path: str, name: str) -> None:
     """A function's object as the relinked program takes it: what it reads and writes of its own statics is the
@@ -290,13 +330,16 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
     if name.startswith("file:"):  # (a source file: every function of it is its own, and its data where it's C)
         fn = UNITS[name[5:]]
         own = set(fn["functions"]) | set((fn.get("data") or {}).get("defines", []))
+    elif name.startswith("data:"):  # (a source file's variables alone: all its own)
+        fn = next(d for d in B["data_files"] if d["name"] == name[5:])
+        own = set(fn["data"]["defines"])
     else:
         fn = next((f for f in B["functions"] if f["name"] == name), {"name": name})
         own = {name}
-    statics = fn.get("statics") or {}
     known = set(B["symbols"])
     symtab = elf.section(".symtab")
     syms = elf.symbols(symtab)
+    statics = numbered(fn.get("statics") or {}, [sym["name"] for sym in syms if sym["type"] == 1])
     writable = {s["index"] for s in elf.sections if s["flags"] & SHF_WRITE and s["flags"] & SHF_ALLOC}
     covering: dict[int, list] = {}
     for sym in syms:
@@ -307,9 +350,14 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
         if sym["shndx"] not in writable:
             return None
         if sym["type"] == 3:  # STT_SECTION
-            for value, size, sname in covering.get(sym["shndx"], ()):
+            found = covering.get(sym["shndx"], ())
+            for value, size, sname in found:
                 if value <= addend < value + size:
                     return statics[sname] + addend - value
+            # one past the end of a static alone in its section (-fdata-sections: a loop's limit, `grvtx + 4`), not
+            # the start of whatever follows it
+            if len(found) == 1 and addend == found[0][0] + found[0][1]:
+                return statics[found[0][2]] + found[0][1]
             return None
         return statics[sym["name"]] + addend if sym["name"] in statics else None
 
@@ -404,7 +452,7 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
     labels: dict[int, list[str]] = {}
     assigns, stray = [], []
     mine, _, _ = owned()
-    for unit in UNITS.values():  # (a name the C reads a file's global by: the global itself)
+    for unit in list(UNITS.values()) + list(B.get("data_files") or []):  # (a name the C reads a global by: the global)
         for alias, (base, off) in ((unit.get("data") or {}).get("link_aliases") or {}).items():
             assigns.append(f"{alias} = {base}{f' + {off}' if off else ''};")
     for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
@@ -589,9 +637,16 @@ def stubs(out_dir: str) -> None:
     imports from each at the versions it asked for (objects with their sizes, for the copies the linker makes): the
     program runs with the real ones. (A newer glibc's IFUNCs are data to a 2001 linker.) Writes <lib>.c, <lib>.map
     and stubs.txt (each library's name and stem) for the Makefile."""
-    _, elf = game()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    if B.get("imports"):  # (as the export read your copy: no need of it)
+        libs = list(B["imports"]["needed"])
+        by_lib: dict[str, dict[str | None, list[dict]]] = {lib: {} for lib in libs}
+        for name, lib, version, kind, size in B["imports"]["symbols"]:
+            by_lib.setdefault(lib, {}).setdefault(version or None, []).append({"name": name, "type": kind, "size": size})
+        write_stubs(out, libs, by_lib, {sym[0] for sym in B["imports"]["symbols"]})
+        return
+    _, elf = game()
     libs = needed(elf)
     dynsym = elf.section(".dynsym")
     syms = elf.symbols(dynsym) if dynsym else []
@@ -618,7 +673,11 @@ def stubs(out_dir: str) -> None:
         v = struct.unpack_from("<H", elf.raw, versym["offset"] + k * 2)[0] & 0x7FFF if versym else 0
         lib, ver = index.get(v, (plain, None))
         by_lib.setdefault(lib, {}).setdefault(ver, []).append(sym)
-    for name, lib in extra_imports(elf, {s["name"] for s in syms}, libs).items():
+    write_stubs(out, libs, by_lib, {s["name"] for s in syms})
+
+
+def write_stubs(out: Path, libs: list[str], by_lib: dict, imported_names: set[str]) -> None:
+    for name, lib in extra_imports(None, imported_names, libs).items():
         if lib not in libs:
             libs.append(lib)
         by_lib.setdefault(lib, {}).setdefault(None, []).append({"name": name, "type": 2, "size": 0})
@@ -644,31 +703,41 @@ def stubs(out_dir: str) -> None:
 def script(out_path: str, move: bool) -> None:
     """The linker script: the program's dynamic sections first, the data where the game has it (or, `move`, after the
     code), the code from above the data, where it may grow."""
-    _, elf = game()
-    dyn = dynamic(elf)
-    starts = {f["vram"]: f["name"] for f in B["functions"]}
-    if not dyn and starts.get(elf.entry) is None:
-        fail(f"the program starts at 0x{elf.entry:X}, where none of its functions is")
-    _, assigns = labels_and_assigns(elf)
-    secs = {n: elf.section(n) for n in DATA}
-    end = max(s["addr"] + s["size"] for s in secs.values() if s)
-    code = (end + 0xFFFFF) & ~0xFFFFF
+    if STANDALONE:  # (the layout as build.json has it; no data of your copy's, only the names the C reads globals by)
+        lay = B["layout"]
+        dyn, entry, low, code = lay["dynamic"], lay["entry"], lay["low"], lay["code"]
+        if not dyn and not entry:
+            fail("the program starts where none of its functions is")
+        assigns = [f"{alias} = {base}{f' + {off}' if off else ''};" for unit in list(UNITS.values()) + list(B.get("data_files") or [])
+                   for alias, (base, off) in ((unit.get("data") or {}).get("link_aliases") or {}).items()]
+        secs, move = {n: None for n in DATA}, True
+    else:
+        _, elf = game()
+        dyn = dynamic(elf)
+        starts = {f["vram"]: f["name"] for f in B["functions"]}
+        if not dyn and starts.get(elf.entry) is None:
+            fail(f"the program starts at 0x{elf.entry:X}, where none of its functions is")
+        entry = starts.get(elf.entry)
+        _, assigns = labels_and_assigns(elf)
+        secs = {n: elf.section(n) for n in DATA}
+        end = max(s["addr"] + s["size"] for s in secs.values() if s)
+        code = (end + 0xFFFFF) & ~0xFFFFF
+        low = min(s["addr"] for s in elf.sections if s["addr"]) & ~0xFFF
     before, after = crt_files() if dyn else ([], [])
     begin, ending = (before[2], after[0]) if dyn else (None, None)
     pinned = "" if move else "".join(f"  .orig{n} 0x{s['addr']:X} : {{ build/relink/data.o(.orig{n}) }} :{seg}\n"
                                      for n, s, seg in ((".rodata", secs[".rodata"], "rodata" if dyn else "text"),
                                                        (".data", secs[".data"], "data"), (".bss", secs[".bss"], "data"))
                                      if s)
-    moved = {n: f"  .orig{n} : {{ build/relink/data.o(.orig{n}) }}\n" if move else "" for n in DATA}
+    moved = {n: f"  .orig{n} : {{ build/relink/data.o(.orig{n}) }}\n" if move and not STANDALONE else "" for n in DATA}
     ctors = "".join(f"  .{k} : {{ KEEP ({begin}(.{k})) KEEP (*(EXCLUDE_FILE ({ending}) .{k})) KEEP (*(.{k})) }}\n"
                     for k in ("ctors", "dtors")) if dyn else ""
     phdrs = (("  headers PT_PHDR PHDRS ;\n  interp PT_INTERP ;\n" if dyn else "") + "  text PT_LOAD FILEHDR PHDRS ;\n"
              + ("  rodata PT_LOAD ;\n" if dyn and not move else "") + ("  data PT_LOAD ;\n" if not move else "")
              + "  code PT_LOAD ;\n  more PT_LOAD ;\n" + ("  dynamic PT_DYNAMIC ;\n" if dyn else ""))
-    low = min(s["addr"] for s in elf.sections if s["addr"]) & ~0xFFF
     text = f"""OUTPUT_FORMAT("elf32-i386")
 OUTPUT_ARCH(i386)
-ENTRY({"_start" if dyn else starts[elf.entry]})
+ENTRY({"_start" if dyn else entry})
 PHDRS
 {{
 {phdrs}}}
@@ -761,6 +830,67 @@ def move(program_path: str) -> None:
           "moved with it)")
 
 
+def follow(program_path: str, map_path: Path) -> None:
+    """A program built from the tree alone, its code's numbers that are addresses of the original's data (what the
+    C still writes as one: `F(0x809e888)` a judge matches only so) made where that variable is now: each source
+    file's variables (build.json) found in its object, the object's section where the linker map says it went."""
+    try:
+        import capstone
+    except ImportError:
+        fail("following the data reads the code's operands with capstone: `pip install capstone`")
+    placed: dict[tuple[str, str], int] = {}  # (object, section) -> address
+    pending = None
+    for line in map_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\s(\.\S+)?\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+\.o)$", line)
+        if m and (m.group(1) or pending):
+            placed.setdefault((m.group(4), m.group(1) or pending), int(m.group(2), 16))
+            pending = None
+            continue
+        alone = re.match(r"^\s(\.\S+)$", line)  # (a long section name on a line of its own)
+        pending = alone.group(1) if alone else None
+    moves = []
+    for obj, entry in objects():
+        variables = ((entry.get("data") or {}).get("variables")) or []
+        if not variables or not (ROOT / obj).exists():
+            continue
+        o = Elf((ROOT / obj).read_bytes())
+        by_name = {sym["name"]: sym for sym in o.symbols(o.section(".symtab")) if sym["name"]}
+        for name, old, size, _ in variables:
+            sym = by_name.get(name)
+            if sym is None or not 0 < sym["shndx"] < len(o.sections):
+                continue
+            base = placed.get((obj, o.sections[sym["shndx"]]["name"]))
+            if base is not None:
+                moves.append((old, old + max(size, 1), base + sym["value"] - old))
+    moves.sort()
+    lows = [lo for lo, _, _ in moves]
+    path = Path(program_path)
+    data = bytearray(path.read_bytes())
+    elf = Elf(bytes(data))
+    text = elf.section(".text")
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    md.skipdata = True
+    done = 0
+    for ins in md.disasm(elf.data(text), text["addr"]):
+        if ins.id == 0:
+            continue
+        for field, value in ((ins.imm_offset, next((o.imm for o in ins.operands if o.type == capstone.x86.X86_OP_IMM), None)),
+                             (ins.disp_offset, next((o.mem.disp for o in ins.operands
+                                                     if o.type == capstone.x86.X86_OP_MEM and o.mem.base == 0), None))):
+            if not field or value is None or ins.size - field < 4:
+                continue
+            value &= 0xFFFFFFFF
+            k = bisect.bisect_right(lows, value) - 1
+            if k >= 0 and moves[k][0] <= value < moves[k][1]:
+                struct.pack_into("<I", data, text["offset"] + ins.address - text["addr"] + field,
+                                 (value + moves[k][2]) & 0xFFFFFFFF)
+                done += 1
+    path.write_bytes(bytes(data))
+    if done:
+        print(f"{program_path}: {done} addresses the C still writes as numbers follow their variables")
+
+
 # ------------------------------------------------------------------------------------------------------------- link
 
 def link(out_path: str, mode: str = "") -> None:
@@ -768,12 +898,12 @@ def link(out_path: str, mode: str = "") -> None:
     by the linker script (written first)."""
     import subprocess
 
-    move_data = mode == "move"
-    _, elf = game()
+    move_data = mode == "move" or STANDALONE
     ld_script = ROOT / OBJDIR / "program.ld"
     script(str(ld_script), move_data)
     first, last, extra, kind = ld_script.with_suffix(".inputs").read_text(encoding="utf-8").split("\n")[:4]
-    old_code(elf)
+    old_code()
+    data_o = [] if STANDALONE else ["build/relink/data.o"]
     objs = [obj for obj, _ in objects()]
     listing = ROOT / OBJDIR / "objects.txt"
     listing.write_text("\n".join(objs) + "\n", encoding="utf-8")
@@ -783,39 +913,56 @@ def link(out_path: str, mode: str = "") -> None:
         libs = [f"{OBJDIR}/stubs/{line.split()[0]}" for line in
                 (stubs_dir / "stubs.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
         cmd = [ld, "-m", "elf_i386", "-dynamic-linker", "/lib/ld-linux.so.2", "-rpath-link", str(stubs_dir),
-               "-T", str(ld_script), "-o", out_path, *first.split(), *objs, "build/relink/data.o", *extra.split(), *libs, *last.split()]
+               "-T", str(ld_script), "-o", out_path, *first.split(), *objs, *data_o, *extra.split(), *libs, *last.split()]
     else:
-        cmd = [ld, "-m", "elf_i386", "-static", "-T", str(ld_script), "-o", out_path, *objs, "build/relink/data.o"]
+        cmd = [ld, "-m", "elf_i386", "-static", "-T", str(ld_script), "-o", out_path, *objs, *data_o]
+    if STANDALONE:  # (where each object's sections went: the numbers its C still writes follow its variables)
+        cmd[1:1] = ["-Map", str(ROOT / OBJDIR / "program.map")]
     env = {**os.environ, "LD_LIBRARY_PATH": f"{TC.resolve()}/binutils/usr/lib:{TC.resolve()}/lib"
            + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")}
     res = subprocess.run([c for c in cmd if c], cwd=ROOT, env=env, capture_output=True, text=True)
     if res.returncode != 0:
         fail(f"the program doesn't link:\n{(res.stdout + res.stderr)[-3000:]}")
     os.chmod(out_path, 0o755)
-    if move_data:
+    if move_data and not STANDALONE:
         move(out_path)
+    if STANDALONE:
+        follow(out_path, ROOT / OBJDIR / "program.map")
     total = len(B["functions"])
-    from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None)
+    from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None and not fn.get("asm"))
     with_data = sum(1 for u in UNITS.values() if u.get("data"))
+    if STANDALONE:
+        print(f"{out_path}: relinked from this tree alone, no copy of the program needed ({from_c} of {total} functions from C, the rest assembly "
+              f"source; {len(UNITS)} source files whole, the data of {with_data} from their C)")
+        return
     print(f"{out_path}: relinked, a new program from the C ({from_c} of {total} functions from C, {len(UNITS)} source "
           f"files whole, the rest from asm/; the data of {with_data} files from their C, the rest "
           f"from data/program.s, {'laid out after the code' if move_data else 'where the game has it'})")
 
 
-def old_code(elf: Elf) -> None:
+def old_code() -> None:
     """Refuse C that writes an address in the original's code as a number (`(void (*)())0x805bc24`): the relinked
-    program doesn't load that code, so it would jump into nothing. Its name is the same bytes after linking."""
-    text = elf.section(".text")
-    lo, hi = text["addr"], text["addr"] + text["size"]
+    program doesn't load that code, so it would jump into nothing. Its name is the same bytes after linking. Built
+    from the tree alone, the original's data isn't there either: an address in it is refused too."""
+    lo, hi = B["text"]["vram"], B["text"]["vram"] + B["text"]["size"]
+    spans, inside = [(lo, hi)], []
+    if STANDALONE:  # (the original's data isn't there either, but for a source file's variables: follow() moves those)
+        spans += [(a, b) for _, a, b in B.get("layout", {}).get("data", [])]
+        inside = [(a, a + max(size, 1)) for unit in list(UNITS.values()) + list(B.get("data_files") or [])
+                  for _, a, size, _ in ((unit.get("data") or {}).get("variables") or [])]
     starts = {f["vram"]: f["name"] for f in B["functions"]}
     found = []
     for src in dict.fromkeys(source_of(fn) for fn in B["functions"]):
         if src is None:
             continue
-        for n, line in enumerate(src.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        text = src.read_text(encoding="utf-8", errors="replace")
+        # (not in a comment or a string: a note that says where a constant was isn't the C reading it)
+        text = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"', lambda m: re.sub(r"[^\n]", " ", m.group(0)), text,
+                      flags=re.S)
+        for n, line in enumerate(text.splitlines(), 1):
             for m in re.finditer(r"\b0x([0-9a-fA-F]{6,8})\b", line):
                 addr = int(m.group(1), 16)
-                if lo <= addr < hi:
+                if any(a <= addr < b for a, b in spans) and not any(a <= addr < b for a, b in inside):
                     hint = f" (that's {starts[addr]})" if addr in starts else ""
                     found.append(f"{src.relative_to(ROOT)}:{n}: 0x{addr:x}{hint}")
     if found:
