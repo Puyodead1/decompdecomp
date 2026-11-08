@@ -355,6 +355,26 @@ class Header:
             lines.append(f"unsigned char pad_{end:X}[0x{t.size - end:X}];")
         return lines
 
+    def members(self, t: Type) -> list[tuple[str, int, Type, int, bool]]:
+        """A struct's or union's members as _members writes them: (its name in C, bit offset, type, bit size, whether
+        it's written as bytes: a type the debug information doesn't define), padding left out. For a value's
+        initializer (cdata.py): `.name = ...` names what the header declares."""
+        out, used = [], set()
+        members = [(offset, f"base_{self._tag(self._resolve(base)) or 'class'}", base, 0) for offset, base in t.bases]
+        members += [(f.bit_offset, self._ident(f.name) if f.name else "", f.type, f.bit_size) for f in t.fields]
+        if t.kind == "struct":
+            members.sort(key=lambda member: member[0])
+        for bit_offset, name, member, bit_size in members:
+            name = name or f"unnamed_{bit_offset // BITS_PER_BYTE:X}"
+            if name in used:
+                name = f"{name}_{bit_offset // BITS_PER_BYTE:X}"
+            used.add(name)
+            width = self.size(member)
+            bitfield = bit_size and bit_size != width * BITS_PER_BYTE and self._resolve(member).kind in ("base", "enum")
+            as_bytes = self._resolve(member) is t or (not bitfield and not self.complete(member))
+            out.append((name, bit_offset, member, bit_size if bitfield else 0, as_bytes))
+        return out
+
     def _typedef_body(self, t: Type, deps: set, name: str) -> str:
         if t.kind in TAGGED and t.tag:  # tag and typedef in one (C++ classes)
             if t.kind == "enum":

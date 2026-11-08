@@ -32,6 +32,30 @@ UNITS = {u["name"]: u for u in B.get("units") or []}  # (the source files that a
 # where the C's objects are: build/relink, or build/port (`make port`: the same C built by the system's GCC); what
 # isn't C yet and the data are the same objects for both
 OBJDIR = os.environ.get("OBJDIR") or "build/relink"
+
+
+def owned() -> tuple[set[tuple[str, int]], dict[int, str], list[tuple[int, int, str]]]:
+    """What the source files whose data is C define themselves: ({(name, address)}: no label or assignment for them
+    in data/program.s; {address: a global name there}, for a pointer in the rest of the data; [(start, end, name)] of
+    their variables, a pointer into one written as its name and offset where it has a global one)."""
+    pairs, names, spans = set(), {}, []
+    for unit in UNITS.values():
+        data = unit.get("data") or {}
+        where = {name: address for name, address, _, _ in data.get("variables", [])}
+        defines = set(data.get("defines", []))
+        for name, address, size, _ in data.get("variables", []):
+            pairs.add((name, address))
+            if name in defines:
+                names.setdefault(address, name)
+                spans.append((address, address + size, name))
+        for alias, (base, off) in {**(data.get("aliases") or {}), **(data.get("link_aliases") or {})}.items():
+            address = where[base] + off
+            pairs.add((alias, address))
+            names.setdefault(address, alias)
+            if off == 0:
+                size = next(s for n, _, s, _ in data["variables"] if n == base)
+                spans.append((address, address + size, alias))
+    return pairs, names, sorted(spans)
 DATA = (".rodata", ".data", ".bss")
 LISTS = (".ctors", ".dtors", ".init_array", ".fini_array", ".preinit_array")
 SHF_WRITE, SHF_ALLOC, SHF_MERGE, SHF_STRINGS = 1, 2, 0x10, 0x20
@@ -263,9 +287,9 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
     obj = Path(raw_path).read_bytes()
     elf = Elf(obj)
     data = bytearray(obj)
-    if name.startswith("file:"):  # (a source file: every function of it is its own)
+    if name.startswith("file:"):  # (a source file: every function of it is its own, and its data where it's C)
         fn = UNITS[name[5:]]
-        own = set(fn["functions"])
+        own = set(fn["functions"]) | set((fn.get("data") or {}).get("defines", []))
     else:
         fn = next((f for f in B["functions"] if f["name"] == name), {"name": name})
         own = {name}
@@ -320,7 +344,8 @@ def fixup(raw_path: str, out_path: str, name: str) -> None:
             data[at:at + len(sec["name"])] = (".ctors" if sec["type"] == SHT_INIT_ARRAY else ".dtors").encode().ljust(
                 len(sec["name"]), b"\0")
     for sym in syms:
-        if sym["shndx"] == SHN_COMMON and sym["name"] in known:  # (a tentative definition: the game's global)
+        if sym["shndx"] == SHN_COMMON and sym["name"] in known and sym["name"] not in own:
+            # (a tentative definition: the game's global; a file whose data is C defines its own)
             struct.pack_into("<II", data, sym["at"] + 4, 0, 0)
             struct.pack_into("<H", data, sym["at"] + 14, SHN_UNDEF)
         elif sym["bind"] == 1 and sym["name"] not in own and sym["shndx"] not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
@@ -378,9 +403,13 @@ def labels_and_assigns(elf: Elf) -> tuple[dict[int, list[str]], list[str]]:
     asm = sorted((f["vram"], f["vram"] + f["size"], f["name"]) for f in B["functions"] if source_of(f) is None)
     labels: dict[int, list[str]] = {}
     assigns, stray = [], []
+    mine, _, _ = owned()
+    for unit in UNITS.values():  # (a name the C reads a file's global by: the global itself)
+        for alias, (base, off) in ((unit.get("data") or {}).get("link_aliases") or {}).items():
+            assigns.append(f"{alias} = {base}{f' + {off}' if off else ''};")
     for name, addr in sorted(B["symbols"].items(), key=lambda kv: kv[1]):
-        if name in skip:
-            continue
+        if name in skip or (name, addr) in mine:
+            continue  # (and what a source file's C defines with its data)
         if addr in starts:
             assigns.append(f"{name} = {starts[addr]};")
         elif any(lo <= addr < hi for lo, hi in spans):
@@ -426,9 +455,17 @@ def write_data(out_path: str) -> None:
     text = elf.section(".text")
     lo, hi = text["addr"], text["addr"] + text["size"]
 
+    _, own_names, own_spans = owned()
+    own_lows = [a for a, _, _ in own_spans]
+
     def named(word: int) -> str | None:
         if word in starts:
             return starts[word]
+        if word in own_names:  # (a source file's variable, its data C: the object's, not this copy)
+            return own_names[word]
+        k = bisect.bisect_right(own_lows, word) - 1
+        if k >= 0 and own_spans[k][0] < word < own_spans[k][1]:
+            return f"{own_spans[k][2]}+{word - own_spans[k][0]}"
         if word in imports:
             return imports[word]
         k = bisect.bisect_right(lows, word) - 1
@@ -759,9 +796,10 @@ def link(out_path: str, mode: str = "") -> None:
         move(out_path)
     total = len(B["functions"])
     from_c = sum(1 for fn in B["functions"] if source_of(fn) is not None)
+    with_data = sum(1 for u in UNITS.values() if u.get("data"))
     print(f"{out_path}: relinked, a new program from the C ({from_c} of {total} functions from C, {len(UNITS)} source "
-          f"files whole, the rest from asm/; "
-          f"the data from data/program.s, {'laid out after the code' if move_data else 'where the game has it'})")
+          f"files whole, the rest from asm/; the data of {with_data} files from their C, the rest "
+          f"from data/program.s, {'laid out after the code' if move_data else 'where the game has it'})")
 
 
 def old_code(elf: Elf) -> None:

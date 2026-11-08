@@ -177,6 +177,12 @@ def _without_copies(cs: list[Chunk], own: set[str]) -> list[Chunk]:
     return out
 
 
+def _loose(key: str) -> str:
+    """A declaration as far as C tells two apart: `int (*asked)(void);` is `int (*asked)();`, `char s[15];` is
+    `char s[];`."""
+    return re.sub(r"\[\s*\w*\s*\]", "[]", key.replace("(void)", "()"))
+
+
 def _one_per_name(cs: list[Chunk]) -> list[Chunk]:
     """Each declaration of several names (`extern float spos_01, spos_02[4];`) as one per name, so that each is
     written once, or another function's guess at one of them aliased, on its own."""
@@ -276,7 +282,9 @@ def prototype(chunk: Chunk) -> str | None:
 
 
 def merge(functions: list[tuple[str, str]], include: str, own_header: str | None = None, context=None,
-          statics_at: dict[str, dict[str, int]] | None = None, as_called: bool = False, shared: str = "") -> Merged:
+          statics_at: dict[str, dict[str, int]] | None = None, as_called: bool = False, shared: str = "",
+          own_data: dict[str, str] | None = None, forward: str = "", placed: list[tuple[int, str]] = (),
+          func_lines: dict[str, int] | None = None) -> Merged:
     """The source file of `functions` ((name, its matched C), in the file's order) as one C file starting with
     `#include "<include>"`, then its own header `own_header` where it declares anything (else those declarations
     are the C file's). `context` (re.Pattern): an include of the shared header the agents wrote themselves
@@ -288,7 +296,14 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     functions as it declared them (`void write_console();` called with two arguments, `float` arguments passed as
     `double` by a function that didn't declare it at all) where that isn't how they're defined, through a
     declaration of its own under another name for the same symbol: what the file needs when it doesn't match with
-    every call made as defined. `shared`: the shared header (what it declares, a function didn't leave undeclared)."""
+    every call made as defined. `shared`: the shared header (what it declares, a function didn't leave undeclared).
+
+    The file's data as C (consoles/linux/export_data.py): `own_data` ({name: its declaration as compared}) are the
+    variables it defines itself, so its functions' definitions of them go and a function that declared one another
+    way has its own declaration of it (as for a guess); `forward` declares them (and what their values name) before
+    the functions; `placed` ((line, definition)) goes before the first function whose `func_lines` entry is after it, as
+    the file had them."""
+    own_data = own_data or {}
     own = [name for name, _ in functions]
     sources = {name: context.sub("", source) if context is not None else source for name, source in functions}
     parsed = [(name, _one_per_name(_without_copies(chunks(sources[name]), set(own)))) for name in own]
@@ -327,7 +342,8 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
                     types.setdefault(n, set()).add(c.key)
             elif c.kind in ("static", "data"):
                 for n in c.names:
-                    statics.setdefault(n, set()).add(c.key)
+                    if n not in own_data:
+                        statics.setdefault(n, set()).add(c.key)
             elif c.kind == "define":
                 macros.setdefault(c.names[0], set()).add(c.key)
             elif c.kind == "func" and c.names and c.names[0] not in defs:
@@ -355,9 +371,11 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     in_shared = {n for n in ways if re.search(rf"(?<![\w.>]){re.escape(n)}\b", flat_shared)}
     uses = {name: _identifiers("".join(c.text for c in cs if c.kind == "func" and c.names == (name,))) for name, cs in parsed}
     declares = {name: {n for c in cs if c.kind == "extern" for n in c.names} for name, cs in parsed}
-    undeclared = {n for n in ways if n not in in_shared and n not in defined_here
+    undeclared = {n for n in ways if n not in in_shared and n not in defined_here and n not in own_data
                   and any(n in uses[name] and n not in declares[name] for name in own)}
-    scoped = sorted(n for n, keys in ways.items() if (len(keys) > 1 or n in undeclared) and n not in defined_here)
+    scoped = sorted(n for n, keys in ways.items() if ((len(keys) > 1 or n in undeclared) and n not in defined_here
+                                                      and n not in own_data)
+                    or (n in own_data and {_loose(k) for k in keys} - {_loose(own_data[n])}))
     # each of those as the file declares it: the shared header's way, else the way most of its functions wrote it;
     # a function that wrote another (or called it undeclared) has its own declaration of the same symbol under its
     # own name (_alias): GCC 2.95 took two types for one name in two functions, a newer GCC refuses them
@@ -366,7 +384,9 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     for n in scoped:
         if any(c.kind == "extern" and n in c.names and len(c.names) > 1 for _, cs in parsed for c in cs):
             return Merged(None, problem=f"its functions declare {n} differently, one with other names in one line")
-        if n in in_shared:
+        if n in own_data:
+            majority[n] = own_data[n]  # (as the file defines it; declared before its functions: `forward`)
+        elif n in in_shared:
             majority[n] = None
             shared_keys[n] = {_key(line) for line in flat_shared.splitlines() if line.rstrip().endswith(";")
                               and re.search(rf"(?<![\w.>]){re.escape(n)}\b", line)}
@@ -393,7 +413,8 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
         for n in scoped:
             said = next((c for c in cs if c.kind == "extern" and c.names == (n,)), None)
             if said is not None:
-                if said.key == majority[n] or said.key in shared_keys.get(n, ()):
+                if said.key == majority[n] or said.key in shared_keys.get(n, ()) or \
+                        (n in own_data and _loose(said.key) == _loose(own_data[n])):
                     continue
                 aliased.setdefault(name, {})[n] = (said.text, f"{n} as this function declares it")
             elif n in uses[name] and n not in in_shared:
@@ -423,6 +444,8 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
                 if set(c.names) & set(defs) and "__attribute__" in c.text:
                     once(c, own_decls)  # (`void setup(void) __attribute__((constructor));`: what it says stays)
                     continue
+                if set(c.names) & set(own_data):
+                    continue  # (the file's own data: declared before its functions, `forward`)
                 if len(c.names) == 1 and c.names[0] in majority and majority[c.names[0]] == c.key:
                     once(c, own_decls if _identifiers(c.text) & local_names else header_decls)
                     continue  # (the file's way of a name its functions guessed differently)
@@ -430,7 +453,7 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
                     continue  # (the file's own functions and statics: as defined; another guess: its function's)
                 once(c, own_decls if _identifiers(c.text) & local_names else header_decls)
             elif c.kind in ("static", "data"):
-                if not set(c.names) & inner:
+                if not set(c.names) & (inner | set(own_data)):
                     once(c, data)
             elif c.kind == "func" and c.names and c.names[0] not in defs:
                 once(c, data)  # (an inline helper its functions define)
@@ -449,7 +472,11 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
 
     defined_as = {name: _key(proto) for name in own if (proto := prototype(defs[name])) is not None}
     body = []
+    pending = sorted(placed, key=lambda p: p[0])
     for name, cs in parsed:
+        here = (func_lines or {}).get(name)  # (the file's data defined before this function: before its macros too)
+        while here is not None and pending and pending[0][0] < here:
+            body.append("\n" + pending.pop(0)[1].rstrip("\n") + "\n")
         mine = [c for c in cs if c.kind == "define" and c.names[0] in local_macros]
         for c in mine:
             text = c.text.strip("\n") + "\n"
@@ -486,11 +513,13 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
         body.append("\n" + text)
         body += [f"#undef {c.names[0]}\n" for c in mine]
 
+    if pending:
+        body.append("\n" + "\n".join(text.rstrip("\n") for _, text in pending) + "\n")
     header = "".join(header_decls + prototypes_h)
     if not own_header:
         own_decls, header = header_decls + prototypes_h + own_decls, ""
     parts = [f'#include "{include}"\n', "".join(includes), f'#include "{own_header}"\n' if header else "",
-             "".join(top_macros), "".join(top_types), "".join(own_decls), "".join(prototypes_c), "".join(others),
-             "".join(data)]
+             "".join(top_macros), "".join(top_types), "".join(own_decls), "".join(prototypes_c), forward,
+             "".join(others), "".join(data)]
     c = "\n".join(p for p in parts if p) + "".join(body)
     return Merged(c, header, scoped=scoped)

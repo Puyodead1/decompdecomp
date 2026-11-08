@@ -322,10 +322,10 @@ class Linux(Console):
     def target_arch(self, fn) -> str:
         return "x86"
 
-    def link_function(self, obj: bytes, name: str, target, symbols, read):
+    def link_function(self, obj: bytes, name: str, target, symbols, read, placed=None):
         from ...arch import x86_link
 
-        return x86_link.link(obj, name, target, symbols, read)
+        return x86_link.link(obj, name, target, symbols, read, placed)
 
     rom_drafts = True  # (Ghidra's: m2c reads no x86)
 
