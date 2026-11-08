@@ -53,9 +53,10 @@ def _statics(obj: bytes, placements: dict[str, dict[int, int]]) -> dict[str, int
     return out
 
 
-def _assembly(row, syms) -> str:
-    """A function that isn't C as GNU assembly: its bytes, each call, jump and address out of it by name (the
-    relinked program moves the code, so a number would point at nothing)."""
+def _refs(row, syms) -> dict[int, str]:
+    """What a function that isn't C refers to out of itself, by name: {offset of the word: its expression} (a call's
+    `name - . - 4`, an address's `name+off`). Kept in build.json: tools/relink.py writes asm/ from your copy's bytes
+    with it (asm/ is your copy's code, never in git)."""
     import json as _json
 
     code, vram, name = bytes(row["target"]), row["vram"], row["name"]
@@ -66,6 +67,12 @@ def _assembly(row, syms) -> str:
         label, off = (name, dest - vram) if vram <= dest < vram + len(code) else syms.name_at(dest)
         target = f"{label}{f'+{off}' if off else ''}"
         refs[at] = f"{target} - . - 4" if kind == 2 else target
+    return refs
+
+
+def assembly(name: str, code: bytes, refs: dict[int, str]) -> str:
+    """A function that isn't C as GNU assembly: its bytes, each word in `refs` by name (the relinked program moves
+    the code, so a number would point at nothing). (tools/relink.py has the same, for a checkout without asm/.)"""
     lines, i = [f".text\n.globl {name}\n.type {name},@function\n{name}:\n"], 0
     while i < len(code):
         if i in refs:
@@ -76,6 +83,69 @@ def _assembly(row, syms) -> str:
         lines.append(f".byte {', '.join(str(b) for b in code[i:stop])}\n")
         i = stop
     return "".join(lines)
+
+
+def _runtime_names(toolchain: str) -> set[str]:
+    """What the toolchain's C runtime objects define (_start, _init): the relinked program's link brings them."""
+    from ... import toolchains
+
+    found = toolchains.installed(toolchain)
+    if found is None:
+        return set()
+    tc = toolchains.path(toolchain)
+    objects = [obj.read_bytes() for obj in [*(tc / "crt").glob("crt[1in].o"), *tc.glob("gcc/usr/lib/**/crt*.o")]]
+    nonshared = tc / "crt" / "libc_nonshared.a"  # (and libc_nonshared.a's members: glibc's atexit, -fPIC)
+    raw = nonshared.read_bytes() if nonshared.exists() else b""
+    at = 8 if raw.startswith(b"!<arch>\n") else len(raw)
+    while at + 60 <= len(raw):
+        size = int(raw[at + 48:at + 58].decode().strip() or 0)
+        if raw[at + 60:at + 64] == b"\x7fELF":
+            objects.append(raw[at + 60:at + 60 + size])
+        at += 60 + size + (size & 1)
+    names = set()
+    for obj in objects:
+        symtab = ELFFile(BytesIO(obj)).get_section_by_name(".symtab")
+        names |= {s.name for s in (symtab.iter_symbols() if symtab else ()) if s.name and s["st_shndx"] != "SHN_UNDEF"
+                  and s["st_info"]["bind"] != "STB_LOCAL"}
+    return names
+
+
+def _unlisted(image: bytes, functions: list[dict], syms, build_toolchain: str = "") -> list[dict]:
+    """Code in .text that no function covers but a global symbol names: hand-written assembly (a .s file has no
+    STABS, and its labels are NOTYPE, size 0: a program's jump_to, change_context and get_curr_cpu_time), each up to
+    the next symbol or function. A relinked program that left them in the old .text called into nothing."""
+    from .split import disassemble
+
+    elf = ELFFile(BytesIO(image))
+    text = elf.get_section_by_name(".text")
+    index = elf.get_section_index(".text")
+    lo, hi = text["sh_addr"], text["sh_addr"] + text["sh_size"]
+    covered = sorted((f["vram"], f["vram"] + f["size"]) for f in functions)
+    starts = [a for a, _ in covered]
+
+    def inside(addr: int) -> bool:
+        import bisect
+
+        k = bisect.bisect_right(starts, addr) - 1
+        return k >= 0 and covered[k][0] <= addr < covered[k][1]
+    library = _runtime_names(build_toolchain) if build_toolchain else set()
+    labels = sorted({(s["st_value"], s.name) for s in elf.get_section_by_name(".symtab").iter_symbols()
+                     if s.name and s["st_shndx"] == index and s["st_info"]["bind"] == "STB_GLOBAL"
+                     and s.name not in library  # (crt1.o's _start: the link brings its own)
+                     and s["st_info"]["type"] == "STT_NOTYPE" and lo <= s["st_value"] < hi and not inside(s["st_value"])})
+    ends = sorted({a for a, _ in covered} | {a for a, _ in labels} | {hi})
+    found = []
+    for addr, name in labels:
+        end = next(e for e in ends if e > addr)
+        at = text["sh_offset"] + addr - lo
+        code = image[at:at + end - addr]
+        # (an operand counts as an address only where a symbol is exactly: a constant is a constant)
+        _, _, refs = disassemble(code, addr, lambda a, exact=False: (syms.by_addr[a].name if a in syms.by_addr
+                                                                     else None) if exact else syms.label(a))
+        row = {"name": name, "vram": addr, "target": code, "relocs": json.dumps(refs)}
+        found.append({"name": name, "vram": addr, "size": len(code), "unit": None, "refs": _refs(row, syms),
+                      "code": code})
+    return found
 
 
 def _unplaceable(obj: bytes, scattered: set[str]) -> bool:
@@ -161,14 +231,27 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         if compiled.layout:  # it matches where the code before it in its file put it (x86_link.layouts)
             f["prelude"] = compiled.layout
 
-    # what isn't C yet, as assembly that names what it calls and reads: the relinked program moves the code
+    # what isn't C yet, as assembly that names what it calls and reads: the relinked program moves the code (its
+    # references in build.json, so `make` writes asm/ again from your copy in a checkout without it); and the code
+    # no function covers that a global symbol names (hand-written assembly)
     asm = out / "asm"
     by_vram = {r["vram"]: r for r in rows}
+    pieces = []
+    library = _runtime_names(cfg["compiler"]["toolchain"])
     for f in functions:
-        if not f.get("c"):
-            asm.mkdir(exist_ok=True)
-            (asm / f"{f['name']}.s").write_text(_assembly(by_vram[f["vram"]], syms), encoding="utf-8")
-            f["s"] = f"asm/{f['name']}.s"
+        if not f.get("c") and f["name"] not in library:  # (the link brings libc_nonshared.a's, crt's: no bytes)
+            row = by_vram[f["vram"]]
+            pieces.append((f, bytes(row["target"]), _refs(row, syms)))
+    for extra in _unlisted(image, functions, syms, cfg["compiler"]["toolchain"]):
+        code = extra.pop("code")
+        functions.append(extra)
+        pieces.append((extra, code, extra["refs"]))
+    functions.sort(key=lambda f: f["vram"])
+    for f, code, refs in pieces:
+        asm.mkdir(exist_ok=True)
+        (asm / f"{f['name']}.s").write_text(assembly(f["name"], code, refs), encoding="utf-8")
+        f["s"] = f"asm/{f['name']}.s"
+        f["refs"] = {str(k): v for k, v in refs.items()}
 
     names = {f["name"] for f in functions if f.get("c")}
     symbols = {s.name: s.address for s in syms.by_name.values() if s.name not in names and s.address}
