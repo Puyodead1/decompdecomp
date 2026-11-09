@@ -30,7 +30,11 @@ MSVC/own-<version>.
   the code, and Ghidra's drafts made into C++ that compiles in the project (also in briefs, the background drafter and
   redraft). Each file may be built with more flags (file_flags: /Oy- where its functions keep an ebp frame, found by
   the import: scratch.frame_flags), which search_flags tries.
-- project_template/: what that project starts as (tools/configure.py writes its ninja build).
+- project_template/: what that project starts as (tools/configure.py writes its ninja build; tools/relink.py links
+  the program anew with Visual C++ 6.0's LINK.EXE, `ninja relink`, and writes it as MASM source; tools/assemble.py
+  makes the program from that source, for a project without the user's copy).
+- export.py: what Export adds to the project: the program as source in source/, a line per instruction with
+  capstone's text of it, checked to make the user's copy (export_fork).
 - guides/x86.md: what agents read about x86 and matching Visual C++'s code.
 
 Its demo game is projects/demo-pc (the Demo Quest game built with Visual C++ 6.0, or with any compiler of the
@@ -424,6 +428,15 @@ class WindowsPC(Console):
                                                      "status='matched'", net.project_row(slug)["id"])}
         return net.forks.reanalyse(slug, lambda fp: scratch.reanalyse_program(fp.root, manifest["version"], found,
                                                                                 keep=matched), log=log)
+
+    def export_fork(self, net, slug: str, root: Path, log=print) -> dict | None:
+        """The project, and its game's program as source in source/ (export.py), checked to make the user's copy."""
+        from .export import export_pc
+
+        fp = net.forks.get(slug)[1]
+        if (fp.manifest or {}).get("created") != "from scratch":
+            return None  # (a public decomp: its own tree)
+        return export_pc(root, fp.manifest["version"], log=log)
 
     def check_rebuild(self, fp, version: str, log=print) -> dict:
         """The program rebuilt from what the project builds now: its objects first (a file that no longer compiles

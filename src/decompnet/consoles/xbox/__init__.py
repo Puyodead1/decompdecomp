@@ -53,6 +53,11 @@ class Xbox(WindowsPC):
     guides = ("x86", "xbox", "cpp")
     ram = (0x00010000, 0x80000000)  # an XBE loads at 0x10000; the kernel is above 0x80000000
     demo = "demo-xbox"
+
+    def export_fork(self, net, slug, root, log=print):
+        """The project is the export (`ninja rebuild` writes default.xbe back): an XBE as source is planned
+        (ROADMAP.md), the Windows program decompdecomp made of it isn't the game's program."""
+        return None
     import_options = (("ltcg", "Link-time code generation (/GL, /LTCG)", (
         ("auto", "Detect it from the program (recommended)"),
         ("on", "The game was built with it: build units through a harness"),

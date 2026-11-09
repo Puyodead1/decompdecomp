@@ -3031,6 +3031,9 @@ copy of its program and compared with what `src/` compiles to, function by funct
    as your copy's. `python tools/relink.py config/{version}/functions.json build/{version} --link <LINK.EXE> --all-c`
    takes every function from its C, not only those that compile to the game's code (a mod); `--pad 0x1000` moves
    everything, to see that the program still works.
+6. decompdecomp's Export writes the whole program as source in `source/` (MASM, kept out of git: it's your copy's
+   code): with it and without your copy, `tools/configure.py` makes `orig/{version}.exe` from it first
+   (`tools/assemble.py`, Visual C++ 6.0's MASM), byte for byte.
 
 Compiler: Visual C++ {compiler} (change `MSVC_VERSION` and `CL_FLAGS` in tools/configure.py if the game was built
 with another version or other flags; `config/{version}/file_compilers.json` names the files built with another

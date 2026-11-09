@@ -789,6 +789,36 @@ def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
         fp.run(["ninja", "relink"], log=lambda *_: None)
 
 
+@needs_tools
+@pytest.mark.skipif(toolchains.installed("msvc") is None or not list(toolchains.path("msvc").glob("6.0SP*/Bin/ml.exe")),
+                    reason="needs Visual C++ 6.0's MASM (a service pack's ml.exe, in the msvc pack)")
+def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_builds_from_it(pc, tmp_path):
+    """Export writes a PC project's program as source (source/: every function MASM, a line per instruction with its
+    text, the data with its pointers named, program.json), kept out of git, and checks that Visual C++ 6.0's MASM
+    makes the user's copy from it; a clone of the project with that source and no copy of the game makes the program
+    from it and rebuilds it byte for byte."""
+    net, slug = pc
+    root, version = Path(net.project_row(slug)["root"]), "demoquest"
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"] and res["source"], res
+    program = json.loads((root / "source" / "program.json").read_text())
+    unit = (root / "source" / program["pieces"][0]["asm"]).read_text(encoding="latin-1")
+    assert " PROC NEAR" in unit and "; mov eax, dword ptr [esp + 4]" in unit
+    data = next((root / "source" / p["asm"]).read_text(encoding="latin-1") for p in program["pieces"]
+                if "data_" in p["asm"])
+    assert "dd OFFSET __d_00402000+" in data  # (the level names' pointers, to their strings)
+    assert "source/" in (root / ".gitignore").read_text().split()
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(root), str(clone)], check=True)
+    shutil.copytree(root / "source", clone / "source")
+    fp = ForkProject(clone)
+    for cmd in ([sys.executable, "tools/configure.py", version, *scratch_pe.tool_args()], ["ninja", "rebuild"]):
+        ok, out = fp.run(cmd, log=lambda *_: None)
+        assert ok, out
+    assert (clone / "orig" / f"{version}.exe").read_bytes() == EXE.read_bytes()
+    assert (clone / "build" / version / f"{version}.exe").read_bytes() == EXE.read_bytes()
+
+
 NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc8, msvc9 and msvc10 packs
 
 

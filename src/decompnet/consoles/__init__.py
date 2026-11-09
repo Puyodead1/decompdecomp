@@ -325,6 +325,11 @@ class Console:
 
         return export_rom(net, slug, out, self, log=log)
 
+    def export_fork(self, net, slug: str, root: Path, log=print) -> dict | None:
+        """Project mode: what Export adds to a project of this console (a Windows PC game's program as source, its
+        source/), with the export's result ({"path", "identical", ...}); None: the project is the export as it is."""
+        return None
+
     def export_asm(self, text: str) -> str:
         """ROM mode's export: a file of spimdisasm's assembly as GNU as reads it. What it can't read as spimdisasm
         writes it (coprocessor 2's instructions), or would place elsewhere (8-byte data), becomes the raw words it is."""

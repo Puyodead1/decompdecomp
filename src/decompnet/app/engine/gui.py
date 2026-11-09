@@ -39,8 +39,10 @@ BROKEN = ("doesn't compile any more", "no longer matches")  # an export's reason
 class GuiMixin:
     def export_rom(self, slug: str, log=print) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
-        if self.fork_slug(slug):  # a fork's work is already in its source tree, committed
-            return {"path": self._project(slug)["root"], "identical": None}
+        if self.fork_slug(slug):  # a fork's work is already in its source tree, committed (and what its console adds)
+            proj = self._project(slug)
+            res = self.console(proj).export_fork(self, slug, Path(proj["root"]), log=log)
+            return res if res is not None else {"path": proj["root"], "identical": None}
 
         proj = self._project(slug)
         # (the C written with the game's addresses as numbers matches only where it lies: named first, where it

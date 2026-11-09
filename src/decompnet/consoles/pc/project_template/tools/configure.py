@@ -12,7 +12,8 @@ config/VERSION/file_flags.json gives it (/Oy-: the frame pointer kept). objdiff.
 compares every source file's functions with the original's. `ninja rebuild` puts the whole program back together from
 them (tools/rebuild.py) and checks it against your copy; `ninja relink` links it again with Visual C++ 6.0's linker
 (tools/relink.py: code can change size and the rest moves with it; run it yourself for its options, --all-c and
---pad). A game built with link-time code generation (LTCG = True:
+--pad). Without your copy of the game, a project with its program as source (source/, what decompdecomp's Export
+writes) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM). A game built with link-time code generation (LTCG = True:
 units with a driver in harness/) builds those units through tools/ltcg.py, whose linker runs through wine. Made by
 decompdecomp.
 """
@@ -131,6 +132,16 @@ def linker() -> list[str]:
     return ["--link", str(link), *(["--wrapper", args.wibo] if args.wibo and sys.platform != "win32" else [])]
 
 
+def assembler() -> list[str]:
+    """tools/assemble.py's arguments for the assembler it makes the program from its source with: Visual C++ 6.0's
+    MASM (ml.exe 6.15, in the 6.0 service packs' folders), and what runs it."""
+    ml = next((p for d in args.msvc for p in sorted(Path(d).glob("6.0SP*/Bin/ml.exe"), reverse=True)), None)
+    if ml is None:
+        sys.exit("configure: the program's source is assembled with Visual C++ 6.0's MASM (6.0SP*/Bin/ml.exe): "
+                 "install Visual C++ 6.0 in decompdecomp's Setup")
+    return ["--ml", str(ml), *(["--wrapper", args.wibo] if args.wibo and sys.platform != "win32" else [])]
+
+
 def file_compilers() -> dict[str, str]:
     return json.loads(FILE_COMPILERS.read_text(encoding="utf-8")) if FILE_COMPILERS.exists() else {}
 
@@ -180,8 +191,15 @@ def main() -> None:
                "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
         n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
 
+        exe = Path(info["exe"]).as_posix()
+        if not Path(exe).exists() and Path("source/program.json").exists():
+            # no copy of the game here, its program as source (decompdecomp's Export): the program from that
+            n.rule("assemble", f"{PY} tools/assemble.py source/program.json {(BUILD / 'source').as_posix()} "
+                   + q(assembler()).replace("$", "$$"))
+            n.build(exe, "assemble", ["source/program.json"],
+                    implicit=[*(p.as_posix() for p in sorted(Path("source").rglob("*.asm"))), "tools/assemble.py"])
         targets = [(BUILD / "target" / f"{u}.obj").as_posix() for u in units]
-        n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"])
+        n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"], implicit=[exe])
         objs = []
         versions, more = file_compilers(), file_flags()
         harness, harness_files = set(), []

@@ -53,7 +53,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves; Export writes the program as MASM source, which builds it without your copy) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -536,6 +536,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   out with every section byte for byte their copy's (the header is the linker's); `--all-c` takes every function
   from its C (a mod: a function other code jumps into the middle of, or whose C needs a name nothing defines, stays
   your copy's, and says so) and `--pad` moves everything, the demo still running to its end.
+- **A Windows PC game's program as source.** Export writes it into the project's source/ (kept out of git, as the
+  user's copy is): every function as MASM, a line per instruction with its text (capstone's), each relocated word
+  `dd OFFSET` what it points at and each call or jump to another function by its name; the data in files of up to
+  64 KiB, every global labelled and every pointer named; the resources; the header and what follows the last
+  section as they are. tools/assemble.py makes the program from it with Visual C++ 6.0's own MASM (ml.exe 6.15,
+  under wibo) and checks it against the SHA-1, and a project without the user's copy makes `orig/` from it before
+  anything else: the four games above and the demo come out byte for byte (10,159 files for the largest).
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1144,8 +1151,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   is whole).
 - Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects
   (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
-  data as C and assembly source (the modding-ready check below), the game's DLLs relinked too, and an Xbox game's
-  XBE.
+  the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
+  from, so a project builds without it). Left: the data as C (a global C defines is the data's copy for now), source
+  edited in assembly taken by the relink (it links from the program the source makes, which must be the game's),
+  the game's DLLs relinked and as source too, and an Xbox game's XBE.
 
 ### A modding-ready check for the export
 
