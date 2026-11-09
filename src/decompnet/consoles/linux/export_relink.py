@@ -930,6 +930,7 @@ def script(out_path: str, move: bool) -> None:
         end = max(s["addr"] + s["size"] for s in secs.values() if s)
         code = (end + 0xFFFFF) & ~0xFFFFF
         low = min(s["addr"] for s in elf.sections if s["addr"]) & ~0xFFF
+    assigns = assigns + [f"PROVIDE({n} = 0);" for n in B.get("weak") or []]  # (left weak and undefined: 0)
     before, after = crt_files() if dyn else ([], [])
     begin, ending = (before[2], after[0]) if dyn else (None, None)
     pinned = "" if move else "".join(f"  .orig{n} 0x{s['addr']:X} : {{ build/relink/data.o(.orig{n}) }} :{seg}\n"
