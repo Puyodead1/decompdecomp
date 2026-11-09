@@ -228,3 +228,16 @@ def libraries(build: dict) -> str:
         if m and m.group(1) != "c":
             out.append(f"-l{m.group(1)}")
     return " ".join(reversed(out))  # (a library before what it uses: GLUT before GL, as a person writes it)
+
+
+# the Debian and Ubuntu packages whose :i386 build has a library's link name (libGL.so, not only libGL.so.1)
+_DEV = {"GL": "libgl-dev", "GLU": "libglu1-mesa-dev", "glut": "freeglut3-dev", "X11": "libx11-dev",
+        "Xext": "libxext-dev", "Xi": "libxi-dev", "Xmu": "libxmu-dev", "asound": "libasound2-dev",
+        "SDL": "libsdl1.2-dev", "z": "zlib1g-dev", "png": "libpng-dev", "jpeg": "libjpeg-dev"}
+
+
+def packages(build: dict) -> str:
+    """What `apt install` gives a plain link its libraries: gcc-multilib and each library's development package
+    for i386 (the C library's, the math library's come with gcc-multilib)."""
+    names = [lib[2:] for lib in libraries(build).split()]
+    return " ".join(["gcc-multilib"] + [f"{_DEV[n]}:i386" for n in names if n in _DEV])

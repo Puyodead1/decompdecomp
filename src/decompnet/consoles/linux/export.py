@@ -830,7 +830,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         export_clean.clean(out, build, Path(toolchains.ensure(build["toolchain"], log=lambda *_: None)), log=log)
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
-          data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"])
+          data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build))
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
     (out / ".gitignore").write_text("/build/\n/baserom*\n/asm/\n/data/\n/tools/*/\n/tools/.downloads/\n", encoding="utf-8")
@@ -849,7 +849,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
 
 
 def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program", whole: int = 0,
-          unit_fallback=(), data_fallback=(), with_data: int = 0, standalone: bool = False) -> None:
+          unit_fallback=(), data_fallback=(), with_data: int = 0, standalone: bool = False,
+          packages: str = "gcc-multilib") -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
     notes += "".join(f"\n- `{u}`: one file per function in `src/{_unit_name(u)}/` for now: {why}"
                      for u, why in unit_fallback)
@@ -867,8 +868,9 @@ in the program and checks the result against your original, byte for byte.
 
 1. {"`make`: builds `build/plain/" + program + "`, the C as any C program is built: every source file compiled by "
    "your system's gcc (`CC`, `CFLAGS`) with `NON_MATCHING` defined, linked against your system's libraries "
-   "(`LDLIBS`). Needs make and a 32-bit gcc and libraries (Debian and Ubuntu: `gcc-multilib` and the `:i386` "
-   "development packages of what `LDLIBS` names). Nothing of the original program, nor decompdecomp. "
+   "(`LDLIBS`). Needs make and a 32-bit gcc and libraries (Debian and Ubuntu: `sudo apt install " + packages + "`; "
+   "a link that can't find `-lGL` where only the libraries' `.so.1` files are there takes "
+   "`make LDFLAGS=-L<a folder of links libGL.so -> libGL.so.1>`). Nothing of the original program, nor decompdecomp. "
    "`make asan` builds the same with AddressSanitizer (`build/asan/" + program + "`): a read past a variable into "
    "the next one, which the plain link lays out as it likes, is reported with its function and variable "
    "(`ASAN_OPTIONS=halt_on_error=0` carries on after each)." if standalone else
