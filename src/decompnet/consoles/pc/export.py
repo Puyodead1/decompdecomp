@@ -4,7 +4,8 @@ The project is the export already (`ninja rebuild` rebuilds the program byte for
 with Visual C++'s linker). What Export adds is the rest of the program as source, in the project's source/ folder:
 every function as MASM, a line per instruction with capstone's text of it as a comment (its C, where it has any,
 is in src/ too); the data as C, a file per part of each section (data/: each global at its place by a #pragma
-data_seg, a string as a string, a pointer as the address of what it points at; data.h declares every one), the
+data_seg, a string as a string, a pointer as the address of what it points at, a table of records an array of a
+struct of its own; data.h declares every one), the
 import tables MASM; the resources, and program.json (tools/relink.py --source writes it). tools/assemble.py makes
 the program from that with Visual C++ 6.0's MASM and compiler, and the export checks it's the user's copy, byte for
 byte. source/ is
