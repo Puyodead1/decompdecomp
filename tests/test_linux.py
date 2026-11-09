@@ -667,7 +667,9 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     whole = program_file.read_text()
     assert whole.count("static int calls;") == 1 and whole.index("int length(") < whole.index("int main(")
     assert "__attribute__((constructor))" in whole and [p.name for p in (out / "src").glob("*/*.c")] == ["atexit.c"]
-    assert "void say(const char *s);" in (out / "include" / f"{program_file.stem}.h").read_text()
+    # (its header, what the rest of the program reads of it, as common.h declared it; no copy of common.h left)
+    assert "void say(const char *);" in (out / "include" / f"{program_file.stem}.h").read_text()
+    assert sorted(p.name for p in (out / "include").iterdir()) == ["common.h", f"{program_file.stem}.h"]
     # the hand-written code as assembly source a person reads, checked to assemble to the program's bytes
     assert "addl %eax, %eax" in (out / "src" / "asm" / "twice.s").read_text() and (out / "src" / "asm" / "answer.s").exists()
     assert not (out / "asm").exists() and (out / "Makefile").exists()
@@ -1451,8 +1453,7 @@ def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_c
     assert "return add(count_calls, 2);" in made and "__asm__(\"add\")" not in made  # (called by its own name)
     # one name for the variable: the definition's, where the C's is GCC's number for a function's static
     assert ".set" not in made
-    assert export_clean.clean(out, build, tc, log=lambda *_: None) == dict.fromkeys(
-        [title for title, _ in export_clean.PASSES], 0)  # (done once: nothing left to do the second time)
+    assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())  # (done once: nothing left)
     # the check itself: the same place written two ways is the same code; another place isn't
     flags = ["-O2"]
     one = export_clean._compile(out, tc, out / "src" / "cam.c", flags, source)
@@ -1468,3 +1469,62 @@ def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_c
     # the plain link's libraries are what the program asked the loader for
     assert export_make.libraries({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
         == "-lglut -lGL -lm"
+
+
+def test_the_exports_common_header_becomes_a_header_per_source_file(tmp_path):
+    """common.h declared every file's names, so a file with a static of one had its own copy without it
+    (common_<file>.h): the export cuts it into a header per source file of what the others read of it, each file
+    including those it uses and declaring itself what no header does (another file's static it reads, a
+    declaration two files disagree on), kept where GCC 2.95 still compiles each file to the same code."""
+    import json
+
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    for d in ("src", "include", "tools"):
+        (out / d).mkdir(parents=True)
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    common = ("typedef int s32;\nint abs(int);\n/* a.c */\nextern s32 score;\nextern int hidden;\n"
+              "/* b.c */\nint helper(int x);\n")
+    (out / "include" / "common.h").write_text(common)
+    (out / "include" / "common_a.h").write_text(common.replace("extern int hidden;\n", ""))
+    (out / "include" / "a.h").write_text("#ifndef FILE_A_H\n#define FILE_A_H\nint a_func(void);\n"
+                                         "extern int helper();\n#endif\n")
+    (out / "include" / "b.h").write_text("#ifndef FILE_B_H\n#define FILE_B_H\nextern char *a_func();\n#endif\n")
+    (out / "src" / "a.c").write_text('#include "common_a.h"\n\n#include "a.h"\n'
+                                     "s32 score;\nstatic int hidden = 3;\n"
+                                     "int a_func(void) { return helper(hidden) + abs(score); }\n")
+    (out / "src" / "b.c").write_text('#include "common.h"\n\n#include "b.h"\n'
+                                     "int helper(int x) { return x + score + hidden + (int)a_func(); }\n")
+    build = {"symbols": {}, "toolchain": gcc, "standalone": True,
+             "functions": [{"name": "a_func", "vram": 0x8048000, "c": "src/a.c"},
+                           {"name": "helper", "vram": 0x8048040, "c": "src/b.c"}],
+             "units": [{"name": "a", "c": "src/a.c", "flags": ["-O2"]},
+                       {"name": "b", "c": "src/b.c", "flags": ["-O2"]}]}
+    (out / "build.json").write_text(json.dumps(build))
+    before = {n: export_clean._compile(out, tc, out / "src" / n, ["-O2"], (out / "src" / n).read_text())
+              for n in ("a.c", "b.c")}
+    export_clean.clean(out, build, tc, log=lambda *_: None)
+
+    shared = (out / "include" / "common.h").read_text()
+    assert "typedef int s32;" in shared and "int abs(int);" in shared  # (types and the libraries' stay)
+    assert "score" not in shared and "helper" not in shared and "hidden" not in shared
+    a_h, b_h = (out / "include" / "a.h").read_text(), (out / "include" / "b.h").read_text()
+    assert "extern s32 score;" in a_h and "#ifndef FILE_A_H" in a_h
+    assert "a_func" not in a_h  # (b.c declares it otherwise: its type isn't settled, each file says its own)
+    assert "int helper(int x);" in b_h and "a_func" not in b_h
+    assert not (out / "include" / "common_a.h").exists()
+    a_c, b_c = (out / "src" / "a.c").read_text(), (out / "src" / "b.c").read_text()
+    assert a_c.startswith('#include "common.h"\n#include "a.h"\n#include "b.h"\n')
+    assert "extern int helper();" not in a_c and "int a_func(void);" in a_c  # (b.h has helper's prototype)
+    assert b_c.startswith('#include "common.h"\n#include "b.h"\n#include "a.h"\n')
+    assert "extern int hidden;" in b_c and "extern char *a_func();" in b_c  # (a.c's static, read here)
+    for n in ("a.c", "b.c"):  # (the same code)
+        made = export_clean._compile(out, tc, out / "src" / n, ["-O2"], (out / "src" / n).read_text())
+        assert export_clean.same_code(before[n], made, {})
+    assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())

@@ -904,7 +904,7 @@ a number where a person writes the variable's name), the file has both, as decom
 | `src/<source file>.c` | A source file of the program, its functions in their original order, its statics defined once. |
 | `src/<source file>/<function>.c` | The functions of a file that isn't back together yet (README's notes say why), one per file; `data.c` beside them its variables. |
 | `src/asm/<function>.s` | Code that isn't C: hand-written assembly, as GNU assembly that assembles to the original's bytes. |
-| `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own, `<source file>.h` what a source file declares for itself (its functions, and what it uses from elsewhere). |
+| `include/` | `common.h`: the program's types, structs, macros and the libraries' declarations. `<source file>.h`: what the rest of the program reads of that file (its functions and variables); each file includes the headers of the files it uses, and declares itself what no header does. A file that only builds the game's code with the headers it was matched with reads those (`common_full.h`, `<source file>_decls.h`). |
 | `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
 | `data/program.s` | The program's data that isn't C yet, every global and pointer named (written from your copy by the first relink). |
 | `Makefile`, `tools/` | The build: `make` the plain program, `make match` the matching one; `tools/relink.py` the matching build's steps, `tools/toolchain.sh` its compiler's download. |
