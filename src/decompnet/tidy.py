@@ -133,6 +133,8 @@ def _is_body(text: str, start: int, close: int) -> bool:
 
 
 _ATTRIBUTE = re.compile(r"__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)")
+_TYPEOF = re.compile(r"\b(?:__)?typeof(?:__)?\s*\((?:[^()]|\([^()]*\))*\)")
+_LABEL = re.compile(r"\b(?:__asm__|asm)\s*\(\s*\"[^\"]*\"\s*\)")
 
 
 def _item(decl: str, original: str) -> tuple[str, tuple[str, ...]] | None:
@@ -151,7 +153,8 @@ def _item(decl: str, original: str) -> tuple[str, tuple[str, ...]] | None:
         return "type", (f"{tag.group(1)} {tag.group(2)}",)
     if "{" in flat:
         return None
-    body = re.sub(r"^extern\s+", "", flat)
+    # (`extern __typeof__(x) y __asm__("x");` declares y: neither the type's parentheses nor the label name it)
+    body = _LABEL.sub("", _TYPEOF.sub("T", re.sub(r"^extern\s+", "", flat)))
     names = []
     for part in _split_top(body.rstrip(";")):
         m = re.search(r"\(\s*\*\s*(\w+)\s*\)\s*\(", part) or re.search(r"(\w+)\s*\(", part) or \

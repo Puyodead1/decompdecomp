@@ -27,8 +27,10 @@ from dataclasses import dataclass, field
 from . import cfields
 from .tidy import _ATTRIBUTE, _KEYWORDS, _KR_HEAD, _identifiers, _is_body, _item, _key, _split_top
 
-# a K&R definition's head (`int f(a, b) int a; ...`), not a prototype with an attribute after it
-_KR = re.compile(_KR_HEAD.pattern[:-len("[A-Za-z_]")] + r"(?!__attribute__|__asm__|asm\b)[A-Za-z_]")
+# a K&R definition's head (`int f(a, b) int a; ...`), not a prototype with an attribute after it, nor a declaration
+# whose type is `__typeof__(x)` (`extern __typeof__(x) y __asm__("x");`, what an export writes for a linked name)
+_KR = re.compile(_KR_HEAD.pattern.replace(r"\b\w+\s*\(", r"\b(?!(?:__)?typeof(?:__)?\b)\w+\s*\(", 1)[:-len("[A-Za-z_]")]
+                 + r"(?!__attribute__|__asm__|asm\b)[A-Za-z_]")
 
 
 @dataclass

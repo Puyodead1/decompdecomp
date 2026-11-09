@@ -16,6 +16,8 @@ Each pass here writes one kind of that machinery as the C it stands for:
   unique by its address).
 - called_by_name: a function's redeclaration of another (`extern int sndPlay__healthHit() __asm__("sndPlay");`)
   dropped, the call by its own name, wherever the shared header's prototype builds the same code.
+- module_headers: common.h, which declared every file's names, cut into a header per source file of what the others
+  read of it; each file includes those it uses.
 """
 
 from __future__ import annotations
@@ -514,6 +516,15 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
         changed[title] = count
         if count or refused:
             log(f"{title}: written as C in {count} files")
+    title = "headers of each source file's own"
+    changed[title] = module_headers(out, build, tc, files, prelude, where, log)
+    if changed[title]:
+        log(f"{title}: {changed[title]} files read them")
+    title = "declarations a header makes"
+    items, apply = redeclared(out)
+    changed[title], refused = _itemized(out, tc, files, prelude, where, title, items, apply, log)
+    if changed[title] or refused:
+        log(f"{title}: dropped in {changed[title]} files ({refused} kept)")
     return changed
 
 
@@ -565,3 +576,294 @@ def _what_works(found: list, works) -> list:
             search(group[half:])
     search(found)
     return kept
+
+
+# the first line of a shared header module_headers wrote (a second run leaves the tree as it is)
+_SHARED = ("/* What every file of the program shares: its types, macros and the libraries' declarations. What a\n"
+           " * source file defines for the others is in its own header (font.c's in font.h). */\n")
+_LABEL_LINE = re.compile(r"^[ \t]*/\* [\w./-]+\.c \*/[ \t]*\n", re.M)  # (common.h's `/* 3dmath.c */` above a group)
+_GLOBL = re.compile(r"\.globl\s+(\w+)")
+_LOCAL = "/* What this file reads that no header declares as it does */"
+
+
+def _module(rel: str) -> str:
+    """The source file a C file of the tree is part of, by name: src/font.c is font, src/model/mdAttach.c (one
+    function of model.c) is model."""
+    p = Path(rel)
+    return p.parent.name if p.parent.name != "src" else p.stem
+
+
+def _defined(text: str) -> tuple[set[str], set[str]]:
+    """The names a C file defines for the rest of the program (its functions and variables, the names its `.set`s
+    give), and those it keeps to itself (static)."""
+    from ...units import chunks
+    public, own = set(), set()
+    for c in chunks(text):
+        if c.kind in ("func", "data"):
+            (own if c.static else public).update(c.names)
+        elif c.kind == "static" or (c.kind == "extern" and c.static):
+            own.update(c.names)
+        elif c.kind == "other":
+            public.update(_GLOBL.findall(c.text))
+    return public - own, own
+
+
+def _declaration(chunk) -> str:
+    """A declaration of common.h as a module's header has it: with the comment right above it, without a heading
+    of common.h's (above a blank line) or the label of the group it opened."""
+    from ...units import _mask
+    masked = _mask(chunk.text)
+    start = len(masked) - len(masked.lstrip())
+    lead, decl = chunk.text[:start], chunk.text[start:]
+    lead = _LABEL_LINE.sub("", re.split(r"\n[ \t]*\n", lead)[-1].lstrip("\n"))
+    return lead + (decl if decl.endswith("\n") else decl + "\n")
+
+
+def _conflicting(out: Path, tc: Path, candidates: list, others: list, prelude) -> set[str]:
+    """The names of `candidates` (declarations) that GCC 2.95 finds conflicting with a declaration of `others` of
+    the same name, or with common.h's."""
+    wanted = {n for c in candidates for n in c.names}
+    probe_dir = out / "build" / "clean"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    bad: set[str] = set()
+    for _ in range(20):  # (GCC stops reporting after a while: until a probe compiles)
+        decls = [c for c in candidates if not set(c.names) & bad]
+        decls += [c for c in others if set(c.names) & wanted and not set(c.names) & bad]
+        text = '#include "common.h"\n' + "".join(dict.fromkeys(c.text.rstrip("\n") + "\n" for c in decls))
+        probe = out / "src" / ".clean-conflicts.c"
+        probe.write_text(text, encoding="utf-8")
+        try:
+            proc = subprocess.run(capped(["sh", "tools/cc.sh", str(tc), str(probe.relative_to(out)),
+                                          str(probe_dir / "conflicts.o"), "-Iinclude", *prelude]),
+                                  cwd=out, capture_output=True, text=True, timeout=600)
+        finally:
+            probe.unlink(missing_ok=True)
+            (probe_dir / "conflicts.o").unlink(missing_ok=True)
+        if proc.returncode == 0:
+            return bad
+        found = set(re.findall(r"(?:conflicting types for|redeclaration of|previous declaration of) `(\w+)'",
+                               proc.stderr)) & wanted
+        if not found - bad:
+            return wanted  # (it fails for another reason: none of them is safe to share)
+        bad |= found
+    return wanted
+
+
+def module_headers(out: Path, build: dict, tc: Path, files, prelude, where, log=print) -> int:
+    """common.h declared every file's functions and variables (and the statics of one file that another reads), so
+    a file with a static of that name had its own copy without it (common_<file>.h): not how a program is written.
+    Each source file gets a header of what the rest of the program reads of it (<file>.h, from common.h's
+    declarations); common.h keeps the types, macros and the libraries'; each file includes common.h, its own header
+    and those of the files whose names it uses, and declares what no header does (another file's static it reads, a
+    declaration of its own) itself. A file is kept so where GCC 2.95 still compiles it to the same code; one that
+    isn't reads the headers it was matched with (common_full.h, <file>_decls.h). Returns how many files read
+    module headers."""
+    from ...units import chunks
+    inc = out / "include"
+    shared = inc / "common.h"
+    if not shared.exists() or shared.read_text(encoding="utf-8").startswith(_SHARED):
+        return 0
+    rels = list(dict.fromkeys(rel for rel, _ in files))
+    texts = {rel: (out / rel).read_text(encoding="utf-8") for rel in rels}
+    others = [p.relative_to(out).as_posix() for p in sorted((out / "src").rglob("*.c"))
+              if not p.name.startswith(".") and p.relative_to(out).as_posix() not in texts]
+    public: dict[str, set[str]] = {}
+    statics: dict[str, set[str]] = {}
+    owner_of: dict[str, set[str]] = {}
+    static_somewhere: set[str] = set()
+    for rel, text in texts.items():
+        mine, own = _defined(text)
+        public[rel], statics[rel] = mine, own
+        static_somewhere |= own
+        for name in mine:
+            owner_of.setdefault(name, set()).add(_module(rel))
+    owner = {n: next(iter(m)) for n, m in owner_of.items() if len(m) == 1}
+    if others:  # (a C file no build compiles: it keeps the headers it has)
+        log(f"module headers: {len(others)} source files aren't compiled by the build, so they keep the full header")
+
+    # common.h cut: what a module defines goes to its header, a static's declaration to the files that read it
+    old_common = shared.read_text(encoding="utf-8")
+    kept, headers, of_statics = [], {}, {}
+    for c in chunks(old_common):
+        names = c.names if c.kind == "extern" and not c.static else ()
+        modules = {owner.get(n) for n in names}
+        if names and len(modules) == 1 and None not in modules:
+            headers.setdefault(modules.pop(), []).append(c)
+        elif names and all(n in static_somewhere and n not in owner_of for n in names):
+            for n in names:
+                of_statics[n] = c
+        else:
+            kept.append(c)
+
+    # what each file was matched with
+    private = {}
+    for rel in rels:
+        own = inc / f"{Path(rel).stem}.h"
+        if _module(rel) == Path(rel).stem and own.exists() and re.search(
+                rf'^#include "{re.escape(own.name)}"', texts[rel], re.M):
+            private[rel] = own.read_text(encoding="utf-8")
+    # a file's own functions and variables its private header declared and common.h didn't: its header's too, where
+    # no other file declares one of them otherwise (two files' guesses at a type GCC calls conflicting)
+    extra: dict[str, list] = {}
+    extended: set[int] = set()  # (the declarations common.h didn't make)
+    for rel, text in private.items():
+        module = _module(rel)
+        have = {n for c in headers.get(module, ()) for n in c.names}
+        for c in chunks(text):
+            if c.kind == "extern" and not c.static and c.names and not set(c.names) & have and all(
+                    owner.get(n) == module for n in c.names):
+                extra.setdefault(module, []).append(c)
+                have.update(c.names)
+    elsewhere = [c for text in private.values() for c in chunks(text) if c.kind == "extern" and not c.static]
+    elsewhere += [c for text in texts.values() for c in chunks(text) if c.kind == "extern" and not c.static]
+    clash = _conflicting(out, tc, [c for cs in extra.values() for c in cs], elsewhere, prelude)
+    for module, cs in extra.items():
+        added = [c for c in cs if not set(c.names) & clash]
+        headers.setdefault(module, []).extend(added)
+        extended.update(id(c) for c in added)
+    declared = {n: m for m, cs in headers.items() for c in cs for n in c.names}
+
+    def tokens(text: str) -> set[str]:
+        return {t for t in _TOKEN.findall(text) if t[0].isalpha() or t[0] == "_"}
+
+    # each file compiled as it was matched, before anything changes
+    flags_of = {rel: tuple(f) for rel, f in files}
+    old_objs = {rel: _compile(out, tc, out / rel, prelude + list(flags_of[rel]), texts[rel]) for rel in rels}
+
+    def rewritten(rel: str, sparing: bool = False) -> str | None:
+        """`rel` reading the module headers; `sparing`: not those with a declaration common.h didn't make (one
+        that may change a call of this file's), what it needs of them declared itself."""
+        text, module, own = texts[rel], _module(rel), statics[rel]
+        first = re.match(r'#include "common(?:_[\w-]+)?\.h"\n', text)
+        if not first:
+            return None
+        body = text[first.end():]
+        local = []
+        if rel in private:
+            body = re.sub(rf'^\n?#include "{re.escape(Path(rel).stem)}\.h"\n', "", body, count=1, flags=re.M)
+            for c in chunks(private[rel]):
+                if c.kind in ("pp", "include") or (c.kind == "define" and c.names and c.names[0].startswith("FILE_")):
+                    continue
+                if c.kind == "extern" and c.names and all(
+                        any(d.key == c.key and not (sparing and id(d) in extended)
+                            for d in headers.get(declared.get(n), ())) for n in c.names):
+                    continue  # (its header says the same)
+                local.append(c.text.strip("\n"))
+        used = tokens(body) | tokens("\n".join(local))
+        need = {owner[t] for t in used if t in owner and t not in own}
+        if headers.get(module):
+            need.add(module)
+        includes = []
+        for m in sorted(need, key=lambda m: (m != module, m)):
+            cs = headers.get(m, ())
+            if not cs:
+                continue
+            # (it has a static of a name that header declares; or sparing)
+            if any(n in own for c in cs for n in c.names) or (sparing and any(id(c) in extended for c in cs)):
+                local += [_declaration(c).strip("\n") for c in cs if set(c.names) & used
+                          and not set(c.names) & own and id(c) not in extended]
+            else:
+                includes.append(f'#include "{m}.h"\n')
+        have = tokens("\n".join(local))
+        local += [_declaration(of_statics[n]).strip("\n") for n in sorted(used & set(of_statics))
+                  if n not in own and n not in have]
+        block = (f"\n{_LOCAL}\n" + "\n".join(local) + "\n" if local else "")
+        return '#include "common.h"\n' + "".join(includes) + block + body
+
+    # the new headers
+    new_common = _SHARED + "\n" + "".join(c.text for c in kept)
+    new_headers = {}
+    for m, cs in headers.items():
+        guard = "FILE_" + re.sub(r"\W", "_", m).upper() + "_H"
+        what = f"{m}.c" + (f" (src/{m}/, a file per function)" if (out / "src" / m).is_dir() else "")
+        new_headers[m] = (f"/* What the rest of the program reads of {what} */\n#ifndef {guard}\n#define {guard}\n\n"
+                          + "".join(_declaration(c) for c in cs) + "\n#endif\n")
+    old_files = {p.name: p.read_text(encoding="utf-8") for p in inc.glob("*.h")}
+    shared.write_text(new_common, encoding="utf-8")
+    for m, text in new_headers.items():
+        (inc / f"{m}.h").write_text(text, encoding="utf-8")
+
+    done, fell_back = 0, []
+    for rel in rels:
+        for sparing in (False, True):
+            new = rewritten(rel, sparing) if old_objs[rel] is not None else None
+            if new is None:
+                break
+            obj = _compile(out, tc, out / rel, prelude + list(flags_of[rel]), new)
+            if obj is not None and same_code(old_objs[rel], obj, where):
+                (out / rel).write_text(new, encoding="utf-8")
+                done += 1
+                break
+        else:
+            fell_back.append(rel)
+            continue
+        if new is None:
+            fell_back.append(rel)
+    for rel in fell_back + others:
+        text = (out / rel).read_text(encoding="utf-8")
+        text = re.sub(r'^#include "common\.h"$', '#include "common_full.h"', text, count=1, flags=re.M)
+        stem = Path(rel).stem
+        if rel in private:
+            (inc / f"{stem}_decls.h").write_text(private[rel], encoding="utf-8")
+            text = re.sub(rf'^#include "{re.escape(stem)}\.h"$', f'#include "{stem}_decls.h"', text, count=1,
+                          flags=re.M)
+        (out / rel).write_text(text, encoding="utf-8")
+        log(f"{rel}: kept the headers it was matched with (its code changed with the module headers)")
+    if fell_back or others:
+        (inc / "common_full.h").write_text(old_common, encoding="utf-8")
+    # the copies of common.h no file reads any more, and a header of a file the new ones didn't replace
+    reads = "\n".join([(out / rel).read_text(encoding="utf-8") for rel in rels + others]
+                      + [p.read_text(encoding="utf-8") for p in inc.glob("*.h")])
+    for name in old_files:
+        if (name.startswith("common_") and name != "common_full.h" or
+                (name[:-2] not in new_headers and name != "common.h" and not name.endswith("_decls.h"))) \
+                and f'"{name}"' not in reads:
+            (inc / name).unlink()
+    return done
+
+
+def redeclared(out: Path):
+    """A declaration module_headers left in a file (what its private header said) that a header the file includes
+    makes too: dropped, each where the file still compiles to the same code (`extern void xfPush();` beside
+    xfstack.h's prototype is the prototype's call)."""
+    from ...units import chunks
+
+    def in_headers(text: str) -> set[str]:
+        seen, todo = set(), re.findall(r'^#include "([\w.-]+)"', text, re.M)
+        names = set()
+        while todo:
+            name = todo.pop()
+            path = out / "include" / name
+            if name in seen or not path.exists():
+                continue
+            seen.add(name)
+            header = path.read_text(encoding="utf-8")
+            todo += re.findall(r'^#include "([\w.-]+)"', header, re.M)
+            names |= {n for c in chunks(header) if c.kind == "extern" for n in c.names}
+        return names
+
+    def block(text: str) -> tuple[int, int] | None:
+        at = text.find(_LOCAL + "\n")
+        if at < 0:
+            return None
+        start = at + len(_LOCAL) + 1
+        end = text.find("\n\n", start)
+        return start, (len(text) if end < 0 else end + 1)
+
+    def items(text: str) -> list[tuple[str, str]]:
+        span = block(text)
+        if span is None:
+            return []
+        known = in_headers(text)
+        return [(c.names[0], c.text) for c in chunks(text[span[0]:span[1]])
+                if c.kind == "extern" and c.names and set(c.names) <= known]
+
+    def apply(text: str, chosen) -> str:
+        start, end = block(text)
+        local = text[start:end]
+        for _, decl in chosen:
+            local = local.replace(decl, "", 1)
+        if not local.strip():
+            return text[:start - len(_LOCAL) - 2] + text[end:]
+        return text[:start] + local + text[end:]
+    return items, apply

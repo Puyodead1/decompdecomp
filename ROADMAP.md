@@ -1123,8 +1123,9 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
 
 - Reads that depend on where variables sit (`scrnHit + 0x12 + D*18`, which is `initMaxAmmo[D - 1]`): found by
   running `make asan`, then written as the variable they read.
-- One prototype per function in module headers (`player.h`), instead of a caller's `__asm__` redeclarations and the
-  copies of `common.h` each file has (`common_<file>.h`).
+- One prototype per function: module headers (`player.h`, what the rest of the program reads of player.c) replace
+  `common.h`'s declarations and its per-file copies (done), but where two files declare a function differently each
+  keeps its own declaration, and a caller's `__asm__` redeclarations stay where the header's prototype changes code.
 - Names: a `.set` alias as the name itself, a constant pool's `D_x_data` as its string literals, an offset into a
   struct (`SegmentModel + 112`) as its field, from the game's debug information.
 - A source file made one file per function (`model.c`) whole.
