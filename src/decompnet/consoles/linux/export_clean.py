@@ -16,6 +16,9 @@ Each pass here writes one kind of that machinery as the C it stands for:
   unique by its address).
 - called_by_name: a function's redeclaration of another (`extern int sndPlay__healthHit() __asm__("sndPlay");`)
   dropped, the call by its own name, wherever the shared header's prototype builds the same code.
+- struct_fields: a read at an offset into a variable written as the field there, by the game's own types.
+- cross_reads: a read of rows past a variable's end written as the variable it lands in (what ASan finds).
+- varargs: a file's own va_start, which steps from an argument's address, the compiler's own in a plain build.
 - module_headers: common.h, which declared every file's names, cut into a header per source file of what the others
   read of it; each file includes those it uses.
 """
@@ -455,15 +458,319 @@ def set_names(build: dict, others: dict[str, str]):
     return items, apply, kept
 
 
+# the game's types as common.h has them from the debug information: `struct _TCamera { /* 0x728 bytes */` and a
+# field a line, its offset in a comment
+_LAYOUT = re.compile(r"^(struct|union) (\w+) \{ /\* 0x([0-9A-Fa-f]+) bytes \*/\n(.*?)^\};", re.M | re.S)
+_FIELD = re.compile(r"^    ([^;{}\n]+?);\s*/\* 0x([0-9A-Fa-f]+) \*/[ \t]*$", re.M)
+_TYPEDEF = re.compile(r"^typedef ((?:struct|union) \w+|\w+) (\w+);", re.M)
+_OFF = r"(0x[0-9a-fA-F]+|\d+)"
+
+
+def _norm(t: str) -> str:
+    return re.sub(r"\s*\*\s*", "*", " ".join(t.split())).strip()
+
+
+class _Layouts:
+    """Struct layouts by their field offsets: which field (`pos.y`) is at an offset into a variable of a type."""
+
+    def __init__(self, text: str):
+        self.typedefs = {name: target for target, name in _TYPEDEF.findall(text)}
+        self.layouts = {}
+        for kind, tag, size, body in _LAYOUT.findall(text):
+            fields = []
+            for decl, off in _FIELD.findall(body):
+                m = re.search(r"\(\s*\*+\s*(\w+)\s*\)", decl)
+                if m:  # (a pointer to a function or an array: one word)
+                    fields.append((m.group(1), "void *", [], int(off, 16)))
+                    continue
+                m = re.match(r"(.*?)(\w+)((?:\[\w*\])*)$", decl.strip())
+                if not m or not m.group(1).strip():
+                    continue
+                dims = [int(d, 0) for d in re.findall(r"\[(\w+)\]", m.group(3)) if re.fullmatch(r"0x[0-9a-fA-F]+|\d+", d)]
+                if m.group(3) and len(dims) != m.group(3).count("["):
+                    continue
+                fields.append((m.group(2), _norm(m.group(1)), dims, int(off, 16)))
+            self.layouts[f"{kind} {tag}"] = (int(size, 16), kind == "union", fields)
+
+    def key(self, type_: str) -> str | None:
+        t = _norm(type_)
+        for _ in range(8):
+            if t in self.layouts:
+                return t
+            if t not in self.typedefs:
+                return None
+            t = _norm(self.typedefs[t])
+        return None
+
+    def base(self, type_: str) -> str:
+        """`type_` through its typedefs (`uint` -> `unsigned int`)."""
+        t = _norm(type_)
+        for _ in range(8):
+            if t not in self.typedefs:
+                break
+            t = _norm(self.typedefs[t])
+        return t
+
+    def same(self, a: str, b: str) -> bool:
+        return self.base(a) == self.base(b)
+
+    def paths(self, type_: str, off: int, want: str | None):
+        """The fields of a `type_` at `off`, outermost first (`pos`, `pos.x`), each of type `want` (any: None)."""
+        key = self.key(type_)
+        if key is None:
+            return
+        size, union, fields = self.layouts[key]
+        ends = [f[3] for f in fields[1:]] + [size]
+        for (name, ftype, dims, at), end in zip(fields, ends):
+            span = (size if union else end) - at
+            if not at <= off < at + max(span, 1):
+                continue
+            rel, sub = off - at, name
+            if dims:
+                if len(dims) != 1 or not dims[0]:
+                    continue
+                inner = self.layouts.get(self.key(ftype) or "", (span // dims[0],))[0]
+                if not inner:
+                    continue
+                if off - at >= inner * dims[0]:
+                    continue
+                if off == at and want is None:  # (an address there: the array's)
+                    yield name
+                sub, rel = f"{name}[{rel // inner}]", rel % inner
+            if rel == 0 and (want is None or self.same(ftype, want)):
+                yield sub
+            for deeper in self.paths(ftype, rel, want) if "*" not in ftype else ():
+                yield f"{sub}.{deeper}"
+
+
+def _variable_types(texts) -> dict[str, str]:
+    """Each variable a header or file declares or defines with a plain type (`extern TCamera g_Camera;`)."""
+    out = {}
+    for text in texts:
+        for m in re.finditer(r"^(?:extern |static )?((?:struct |union |unsigned |const )*\w+) (\w+)\s*(\[\w+\])?\s*"
+                             r"(?:=|;|__attribute__)", text, re.M):
+            if m.group(1) not in ("return", "typedef", "extern", "static", "goto"):
+                out.setdefault(m.group(2), m.group(1) + (m.group(3) or ""))
+    return out
+
+
+def _access(layouts: _Layouts, vtype: str, off: int, want: str | None, outermost: bool = False) -> str | None:
+    """How C reads `off` bytes into a variable of `vtype` as a field of type `want` (any: None): `.pos.y`, or
+    `[1].input` into an array; None where no field of that type starts there."""
+    m = re.fullmatch(r"(.+?)\s*\[(\w+)\]", vtype or "")
+    if m:
+        key = layouts.key(m.group(1))
+        size = layouts.layouts[key][0] if key else 0
+        if not size or not re.fullmatch(r"0x[0-9a-fA-F]+|\d+", m.group(2)) or off >= size * int(m.group(2), 0):
+            return None
+        rest = off % size
+        if rest == 0 and want is not None and layouts.same(m.group(1), want):
+            return f"[{off // size}]"
+        path = _first(layouts.paths(m.group(1), rest, want), want, outermost)
+        return f"[{off // size}].{path}" if path else None
+    path = _first(layouts.paths(vtype or "", off, want), want, outermost)
+    return f".{path}" if path else None
+
+
+def _first(paths, want: str | None, outermost: bool = False) -> str | None:
+    """The field of a type asked for (the outermost), or with none asked, the innermost one there (`spaceVel.x`,
+    what a read of one word is; an address: the outermost, `&g_Camera.scale`)."""
+    if want is not None or outermost:
+        return next(paths, None)
+    found = None
+    for path in paths:
+        if found is not None and not path.startswith(found + "."):
+            break
+        found = path
+    return found
+
+
+def struct_fields(out: Path):
+    """A read at an offset into a variable (`*(int *)((char *)&g_Camera + 0x6d8)`, `(*(__typeof__(D_08EC894C) *)
+    ((char *)&g_Camera + 12))`, what the linker script's names became) written as the field there (`g_Camera.pos`),
+    by the game's own types where the field's type is what the C reads."""
+    shared = out / "include" / "common.h"
+    layouts = _Layouts(shared.read_text(encoding="utf-8") if shared.exists() else "")
+    headers = [p.read_text(encoding="utf-8") for p in sorted((out / "include").glob("*.h"))]
+    typeof_ = re.compile(rf"\(\*\(__typeof__\((\w+)\) \*\)\(\(char \*\)&(\w+) \+ {_OFF}\)\)")
+    read = re.compile(rf"\*\(((?:unsigned |signed |struct |const |volatile )*\w+(?: \*+)?) \*\)\(\(char \*\)&(\w+) \+ "
+                      rf"{_OFF}\)")
+    point = re.compile(rf"(?<![*\w)])\(((?:unsigned |signed |struct |const |volatile )*\w+(?: \*+)?) \*\)\(\(char \*\)&"
+                       rf"(\w+) \+ {_OFF}\)")
+
+    def items(text: str) -> list[tuple[int, int, str]]:
+        if not layouts.layouts:
+            return []
+        types = _variable_types(headers + [text])
+        found = []
+        for m in typeof_.finditer(text):
+            var, want = m.group(2), types.get(m.group(1))
+            path = _access(layouts, types.get(var, ""), int(m.group(3), 0), want) if want else None
+            if path:
+                found.append((m.start(), m.end(), f"{var}{path}"))
+        for m in read.finditer(text):
+            var, off, want = m.group(2), int(m.group(3), 0), m.group(1)
+            path = _access(layouts, types.get(var, ""), off, want)
+            if path:
+                found.append((m.start(), m.end(), f"{var}{path}"))
+                continue
+            path = _access(layouts, types.get(var, ""), off, None)  # (read as another type than the field's)
+            if path:
+                found.append((m.start(), m.end(), f"*({want} *)&{var}{path}"))
+        for m in point.finditer(text):
+            var, off = m.group(2), int(m.group(3), 0)
+            path = (_access(layouts, types.get(var, ""), off, m.group(1))
+                    or _access(layouts, types.get(var, ""), off, None, outermost=True))
+            if path:
+                found.append((m.start(), m.end(), f"({m.group(1)} *)&{var}{path}"))
+        found.sort()
+        return [f for i, f in enumerate(found) if not i or f[0] >= found[i - 1][1]]
+
+    def apply(text: str, chosen) -> str:
+        for start, end, new in sorted(chosen, reverse=True):
+            text = text[:start] + new + text[end:]
+        return text
+    return items, apply
+
+
+_SCALAR = {"char": 1, "signed char": 1, "unsigned char": 1, "short": 2, "unsigned short": 2, "signed short": 2,
+           "int": 4, "unsigned int": 4, "signed int": 4, "unsigned": 4, "long": 4, "unsigned long": 4, "float": 4,
+           "double": 8, "long long": 8, "unsigned long long": 8}
+_ROWS = re.compile(r"\(\(\(int\)&(\w+) \+ (0x[0-9a-fA-F]+|\d+)\) \+ ([^;()]+?|\([^;()]*\)[^;()]*?) \* (\d+)\)")
+_ROW_ALIAS = re.compile(r'^[ \t]*extern (?:\w+ )+(\w+)\[\]\[(\d+)\] __asm__\("(\w+)"\);[^\n]*\n', re.M)
+
+
+def cross_reads(build: dict):
+    """A read of rows past a variable's end (`(short *)(((int)&scrnHit + 0x12) + Difficulty * 18)`, a table the C
+    reached from the one before it) written as the variable it lands in, where one starts on a row
+    (`initMaxAmmo[Difficulty - 1]`, at the same address: the same code). What ASan finds in a plain build."""
+    at: dict[str, dict[str, tuple[int, int]]] = {}
+    for entry in list(build.get("units") or []) + list(build.get("data_files") or []):
+        for name, address, size, _ in (entry.get("data") or {}).get("variables") or []:
+            at.setdefault(entry.get("c") or "", {})[name] = (address, size)
+
+    def arrays(text: str) -> dict[str, tuple[int, list[int]]]:
+        out = {}
+        for m in re.finditer(r"^(?:static )?((?:unsigned |signed )?\w+) (\w+)((?:\[\d+\])+)\s*(?:=|;|__attribute__)",
+                             text, re.M):
+            if m.group(1) in _SCALAR:
+                out.setdefault(m.group(2), (_SCALAR[m.group(1)], [int(d) for d in re.findall(r"\d+", m.group(3))]))
+        return out
+
+    def landing(rel: str, text: str, base: int, past: int, row: int) -> tuple[str, int] | None:
+        """The array of `rel` with a row of `row` bytes starting `j` rows after `base`, at or past `past`."""
+        shapes = arrays(text)
+        for name, (address, size) in (at.get(rel) or {}).items():
+            shape = shapes.get(name)
+            if shape is None or address < past or (address - base) % row:
+                continue
+            elem, dims = shape
+            if elem * (dims[-1] if len(dims) > 1 else 1) == row and size % row == 0 and 0 < (address - base) // row <= 4:
+                return name, (address - base) // row
+        return None
+
+    def index(expr: str, minus: int) -> str:
+        m = re.fullmatch(r"(.*?)\s*\+\s*(\d+)", expr.strip())
+        expr, k = (m.group(1), int(m.group(2))) if m else (expr.strip(), 0)
+        k -= minus
+        return expr if not k else f"{expr} + {k}" if k > 0 else f"{expr} - {-k}"
+
+    def items(text: str, rel: str = "") -> list[tuple[int, int, str]]:
+        vars_ = at.get(rel) or {}
+        found = []
+        for m in _ROWS.finditer(text):
+            name, off, expr, row = m.group(1), int(m.group(2), 0), m.group(3), int(m.group(4))
+            if name not in vars_:
+                continue
+            address, size = vars_[name]
+            target = landing(rel, text, address + off, address + size, row)
+            if target and off + row >= size:
+                land, j = target
+                cast = re.search(r"\((?:const )?((?:unsigned |signed )?\w+) \*\)\s*$", text[:m.start()])
+                elem = arrays(text)[land][0]
+                if cast and _SCALAR.get(cast.group(1)) == elem and len(arrays(text)[land][1]) > 1:
+                    found.append((cast.start(), m.end(), f"{land}[{index(expr, j)}]"))
+                else:
+                    found.append((m.start(), m.end(), f"((int)&{land}[{index(expr, j)}])"))
+        for alias in _ROW_ALIAS.finditer(text):
+            short, cols, name = alias.group(1), int(alias.group(2)), alias.group(3)
+            elem = re.match(r"^[ \t]*extern ((?:unsigned |signed )?\w+) ", alias.group(0))
+            if name not in vars_ or not elem or elem.group(1) not in _SCALAR:
+                continue
+            address, size = vars_[name]
+            row = _SCALAR[elem.group(1)] * cols
+            target = landing(rel, text, address, address + size, row)
+            if not target:
+                continue
+            for m in re.finditer(rf"\b{re.escape(short)}\[([^\[\]]+)\]", text):
+                if m.start() < alias.end():
+                    continue
+                found.append((m.start(), m.end(), f"{target[0]}[{index(m.group(1), target[1])}]"))
+        found.sort()
+        return [f for i, f in enumerate(found) if not i or f[0] >= found[i - 1][1]]
+
+    def apply(text: str, chosen) -> str:
+        for start, end, new in sorted(chosen, reverse=True):
+            text = text[:start] + new + text[end:]
+        return text
+
+    def candidates(text: str, rel: str):
+        """The reads by the variable they reach, else both (`#ifdef NON_MATCHING`): GCC 2.95 writes
+        `initMaxAmmo - 18` as an offset into the file's own data, which no relink of the file places as the game
+        has it, while the address is the game's by construction."""
+        found = items(text, rel)
+        if not found:
+            return
+        new = apply(text, found)
+        yield new
+        both = _non_matching(text, new)
+        if both is not None:
+            yield both
+    return candidates
+
+
+_OWN_VARARGS = re.compile(r"^#define va_start\(.*?(?=^#define va_end\(\w+\)[^\n]*\n)#define va_end\(\w+\)[^\n]*\n",
+                          re.M | re.S)
+
+
+def varargs(build: dict):
+    """A file's own va_start (`(char *)&(LASTARG) + 4`, the argument where GCC 2.95 left it) is GCC 2.95's only;
+    another compiler (or ASan) moves the argument, so a plain build takes the compiler's own (NON_MATCHING)."""
+    def candidates(text: str):
+        m = _OWN_VARARGS.search(text)
+        if m and "__builtin_va_start" not in text:
+            yield (text[:m.start()] + "#ifdef NON_MATCHING\n#define va_start(AP, LASTARG) __builtin_va_start(AP, LASTARG)"
+                   "\n#define va_arg(AP, TYPE) __builtin_va_arg(AP, TYPE)\n#define va_end(AP) __builtin_va_end(AP)\n"
+                   "#else\n" + m.group(0) + "#endif\n" + text[m.end():])
+    return candidates
+
+
 PASSES = (("names the linker script gave", linked_names), ("helpers made each file's own", own_helpers),
           ("addresses written as numbers", numbered_addresses), ("the C library's tables read as calls", library_tables),
-          ("functions called by their own names", called_by_name), ("variables by one name", set_names))
-ITEMIZED = {called_by_name, set_names}  # (passes whose changes are kept one by one: items, apply)
+          ("functions called by their own names", called_by_name), ("variables by one name", set_names),
+          ("offsets into variables read as their fields", struct_fields),
+          ("reads past a variable's end as the one they reach", cross_reads),
+          ("varargs as the compiler's own", varargs))
+ITEMIZED = {called_by_name, set_names, struct_fields}  # (passes whose changes are kept one by one: items, apply)
+
+
+_VA_LIST = re.compile(r"^typedef (?:void|char) \*va_list;\n", re.M)
+
+
+def _header_varargs(out: Path) -> None:
+    """The headers' `typedef void *va_list;` (what a file's own va_start steps through) the compiler's own in a plain
+    build, which its __builtin_va_start takes (varargs)."""
+    for header in sorted((out / "include").glob("*.h")):
+        text = header.read_text(encoding="utf-8")
+        if _VA_LIST.search(text) and "__builtin_va_list" not in text:
+            header.write_text(_VA_LIST.sub(lambda m: "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\n"
+                                           + m.group(0) + "#endif\n", text, count=1), encoding="utf-8")
 
 
 def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
     """Each pass over each C source file of the tree, kept where the file still compiles to the same code. Returns
     how many files each pass changed."""
+    _header_varargs(out)  # (not read by the matching build: NON_MATCHING)
     where = addresses(build)
     files = [(u["c"], tuple(u.get("flags") or [])) for u in build.get("units") or [] if u.get("c")]
     files += [(f["c"], tuple(f.get("flags") or [])) for f in build["functions"] if f.get("c") and not f.get("file")
@@ -476,7 +783,7 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             if make is set_names and not build.get("standalone"):
                 continue  # (data/program.s names pointers by them)
             made = make(build, {rel: (out / rel).read_text(encoding="utf-8") for rel, _ in files}) \
-                if make is set_names else make(build)
+                if make is set_names else make(out) if make is struct_fields else make(build)
             count, refused = _itemized(out, tc, files, prelude, where, title, made[0], made[1], log,
                                        made[2] if len(made) > 2 else None)
             if len(made) > 2 and count:
@@ -485,6 +792,7 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             log(f"{title}: written as C in {count} files" + (f" ({refused} kept as they were)" if refused else ""))
             continue
         rewrite = make(build, out) if make is numbered_addresses else make(build)
+        by_file = make in (numbered_addresses, cross_reads)  # (rewrite(text, rel))
         # (the names only the linker script gives reach nothing in a plain link: the new C mustn't read them)
         linked = {a for e in list(build.get("units") or []) + list(build.get("data_files") or [])
                   for a in ((e.get("data") or {}).get("link_aliases") or {})}
@@ -495,7 +803,7 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             text = path.read_text(encoding="utf-8")
             old_obj = None
             why = None
-            for new in (rewrite(text, rel) if make is numbered_addresses else rewrite(text)):
+            for new in (rewrite(text, rel) if by_file else rewrite(text)):
                 if new == text:
                     continue
                 if old_obj is None:

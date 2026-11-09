@@ -1469,6 +1469,8 @@ def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_c
     # the plain link's libraries are what the program asked the loader for
     assert export_make.libraries({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
         == "-lglut -lGL -lm"
+    assert export_make.packages({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
+        == "gcc-multilib freeglut3-dev:i386 libgl-dev:i386"
 
 
 def test_the_exports_common_header_becomes_a_header_per_source_file(tmp_path):
@@ -1527,4 +1529,61 @@ def test_the_exports_common_header_becomes_a_header_per_source_file(tmp_path):
     for n in ("a.c", "b.c"):  # (the same code)
         made = export_clean._compile(out, tc, out / "src" / n, ["-O2"], (out / "src" / n).read_text())
         assert export_clean.same_code(before[n], made, {})
+    assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())
+
+
+def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it_reaches(tmp_path):
+    """An offset into a variable is the field the game's own types have there (`g_Cam.pos.y`), kept where GCC 2.95
+    builds the same code; a read of rows past a table's end (what ASan finds in a plain build) is the table it lands
+    in, under NON_MATCHING (GCC 2.95 writes `ammo - 4` as an offset into the file's data, which no relink places);
+    a file's own va_start, which steps from an argument's address, is the compiler's own in a plain build."""
+    import json
+
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    for d in ("src", "include", "tools"):
+        (out / d).mkdir(parents=True)
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    (out / "include" / "common.h").write_text(
+        "typedef void *va_list;\nstruct _V3 { /* 0xc bytes */\n    float x; /* 0x0 */\n    float y; /* 0x4 */\n"
+        "    float z; /* 0x8 */\n};\ntypedef struct _V3 V3;\n"
+        "struct _Cam { /* 0x14 bytes */\n    int id; /* 0x0 */\n    V3 pos; /* 0x4 */\n    short flags[2]; /* 0x10 */\n};\n"
+        "typedef struct _Cam TCam;\nextern TCam g_Cam;\nextern float D_08000008;\n")
+    (out / "src" / "cam.c").write_text(
+        '#include "common.h"\n\n'
+        "TCam g_Cam;\nstatic short hits[2] = { 1, 2 };\nstatic short ammo[3][2] = { { 3, 4 }, { 5, 6 }, { 7, 8 } };\n"
+        "int id(void) { return *(int *)((char *)&g_Cam + 0); }\n"
+        "float y(void) { return (*(__typeof__(D_08000008) *)((char *)&g_Cam + 8)); }\n"
+        "int bits(void) { return *(int *)((char *)&g_Cam + 12); }\n"
+        "short *flags(void) { return (short *)((char *)&g_Cam + 0x10); }\n"
+        "short *row(int d) { return (short *)(((int)&hits + 0x0) + d * 4); }\n"
+        "#define va_start(AP, LASTARG) \\\n  (AP = (void *)((char *) &(LASTARG) + 4))\n"
+        "#define va_arg(AP, TYPE) (*(TYPE *)((AP = (void *)((char *)(AP) + sizeof(TYPE))) - sizeof(TYPE)))\n"
+        "#define va_end(AP)\n"
+        "int sum(int n, ...) { va_list ap; int s = 0; va_start(ap, n); while (n--) s += va_arg(ap, int); "
+        "va_end(ap); return s; }\n")
+    build = {"symbols": {"D_08000008": 0x8000008}, "toolchain": gcc, "standalone": True,
+             "functions": [{"name": n, "vram": 0x8048000 + 0x20 * k, "c": "src/cam.c"}
+                           for k, n in enumerate(["id", "y", "bits", "flags", "row", "sum"])],
+             "units": [{"name": "cam", "c": "src/cam.c", "flags": ["-O2"],
+                        "data": {"defines": ["g_Cam"], "variables": [["g_Cam", 0x8000000, 20, ".bss"],
+                                                                     ["hits", 0x8000100, 4, ".data"],
+                                                                     ["ammo", 0x8000104, 12, ".data"]]}}]}
+    (out / "build.json").write_text(json.dumps(build))
+    export_clean.clean(out, build, tc, log=lambda *_: None)
+    made = (out / "src" / "cam.c").read_text()
+    assert "return g_Cam.id;" in made and "return g_Cam.pos.y;" in made  # (the field of the type the C reads)
+    assert "return *(int *)&g_Cam.pos.z;" in made  # (another type than the field's: the field, read as the C does)
+    assert "return (short *)&g_Cam.flags[0];" in made  # (an address: the field there)
+    # (hits + 4d: ammo; as C where the file's own data is laid out as the game's, else under NON_MATCHING)
+    assert "short *row(int d) { return ammo[d - 1]; }\n" in made
+    assert "#ifdef NON_MATCHING\n#define va_start(AP, LASTARG) __builtin_va_start(AP, LASTARG)" in made
+    assert "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\ntypedef void *va_list;\n#endif\n" \
+        in (out / "include" / "common.h").read_text()
     assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())
