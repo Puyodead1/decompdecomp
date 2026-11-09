@@ -1563,6 +1563,7 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
         "int bits(void) { return *(int *)((char *)&g_Cam + 12); }\n"
         "short *flags(void) { return (short *)((char *)&g_Cam + 0x10); }\n"
         "short *row(int d) { return (short *)(((int)&hits + 0x0) + d * 4); }\n"
+        "short *clipped(int d) { short *c; c = (short *) hits; return c + d * 2; }\n"
         "#define va_start(AP, LASTARG) \\\n  (AP = (void *)((char *) &(LASTARG) + 4))\n"
         "#define va_arg(AP, TYPE) (*(TYPE *)((AP = (void *)((char *)(AP) + sizeof(TYPE))) - sizeof(TYPE)))\n"
         "#define va_end(AP)\n"
@@ -1570,7 +1571,7 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
         "va_end(ap); return s; }\n")
     build = {"symbols": {"D_08000008": 0x8000008}, "toolchain": gcc, "standalone": True,
              "functions": [{"name": n, "vram": 0x8048000 + 0x20 * k, "c": "src/cam.c"}
-                           for k, n in enumerate(["id", "y", "bits", "flags", "row", "sum"])],
+                           for k, n in enumerate(["id", "y", "bits", "flags", "row", "clipped", "sum"])],
              "units": [{"name": "cam", "c": "src/cam.c", "flags": ["-O2"],
                         "data": {"defines": ["g_Cam"], "variables": [["g_Cam", 0x8000000, 20, ".bss"],
                                                                      ["hits", 0x8000100, 4, ".data"],
@@ -1583,6 +1584,7 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
     assert "return (short *)&g_Cam.flags[0];" in made  # (an address: the field there)
     # (hits + 4d: ammo; as C where the file's own data is laid out as the game's, else under NON_MATCHING)
     assert "short *row(int d) { return ammo[d - 1]; }\n" in made
+    assert "return ammo[d - 1]; }" in made.split("short *clipped")[1]  # (through a pointer only ever set to hits)
     assert "#ifdef NON_MATCHING\n#define va_start(AP, LASTARG) __builtin_va_start(AP, LASTARG)" in made
     assert "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\ntypedef void *va_list;\n#endif\n" \
         in (out / "include" / "common.h").read_text()
