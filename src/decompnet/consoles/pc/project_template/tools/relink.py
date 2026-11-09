@@ -2,12 +2,14 @@
 """Link the game's program again with Visual C++'s own linker (LINK.EXE), from this project's objects.
 
     python tools/relink.py config/<version>/functions.json build/<version> --link LINK.EXE [--wrapper WIBO]
-    (or: ninja relink)
+        [--asm source --ml ML.EXE] (or: ninja relink, which takes source/ when the project has it)
 
 tools/rebuild.py puts each function back at the game's address in your copy; this links a new program, so code can
 change size and the rest moves with it (what a mod or a port needs). What goes in:
 - the code: every function of src/ that compiles (build/<version>/src/auto/<unit>.obj), and every other one as
-  tools/delink.py cuts it out of your copy, in the game's order;
+  tools/delink.py cuts it out of your copy, in the game's order; with --asm, as the program's source has it instead
+  (what Export writes in source/, each function a segment of MASM: assembly you edited), and the data, resources and
+  the rest from that source too;
 - the data: every data section of your copy (.rdata, .data, and what is uninitialised as .bss) as one object,
   data.obj, with a symbol for every address the code names (D_00402034) and every word that points at a function, an
   import's slot or into the data written as a relocation to it, so it follows what it points at. Without base
@@ -288,8 +290,12 @@ class Coff:
         jcc = ["jo", "jno", "jb", "jae", "jz", "jnz", "jbe", "ja", "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg"]
         for number in sections:
             s = self.sections[number - 1]
-            seg = "CODE" if s["flags"] & CNT_CODE else f"S{number}"  # (a unit's functions: one segment, in order)
-            out += ["", f"{seg} SEGMENT BYTE PUBLIC USE32 '{'CODE' if s['flags'] & CNT_CODE else 'DATA'}' ; {s['name']}"]
+            # (a function a segment of its own: ML then writes a relocation for each call and jump to another, where in
+            # one segment it would resolve them itself, and relink.py --asm can take them one by one)
+            seg = f"C{number}" if s["flags"] & CNT_CODE else f"S{number}"
+            out += ["", f"{seg} SEGMENT BYTE PUBLIC {'FLAT' if s['flags'] & CNT_CODE else 'USE32'} "  # (FLAT: a near
+                    # jump to another segment's function, which ML 6.15 refuses through a segment of USE32)
+                    f"'{'CODE' if s['flags'] & CNT_CODE else 'DATA'}' ; {s['name']}"]
             marks = sorted(labels[number])
             relocs = {off: (index, kind) for off, index, kind in s["relocs"]}
             body, size = s["data"], s["size"]
@@ -618,13 +624,14 @@ class Compiled:
             s = self.symbols[index]
             if s["section"] > 0:
                 k = self.piece_at(s["section"], s["value"])
-                if k in kept and not DATA_SYMBOL.fullmatch(s["name"]):
+                if k in kept and not DATA_SYMBOL.fullmatch(s["name"]) and not s["name"].startswith("__imp_"):
+                    # (an import's slot a C file defines itself, as a variable of its own: the game's is in its data)
                     lo = self.pieces[k]["lo"]
                     if self._is_section(s):
                         new = obj.sections[numbers[k] - 1]["symbol"]
                     else:
                         new = obj.symbol(s["name"], s["value"] - lo, numbers[k], s["type"], s["cls"])
-                elif s["cls"] == EXTERNAL or DATA_SYMBOL.fullmatch(s["name"]):
+                elif s["cls"] == EXTERNAL or DATA_SYMBOL.fullmatch(s["name"]) or s["name"].startswith("__imp_"):
                     # (from your copy, or the data's: a global the C defines, static or not, is the game's)
                     new = obj.extern(s["name"], s["type"] == FUNCTION)
                 else:
@@ -744,6 +751,27 @@ class Relink:
         self.trusted: list[str] = []  # what the relink took on trust, for the report
         self.relocated = image.relocated()  # (every word the game's base relocations name; None: it has none)
         self.needs: dict[str, set[str]] = {}  # a function from C whose code isn't the game's: the names it needs
+        self.source: tuple[Path, Path, list[str]] | None = None  # (--asm: the source's folder, ML's objects, ML)
+        self.asm_units: dict[str, Compiled] | None = None
+        self._asm_starts: dict[str, list[tuple[int, int, str]]] = {}  # (--asm: each unit's functions as source/ has them)
+        self.source_objects: list[Path] = []  # (--asm: the data, resources and the rest, from source/)
+        self.unit_of = {fn["name"]: unit for unit, fns in info["units"].items() for fn in fns}
+        for lead, first in ((v["name"], k) for k, v in self.leads.items()):
+            self.unit_of[lead] = self.unit_of.get(first)
+
+    def use_source(self, folder: Path, objects: Path, ml: list[str]) -> None:
+        """Take what isn't from C from the program's source (`folder`: what Export and --source write, maybe edited)
+        instead of your copy: each function from its unit's MASM, cut where each PROC starts, and the data, resources
+        and the rest as tools/assemble.py links them (its prepare). `objects`: where ML's objects go."""
+        assemble = _sibling("assemble")
+        program = json.loads((folder / "program.json").read_text(encoding="utf-8"))
+        units = set(self.units)
+        made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p["asm"]).stem in units)
+        self.asm_units, self.source_objects = made["skipped"], made["paths"]
+        self.source_changed = made["changed"]
+        missing = sorted(units - set(self.asm_units))
+        if missing:
+            fail(f"{len(missing)} units have no source in {folder}: {', '.join(missing[:SHOWN])} (export again)")
 
     def _lead(self, addr: int, size: int) -> dict:
         """Code before a section's first function, as a function: its jumps (E9 <rel32>) relocations to where they
@@ -814,6 +842,8 @@ class Relink:
     def delinked(self, obj: Coff, fn: dict, labels: dict[str, list[tuple[str, int]]]) -> None:
         """A function as tools/delink.py cuts it out of your copy, with the code labels other code and the data
         point at (D_<address> inside it, public symbols)."""
+        if self.asm_units is not None:
+            return self.assembled(obj, fn, labels)
         code = bytearray(self.image.read(fn["addr"], self.extent[fn["name"]]))
         if len(code) != self.extent[fn["name"]]:
             fail(f"{fn['name']} isn't in {self.info['exe']}")
@@ -849,11 +879,81 @@ class Relink:
         obj.sections[number - 1]["data"] = bytes(code)
         obj.sections[number - 1]["size"] = len(code)
 
+    def asm_starts(self, unit: str) -> list[tuple[int, int, str]]:
+        """Where each of a unit's functions starts in its assembled source: (section, offset, name), in order (a PROC
+        the source has that's no function's, a label the analysis took for one, doesn't cut its function)."""
+        if unit not in self._asm_starts:
+            read = self.asm_units.get(unit)
+            mine = {fn["name"] for fn in self.info["units"][unit]} | {
+                lead["name"] for name, lead in self.leads.items() if self.unit_of.get(name) == unit}
+            self._asm_starts[unit] = sorted((s["section"], s["value"], s["name"]) for s in read.symbols.values()
+                                            if s["name"] in mine and s["section"] > 0 and s["cls"] == EXTERNAL) \
+                if read is not None else []
+        return self._asm_starts[unit]
+
+    def assembled(self, obj: Coff, fn: dict, labels: dict[str, list[tuple[str, int]]]) -> None:
+        """A function as the program's source has it (--asm): its PROC in its unit's MASM, as ML assembled it, with the
+        labels that source gives in it and those other code and the data point at."""
+        unit = self.unit_of.get(fn["name"])
+        read = self.asm_units.get(unit)
+        starts = self.asm_starts(unit)
+        k = next((k for k, (_, _, name) in enumerate(starts) if name == fn["name"]), None)
+        if k is None:
+            fail(f"{fn['name']} isn't in source/asm/{unit}.asm")
+        piece = {"section": starts[k][0], "lo": starts[k][1], "function": fn["name"],
+                 "hi": starts[k + 1][1] if k + 1 < len(starts) and starts[k + 1][0] == starts[k][0]
+                 else read.sections[starts[k][0] - 1]["size"]}
+        sec = read.sections[piece["section"] - 1]
+        lo, hi = piece["lo"], piece["hi"]
+        code = bytearray(sec["data"][lo:hi])
+        number = obj.section(".text", b"", CODE_EXACT)
+        obj.symbol(fn["name"], 0, number, FUNCTION)
+        here = {fn["name"]}
+        for s in read.symbols.values():  # (the labels the source has in it: _D_<address>, where other code points)
+            if s["section"] == piece["section"] and s["cls"] == EXTERNAL and s["name"] not in here and \
+                    (lo <= s["value"] < hi or s["value"] == hi == sec["size"]):
+                obj.symbol(s["name"], s["value"] - lo, number, s["type"])
+                here.add(s["name"])
+        for label, at in labels.get(fn["name"], []):  # (one the relink needs that the source doesn't name: the
+            # copy's place, where the function is still the copy's size)
+            if label not in here:
+                if hi - lo != self.extent[fn["name"]]:
+                    fail(f"{label}, in {fn['name']}, is named by what the relink links, and the source, where the "
+                         "function has another size now, doesn't have it: give it a label there")
+                obj.symbol(label, at, number)
+        local: dict[int, int] = {}
+        for reloc in sec["relocs"]:
+            off, index, kind = reloc
+            if not lo <= off < hi:
+                continue
+            s = read.symbols[index]
+            if s["section"] > 0 and s["cls"] != EXTERNAL:  # (a place of this file's own, by its section)
+                _, at = read.target(piece, reloc)
+                owner = next((st for st in reversed(starts) if st[0] == s["section"] and st[1] <= at), None)
+                if s["section"] == piece["section"] and lo <= at < hi or owner is None:
+                    if owner is None and s["section"] != piece["section"]:
+                        fail(f"{fn['name']} points at a place of its file that's no function's")
+                    if at - lo not in local:
+                        local[at - lo] = obj.symbol(f"$L{fn['addr']:08X}_{at - lo:X}", at - lo, number, cls=LABEL)
+                    symbol, inline = local[at - lo], 0
+                else:
+                    symbol, inline = obj.extern(owner[2], True), at - owner[1]
+                struct.pack_into("<i", code, off - lo, inline)
+            elif s["section"] == -1:  # (a number)
+                symbol = obj.symbol(s["name"], s["value"], -1) if s["name"] not in obj.index else obj.index[s["name"]]
+            else:
+                symbol = obj.extern(s["name"], kind == REL32 or s["type"] == FUNCTION)
+            obj.reloc(number, off - lo, symbol, kind)
+        obj.sections[number - 1]["data"] = bytes(code)
+        obj.sections[number - 1]["size"] = len(code)
+
     def write(self, link: list[str]) -> dict:
         """Write every object, run the linker, and say how the program came out."""
         if self.out.exists():
             shutil.rmtree(self.out)
         (self.out / "objects").mkdir(parents=True)
+        if self.source is not None:
+            self.use_source(*self.source)
         self.code()
         self.from_copy: set[str] = set()  # (with --all-c: functions whose C isn't the game's code that other code
         # jumps into the middle of, or the data points into: their places are the game's code's)
@@ -879,18 +979,33 @@ class Relink:
             path = self.out / "objects" / f"{unit}.obj"
             path.write_bytes(self.unit(unit, labels).bytes())
             objects.append(path)
-        undefined = sorted(wanted - defined - set(self.names) - set(self.import_names) - set(ABSOLUTE))
+        names = set(self.names) | set(self.import_names)
+        if self.asm_units is not None:  # (the data's names: what source/'s files define)
+            names = {s["name"] for path in self.source_objects for s in Compiled(path.read_bytes()).symbols.values()
+                     if s["cls"] == WEAK_EXTERNAL or s["cls"] == EXTERNAL and s["section"] != 0}  # (numbers too)
+            names |= {n for n, _ in self.thunks} | {label for put in labels.values() for label, _ in put}  # (and the
+            # labels the relink puts in functions)
+            numbers = Coff()  # (the C's numbers, ABSOLUTE, where the source has none of them)
+            for n, value in ABSOLUTE.items():
+                if n in wanted and n not in names and n not in defined:
+                    numbers.symbol(n, value, -1)
+            if numbers.symbols:
+                (self.out / "objects" / "numbers.obj").write_bytes(numbers.bytes())
+                imports = [*imports, self.out / "objects" / "numbers.obj"]
+        undefined = sorted(wanted - defined - names - set(ABSOLUTE))
         if undefined:
             fail(f"{len(undefined)} names the code uses that nothing defines: {', '.join(undefined[:SHOWN])}"
-                 + ("…" if len(undefined) > SHOWN else ""))
+                 + ("…" if len(undefined) > SHOWN else "")
+                 + (" (the source was written without them: export again)" if self.asm_units is not None else ""))
         name = Path(self.info["exe"]).name
         program = self.out / name
-        res = self.resources_object()
+        res = self.resources_object() if self.asm_units is None else None
         entry = self.starts.get(self.image.base + self.image.entry)
         if entry is None:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
         argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program)]
-        argv += [str(data), *map(str, objects), *map(str, imports)]
+        argv += [*(map(str, self.source_objects) if self.asm_units is not None else [str(data)]),
+                 *map(str, objects), *map(str, imports)]
         if res is not None:
             argv.append(str(res))
         (self.out / "link.txt").write_text(" ".join(argv[len(link):]) + "\n", encoding="utf-8")  # (to run it again)
@@ -1148,6 +1263,16 @@ class Relink:
             obj = self.unit(unit, {})
             defined |= obj.defined()
             wanted |= obj.undefined()
+        # and what the units name with their C, as the relink links them (an import as C declares it, __imp__Sleep@4;
+        # the game's place for a constant of the C's; a place in the data or in a function): labelled too, so
+        # `relink.py --asm` links that C with this source, its functions the game's code or every one (--all-c)
+        for chosen in (self.games_code, self.games_code | self.other_c):
+            self.from_c = set(chosen)
+            try:
+                wanted |= {n for unit in self.units for n in self.unit(unit, {}).undefined()} - defined
+            except SystemExit:  # (C the relink can't link as it is: it says so when it links)
+                pass
+        self.from_c, self.needs = set(), {}
         self.jumped_into = set()
         data_path, labels = self.data(wanted, defined)
         (folder / "asm").mkdir(parents=True, exist_ok=True)
@@ -1346,6 +1471,9 @@ def main() -> None:
                         help="every function the C defines, not only those it compiles to the game's code (a mod)")
     parser.add_argument("--source", metavar="FOLDER",
                         help="write the whole program as source there instead (MASM; tools/assemble.py makes it again)")
+    parser.add_argument("--asm", metavar="FOLDER", help="what isn't from C from the program's source there (what "
+                        "Export writes, maybe edited) instead of your copy: the functions, the data, the resources")
+    parser.add_argument("--ml", default="", help="Visual C++ 6.0's MASM, ml.exe (for --asm)")
     parser.add_argument("--pad", type=lambda s: int(s, 0), default=0,
                         help="this many bytes (int3s) before the game's code: everything moves, as with a mod's longer "
                              "code (does the program still work?)")
@@ -1367,6 +1495,10 @@ def main() -> None:
         fail("it links with Visual C++ 6.0's linker: install Visual C++ 6.0 in decompdecomp's Setup (Compilers & "
              "tools), then run tools/configure.py again")
     relink = Relink(info, Image(exe), root, Path(args.build), args.all_c, args.pad)
+    if args.asm:
+        if not args.ml:
+            fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
+        relink.source = (Path(args.asm), Path(args.build) / "source", [*([args.wrapper] if args.wrapper else []), args.ml])
     report = relink.write([*([args.wrapper] if args.wrapper else []), args.link])
     how = "every function and global at the game's address" if report["same_layout"] else \
         f"{len(report['moved'])} functions and {len(report['data_moved'])} globals moved"
@@ -1375,18 +1507,23 @@ def main() -> None:
     print(f"{report['program']}: linked by LINK.EXE from {report['functions']:,} functions "
           f"({len(report['c']):,} from C), {report['pointers']:,} pointers in the data, {report['imports']:,} "
           f"imports; {how}{code}")
+    origin = args.asm if args.asm else "your copy"
+    if relink.asm_units is not None:
+        changed = relink.source_changed
+        print(f"  what isn't from C came from {args.asm}" + (f", where {len(changed)} files changed size: "
+              + ", ".join(changed[:SHOWN]) + ("…" if len(changed) > SHOWN else "") if changed else ""))
     if report["follows"] is not None:
         wrong = report["follows"]["wrong"]
         print(f"  of the {report['follows']['relocated']:,} addresses the game's base relocations name, "
               + (f"these don't point where they did: {', '.join(wrong[:SHOWN])}" if wrong else
                  "every one points where it did, moved"))
     if report["from_copy"]:
-        print(f"  {len(report['from_copy']):,} functions came from your copy, not their C: their C uses a name nothing "
+        print(f"  {len(report['from_copy']):,} functions came from {origin}, not their C: their C uses a name nothing "
               "defines, or other code or the data points into their middle, where the C has other code "
               f"({', '.join(report['from_copy'][:SHOWN])}{'…' if len(report['from_copy']) > SHOWN else ''})")
     if report["other_c"]:
         print(f"  {len(report['other_c']):,} functions the C defines compile to other code than the game's and came "
-              "from your copy: --all-c takes them from C too (a mod)")
+              f"from {origin}: --all-c takes them from C too (a mod)")
     for what in report["trusted"]:
         print(f"  note: {what}")
 

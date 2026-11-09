@@ -831,9 +831,22 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
     ok, out = fp.run(["ninja", "relink-source"], log=lambda *_: None)
     assert ok, out
     assert linked.read_bytes()[0x400:] != EXE.read_bytes()[0x400:]
-    said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(linked)],
-                          capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
-    assert "We came back" in said.stdout + said.stderr
+
+    def runs(program: Path) -> bool:  # (to its end: wibo says so when the program's entry returns)
+        said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(program)],
+                              capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
+        return "We came back" in said.stdout + said.stderr
+    assert runs(linked)
+    # `ninja relink` with source/: the C, and what isn't C from the source, edited, not from the copy
+    ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+    assert ok, out
+    report = json.loads((clone / "build" / version / "relink" / "relink.json").read_text())
+    assert report["moved"] and runs(clone / "build" / version / "relink" / f"{version}.exe")
+    asm.write_text("\n".join(lines), encoding="latin-1")  # (as it was: the game's program again)
+    ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+    assert ok, out
+    report = json.loads((clone / "build" / version / "relink" / "relink.json").read_text())
+    assert report["same_sections"] and report["c"], report
 
 
 NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc8, msvc9 and msvc10 packs
