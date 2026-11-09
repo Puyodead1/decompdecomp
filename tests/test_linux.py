@@ -1554,7 +1554,8 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
         "typedef void *va_list;\nstruct _V3 { /* 0xc bytes */\n    float x; /* 0x0 */\n    float y; /* 0x4 */\n"
         "    float z; /* 0x8 */\n};\ntypedef struct _V3 V3;\n"
         "struct _Cam { /* 0x14 bytes */\n    int id; /* 0x0 */\n    V3 pos; /* 0x4 */\n    short flags[2]; /* 0x10 */\n};\n"
-        "typedef struct _Cam TCam;\nextern TCam g_Cam;\nextern float D_08000008;\n")
+        "typedef struct _Cam TCam;\nextern TCam g_Cam;\nextern float D_08000008;\nextern float D_08000200;\n"
+        "extern char D_08000210[];\n")
     (out / "src" / "cam.c").write_text(
         '#include "common.h"\n\n'
         "TCam g_Cam;\nstatic short hits[2] = { 1, 2 };\nstatic short ammo[3][2] = { { 3, 4 }, { 5, 6 }, { 7, 8 } };\n"
@@ -1564,6 +1565,9 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
         "short *flags(void) { return (short *)((char *)&g_Cam + 0x10); }\n"
         "short *row(int d) { return (short *)(((int)&hits + 0x0) + d * 4); }\n"
         "short *clipped(int d) { short *c; c = (short *) hits; return c + d * 2; }\n"
+        "char D_08000200_data[4] = { 0, 0, -56, 67 };\nchar D_08000210_data[4] = { 104, 105, 0, 0 };\n"
+        "float width(void) { return (*(__typeof__(D_08000200) *)&D_08000200_data); }\n"
+        "char *hello(void) { return (*(__typeof__(D_08000210) *)&D_08000210_data); }\n"
         "#define va_start(AP, LASTARG) \\\n  (AP = (void *)((char *) &(LASTARG) + 4))\n"
         "#define va_arg(AP, TYPE) (*(TYPE *)((AP = (void *)((char *)(AP) + sizeof(TYPE))) - sizeof(TYPE)))\n"
         "#define va_end(AP)\n"
@@ -1571,11 +1575,13 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
         "va_end(ap); return s; }\n")
     build = {"symbols": {"D_08000008": 0x8000008}, "toolchain": gcc, "standalone": True,
              "functions": [{"name": n, "vram": 0x8048000 + 0x20 * k, "c": "src/cam.c"}
-                           for k, n in enumerate(["id", "y", "bits", "flags", "row", "clipped", "sum"])],
+                           for k, n in enumerate(["id", "y", "bits", "flags", "row", "clipped", "width", "hello", "sum"])],
              "units": [{"name": "cam", "c": "src/cam.c", "flags": ["-O2"],
                         "data": {"defines": ["g_Cam"], "variables": [["g_Cam", 0x8000000, 20, ".bss"],
                                                                      ["hits", 0x8000100, 4, ".data"],
-                                                                     ["ammo", 0x8000104, 12, ".data"]]}}]}
+                                                                     ["ammo", 0x8000104, 12, ".data"],
+                                                                     ["D_08000200_data", 0x8000200, 4, ".rodata"],
+                                                                     ["D_08000210_data", 0x8000210, 4, ".rodata"]]}}]}
     (out / "build.json").write_text(json.dumps(build))
     export_clean.clean(out, build, tc, log=lambda *_: None)
     made = (out / "src" / "cam.c").read_text()
@@ -1586,6 +1592,9 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
     assert "short *row(int d) { return ammo[d - 1]; }\n" in made
     assert "return ammo[d - 1]; }" in made.split("short *clipped")[1]  # (through a pointer only ever set to hits)
     assert "#ifdef NON_MATCHING\n#define va_start(AP, LASTARG) __builtin_va_start(AP, LASTARG)" in made
+    # (a read-only constant read where the game keeps it: its literal, the compiler's to place, in a plain build)
+    assert "#ifdef NON_MATCHING\nfloat width(void) { return 400.0f; }\n#else\n" in made
+    assert "#ifdef NON_MATCHING\nchar *hello(void) { return \"hi\"; }\n#else\n" in made
     assert "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\ntypedef void *va_list;\n#endif\n" \
         in (out / "include" / "common.h").read_text()
     assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())
