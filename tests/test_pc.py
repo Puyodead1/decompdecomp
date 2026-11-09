@@ -732,6 +732,63 @@ def test_the_project_rebuilds_the_whole_program_from_its_matched_c(pc, tmp_path)
     assert set(json.loads((clone / "build" / version / "rebuild.json").read_text())["c"]) == from_c
 
 
+@needs_tools
+def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
+    """`ninja relink` links a new program with Visual C++ 6.0's LINK.EXE from the project's objects, the program's
+    data (its pointers relocations), imports and resources made objects too: with matched C in it, every section is
+    the user's copy's byte for byte. Padded before the code, every function and global moves and the program still
+    runs to its end; a function whose C is longer than the game's (a mod, --all-c) comes from its C and what follows
+    it moves."""
+    net, slug = pc
+    root, version = Path(net.project_row(slug)["root"]), "demoquest"
+    agent, _ = net.local_agent("pc-agent")
+    clamp = next(s for s in _map() if re.sub(r"^[_@]|@\d+$", "", s) == "clamp_s32")
+    clamp = clamp.replace("clamp_s32", _addresses()["clamp_s32"])
+    res = net.attempt(agent, clamp, _by_address()(csource.get(GAME.read_text(), "clamp_s32")), slug)
+    assert res["matched"], res["text"]
+    fp = ForkProject(root)
+    ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+    assert ok, out
+    report = json.loads((root / "build" / version / "relink" / "relink.json").read_text())
+    assert report["same_sections"] and report["same_layout"] and clamp in report["c"], report
+    program = root / "build" / version / "relink" / f"{version}.exe"
+    assert program.read_bytes()[0x400:] == EXE.read_bytes()[0x400:]  # (the headers are the linker's)
+
+    link = ["--link", str(toolchains.path("msvc") / "6.0" / "Bin" / "LINK.EXE"),
+            *(["--wrapper", str(toolchains.binary("wibo"))] if sys.platform != "win32" else [])]
+    relink = [sys.executable, "tools/relink.py", f"config/{version}/functions.json", f"build/{version}", *link]
+
+    def runs() -> bool:  # (to its end: wibo says so when the program's entry returns)
+        said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(program)],
+                              capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
+        return "We came back" in said.stdout + said.stderr
+
+    ok, out = fp.run([*relink, "--pad", "0x1000"], log=lambda *_: None)
+    assert ok, out
+    report = json.loads((root / "build" / version / "relink" / "relink.json").read_text())
+    assert len(report["moved"]) == report["functions"] and report["data_moved"] and not report["same_sections"]
+    assert runs()
+    # a mod: the C of a function longer than the game's, taken with --all-c, and what follows it moved
+    source = next(p for p in (root / "src").rglob("*.c*") if csource.find(p.read_text(), _addresses()["clamp_s32"]))
+    kept = source.read_text()
+    try:
+        abs_name = _addresses()["abs_s32"]
+        source.write_text(kept + f"int {abs_name}(int v) {{\n" + "    __asm nop\n" * 64 + "    return v < 0 ? -v : v;\n}\n")
+        ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+        assert ok, out
+        ok, out = fp.run([*relink, "--all-c"], log=lambda *_: None)
+        assert ok, out
+        report = json.loads((root / "build" / version / "relink" / "relink.json").read_text())
+        longer = next(n for n in report["c"] if abs_name in n)
+        after = [fn["name"] for fns in json.loads((root / "config" / version / "functions.json").read_text())["units"]
+                 .values() for fn in fns if fn["addr"] > int(abs_name.split("_")[1], 16)]
+        assert longer and after and set(after) <= set(report["moved"]), report
+        assert runs()
+    finally:
+        source.write_text(kept)
+        fp.run(["ninja", "relink"], log=lambda *_: None)
+
+
 NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc8, msvc9 and msvc10 packs
 
 
@@ -3879,3 +3936,44 @@ def test_agents_join_two_files_and_every_match_holds(pc):
                                                    *moved)} == {Path(first).stem}
     log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=root, capture_output=True, text=True).stdout
     assert log.startswith(f"Join {Path(second).name} to {Path(first).name}")
+
+
+def _relink_tool():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pc_relink", scratch_pe.TEMPLATE / "tools" / "relink.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_relink_cuts_a_compiled_object_into_its_functions_and_writes_objects_linkexe_reads():
+    """tools/relink.py takes some functions of a compiled object and leaves the rest: its code is cut where each
+    function starts (a static helper too), a COMDAT copy defined twice counts once (the last, as rebuild.py checks it),
+    and in the objects it writes every section's symbol comes before the symbols defined in it (LINK.EXE's LNK1143:
+    a COMDAT's own symbol, defined after code referred to it, came first)."""
+    relink = _relink_tool()
+    obj = relink.Coff()
+    call_b = obj.extern("_b", True)  # (referred to before it's defined)
+    text = obj.section(".text", b"\xe8\0\0\0\0\xc3" + b"\x90" * 10 + b"\xc3", relink.CODE)
+    obj.symbol("_a", 0, text, relink.FUNCTION)
+    obj.symbol("_helper", 16, text, relink.FUNCTION, relink.STATIC)
+    obj.reloc(text, 1, call_b, relink.REL32)
+    for code in (b"\x31\xc0\xc3", b"\x33\xc0\xc3"):  # (two copies of _b, the second the game's)
+        comdat = obj.section(".text", code, relink.CODE, comdat=(2, 0))
+        obj.symbol("_b", 0, comdat, relink.FUNCTION)
+        obj.index.pop("_b")  # (a compiler's object has a symbol for each: the writer itself never writes two)
+    data = obj.bytes()
+
+    read = relink.Compiled(data)
+    pieces = [(p["section"], p["lo"], p["hi"], p["function"]) for p in read.pieces]
+    assert pieces[:2] == [(1, 0, 16, "_a"), (1, 16, 17, None)], pieces  # (the helper: a piece of no function)
+    assert [p[3] for p in pieces[2:]] == ["_b", "_b"] and read.defined == {"_a", "_b"}
+    # the table: every section's symbol first, so each COMDAT's own is the first after its section's
+    count = struct.unpack_from("<H", data, 2)[0]
+    order = [(s["section"], s["name"]) for _, s in sorted(read.symbols.items())]
+    assert [s for s, _ in order[:count]] == list(range(1, count + 1))
+    assert [next(name for s, name in order[count:] if s == section) for section in (2, 3)] == ["_b", "_b"]
+    # the relocation names _b by its new number (the first, then undefined, then defined in the first copy)
+    off, index, kind = read.sections[0]["relocs"][0]
+    assert (off, read.symbols[index]["name"], read.symbols[index]["section"], kind) == (1, "_b", 2, relink.REL32)

@@ -10,7 +10,9 @@ $DECOMPNET_WINE and $DECOMPNET_WINE_PREFIX, and the packs wine runs in $DECOMPNE
 sets): each file with its own version when config/VERSION/file_compilers.json names one, and with the more flags
 config/VERSION/file_flags.json gives it (/Oy-: the frame pointer kept). objdiff.json (for objdiff and decompdecomp)
 compares every source file's functions with the original's. `ninja rebuild` puts the whole program back together from
-them (tools/rebuild.py) and checks it against your copy. A game built with link-time code generation (LTCG = True:
+them (tools/rebuild.py) and checks it against your copy; `ninja relink` links it again with Visual C++ 6.0's linker
+(tools/relink.py: code can change size and the rest moves with it; run it yourself for its options, --all-c and
+--pad). A game built with link-time code generation (LTCG = True:
 units with a driver in harness/) builds those units through tools/ltcg.py, whose linker runs through wine. Made by
 decompdecomp.
 """
@@ -119,6 +121,16 @@ def runner(version: str) -> list[str]:
     return ["--wine"]
 
 
+def linker() -> list[str]:
+    """tools/relink.py's arguments for the linker it links with: Visual C++ 6.0's LINK.EXE, from the first --msvc folder
+    that has it, and what runs it (wibo, off Windows). 6.0's for every game: it links later compilers' objects too,
+    and wibo runs 2005's and later linkers only up to their first lstrcmpiW."""
+    link = next((p for d in args.msvc for p in (Path(d) / "6.0" / "Bin" / "LINK.EXE",) if p.exists()), None)
+    if link is None:
+        return ["--link", ""]  # (relink.py says what to install)
+    return ["--link", str(link), *(["--wrapper", args.wibo] if args.wibo and sys.platform != "win32" else [])]
+
+
 def file_compilers() -> dict[str, str]:
     return json.loads(FILE_COMPILERS.read_text(encoding="utf-8")) if FILE_COMPILERS.exists() else {}
 
@@ -210,6 +222,13 @@ def main() -> None:
         n.build(programs, "rebuild", [*targets, *objs],
                 implicit=[CONFIG.as_posix(), *exes, "tools/rebuild.py", "tools/delink.py"])
         n.build("rebuild", "phony", programs)
+        # the program linked again by Visual C++'s own linker from the same objects (tools/relink.py): code can grow
+        # and the rest moves with it (not the default either)
+        relinked = (BUILD / "relink" / Path(info["exe"]).name).as_posix()
+        n.rule("relink", f"{PY} tools/relink.py {CONFIG.as_posix()} {BUILD.as_posix()} " + q(linker()).replace("$", "$$"))
+        n.build(relinked, "relink", [*targets, *objs], implicit=[CONFIG.as_posix(), exes[0], "tools/relink.py",
+                                                                 "tools/rebuild.py"])
+        n.build("relink", "phony", [relinked])
         # the source folders, not each file: on a game of 9,608 files every edit rewrote build.ninja (20-37 s)
         n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *folders("src", "include"),
                                              *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()],

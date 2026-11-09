@@ -53,7 +53,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -523,9 +523,19 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   project's rebuild check too, so "Rebuild the game and compare" and every check of a join or a new analysis test
   the whole program with the matched C in it. On a Visual C++ 6.0 game of 11,846 functions it comes out identical
   with its six matched functions from C (constructors, destructors and exception handling), in under a second, and
-  from a fresh clone of the project. Not a linker: the program's data isn't delinked, and Visual C++'s LINK.EXE would
-  have to place every object, library and resource as the original did (and 2005's and later stop in wibo 1.2.0),
-  so the code goes back where the game has it; moving code is the modding-ready check below.
+  from a fresh clone of the project. Not a linker: the code goes back where the game has it; `ninja relink` (below)
+  links a new program.
+- **A Windows PC project links its program again with Visual C++'s own linker.** `ninja relink` (tools/relink.py)
+  gives Visual C++ 6.0's LINK.EXE (under wibo off Windows; it links later compilers' objects too) the program as
+  objects: each source file's functions in the game's order, from its C where that compiles to the game's code (cut
+  out of the compiled object, a function at a time, with what it reaches of it) else delinked; the data, every
+  global the code names a symbol and every pointer in it a relocation (by the program's base relocations where it has
+  them, which also say which of the code's words are addresses: a mask the analysis took for one stays a number);
+  the import tables where the game has them, their RVAs relocations; the resources as CVTRES writes them. Four of
+  the user's games (Visual C++ 6.0, 7.0, 2005 and 2005 SP1, one incrementally linked, one with a 100 MB .bss) come
+  out with every section byte for byte their copy's (the header is the linker's); `--all-c` takes every function
+  from its C (a mod: a function other code jumps into the middle of, or whose C needs a name nothing defines, stays
+  your copy's, and says so) and `--pad` moves everything, the demo still running to its end.
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1132,15 +1142,18 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
 - A source file made one file per function joined whole: a table a function copies from a literal the match placed
   (`memcpy(vlist, "", sizeof(vlist))`) is the local array's initializer it was (done: an arcade game's last such file
   is whole).
-- Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects,
-  first on `projects/demo-pc`, then data as C and assembly source (the modding-ready check below).
+- Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects
+  (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
+  data as C and assembly source (the modding-ready check below), the game's DLLs relinked too, and an Xbox game's
+  XBE.
 
 ### A modding-ready check for the export
 
 The export rebuilds the game byte for byte; mods need code that can move. Build a second copy with padding inserted
 and report every address that is still hard-coded ("93% movable, 41 addresses left"). The matching build stays as
-it is. A Windows PC project's rebuild puts each function back at the game's address in the user's copy
-(tools/rebuild.py): moving code there needs its data delinked too, and a linker that lays the program out.
+it is. A Windows PC project's `tools/relink.py --pad` moves everything already; what's left there is saying how much
+of a program without base relocations is taken on trust (its data's pointers found by their values) and running it
+moved on Windows.
 
 ### A list of open rooms (to investigate)
 

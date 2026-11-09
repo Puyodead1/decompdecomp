@@ -22,7 +22,8 @@ MSVC through wibo (Visual C++ 2017 through wine). A program built without reloca
 every address fixed, which is what this reads. `ninja rebuild` (tools/rebuild.py) puts the whole .exe back together
 from the project, each function at its address from its C where that compiles to the game's code, else from the
 delinked objects, the rest your copy's, and compares it with the user's copy: the project's rebuild check (check_code)
-and its export.
+and its export. `ninja relink` (tools/relink.py) links a new program with Visual C++ 6.0's LINK.EXE from the same
+objects and the program's data, imports and resources made objects too: code can grow and the rest moves.
 The game's own DLLs are analysed the same way, each a program of the project (find_modules), rebuilt against its
 own copy.
 """
@@ -3024,6 +3025,12 @@ copy of its program and compared with what `src/` compiles to, function by funct
 3. Decompiled code goes in `src/`; `objdiff.json` shows each function's progress in [objdiff](https://github.com/encounter/objdiff).
 4. `ninja rebuild` puts the whole program back together in `build/{version}/{version}.exe`, each function from its C
    where that compiles to the game's code (else from your copy's), and says whether it's your copy, byte for byte.
+5. `ninja relink` links it again with Visual C++ 6.0's own linker, in `build/{version}/relink/`: the code, the data
+   (with every pointer in it a relocation), the imports and resources as objects, so code can change size and the
+   rest moves with it. It says whether every function and global came out at the game's address and every section
+   as your copy's. `python tools/relink.py config/{version}/functions.json build/{version} --link <LINK.EXE> --all-c`
+   takes every function from its C, not only those that compile to the game's code (a mod); `--pad 0x1000` moves
+   everything, to see that the program still works.
 
 Compiler: Visual C++ {compiler} (change `MSVC_VERSION` and `CL_FLAGS` in tools/configure.py if the game was built
 with another version or other flags; `config/{version}/file_compilers.json` names the files built with another
