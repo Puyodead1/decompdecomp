@@ -27,6 +27,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 FUNCTIONS = {f["name"]: f["vram"] for f in B["functions"]}  # (the program's functions, where it has them)
+# and its variables, by the names the export gave them, and the names a source file gives them besides their own (`MDLMAGIC_080BE4C4`, a static's global name),
+# which other files' C may read them by
+_VARIABLES = {n: a for e in (B.get("units") or []) + (B.get("data_files") or [])
+              for n, a, _, _ in ((e.get("data") or {}).get("variables") or [])}
+for _name, _at in _VARIABLES.items():
+    FUNCTIONS.setdefault(_name, _at)
+for _e in (B.get("units") or []) + (B.get("data_files") or []):
+    for _alias, (_base, _off) in {**((_e.get("data") or {}).get("aliases") or {}),
+                                  **((_e.get("data") or {}).get("link_aliases") or {})}.items():
+        if _base in _VARIABLES:
+            FUNCTIONS.setdefault(_alias, _VARIABLES[_base] + _off)
 UNITS = {u["name"]: u for u in B.get("units") or []}  # (the source files that are one C file each)
 ALIGN = 16  # (GCC 2.95 aligns an object's .text, its loops' .p2align 4: a function sits at its address modulo 16)
 
@@ -437,7 +448,7 @@ def check(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------- relinking
-# A new program from the C is the tree's own build: `make` (Makefile, tools/relink.py), which needs neither
+# A new program from the C is the tree's own build: `make match` (Makefile, tools/relink.py), which needs neither
 # decompdecomp nor its sandbox. Here it runs with decompdecomp's copy of the compiler (no download), in its sandbox
 # where this system has no 32-bit loader.
 
@@ -448,7 +459,7 @@ def relink(move: bool = False) -> Path:
         fail(f"{tcid} has no C runtime objects to link a program with: update decompdecomp")
     if not (ROOT / "Makefile").exists():
         fail("this tree has no Makefile: export it again")
-    argv = ["make", "-s", f"TC={tc}", f"PY={sys.executable}"] + (["move"] if move else [])
+    argv = ["make", "-s", f"TC={tc}", f"PY={sys.executable}"] + (["move"] if move else ["match"])
     if Path("/lib/ld-linux.so.2").exists():
         import subprocess
 

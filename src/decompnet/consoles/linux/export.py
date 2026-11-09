@@ -820,6 +820,14 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")
     export_make.write(out, build)
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
+    # the C made plain where it still builds the same code: what only the matching build's linker script supplied,
+    # written as C (export_clean.py), so `make` builds it with any GCC
+    if (out / "tools" / "cc.sh").exists():
+        from ... import toolchains
+        from . import export_clean
+
+        log("writing what only the matching build supplied as plain C")
+        export_clean.clean(out, build, Path(toolchains.ensure(build["toolchain"], log=lambda *_: None)), log=log)
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
           data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"])
@@ -857,19 +865,37 @@ in the program and checks the result against your original, byte for byte.
 
 ## Build
 
-1. {"`make` needs nothing of the program's: every function is C or assembly source (`src/asm/`) and every "
-   "variable C. To check the C against your own copy byte for byte (`python build.py`), put it here as "
-   "`baserom`" if standalone else "Put your own copy of the program here as `baserom`: what isn't source yet is "
-   "made from it (`asm/`, `data/program.s`)"} (it is in `.gitignore`; never commit it).
-2. `make`: builds `build/{program}`, the program linked anew from the C. The first time it downloads the compiler the
-   program was built with into `tools/` (`make toolchain`: pinned archives, each checked against its SHA-256; where
-   the system has no 32-bit loader, a 32-bit C runtime too). Needs make, python3, curl or wget, tar and ar; not
-   decompdecomp.
-3. `python build.py` (with decompdecomp installed) checks that the C still rebuilds your copy byte for byte, as
-   `build/program`, and then runs `make`.
-4. `make port`: the same C built by your system's GCC (`PORT_CC`, default `gcc -m32`; `PORT_FLAGS`), against the
-   program's own C library headers from `tools/`, linked the same way into `build/port/{program}`. Nothing has to
-   match there: it's how the C fares with a modern compiler (its warnings are worth reading).
+1. {"`make`: builds `build/plain/" + program + "`, the C as any C program is built: every source file compiled by "
+   "your system's gcc (`CC`, `CFLAGS`) with `NON_MATCHING` defined, linked against your system's libraries "
+   "(`LDLIBS`). Needs make and a 32-bit gcc and libraries (Debian and Ubuntu: `gcc-multilib` and the `:i386` "
+   "development packages of what `LDLIBS` names). Nothing of the original program, nor decompdecomp. "
+   "`make asan` builds the same with AddressSanitizer (`build/asan/" + program + "`): a read past a variable into "
+   "the next one, which the plain link lays out as it likes, is reported with its function and variable "
+   "(`ASAN_OPTIONS=halt_on_error=0` carries on after each)." if standalone else
+   "Put your own copy of the program here as `baserom`: what isn't source yet is made from it (`asm/`, "
+   "`data/program.s`), and `make` builds the matching program (2. below) until every function and variable is "
+   "source; then it builds the C as any C program is built, with your system's gcc and libraries"} (`baserom` is in
+   `.gitignore`; never commit it).
+2. `make match`: builds `build/{program}`, the program linked anew from the C with the compiler it was built with
+   (GCC 2.95.3), its code byte for byte the original's. The first time it downloads that compiler into `tools/`
+   (`make toolchain`: pinned archives, each checked against its SHA-256; where the system has no 32-bit loader, a
+   32-bit C runtime too). Needs make, python3, curl or wget, tar and ar; not decompdecomp.
+3. `python build.py` (with decompdecomp installed, and your copy as `baserom`) checks that the C still rebuilds your
+   copy byte for byte, as `build/program`, and then runs `make match`.
+4. `make port`: the C built by your system's GCC (`PORT_CC`, default `gcc -m32`; `PORT_FLAGS`) against the
+   program's own C library headers from `tools/`, linked as `make match` links it, its variables where the program
+   has them.
+
+Where the plain C and the C that compiles to the original's code differ (GCC 2.95 builds the game's code only from
+a number where a person writes the variable's name), the file has both, as decompilations write them:
+
+```c
+#ifdef NON_MATCHING
+    texState = (GLtextureState *)((int)&glContext + 0x14);
+#else
+    texState = (GLtextureState *)0x8f14db4;
+#endif
+```
 
 ## Layout
 
@@ -881,13 +907,14 @@ in the program and checks the result against your original, byte for byte.
 | `include/` | Types, structs and prototypes: `common.h` for the program, `common_<source file>.h` for each file's own, `<source file>.h` what a source file declares for itself (its functions, and what it uses from elsewhere). |
 | `asm/<function>.s` | What isn't C yet, as assembly (from your copy). |
 | `data/program.s` | The program's data that isn't C yet, every global and pointer named (written from your copy by the first relink). |
-| `Makefile`, `tools/` | The build: `make` links `build/{program}`; `tools/relink.py` its steps, `tools/toolchain.sh` the compiler's download. |
+| `Makefile`, `tools/` | The build: `make` the plain program, `make match` the matching one; `tools/relink.py` the matching build's steps, `tools/toolchain.sh` its compiler's download. |
 | `build.json`, `build.py` | Where each function is; `build.py` (decompdecomp) checks the C against your copy, as `build/program`. |
 
-`build/{program}` is every function compiled as written and laid out by the linker above the program's data, where
-it may grow, with the compiler's own crt files and the libraries it imports. A source file's variables sit as far
-apart as the program has them (C that reads past one into the next reads what the program read), in both builds. That's the one to change: edit any
-function (make it longer, add one in its file), run `make`, and run `build/{program}` where your copy runs.
+`build/{program}` (`make match`) is every function compiled as written and laid out by the linker above the program's
+data, where it may grow, with the compiler's own crt files and the libraries it imports. A source file's variables
+sit as far apart as the program has them (C that reads past one into the next reads what the program read), there
+and in `make port`; the plain build lays them out as its linker likes. Edit any function (make it longer, add one in
+its file), run `make`, and run the program where your copy runs.
 
 Keep going with any tool: write a function as `src/<source file>/<name>.c`, run `python build.py check <name>`,
 then `python build.py`. Change a source file and run `python build.py check <file>` (or the name of one of its

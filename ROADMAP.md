@@ -53,7 +53,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and `make`, without decompdecomp and, where all of it is source, without your copy, links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -1112,6 +1112,24 @@ reports are approved now). Names only: matching is unaffected. It also names the
 The class recovery reads MIPS and x86 (Windows PC: RTTI's names, the classes of code built without it, and their
 fields: done). Left: GameCube and Wii (CodeWarrior: the vtable pointer often isn't at offset 0), with a PowerPC
 reader (`Arch.field_accesses`), in fork mode.
+
+### Exports that are the game's own source
+
+An export a person builds and mods as if it were the original source tree: plain C, real headers, a plain Makefile,
+no decompdecomp machinery; the byte-matching build beside it (`make match`). Started on Linux:
+`consoles/linux/export_clean.py` writes what only the matching build's linker script supplied as C, each change kept
+only where GCC 2.95 still builds the file's code (both, `#ifdef NON_MATCHING`, where not), and `make` compiles the
+tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, in this order:
+
+- Reads that depend on where variables sit (`scrnHit + 0x12 + D*18`, which is `initMaxAmmo[D - 1]`): found by
+  running `make asan`, then written as the variable they read.
+- One prototype per function in module headers (`player.h`), instead of a caller's `__asm__` redeclarations and the
+  copies of `common.h` each file has (`common_<file>.h`).
+- Names: a `.set` alias as the name itself, a constant pool's `D_x_data` as its string literals, an offset into a
+  struct (`SegmentModel + 112`) as its field, from the game's debug information.
+- A source file made one file per function (`model.c`) whole.
+- Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects,
+  first on `projects/demo-pc`, then data as C and assembly source (the modding-ready check below).
 
 ### A modding-ready check for the export
 

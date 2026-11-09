@@ -262,14 +262,14 @@ def rules() -> None:
         if "/data-" in obj:  # a source file's variables alone
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
+                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
             objs.append(obj)
             continue
         if "functions" in fn:  # a source file, compiled whole
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
+                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ file:{fn['name']}\n")
             objs.append(obj)
             continue
@@ -285,7 +285,7 @@ def rules() -> None:
             flags = " ".join(fn.get("flags") or ["-O2"])
             rel = src.relative_to(ROOT).as_posix()
             lines.append(f"{obj}: {rel} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(CC) {rel} $@.raw -Iinclude $(PRELUDE) {flags}\n"
+                         f"\t$(MATCH_CC) {rel} $@.raw -Iinclude $(PRELUDE) {flags}\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ {fn['name']}\n")
         elif (fn.get("s") or "").startswith("src/"):  # (written as assembly source: the tree's own)
             lines.append(f"{obj}: {fn['s']} | build/relink $(TOOLCHAIN_READY)\n\t$(AS) -o $@ {fn['s']}\n")

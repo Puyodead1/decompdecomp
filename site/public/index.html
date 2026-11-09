@@ -200,7 +200,7 @@
         <li><small>Split by</small><b>Its own symbols</b><span>and its STABS or DWARF debug information: source files, types, prototypes; drafts by Ghidra</span></li>
         <li><small>Built by</small><b>GCC 2.95.3 or 4.3.2</b><span>Slackware 8.0's 2.95.3, or Debian 5.0's or Fedora 10's 4.3.2, each with its binutils and glibc's headers, picked by the program's own record of its compiler; C, and C++ with Fedora's</span></li>
         <li><small>Judged by</small><b>Linking</b><span>at the function's real address, compared byte for byte</span></li>
-        <li><small>You get</small><b>A source tree that builds with make</b><span>its source files back as C files, their data too (each global with its type and value), checked against your copy; <code>make</code> links a new program from them that you can change (once it's all source, without your copy), <code>make port</code> builds the same C with your system's GCC</span></li>
+        <li><small>You get</small><b>A source tree that builds with make</b><span>its source files back as C files, their data too (each global with its type and value), checked against your copy; once it's all source, <code>make</code> builds it as plain C with your system's gcc and libraries, without your copy or decompdecomp; <code>make match</code> links a new program from them that you can change, byte for byte the original's code</span></li>
       </ol>
     </article>
   </div>
