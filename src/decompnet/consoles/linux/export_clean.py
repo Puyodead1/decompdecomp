@@ -706,6 +706,23 @@ def cross_reads(build: dict):
                 if m.start() < alias.end():
                     continue
                 found.append((m.start(), m.end(), f"{target[0]}[{index(m.group(1), target[1])}]"))
+        # (through a pointer the file only ever sets to the table: `clip = (short *) clipMaxAmmo;` ... `clip + D * 9`)
+        sets: dict[str, set[tuple[str, str]]] = {}
+        for m in re.finditer(r"\b(\w+) = \((?:const )?((?:unsigned |signed )?\w+) \*\) ?&?(\w+);", text):
+            sets.setdefault(m.group(1), set()).add((m.group(2), m.group(3)))
+        for pointer, targets in sets.items():
+            if len(targets) != 1 or len(re.findall(rf"\b{re.escape(pointer)} = ", text)) != len(
+                    re.findall(rf"\b{re.escape(pointer)} = \((?:const )?(?:unsigned |signed )?\w+ \*\) ?&?\w+;", text)):
+                continue
+            (elem, name), = targets
+            if name not in vars_ or elem not in _SCALAR:
+                continue
+            address, size = vars_[name]
+            for m in re.finditer(rf"\b{re.escape(pointer)} \+ ([^;(),]+?) \* (\d+)\b", text):
+                row = _SCALAR[elem] * int(m.group(2))
+                target = landing(rel, text, address, address + size, row) if row >= size else None
+                if target and arrays(text)[target[0]][0] == _SCALAR[elem] and len(arrays(text)[target[0]][1]) > 1:
+                    found.append((m.start(), m.end(), f"{target[0]}[{index(m.group(1), target[1])}]"))
         found.sort()
         return [f for i, f in enumerate(found) if not i or f[0] >= found[i - 1][1]]
 
