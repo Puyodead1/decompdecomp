@@ -1598,3 +1598,45 @@ def test_the_export_reads_fields_by_name_and_a_read_past_a_table_as_the_table_it
     assert "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\ntypedef void *va_list;\n#endif\n" \
         in (out / "include" / "common.h").read_text()
     assert not any(export_clean.clean(out, build, tc, log=lambda *_: None).values())
+
+
+
+def test_a_table_copied_from_a_literal_the_match_placed_is_the_tables_bytes_in_a_plain_build(tmp_path):
+    """`memcpy(v, "", sizeof(v))` matches a game's copy of a local table's initializer where the match placed the
+    literal at the table, which a plain build reads past (a 1-byte string): under NON_MATCHING the literal is the
+    table's bytes, read from the program at the address the game's code loads there."""
+    import json
+    import struct
+    import subprocess
+
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    for d in ("src", "include", "tools"):
+        (out / d).mkdir(parents=True)
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    (out / "include" / "common.h").write_text("void *memcpy(void *, const void *, unsigned int);\n")
+    # the game: its own table (GCC 2.95 copies one this big from .rodata), at an address its code loads
+    table = ", ".join(str(k) for k in range(36))
+    (tmp_path / "game.c").write_text('#include "common.h"\nvoid tris(unsigned short *out) { unsigned short v[12][3] '
+                                     "= { " + table + " }; memcpy(out, v, sizeof(v)); }\n")
+    subprocess.run(["sh", str(out / "tools" / "cc.sh"), str(tc), str(tmp_path / "game.c"), str(tmp_path / "game.o"),
+                    "-I", str(out / "include"), "-O2"], check=True, capture_output=True)
+    subprocess.run([str(tc / "binutils" / "usr" / "bin" / "ld"), "-m", "elf_i386", "-Ttext", "0x8048000", "-e", "tris",
+                    "-o", str(out / "baserom"), str(tmp_path / "game.o")], check=True, capture_output=True,
+                   env={"LD_LIBRARY_PATH": str(tc / "binutils" / "usr" / "lib")})
+    # its decompilation: the literal the match placed at the table
+    (out / "src" / "tris.c").write_text('#include "common.h"\nvoid tris(unsigned short *out) { unsigned short v[12][3];\n'
+                                        '    memcpy(v, "", sizeof(v));\n    memcpy(out, v, sizeof(v)); }\n')
+    build = {"symbols": {}, "toolchain": gcc, "standalone": True,
+             "functions": [{"name": "tris", "vram": 0x8048000, "c": "src/tris.c", "flags": ["-O2"]}]}
+    (out / "build.json").write_text(json.dumps(build))
+    rewrite = export_clean.copied_literals(build, out, tc, {"src/tris.c": ["-O2"]})
+    made = next(rewrite((out / "src" / "tris.c").read_text(), "src/tris.c"), "")
+    body = "".join(f"\\{b:03o}" for b in struct.pack("<36H", *range(36)))
+    assert f'#ifdef NON_MATCHING\n    memcpy(v, "{body}", sizeof(v));\n#else\n    memcpy(v, "", sizeof(v));\n#endif\n' in made

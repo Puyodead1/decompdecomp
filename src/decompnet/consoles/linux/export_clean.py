@@ -20,6 +20,8 @@ Each pass here writes one kind of that machinery as the C it stands for:
 - cross_reads: a read of rows past a variable's end written as the variable it lands in (what ASan finds).
 - varargs: a file's own va_start, which steps from an argument's address, the compiler's own in a plain build.
 - pool_constants: a constant read from the program's data by an address name, its literal in a plain build.
+- copied_literals: a table copied from a literal the match placed at it (`memcpy(vlist, "", 72)`), the table's
+  bytes in a plain build.
 - module_headers: common.h, which declared every file's names, cut into a header per source file of what the others
   read of it; each file includes those it uses.
 """
@@ -851,13 +853,117 @@ def pool_constants(build: dict, out: Path):
     return candidates
 
 
+_COPY = re.compile(r'\bmemcpy\s*\(\s*([^,;]+?)\s*,\s*"((?:\\.|[^"\\])*)"\s*,\s*(sizeof\s*\(\s*\w+\s*\)|0x[0-9a-fA-F]+|\d+)\s*\)')
+
+
+def _program_bytes(image: bytes, address: int, size: int) -> bytes | None:
+    """`size` bytes of the program at `address`, from its sections."""
+    from io import BytesIO
+
+    from elftools.elf.elffile import ELFFile
+    for sec in ELFFile(BytesIO(image)).iter_sections():
+        lo = sec["sh_addr"]
+        if lo and sec["sh_type"] != "SHT_NOBITS" and lo <= address and address + size <= lo + sec["sh_size"]:
+            return sec.data()[address - lo:address - lo + size]
+    return None
+
+
+def _sizeof(text: str, name: str) -> int | None:
+    """The size of a local or file array `name` of scalars as `text` declares it (`ushort vlist[12][3];`)."""
+    m = re.search(rf"\b((?:unsigned |signed )?\w+) {re.escape(name)}((?:\[\d+\])+)\s*;", text)
+    if not m:
+        return None
+    elem = _SCALAR.get({"ushort": "unsigned short", "uint": "unsigned int", "uchar": "unsigned char",
+                        "u8": "unsigned char", "u16": "unsigned short", "u32": "unsigned int", "s16": "short",
+                        "s32": "int", "s8": "char"}.get(m.group(1), m.group(1)))
+    if not elem:
+        return None
+    for d in re.findall(r"\d+", m.group(2)):
+        elem *= int(d)
+    return elem
+
+
+def copied_literals(build: dict, out: Path, tc: Path, flags_of: dict[str, list[str]]):
+    """`memcpy(vlist, "", sizeof(vlist))`: the code copies a table the game keeps (a local array's initializer) from
+    where GCC 2.95 put a literal its C wrote, and the match placed that literal at the table's address: a plain build
+    copies past a 1-byte string. Under NON_MATCHING the literal is the table's bytes, read from the program at the
+    address the game's code loads (the matched code is the game's, so the relocated word there is that address)."""
+    image_path = out / "baserom"
+    image = image_path.read_bytes() if image_path.is_file() else None
+    where = addresses(build)
+
+    def candidates(text: str, rel: str):
+        if image is None or not _COPY.search(text):
+            return
+        obj = _compile(out, tc, out / rel, flags_of.get(rel, []), text)
+        if obj is None:
+            return
+        sections, symbols = _sections(obj)
+        # each function's literal reads: (string, offset in the function) from its relocations into string sections
+        reads: dict[str, dict[bytes, set[int]]] = {}
+        funcs = [(sym["name"], sym["value"], sym["size"], sym["shndx"]) for sym in symbols
+                 if sym["type"] == 2 and sym["name"] in where]
+        for rs in sections:
+            if rs["type"] != 9:
+                continue
+            target = sections[rs["info"]]
+            for k in range(rs["size"] // 8):
+                off, info = struct.unpack_from("<II", obj, rs["offset"] + k * 8)
+                sym = symbols[info >> 8]
+                if sym["type"] != 3 or not sections[sym["shndx"]]["name"].startswith(".rodata"):
+                    continue
+                home = sections[sym["shndx"]]
+                addend, = struct.unpack_from("<i", obj, target["offset"] + off)
+                start = home["offset"] + addend
+                end = obj.find(b"\0", start, home["offset"] + home["size"])
+                if end < 0:
+                    continue
+                # (an address the code loads as an immediate, `mov $table,%esi` or `push $table`: not a constant the
+                # code reads in place, `flds 256.0f`, whose bytes may start as the literal's)
+                if not off or not (obj[target["offset"] + off - 1] in range(0xB8, 0xC0) or
+                                   obj[target["offset"] + off - 1] == 0x68):
+                    continue
+                for name, lo, size, shndx in funcs:
+                    if shndx == rs["info"] and lo <= off < lo + size:
+                        game = _program_bytes(image, where[name] + off - lo, 4)
+                        if game is not None:
+                            reads.setdefault(name, {}).setdefault(obj[start:end], set()).add(
+                                struct.unpack("<I", game)[0])
+        from ...units import chunks
+        new, at = [], 0
+        done = _in_both(text)
+        bodies = [(c.names[0], text.find(c.text), len(c.text)) for c in chunks(text) if c.kind == "func" and c.names]
+        for m in _COPY.finditer(text):
+            if done(m.start()):
+                continue
+            owner = next((n for n, lo, size in bodies if lo <= m.start() < lo + size), None)
+            literal = bytes(m.group(2), "ascii").decode("unicode_escape").encode("latin-1")
+            places = (reads.get(owner) or {}).get(literal) or set()
+            count = m.group(3)
+            n = _sizeof(text, re.search(r"\w+", count[6:]).group(0)) if count.startswith("sizeof") else int(count, 0)
+            if len(places) != 1 or n is None or n <= len(literal) + 1:
+                continue
+            table = _program_bytes(image, next(iter(places)), n)
+            if table is None or not table.startswith(literal):
+                continue
+            body = "".join(f"\\{b:03o}" for b in table)
+            new += [text[at:m.start(2) - 1], f'"{body}"']
+            at = m.end(2) + 1
+        if new:
+            both = _non_matching(text, "".join(new) + text[at:])
+            if both is not None:
+                yield both
+    return candidates
+
+
 PASSES = (("names the linker script gave", linked_names), ("helpers made each file's own", own_helpers),
           ("addresses written as numbers", numbered_addresses), ("the C library's tables read as calls", library_tables),
           ("functions called by their own names", called_by_name), ("variables by one name", set_names),
           ("offsets into variables read as their fields", struct_fields),
           ("reads past a variable's end as the one they reach", cross_reads),
           ("varargs as the compiler's own", varargs),
-          ("constants read from the program's data as literals", pool_constants))
+          ("constants read from the program's data as literals", pool_constants),
+          ("tables copied from a literal the match placed", copied_literals))
 ITEMIZED = {called_by_name, set_names, struct_fields}  # (passes whose changes are kept one by one: items, apply)
 
 
@@ -898,8 +1004,9 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             changed[title] = count
             log(f"{title}: written as C in {count} files" + (f" ({refused} kept as they were)" if refused else ""))
             continue
-        rewrite = make(build, out) if make in (numbered_addresses, pool_constants) else make(build)
-        by_file = make in (numbered_addresses, cross_reads, pool_constants)  # (rewrite(text, rel))
+        rewrite = make(build, out) if make in (numbered_addresses, pool_constants) else \
+            make(build, out, tc, {rel: prelude + list(f) for rel, f in files}) if make is copied_literals else make(build)
+        by_file = make in (numbered_addresses, cross_reads, pool_constants, copied_literals)  # (rewrite(text, rel))
         # (the names only the linker script gives reach nothing in a plain link: the new C mustn't read them)
         linked = {a for e in list(build.get("units") or []) + list(build.get("data_files") or [])
                   for a in ((e.get("data") or {}).get("link_aliases") or {})}
