@@ -3,9 +3,11 @@
 The project is the export already (`ninja rebuild` rebuilds the program byte for byte, `ninja relink` links it anew
 with Visual C++'s linker). What Export adds is the rest of the program as source, in the project's source/ folder:
 every function as MASM, a line per instruction with capstone's text of it as a comment (its C, where it has any,
-is in src/ too), the data a file per part of each section (every global labelled, every pointer written as what it
-points at), the resources, and program.json (tools/relink.py --source writes it). tools/assemble.py makes the
-program from that with Visual C++ 6.0's MASM, and the export checks it's the user's copy, byte for byte. source/ is
+is in src/ too); the data as C, a file per part of each section (data/: each global at its place by a #pragma
+data_seg, a string as a string, a pointer as the address of what it points at; data.h declares every one), the
+import tables MASM; the resources, and program.json (tools/relink.py --source writes it). tools/assemble.py makes
+the program from that with Visual C++ 6.0's MASM and compiler, and the export checks it's the user's copy, byte for
+byte. source/ is
 made from the user's copy: the project's .gitignore keeps it out of git, as orig/ is.
 """
 
@@ -60,14 +62,14 @@ def export_pc(root: Path, version: str, log=print) -> dict:
     out = root / SOURCE
     if (out / "program.json").exists():  # (one this wrote before: its files may name functions no longer there)
         shutil.rmtree(out)
-    log("writing the program as source (MASM, with each instruction's text)")
+    log("writing the program as source (its code MASM, with each instruction's text; its data C)")
     linker = relink.Relink(info, relink.Image(exe), root, Path("build") / version)
     linker.out = root / "build" / version / "relink"  # (its own objects, as `ninja relink` writes them)
     try:
         program = linker.write_source(out, disassemble=disassembler())
     except SystemExit as e:  # (the tool says why and stops: here, the export's error)
         raise ForkError(str(e.code)) from None
-    log(f"assembling its {len(program['pieces']):,} files with Visual C++ 6.0's MASM")
+    log(f"assembling and compiling its {len(program['pieces']):,} files with Visual C++ 6.0's MASM and compiler")
     with tempfile.TemporaryDirectory() as tmp:
         made = Path(tmp) / Path(info["exe"]).name
         said = subprocess.run([sys.executable, str(Path(relink.__file__).with_name("assemble.py")),

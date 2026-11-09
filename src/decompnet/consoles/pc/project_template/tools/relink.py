@@ -10,7 +10,11 @@ change size and the rest moves with it (what a mod or a port needs). What goes i
   tools/delink.py cuts it out of your copy, in the game's order; with --asm, as the program's source has it instead
   (what Export writes in source/, each function a segment of MASM: assembly you edited), and the data, resources and
   the rest from that source too;
-- the data: every data section of your copy (.rdata, .data, and what is uninitialised as .bss) as one object,
+- the data: a global the C defines (D_<address>) whose bytes are the game's, its pointers pointing where the game's
+  do, from C, at its place (cdata.obj; the rest of the data is cut around it, each part in a section named for its
+  place, <section>$<address>, which the linker puts in that order); with --asm, the data as the source has it, C
+  (Export writes it so) and the import tables MASM; else every data section of your copy (.rdata, .data, and what
+  is uninitialised as .bss) as one object,
   data.obj, with a symbol for every address the code names (D_00402034) and every word that points at a function, an
   import's slot or into the data written as a relocation to it, so it follows what it points at. Without base
   relocations (a program linked with /FIXED, as most games of the late 1990s), a pointer is a word whose value is a
@@ -25,7 +29,10 @@ The program's headers come from the linker, set as your copy's are: its address 
 entry point, and /FIXED when it has no base relocations. Writes build/<version>/relink/<program>.exe, its map
 (relink.map) and relink.json (which functions came from C, which moved, what had to be taken on trust); says
 whether every function and global came out at the game's address and its code byte for byte the game's. The game's
-own DLLs (functions.json's "modules") are not relinked yet. Standard library only. Made by decompdecomp.
+own DLLs (functions.json's "modules") are relinked after it, each from its folder's source files and its own copy at
+the address the project gives it, then moved back to its own (build/<version>/relink/<the DLL>), its export tables
+kept in its data as the imports are, the header's export directory set to them; with --asm a DLL still comes from
+your copy (its source isn't written yet). Standard library only. Made by decompdecomp.
 """
 
 from __future__ import annotations
@@ -59,7 +66,8 @@ IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # handler chain (every function with C++ exception handling reads it); __fltused only says the program uses floats
 ABSOLUTE = {"__except_list": 0, "__fltused": 0x9875}
 # the data directories (the optional header's table) this reads
-IMPORTS, RESOURCES, SECURITY, BASE_RELOCATIONS, TLS, LOAD_CONFIG, IAT = 1, 2, 4, 5, 9, 10, 12
+EXPORTS, IMPORTS, RESOURCES, SECURITY, BASE_RELOCATIONS, TLS, LOAD_CONFIG, IAT = 0, 1, 2, 4, 5, 9, 10, 12
+DLL = 0x2000  # (the header's characteristics: the program is a DLL)
 SUBSYSTEMS = {1: "NATIVE", 2: "WINDOWS", 3: "CONSOLE"}
 SHOWN = 8
 PART = 0x10000  # the most of a section one source file has (ML 6.15 stopped on 6 MB of a game's data)
@@ -160,6 +168,36 @@ class Image:
             at += 20
         return out
 
+    def export_rvas(self) -> tuple[dict[int, int], list[tuple[int, int]]]:
+        """A DLL's export tables: each word of them that's an RVA, by where it is (what it points at: a function, its
+        name, a forwarded export's string), and where they are ([(start, end)]: the directory, its address, name and
+        ordinal tables, the names). Nothing for a program that exports nothing."""
+        at, size = self.directory(EXPORTS)
+        if not at:
+            return {}, []
+        _, _, _, _, name, _, count, names, functions, name_table, ordinals = struct.unpack("<IIHHIIIIIII",
+                                                                                           self.read(at, 40))
+        rvas, ranges = {}, [(at, at + 40)]
+        for place, rva in ((at + 12, name), (at + 28, functions), (at + 32, name_table), (at + 36, ordinals)):
+            if rva:
+                rvas[place] = self.base + rva
+        for k in range(count):  # (each function's: 0 where an ordinal exports nothing)
+            if rva := self.word(self.base + functions + 4 * k):
+                rvas[self.base + functions + 4 * k] = self.base + rva
+        ranges.append((self.base + functions, self.base + functions + 4 * count))
+        for k in range(names):
+            place = self.base + name_table + 4 * k
+            rvas[place] = self.base + self.word(place)
+            ranges.append((rvas[place], rvas[place] + len(self.string(rvas[place])) + 1))
+        ranges += [(self.base + name_table, self.base + name_table + 4 * names),
+                   (self.base + ordinals, self.base + ordinals + 2 * names)]
+        if name:
+            ranges.append((self.base + name, self.base + name + len(self.string(self.base + name)) + 1))
+        for place, target in list(rvas.items()):  # (a forwarded export: its string, in the directory's span)
+            if at <= target < at + size and place not in (at + 12, at + 28, at + 32, at + 36):
+                ranges.append((target, target + len(self.string(target)) + 1))
+        return rvas, ranges
+
     def relocated(self) -> set[int] | None:
         """The addresses of every word the base relocations say holds an address; None: the program has none."""
         at, size = self.directory(BASE_RELOCATIONS)
@@ -229,12 +267,14 @@ class Coff:
 
     def masm(self, sections: list[int], names: dict[int, str], note: str = "",
              span: tuple[int, int] | None = None,
-             texts: dict[int, dict[int, tuple[int, str]]] | None = None) -> tuple[str, list[int]]:
+             texts: dict[int, dict[int, tuple[int, str]]] | None = None,
+             numbers: bool | None = None) -> tuple[str, list[int]]:
         """These sections as MASM source (ML 6.15, Visual C++ 6.0's: tools/assemble.py assembles it), one after the
         other, and where in them (from the first's start) a word is an RVA (MASM 6.15 has no IMAGEREL: the word holds
         the address, assemble.py makes it an RVA). `names`: a public name for a section's start, by its number, where
         another file points into it. `span`: only this part of the one section (ML 6.15 stops on a file of 6 MB).
-        `texts`: by section, its instructions (offset: (length, text)): a line of bytes each, the text its comment. Functions are PROCs; a relocated word is `dd OFFSET name+n`, a relative call
+        `texts`: by section, its instructions (offset: (length, text)): a line of bytes each, the text its comment.
+        `numbers`: whether it writes the names that are numbers and the aliases (None: unless it's a later part). Functions are PROCs; a relocated word is `dd OFFSET name+n`, a relative call
         or jump `call`/`jmp`/`jcc NEAR PTR name` (all rel32, as the game has them)."""
         index_of = {k: i for i, k in self.position.items()}
         mine = set(sections)
@@ -265,7 +305,7 @@ class Coff:
                                         typ == FUNCTION and cls == EXTERNAL))
                 local[i] = label
             elif section > 0:  # (another file's: its public name)
-                local[i] = names[section] if name.startswith("$S") and cls == STATIC else name
+                local[i] = names.get(section, name) if name.startswith("$S") and cls == STATIC else name
                 extern[local[i]] = "BYTE"
             elif section == -1 and cls == EXTERNAL:
                 absolute.append((name, value))
@@ -279,7 +319,7 @@ class Coff:
         # declares only its own, and the names that are no place, aliases and numbers, are its first part's)
         out += [f"EXTRN {name}:{kind}" for name, kind in sorted(extern.items()) if name not in defined and name in used]
         out += [f"PUBLIC {label}" for s in sections for _, label, public, _ in labels[s] if public]
-        if span is None or span[0] == 0:
+        if numbers if numbers is not None else span is None or span[0] == 0:
             # (a name that stands for another: program.json's "aliases", which assemble.py reads; ML 6.15 stopped
             # on ALIAS)
             out += [f"; {name} stands for {default}" for name, default in aliases]
@@ -665,7 +705,10 @@ class Compiled:
                 assoc = self._associated(p["section"])
                 with_it = next((numbers[k] for k in kept if self.pieces[k]["section"] == assoc), 0) if assoc else 0
                 comdat = (head["aux"][14], with_it)
-            made = obj.section(sec["name"], None if body is None else b"", flags,
+            name = sec["name"]
+            if not flags & CNT_CODE and "$" not in name:
+                name += "$~"  # (after the game's data, which may be in sections named for each part's place)
+            made = obj.section(name, None if body is None else b"", flags,
                                size=p["hi"] - p["lo"] if body is None else 0, comdat=comdat)
             assert made == numbers[item]
             for index, s in self.symbols.items():  # (its symbols first: a COMDAT's own follows its section's)
@@ -720,13 +763,21 @@ class Compiled:
 # ---------------------------------------------------------------------------------------------------------- the link
 
 class Relink:
-    def __init__(self, info: dict, image: Image, root: Path, build: Path, all_c: bool = False, pad: int = 0):
+    def __init__(self, info: dict, image: Image, root: Path, build: Path, all_c: bool = False, pad: int = 0,
+                 module: str = ""):
         self.info, self.image, self.root, self.build, self.all_c, self.pad = info, image, root, build, all_c, pad
-        self.out = build / "relink"
-        # the .exe's units (a DLL's are in its folder), in the order of the game's code
-        self.units = sorted((u for u in info["units"] if "/" not in u and info["units"][u]),
+        # (a DLL of the game's, functions.json's "modules": its source files in its folder, its objects in one of its
+        # own, its program beside the .exe's)
+        self.module, self.out = module, build / "relink" / module if module else build / "relink"
+        self.name = next((Path(m["exe"]).name for m in info.get("modules", []) if m["name"] == module),
+                         None) if module else Path(info["exe"]).name
+
+        def mine(unit: str) -> bool:
+            return (unit.rsplit("/", 1)[0] if "/" in unit else "") == module
+        # the program's units, in the order of the game's code
+        self.units = sorted((u for u in info["units"] if mine(u) and info["units"][u]),
                             key=lambda u: min(fn["addr"] for fn in info["units"][u]))
-        self.functions = sorted((fn for unit, fns in info["units"].items() if "/" not in unit for fn in fns),
+        self.functions = sorted((fn for unit, fns in info["units"].items() if mine(unit) for fn in fns),
                                 key=lambda fn: fn["addr"])
         # what a code section has before its first function, as code of its own that goes before that function: an
         # incrementally linked game's table of jumps (jmp <function>, each a relocation to it), int3s
@@ -755,6 +806,10 @@ class Relink:
         self.asm_units: dict[str, Compiled] | None = None
         self._asm_starts: dict[str, list[tuple[int, int, str]]] = {}  # (--asm: each unit's functions as source/ has them)
         self.source_objects: list[Path] = []  # (--asm: the data, resources and the rest, from source/)
+        self.source_where: dict[str, dict[int, int]] = {}  # (--asm: each of those objects' sections' addresses)
+        self.data_c: list[Compiled] = []  # (the data as C: what it compiles to, beside src/'s)
+        self.taken_data: list[dict] = []  # (the globals that come from C: globals_from_c)
+        self.c_wanted: set[str] = set()
         self.unit_of = {fn["name"]: unit for unit, fns in info["units"].items() for fn in fns}
         for lead, first in ((v["name"], k) for k, v in self.leads.items()):
             self.unit_of[lead] = self.unit_of.get(first)
@@ -766,8 +821,9 @@ class Relink:
         assemble = _sibling("assemble")
         program = json.loads((folder / "program.json").read_text(encoding="utf-8"))
         units = set(self.units)
-        made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p["asm"]).stem in units)
+        made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p.get("asm", "")).stem in units)
         self.asm_units, self.source_objects = made["skipped"], made["paths"]
+        self.source_where = made["where"]
         self.source_changed = made["changed"]
         missing = sorted(units - set(self.asm_units))
         if missing:
@@ -955,6 +1011,7 @@ class Relink:
         if self.source is not None:
             self.use_source(*self.source)
         self.code()
+        self.taken_data = self.globals_from_c()
         self.from_copy: set[str] = set()  # (with --all-c: functions whose C isn't the game's code that other code
         # jumps into the middle of, or the data points into: their places are the game's code's)
         while True:
@@ -964,6 +1021,8 @@ class Relink:
                 obj = self.unit(unit, {})
                 defined |= obj.defined()
                 wanted |= obj.undefined()
+            wanted |= self.c_wanted
+            defined |= {g["name"] for g in self.taken_data}
             self.jumped_into = set()
             data, labels = self.data(wanted, defined)
             self.thunks = [(n, s) for n, s in self.thunks if n not in defined]
@@ -974,9 +1033,21 @@ class Relink:
                 break
             self.from_c -= self.jumped_into | needing
             self.from_copy |= self.jumped_into | needing
+        data_objects = [data]
+        if self.taken_data:  # (the data cut where a global comes from C, and those globals)
+            inner: dict[str, list[tuple[str, int]]] = {}
+            if self.asm_units is None:
+                data_objects = [self.carve(data, {number: start for start, _, number in self.chunks}, inner)]
+            else:
+                self.source_objects = [
+                    self.carve(path, where, inner) if any(self.place_of(a) for a in where.values()) else path
+                    for path in self.source_objects for where in [self.source_where.get(str(path), {})]]
+            data_objects.append(self.c_data_object(inner))
+            if self.asm_units is not None:
+                self.source_objects.append(data_objects.pop())
         objects = []
         for unit in self.units:
-            path = self.out / "objects" / f"{unit}.obj"
+            path = self.out / "objects" / f"{Path(unit).name}.obj"  # (a DLL's unit is in its folder: hw/text_10001000)
             path.write_bytes(self.unit(unit, labels).bytes())
             objects.append(path)
         names = set(self.names) | set(self.import_names)
@@ -997,14 +1068,13 @@ class Relink:
             fail(f"{len(undefined)} names the code uses that nothing defines: {', '.join(undefined[:SHOWN])}"
                  + ("…" if len(undefined) > SHOWN else "")
                  + (" (the source was written without them: export again)" if self.asm_units is not None else ""))
-        name = Path(self.info["exe"]).name
-        program = self.out / name
+        program = self.build / "relink" / self.name  # (a DLL's beside the .exe's, as the game has them)
         res = self.resources_object() if self.asm_units is None else None
-        entry = self.starts.get(self.image.base + self.image.entry)
-        if entry is None:
+        entry = self.starts.get(self.image.base + self.image.entry) if self.image.entry else None
+        if entry is None and self.image.entry:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
         argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program)]
-        argv += [*(map(str, self.source_objects) if self.asm_units is not None else [str(data)]),
+        argv += [*map(str, self.source_objects if self.asm_units is not None else data_objects),
                  *map(str, objects), *map(str, imports)]
         if res is not None:
             argv.append(str(res))
@@ -1070,9 +1140,6 @@ class Relink:
             if what is None:
                 kept.append(s)
         self.trusted, self.in_resources = [], []
-        if self.info.get("modules"):
-            self.trusted.append(f"only {Path(self.info['exe']).name}: the game's DLLs aren't relinked yet "
-                                "(`ninja rebuild` rebuilds them)")
         obj = Coff()
         chunks = []  # (start, end, section number)
 
@@ -1099,7 +1166,8 @@ class Relink:
         stray = []
         # what the linker sets a directory of the program's header from, by the name it looks for: thread-local
         # storage's, and the load configuration's
-        for directory, name in ((TLS, "__tls_used"), (LOAD_CONFIG, "__load_config_used")):
+        for directory, name in ((TLS, "__tls_used"), (LOAD_CONFIG, "__load_config_used"),
+                                (EXPORTS, "__relink_exports")):  # (finish sets the export directory to its place)
             addr, _ = image.directory(directory)
             if addr and (c := chunk_of(addr)) is not None:
                 obj.symbol(name, addr - c[0], c[2])
@@ -1107,6 +1175,7 @@ class Relink:
                 stray.append(f"{name} (0x{addr:08X}, outside the data)")
         by_slot = {slot["slot"]: slot["symbol"] for _, slots in image.imports() for slot in slots}
         rvas = self.import_tables(obj, wanted, chunk_of, stray)
+        rvas.update(image.export_rvas()[0])  # (a DLL's export tables: their RVAs, of its functions too)
         for name in sorted(wanted - defined):
             if name.endswith(RVA) and DATA_SYMBOL.fullmatch(name[:-len(RVA)]):
                 obj.symbol(name, (int(name[3:11], 16) - image.base) & 0xFFFFFFFF, -1)
@@ -1148,15 +1217,22 @@ class Relink:
                 continue
             body = bytearray(body)
             places = sorted(a for a in relocated | set(rvas) if start <= a <= end - 4) if relocated is not None else \
-                range(start, end - 3, 4)
+                [a for a in range(start, end - 3, 4) if a in rvas or not in_text(image, a)]
             for addr in places:
                 word = struct.unpack_from("<I", body, addr - start)[0]
                 target = None
                 if addr in rvas and rvas[addr] < 0:
                     struct.pack_into("<I", body, addr - start, -rvas[addr])
                     continue
+                if addr in rvas and rvas[addr] in self.starts:  # (an export's: of its function)
+                    struct.pack_into("<I", body, addr - start, 0)
+                    obj.reloc(number, addr - start, obj.extern(self.starts[rvas[addr]], True), DIR32NB)
+                    continue
                 if addr in rvas:  # (an import table's RVA: of a name, a lookup table, an address table)
                     c = chunk_of(rvas[addr])
+                    if c is None:
+                        stray.append(f"0x{addr:08X} (an RVA of 0x{rvas[addr]:08X}, in nothing the relink has)")
+                        continue
                     struct.pack_into("<I", body, addr - start, rvas[addr] - c[0])
                     obj.reloc(number, addr - start, obj.sections[c[2] - 1]["symbol"], DIR32NB)
                     continue
@@ -1191,6 +1267,289 @@ class Relink:
         path = self.out / "objects" / "data.obj"
         path.write_bytes(obj.bytes())
         return path, labels
+
+    # ------------------------------------------------------------------------------------------------ data from C
+    def place_of(self, addr: int) -> tuple[str, int, int, int] | None:
+        """Where a global of the program's data is: (the section the linker gets it in, its flags, where that part
+        starts, where it ends); the part of a section past its bytes in the file is .bss, as a compiler's
+        uninitialised data (tools/assemble.py's prepare names it so too). None outside the data."""
+        s = self.image.section_of(addr)
+        if s is None or s in self.code_sections or s["name"] in (".rsrc", ".reloc"):
+            return None
+        initialised = min(s["vsize"], len(s["raw"]))
+        flags = (s["flags"] & 0xFE0000E0 & ~0x00F00000) | ALIGN_1  # (where the one before it ends)
+        if addr >= s["addr"] + initialised:
+            return ".bss", (flags & ~CNT_DATA) | CNT_BSS, s["addr"] + initialised, s["addr"] + s["vsize"]
+        return s["name"], flags, s["addr"], s["addr"] + initialised
+
+    def rva_places(self) -> set[int]:
+        """The words of the import and export tables that are RVAs (C has no way to write one)."""
+        places = set(self.image.export_rvas()[0])
+        for dll in self.image.import_layout():
+            places |= {dll["descriptor"] + at for at in (0, 12, 16)}
+            for k, _ in enumerate(dll["slots"]):
+                places |= {table + 4 * k for table in {dll["lookup"], dll["iat"]} - {0}}
+        return places
+
+    def c_address(self, read: Compiled, symbol: dict, inline: int) -> int | None:
+        """Where in the game a relocation of a global's C points: a global (D_<address>, or a place in a global of the
+        same file, by its section), a function, an import's slot; None for anything else (a string of the C's own, a
+        helper of its own)."""
+        name = symbol["name"]
+        if symbol["cls"] == EXTERNAL and (m := DATA_SYMBOL.fullmatch(name)):
+            return int(m.group(1), 16) + inline
+        if symbol["section"] > 0 and symbol["cls"] != EXTERNAL:
+            at = symbol["value"] + inline
+            owner = max((s for s in read.symbols.values() if s["section"] == symbol["section"] and s["cls"] == EXTERNAL
+                         and DATA_SYMBOL.fullmatch(s["name"]) and s["value"] <= at), key=lambda s: s["value"],
+                        default=None)
+            return None if owner is None else int(owner["name"][3:], 16) + at - owner["value"]
+        if name in self.by_name:
+            return self.by_name[name]["addr"] + inline
+        slot = self.slot_named.get(name) or self.slot_named.get(re.sub(r"@\d+$", "", name))
+        return None if slot is None else slot + inline
+
+    def globals_from_c(self) -> list[dict]:
+        """The globals the C defines (D_<address>, initialised or not) that are the game's, byte for byte, every
+        pointer in them pointing where the game's does: the relink takes each from C, at the game's place, as it takes
+        a function whose C is the game's code; the data around it is cut there (carve). A global whose C is other
+        data, or points at something of the C's own, stays the data's copy's. [{"name", "addr", "size", "read",
+        "section" (0: uninitialised), "value" (its offset there)}]"""
+        self.slot_named = {slot["symbol"]: slot["slot"] for _, slots in self.image.imports() for slot in slots}
+        rvas = self.rva_places()
+        found = []
+        for read in [*self.compiled.values(), *self.data_c]:
+            for s in read.symbols.values():
+                m = DATA_SYMBOL.fullmatch(s["name"])
+                if m is None or s["cls"] != EXTERNAL or s["section"] < 0 or s["section"] == 0 and not s["value"]:
+                    continue
+                addr = int(m.group(1), 16)
+                place = self.place_of(addr)
+                if place is None:
+                    continue
+                if s["section"] == 0:  # (uninitialised: a common symbol, its size its value)
+                    body, relocs, size = None, [], s["value"]
+                else:
+                    sec = read.sections[s["section"] - 1]
+                    if sec["flags"] & (CNT_CODE | COMDAT) or sec["name"].startswith(Compiled.DROPPED):
+                        continue
+                    end = min((o["value"] for o in read.symbols.values() if o["section"] == s["section"] and
+                               o["value"] > s["value"] and not read._is_section(o)), default=sec["size"])
+                    size = end - s["value"]
+                    body = sec["data"][s["value"]:end] if sec["data"] is not None else None
+                    relocs = [(off - s["value"], index, kind) for off, index, kind in sec["relocs"]
+                              if s["value"] <= off < end]
+                size = min(size, place[3] - addr)
+                size = self.same_as_game(read, addr, body, relocs, size, rvas)
+                if size:
+                    found.append({"name": s["name"], "addr": addr, "size": size, "read": read,
+                                  "section": s["section"], "value": s["value"] if s["section"] else 0})
+        found.sort(key=lambda g: g["addr"])
+        taken, end = [], 0
+        for g in found:  # (two that overlap: the first)
+            if g["addr"] >= end:
+                taken.append(g)
+                end = g["addr"] + g["size"]
+        self.c_wanted = set()  # (what they point at, by name: the data defines it)
+        for g in taken:
+            read = g["read"]
+            sec = read.sections[g["section"] - 1] if g["section"] else None
+            for off, index, kind in sec["relocs"] if sec is not None else ():
+                if g["value"] <= off < g["value"] + g["size"]:
+                    s = read.symbols[index]
+                    if s["section"] > 0 and s["cls"] != EXTERNAL:
+                        inline = struct.unpack_from("<i", sec["data"], off)[0]
+                        self.c_wanted.add(f"_D_{self.c_address(read, s, inline):08X}")
+                    else:
+                        self.c_wanted.add(s["name"])
+        return taken
+
+    def pointer_places(self) -> list[int]:
+        """Every word of the game's data that's an address, in order: what its base relocations name, or without them
+        (/FIXED) what data() takes for one (a word whose value is a function's start, an import's slot or in the data)."""
+        if getattr(self, "_pointer_places", None) is None:
+            if self.relocated is not None:
+                places = self.relocated
+            else:
+                slots = {slot["slot"] for _, ss in self.image.imports() for slot in ss}
+                places = set()
+                for s in self.image.sections:
+                    if self.place_of(s["addr"]) is None:
+                        continue
+                    for addr in range(s["addr"], s["addr"] + min(s["vsize"], len(s["raw"])) - 3, 4):
+                        if in_text(self.image, addr):
+                            continue
+                        word = self.image.word(addr)
+                        if word in self.starts or word in slots or self.place_of(word) is not None or \
+                                self.function_at(word) is not None:
+                            places.add(addr)
+            self._pointer_places = sorted(places)
+        return self._pointer_places
+
+    def same_as_game(self, read: Compiled, addr: int, body: bytes | None, relocs: list, size: int,
+                     rvas: set[int]) -> int:
+        """How much of a global's C (`body`, None: zeros; `relocs` by its offsets) is the game's at `addr`, from
+        its start: `size`, or a little less where all it has past that is a compiler's padding (zeros, before the
+        next global); 0 where it isn't the game's."""
+        game = self.image.read(addr, size)
+        mine = bytearray(body[:size] if body is not None else bytes(size))
+        if len(game) != size or len(mine) != size:
+            return 0
+        pointers = set()
+        for off, index, kind in relocs:
+            if off + 4 > size or kind != DIR32:
+                return 0
+            inline = struct.unpack_from("<i", mine, off)[0]
+            target = self.c_address(read, read.symbols[index], inline)
+            if target is None or self.image.word(addr + off) != target & 0xFFFFFFFF:
+                return 0
+            mine[off:off + 4] = game[off:off + 4]
+            pointers.add(addr + off)
+        differ = next((k for k in range(size) if mine[k] != game[k]), None)
+        if differ is not None:
+            if any(mine[differ:]) or size - differ >= 16 or any(p >= addr + differ - 3 for p in pointers):
+                return 0
+            size = differ  # (the padding to the next global's alignment: not the game's, and not the C's global)
+        relocated = self.pointer_places()
+        if any(p not in relocated for p in pointers):
+            return 0
+        k = bisect.bisect_left(relocated, addr - 3)
+        if any(p not in pointers for p in relocated[k:bisect.bisect_left(relocated, addr + size)]):
+            return 0  # (a pointer the game has where the C has a number, or one it cuts)
+        if any(addr - 3 <= p < addr + size for p in rvas):
+            return 0
+        return size if size > 0 else 0
+
+    def c_data_object(self, inner: dict[str, list[tuple[str, int]]]) -> Path:
+        """cdata.obj: each global taken from C (self.taken_data), as its C has it, in a section of its own named for
+        its place (`<section>$<address>`: the linker puts those in the order of their names), with the labels the rest
+        of the program names inside it (`inner`)."""
+        obj = Coff()
+        for g in self.taken_data:
+            name, flags, _, _ = self.place_of(g["addr"])
+            read = g["read"]
+            if g["section"] == 0 or read.sections[g["section"] - 1]["data"] is None:
+                body = None if flags & CNT_BSS else bytes(g["size"])
+                relocs = []
+            else:
+                sec = read.sections[g["section"] - 1]
+                body = bytearray(sec["data"][g["value"]:g["value"] + g["size"]])
+                relocs = [(off - g["value"], index, kind) for off, index, kind in sec["relocs"]
+                          if g["value"] <= off < g["value"] + g["size"]]
+            if body is not None and flags & CNT_BSS:  # (zeros, in what the game has uninitialised)
+                body = None
+            number = obj.section(f"{name}${g['addr']:08X}", None if body is None else b"",
+                                 flags, size=g["size"] if body is None else 0)
+            obj.symbol(g["name"], 0, number)
+            for label, at in inner.get(g["name"], []):
+                obj.symbol(label, at, number)
+            for off, index, kind in relocs:
+                s = read.symbols[index]
+                inline = struct.unpack_from("<i", body, off)[0]
+                if s["section"] > 0 and s["cls"] != EXTERNAL:  # (a place in a global of the C's file: by its address)
+                    target = self.c_address(read, s, inline)
+                    struct.pack_into("<i", body, off, 0)
+                    obj.reloc(number, off, obj.extern(f"_D_{target:08X}"), kind)
+                else:
+                    obj.reloc(number, off, obj.extern(s["name"], s["type"] == FUNCTION or s["name"] in self.by_name),
+                              kind)
+            if body is not None:
+                obj.sections[number - 1].update(data=bytes(body), size=len(body))
+        path = self.out / "objects" / "cdata.obj"
+        path.write_bytes(obj.bytes())
+        return path
+
+    def carve(self, path: Path, where: dict[int, int], inner: dict[str, list[tuple[str, int]]]) -> Path:
+        """An object of the data (data.obj, or one of the source's) without the globals taken from C, each of its
+        sections a section per part between them, named for its place (`<section>$<address>`) as cdata.obj's are, so
+        the linker puts them all in the game's order; the labels that were inside a global taken from C go into
+        `inner`, for cdata.obj. `where`: each section's address."""
+        read = Compiled(path.read_bytes())
+        taken = self.taken_data
+        starts = [g["addr"] for g in taken]
+
+        def global_at(addr: int) -> dict | None:
+            k = bisect.bisect_right(starts, addr) - 1
+            return taken[k] if k >= 0 and addr < taken[k]["addr"] + taken[k]["size"] else None
+        obj = Coff()
+        parts: list[tuple[int, int, int]] = []  # (start, end, section number)
+        number_of: dict[int, list[tuple[int, int, int]]] = {}
+        for number, sec in enumerate(read.sections, 1):
+            if number not in where or sec["name"].startswith(Compiled.DROPPED):
+                continue
+            at = where[number]
+            place = self.place_of(at)
+            if place is None:  # (not the program's data: as it is)
+                made = obj.section(sec["name"], sec["data"], sec["flags"], size=sec["size"])
+                number_of[number] = [(at, at + sec["size"], made)]
+                continue
+            name, flags, _, _ = place
+            cuts, pos, end = [], at, at + sec["size"]
+            for g in taken[bisect.bisect_left(starts, at - 0x100000):]:
+                if g["addr"] >= end:
+                    break
+                if g["addr"] + g["size"] <= pos:
+                    continue
+                if g["addr"] > pos:
+                    cuts.append((pos, g["addr"]))
+                pos = max(pos, g["addr"] + g["size"])
+            if pos < end:
+                cuts.append((pos, end))
+            number_of[number] = []
+            for lo, hi in cuts:
+                data = None if sec["data"] is None else sec["data"][lo - at:hi - at]
+                made = obj.section(f"{name}${lo:08X}", data, flags, size=hi - lo)
+                number_of[number].append((lo, hi, made))
+                parts.append((lo, hi, made))
+
+        def part_of(number: int, addr: int) -> tuple[int, int, int] | None:
+            pieces = number_of.get(number, [])
+            return next((p for p in pieces if p[0] <= addr < p[1]), None) or \
+                next((p for p in pieces if p[1] == addr), None)
+        for s in read.symbols.values():
+            if s["section"] > 0 and s["section"] in where and s["cls"] in (EXTERNAL,) and \
+                    not read._is_section(s):
+                addr = where[s["section"]] + s["value"]
+                g = global_at(addr)
+                if g is not None:
+                    if s["name"] != g["name"]:
+                        inner.setdefault(g["name"], []).append((s["name"], addr - g["addr"]))
+                    continue
+                p = part_of(s["section"], addr)
+                if p is not None:
+                    obj.symbol(s["name"], addr - p[0], p[2], s["type"])
+            elif s["section"] == -1 and s["cls"] == EXTERNAL:
+                obj.symbol(s["name"], s["value"], -1, s["type"])
+            elif s["cls"] == WEAK_EXTERNAL:
+                obj.alias(s["name"], read.symbols[struct.unpack_from("<I", s["aux"], 0)[0]]["name"])
+        for number, sec in enumerate(read.sections, 1):
+            for lo, hi, made in number_of.get(number, []):
+                at = where[number]
+                body = bytearray(obj.sections[made - 1]["data"]) if obj.sections[made - 1]["data"] is not None else None
+                for off, index, kind in sec["relocs"]:
+                    if not lo <= at + off < hi:
+                        continue
+                    s = read.symbols[index]
+                    if s["section"] > 0 and s["cls"] != EXTERNAL:  # (a place of this object's own, by its section)
+                        inline = struct.unpack_from("<i", sec["data"], off)[0]
+                        target = where[s["section"]] + s["value"] + inline
+                        g = global_at(target)
+                        p = part_of(s["section"], target) if g is None else None
+                        if g is not None:
+                            symbol, value = obj.extern(g["name"]), target - g["addr"]
+                        elif p is not None:
+                            symbol, value = obj.sections[p[2] - 1]["symbol"], target - p[0]
+                        else:
+                            fail(f"0x{at + off:08X} points at 0x{target:08X}, which the data has nowhere")
+                        struct.pack_into("<i", body, at + off - lo, value)
+                    else:
+                        symbol = obj.extern(s["name"], s["type"] == FUNCTION)
+                    obj.reloc(made, at + off - lo, symbol, kind)
+                if body is not None:
+                    obj.sections[made - 1]["data"] = bytes(body)
+        out = self.out / "objects" / f"{path.stem}.carved.obj"
+        out.write_bytes(obj.bytes())
+        return out
 
     # --------------------------------------------------------------------------------------------------- imports
     def import_tables(self, obj: Coff, wanted: set[str], chunk_of, stray: list[str]) -> dict[int, int]:
@@ -1247,8 +1606,8 @@ class Relink:
     # ---------------------------------------------------------------------------------------------------- source
     def write_source(self, folder: Path, disassemble=None) -> dict:
         """The whole program as source, in `folder`: every function as MASM (asm/<unit>.asm, each a PROC; its C, where
-        it has any, is in src/ too), its data a file per section (asm/data_<address>.asm, every global labelled, every
-        pointer `dd OFFSET` what it points at), its resources (asm/resources.asm), and program.json: where each goes,
+        it has any, is in src/ too), its data as C (data/data_<address>.c and data.h: write_data_c; the import tables
+        MASM, asm/data_<address>.asm), its resources (asm/resources.asm), and program.json: where each goes,
         the program's header and what follows its last section (header.bin, overlay.bin), its SHA-1. tools/assemble.py
         makes the program from it, byte for byte: a project without your copy builds from it. `disassemble(code,
         address)`: its instructions ([(offset, length, text)]), each function's comments (decompdecomp gives one; this
@@ -1279,8 +1638,8 @@ class Relink:
         pieces = []
 
         def write(name: str, obj: Coff, sections: list[int], at: int, names: dict[int, str], note: str,
-                  span: tuple[int, int] | None = None, texts=None) -> None:
-            text, rvas = obj.masm(sections, names, note, span, texts)
+                  span: tuple[int, int] | None = None, texts=None, numbers: bool | None = None) -> None:
+            text, rvas = obj.masm(sections, names, note, span, texts, numbers)
             (folder / "asm" / f"{name}.asm").write_text(text, encoding="latin-1")
             size = span[1] - span[0] if span else sum(obj.sections[s - 1]["size"] for s in sections)
             pieces.append({"asm": f"asm/{name}.asm", "at": at, "size": size, **({"rvas": rvas} if rvas else {})})
@@ -1295,17 +1654,7 @@ class Relink:
                 at += s["size"]
             write(unit, obj, list(range(1, len(obj.sections) + 1)), start, {},
                   f"{unit}: functions as your copy has them (decompdecomp's tools/relink.py wrote this)", texts=texts)
-        names = {number: f"__d_{start:08X}" for start, _, number in self.chunks}
-        for start, end, number in self.chunks:
-            relocs = sorted(off for off, _, _ in self.data_obj.sections[number - 1]["relocs"])
-            lo = 0
-            while lo < end - start:  # (in parts of 64 KiB, none cutting a relocated word)
-                hi = min(end - start, lo + PART)
-                while any(hi - 4 < off < hi for off in relocs[bisect.bisect_left(relocs, hi - 3):][:1]):
-                    hi += 1
-                write(f"data_{start + lo:08X}", self.data_obj, [number], start + lo, names,
-                      f"the program's data from 0x{start + lo:08X} to 0x{start + hi:08X}", span=(lo, hi))
-                lo = hi
+        self.write_data_c(folder, write, pieces)
         if self.resources_object() is not None:
             write("resources", self.resources_obj, [1], self.image.directory(RESOURCES)[0], {},
                   "the program's resources (their directory, then their data)")
@@ -1345,6 +1694,322 @@ class Relink:
         (folder / "program.json").write_text(json.dumps(program, indent=1), encoding="utf-8")
         return program
 
+    # --------------------------------------------------------------------------------------------- the data as C
+    def asm_ranges(self) -> list[tuple[int, int]]:
+        """What of the data stays assembly when the rest is C: the import tables (their RVAs, which C can't write)
+        and what the linker looks for by a name of its own (thread-local storage's directory, the load
+        configuration's), in order, merged."""
+        image, out = self.image, []
+        for dll in image.import_layout():
+            out.append((dll["descriptor"], dll["descriptor"] + 20))
+            out.append((dll["name"], dll["name"] + len(image.string(dll["name"])) + 1))
+            for table in {dll["lookup"], dll["iat"]} - {0}:
+                out.append((table, table + 4 * (len(dll["slots"]) + 1)))
+            for slot in dll["slots"]:
+                if slot["entry"] is not None:
+                    out.append((slot["entry"], slot["entry"] + 2 + len(slot["name"]) + 1))
+        at, _ = image.directory(IMPORTS)
+        if at:
+            out.append((at, at + 20 * (len(image.import_layout()) + 1)))  # (and the empty descriptor that ends them)
+        out += image.export_rvas()[1]  # (a DLL's export tables: RVAs too)
+        for directory, size in ((TLS, 24), (LOAD_CONFIG, None)):
+            addr, length = image.directory(directory)
+            if addr:
+                out.append((addr, addr + (size or length or 4)))
+        merged: list[list[int]] = []
+        for lo, hi in sorted(out):
+            if merged and lo <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        return [(lo, hi) for lo, hi in merged]
+
+    def write_data_c(self, folder: Path, write, pieces: list[dict]) -> None:
+        """The program's data as C (data/<part>.c, and data.h, every global declared): each global at its place in
+        the game, `#pragma data_seg(".data$<address>")` (const_seg, bss_seg) giving each a section of its own named
+        for it, which the linker puts in the order of their names, so the game's; its bytes as numbers, a string as a
+        string, a pointer as the address of what it points at (a global, a function, a place in code or the import
+        tables). The import tables and the rest asm_ranges() names stay assembly (`write`: tools/relink.py's MASM
+        writer, as write_source has it), the names that are numbers in asm/names.asm. `pieces`: program.json's."""
+        obj, image = self.data_obj, self.image
+        keep = self.asm_ranges()
+        keep_lows = [lo for lo, _ in keep]
+
+        def kept(addr: int) -> tuple[int, int] | None:
+            k = bisect.bisect_right(keep_lows, addr) - 1
+            return keep[k] if k >= 0 and addr < keep[k][1] else None
+        chunk_at = {number: (start, end) for start, end, number in self.chunks}
+        heads = {i: section for i, (name, value, section, typ, cls, aux) in
+                 ((i, obj.symbols[k]) for i, k in obj.position.items()) if cls == STATIC and name.startswith("$S")}
+        by_index = {i: obj.symbols[k] for i, k in obj.position.items()}
+        # every pointer of the data: where it is, and what it points at (an address, or a name)
+        pointers: dict[int, tuple[int | None, str | None, int]] = {}  # place: (address, name, inline)
+        for start, end, number in self.chunks:
+            sec = obj.sections[number - 1]
+            for off, index, kind in sec["relocs"]:
+                inline = struct.unpack_from("<i", sec["data"], off)[0]
+                if index in heads:
+                    pointers[start + off] = (chunk_at[heads[index]][0] + inline, None, 0)
+                else:
+                    name, value, section, typ, cls, aux = by_index[index]
+                    addr = chunk_at[section][0] + value + inline if section > 0 else None
+                    if addr is not None and cls == EXTERNAL and kept(addr) is not None:
+                        addr = None  # (an import's slot: by its name, __imp__Sleep)
+                    pointers[start + off] = (addr, name if addr is None else None, inline)
+        places = sorted(pointers)
+        for i, (name, value, section, typ, cls, aux) in by_index.items():  # (a pointer the code names a byte of:
+            # assembly too, where a label can be anywhere)
+            if cls == EXTERNAL and section in chunk_at:
+                a = chunk_at[section][0] + value
+                k = bisect.bisect_left(places, a - 3)
+                if k < len(places) and places[k] < a:
+                    keep.append((places[k], places[k] + 4))
+                elif a == chunk_at[section][1]:  # (its end, a loop's limit: no global of C ends in a label)
+                    keep.append((a - 1, a))
+        keep.sort()
+        for k, (lo, hi) in enumerate(keep):  # (as far as whole pointers: a load configuration's size can end in one)
+            lo = min([lo, *(p for p in places[bisect.bisect_left(places, lo - 3):bisect.bisect_left(places, lo)])])
+            hi = max([hi, *(p + 4 for p in places[bisect.bisect_left(places, hi - 3):bisect.bisect_left(places, hi)])])
+            keep[k] = (lo, hi)
+        merged: list[tuple[int, int]] = []
+        for lo, hi in keep:
+            merged = merged[:-1] + [(merged[-1][0], max(hi, merged[-1][1]))] if merged and lo <= merged[-1][1] else \
+                merged + [(lo, hi)]
+        keep[:] = merged
+        keep_lows[:] = [lo for lo, _ in keep]
+        # where a global starts: what the code names, what a pointer points at, where the import tables are
+        bounds = set()
+        for start, end, number in self.chunks:
+            bounds |= {start, end}
+        for i, (name, value, section, typ, cls, aux) in by_index.items():
+            if cls == EXTERNAL and section > 0 and section in chunk_at:
+                bounds.add(chunk_at[section][0] + value)
+        bounds |= {a for a, _, _ in pointers.values() if a is not None and self.chunk_holding(a) is not None}
+        for lo, hi in keep:
+            bounds |= {lo, hi}
+
+        def cuts_word(b: int) -> bool:  # (inside a pointer: no global starts there)
+            k = bisect.bisect_left(places, b - 3)
+            return k < len(places) and places[k] < b
+        globals_: list[dict] = []  # {"lo", "hi", "section", "flags", "bss"}
+        for start, end, number in self.chunks:
+            sec = obj.sections[number - 1]
+            name, flags, _, _ = self.place_of(start)
+            marks = sorted(b for b in bounds if start <= b <= end and not cuts_word(b))
+            for lo, hi in zip(marks, marks[1:]):
+                if kept(lo) is not None:
+                    continue
+                pos = lo
+                while pos < hi:  # (a long run: in parts, as a file has at most PART bytes)
+                    to = min(hi, pos + PART)
+                    while to < hi and cuts_word(to):
+                        to += 1
+                    globals_ += self.c_globals(pos, to, name, flags, sec["data"] is None, pointers)
+                    pos = to
+        starts = [g["lo"] for g in globals_]
+
+        def holder(addr: int) -> dict | None:
+            k = bisect.bisect_right(starts, addr) - 1
+            return globals_[k] if k >= 0 and addr < globals_[k]["hi"] else None
+        def target(addr: int) -> tuple[str, int]:
+            """The name an address is reached by, and how far past it: a global's of the C (or one past its end), or
+            a label where the import tables are."""
+            g = None if kept(addr) is not None else holder(addr) or holder(addr - 1)
+            return (f"_D_{g['lo']:08X}", addr - g["lo"]) if g is not None else (f"_D_{addr:08X}", 0)
+        # each pointer by a name (a global's, or a label where the import tables are), for C and for MASM alike
+        for start, end, number in self.chunks:
+            sec = obj.sections[number - 1]
+            body = bytearray(sec["data"]) if sec["data"] is not None else None
+            relocs = []
+            for off, index, kind in sec["relocs"]:
+                addr, name, inline = pointers[start + off]
+                if addr is not None:
+                    label, past = target(addr)
+                    index = obj.extern(label)
+                    if kept(addr) is not None and (c := self.chunk_holding(addr)) is not None:  # (a label there)
+                        obj.symbol(label, addr - c[0], c[2])
+                    struct.pack_into("<i", body, off, past)
+                relocs.append((off, index, kind))
+            sec["relocs"] = relocs
+            if body is not None:
+                sec["data"] = bytes(body)
+        # the import tables and the rest: assembly, as before
+        for start, end, number in self.chunks:
+            for lo, hi in keep:
+                lo, hi = max(lo, start), min(hi, end)
+                while lo < hi:
+                    to = min(hi, lo + PART)
+                    write(f"data_{lo:08X}", obj, [number], lo, {},
+                          f"the program's import tables from 0x{lo:08X} to 0x{to:08X} (the rest of its data is C, "
+                          "in data/)", span=(lo - start, to - start), numbers=False)
+                    lo = to
+        # the C
+        defined = {f"_D_{g['lo']:08X}": g for g in globals_}
+        (folder / "data").mkdir(parents=True, exist_ok=True)  # (data.h beside them: #include "data.h")
+        self.c_aliases: dict[str, str] = {}
+        others: dict[str, str] = {}  # (a name the data points at that isn't a global of its C: its declaration)
+
+        def pointer(addr: int | None, name: str | None, inline: int, place: int) -> str:
+            if addr is not None:
+                name, inline = target(addr)
+            c = self.c_name(name, others)
+            return f"&{c}" if not inline else f"(char *)&{c} + {inline}"
+        files: list[list[dict]] = []
+        for g in globals_:
+            if files and files[-1][0]["section"] == g["section"] and g["lo"] == files[-1][-1]["hi"] and \
+                    (sum(x["hi"] - x["lo"] for x in files[-1]) + g["hi"] - g["lo"] <= PART or g["bss"]) and \
+                    len(files[-1]) < 2048:  # (Visual C++ 6.0's heap ran out on 64 KiB of small strings: C1076)
+                files[-1].append(g)
+            else:
+                files.append([g])
+        declared = []
+        for group in files:
+            lo, hi = group[0]["lo"], group[-1]["hi"]
+            lines = [f"/* The program's data from 0x{lo:08X} to 0x{hi:08X} ({group[0]['section']}), as C: each global "
+                     "in a section of its own named for its place in", " * the game (#pragma "
+                     "data_seg), which the linker puts in that order. decompdecomp's tools/relink.py wrote this. */",
+                     '#include "data.h"', ""]
+            for g in group:
+                decl, text = self.c_global(g, image, pointers, pointer)
+                lines += [g["pragma"], text, ""]
+                declared.append(decl)
+            path = f"data/data_{lo:08X}.c"
+            (folder / path).write_text("\n".join(lines), encoding="latin-1")
+            pieces.append({"c": path, "at": lo, "size": hi - lo})
+        names = Coff()  # (the names that are numbers, and the aliases: a file of their own)
+        for name, value, section, typ, cls, aux in obj.symbols:
+            if section == -1 and cls == EXTERNAL:
+                names.symbol(name, value, -1)
+        for k, (name, value, section, typ, cls, aux) in enumerate(obj.symbols):
+            if cls == WEAK_EXTERNAL:
+                names.alias(name, obj.symbols[obj.position[struct.unpack_from("<I", aux, 0)[0]]][0])
+        first = min(start for start, _, _ in self.chunks)
+        for name, value, section, typ, cls, aux in obj.symbols:  # (a name of the data's other than D_<address>,
+            # where the data is C: for that global)
+            if cls == EXTERNAL and section in chunk_at and (addr := chunk_at[section][0] + value) and \
+                    kept(addr) is None and name != f"_D_{addr:08X}":
+                names.alias(name, f"_D_{addr:08X}")
+        for alias, name in self.c_aliases.items():  # (a function the data's C can't name: by its address)
+            names.alias(alias, name)
+        write("names", names, [], first, {}, "the names that are numbers (and those that stand for others)",
+              numbers=True)
+        obj.aliases.update(names.aliases)  # (program.json's "aliases": ML 6.15 stops on ALIAS)
+        header = ["/* The program's globals, as data/*.c defines them, and what their pointers point at. decompdecomp's "
+                  "tools/relink.py wrote this. */", "#ifndef DATA_H", "#define DATA_H", "",
+                  "typedef unsigned char u8;", "typedef unsigned short u16;", "typedef unsigned int u32;", ""]
+        header += [line for name, line in sorted(others.items()) if name not in defined] + [""] + declared
+        header += ["", "#endif", ""]
+        (folder / "data" / "data.h").write_text("\n".join(header), encoding="latin-1")
+
+    def chunk_holding(self, addr: int) -> tuple[int, int, int] | None:
+        return next((c for c in self.chunks if c[0] <= addr < c[1]), None)
+
+    def c_globals(self, lo: int, hi: int, section: str, flags: int, bss: bool, pointers: dict) -> list[dict]:
+        """The globals [lo, hi) is as C: one, or (where a pointer isn't at a multiple of 4 from its start, which an
+        array of words can't have) one per run of pointers and of what's between them."""
+        mine = sorted(p for p in pointers if lo <= p < hi)
+        pragma = ("bss_seg" if bss else "data_seg" if flags & 0x80000000 else "const_seg")
+        base = {"section": section, "flags": flags, "bss": bss, "pragma": f'#pragma {pragma}("{section}$', "lo": lo}
+        if not mine or all((p - lo) % 4 == 0 for p in mine) and (hi - lo) % 4 == 0:
+            return [{**base, "lo": lo, "hi": hi}]
+        marks = sorted({lo, hi, *(p for p in mine), *(p + 4 for p in mine)})
+        runs: list[list[int]] = []
+        for a, b in zip(marks, marks[1:]):
+            word = a in pointers and b == a + 4
+            if runs and word and runs[-1][2] and runs[-1][1] == a:
+                runs[-1][1] = b
+            else:
+                runs.append([a, b, word])
+        return [{**base, "lo": a, "hi": b} for a, b, _ in runs]
+
+    def c_name(self, name: str, others: dict[str, str]) -> str:
+        """The C for a name the data points at (its link name: _D_00402034, _func_00401000@8, __imp__Sleep), declared
+        in data.h (`others`) unless it's a global of the data's C."""
+        m = re.fullmatch(r"_(\w+)@(\d+)|@(\w+)@(\d+)", name)
+        if name in self.by_name and (m is None and not (name.startswith("_") and IDENTIFIER.fullmatch(name[1:])) or
+                                     m is not None and (int(m.group(2) or m.group(4)) > 256 or int(m.group(2) or
+                                                                                                   m.group(4)) % 4)):
+            alias = f"_D_{self.by_name[name]['addr']:08X}"  # (a name no C function has: by its address, an alias)
+            self.c_aliases[alias] = name
+            others.setdefault(alias, f"extern char {alias[1:]};")
+            return alias[1:]
+        if m:  # (a function by its convention)
+            c, size, how = (m.group(1), int(m.group(2)), "__stdcall") if m.group(1) else \
+                (m.group(3), int(m.group(4)), "__fastcall")
+            others.setdefault(name, f"void {how} {c}({', '.join(['int'] * (size // 4)) or 'void'});")
+            return c
+        if name.startswith("_") and IDENTIFIER.fullmatch(name[1:]):
+            c = name[1:]
+            if name in self.by_name:
+                others.setdefault(name, f"void {c}();")
+            else:
+                others.setdefault(name, f"extern char {c};")
+            return c
+        fail(f"the data points at {name}, which C has no name for")
+        return name
+
+    def c_global(self, g: dict, image: Image, pointers: dict, pointer) -> tuple[str, str]:
+        """A global as C: its declaration (for data.h) and its definition (after its #pragma)."""
+        lo, hi = g["lo"], g["hi"]
+        n = hi - lo
+        name = f"D_{lo:08X}"
+        const = "const " if g["pragma"].startswith("#pragma const_seg") else ""
+        g["pragma"] += f'{lo:08X}")'
+        if g["bss"]:
+            if n == 4 and lo % 4 == 0:
+                return f"extern u32 {name};", f"u32 {name};"
+            return f"extern u8 {name}[];", f"u8 {name}[{n}];"
+        body = image.read(lo, n)
+        mine = [p for p in sorted(pointers) if lo <= p < hi]
+        if mine:
+            words = []
+            for k in range(0, n, 4):
+                if lo + k in pointers:
+                    addr, target, inline = pointers[lo + k]
+                    words.append(pointer(addr, target, inline, lo + k))
+                else:
+                    words.append(f"0x{struct.unpack_from('<I', body, k)[0]:X}")
+            if all(lo + k in pointers for k in range(0, n, 4)):
+                values, kind = words, f"void *{const}"
+            else:
+                values = [f"(u32){w}" if lo + 4 * k in pointers else w for k, w in enumerate(words)]
+                kind = f"{const}u32 "
+            return self.c_array(kind, name, values, n // 4)
+        text = body.rstrip(b"\0")
+        if len(text) < n and _text(text, lo):  # (a string, or strings one after another, NULs between them)
+            pieces = [_c_char(c, text[k + 1:k + 2], text[k - 1:k] if k else b"") for k, c in enumerate(text)]
+            parts, line = [], ""
+            for k, piece in enumerate(pieces):  # (a line at most 96 long, and one after each \n)
+                line += piece
+                if len(line) >= 96 or piece == "\\n" and k + 1 < len(pieces):
+                    parts.append(line)
+                    line = ""
+            parts = [*parts, line] if line or not parts else parts
+            joined = "\n    ".join(f'"{part}"' for part in parts)
+            return f"extern {const}char {name}[];", f"{const}char {name}[{n}] = {joined};"
+        floats = [_c_float(w) for w in struct.unpack(f"<{n // 4}I", body)] if lo % 4 == 0 and n % 4 == 0 else []
+        if floats and all(floats) and any(w != "0.0f" for w in floats):
+            return self.c_array(f"{const}float ", name, floats, n // 4)
+        if lo % 4 == 0 and n % 4 == 0:
+            values = [f"0x{w:X}" for w in struct.unpack(f"<{n // 4}I", body)]
+            return self.c_array(f"{const}u32 ", name, values, n // 4)
+        if lo % 2 == 0 and n == 2:
+            return f"extern {const}u16 {name};", f"{const}u16 {name} = 0x{struct.unpack('<H', body)[0]:X};"
+        return self.c_array(f"{const}u8 ", name, [f"0x{c:02X}" for c in body], n)
+
+    @staticmethod
+    def c_array(kind: str, name: str, values: list[str], count: int) -> tuple[str, str]:
+        """`kind name[count] = {values}`, its trailing zeros left to C (a single one: a scalar)."""
+        if count == 1:
+            return f"extern {kind}{name};", f"{kind}{name} = {values[0]};"
+        while values and values[-1] in ("0x0", "0x00", "0.0f"):
+            values.pop()
+        longest = max((len(v) for v in values), default=0)
+        width = 12 if longest <= 4 else 6 if longest <= 12 else 3 if longest <= 28 else 1
+        rows = [", ".join(values[k:k + width]) for k in range(0, len(values), width)] or ["0"]
+        body = rows[0] if len(rows) == 1 else "\n    " + ",\n    ".join(rows) + "\n"
+        return f"extern {kind}{name}[];", f"{kind}{name}[{count}] = {{{body}}};"
+
     # ---------------------------------------------------------------------------------------------------- report
     def report(self, program: Path, from_c: set[str], said: str) -> dict:
         """Where everything went (the linker's map), and whether it's the game's layout and code."""
@@ -1380,6 +2045,7 @@ class Relink:
         report = {"program": program.relative_to(self.root).as_posix(), "follows": follows,
                   "functions": sum(1 for fn in self.functions if not fn.get("lead")),
                   "c": sorted(from_c), "moved": moved, "data_moved": sorted(data_moved),
+                  "data_c": [g["name"] for g in self.taken_data],
                   "other_c": sorted(self.other_c - from_c - self.from_copy), "from_copy": sorted(self.from_copy),
                   "pointers": self.pointers, "imports": sum(len(s) for _, s in self.image.imports()),
                   "same_layout": not moved and not data_moved, "same_code": same_code,
@@ -1390,11 +2056,81 @@ class Relink:
         return report
 
 
-def link_options(image: Image, entry: str, map_path: Path, program: Path) -> list[str]:
+def in_text(image: Image, addr: int) -> bool:
+    """Whether a word of the data is in the middle of text: the two bytes before it and its first three print, its
+    last too or is the string's NUL. A program without base relocations says nothing of which words are pointers, and
+    a word whose value is an address is taken for one, but in "_PAUSED" "SED\\0" is 0x00444553, an address in a game's
+    code: as a pointer it would change when the code moves."""
+    near = image.read(addr - 2, 6)
+    return len(near) == 6 and all(32 <= c < 127 for c in near[:5]) and (near[5] == 0 or 32 <= near[5] < 127)
+
+
+def regrouped(read: Compiled, sections: dict[int, tuple[str, int]]) -> tuple[Coff, dict[int, int]]:
+    """An object as it is, but its sections (`sections`: number -> (name, flags), in order) named and flagged anew,
+    and the others left out; and each kept section's new number."""
+    obj, number, index = Coff(), {}, {}
+    for n, (name, flags) in sections.items():
+        sec = read.sections[n - 1]
+        number[n] = obj.section(name, sec["data"], flags, size=sec["size"])
+    for i, s in read.symbols.items():
+        if s["section"] > 0 and s["section"] not in number:
+            continue
+        if s["section"] > 0 and read._is_section(s):
+            index[i] = obj.sections[number[s["section"]] - 1]["symbol"]
+        elif s["cls"] == EXTERNAL or s["section"] > 0 and s["cls"] in (STATIC, LABEL):
+            index[i] = obj.symbol(s["name"], s["value"], number.get(s["section"], s["section"]), s["type"], s["cls"])
+    for i, s in read.symbols.items():
+        if s["cls"] == WEAK_EXTERNAL:
+            obj.alias(s["name"], read.symbols[struct.unpack_from("<I", s["aux"], 0)[0]]["name"])
+            index[i] = obj.index[s["name"]]
+    for n in number:
+        for off, symbol, kind in read.sections[n - 1]["relocs"]:
+            obj.reloc(number[n], off, index[symbol], kind)
+    return obj, number
+
+
+def _c_char(c: int, after: bytes, before: bytes = b"") -> str:
+    """A character of a C string literal (a ? beside another escaped: C reads ??) as ] before any escape; a NUL
+    before a digit, \\000)."""
+    if c == 0:
+        return "\\000" if after[:1].isdigit() else "\\0"
+    return {34: '\\"', 92: "\\\\", 9: "\\t", 10: "\\n", 13: "\\r"}.get(c) or \
+        ("\\?" if c == 63 and b"?" in (after, before) else chr(c))  # ("???)" is \\?\\?\\?): no ??) for ]
+
+
+def _text(text: bytes, lo: int) -> bool:
+    """Whether bytes read as text, what C writes as a string: printable (NULs between strings), mostly letters, and
+    not words that are floats whose bytes print (0.9f is "fff?")."""
+    if not text or not all(32 <= c < 127 or c in (0, 9, 10, 13) for c in text) or text.count(0) * 4 > len(text):
+        return False
+    if len(text) == 1:
+        return lo % 4 != 0 and chr(text[0]).isalpha()  # (a one-letter string where a word can't be)
+    if sum(chr(c).isalpha() or c == 32 for c in text) * 2 < len(text) - text.count(0):
+        return False
+    return not (lo % 4 == 0 and len(text) >= 4 and all(0x38 <= c & 0x7F <= 0x47 for c in text[3::4]))
+
+
+def _c_float(word: int) -> str | None:
+    """A word as a float literal that's the same bits, when it reads as one a game would have: 0, or an exponent of
+    one between about 2^-31 and 2^32, and at most 7 digits. None otherwise."""
+    if word == 0:
+        return "0.0f"
+    if not 0x60 <= (word >> 23) & 0xFF <= 0x9F:
+        return None
+    x = struct.unpack("<f", struct.pack("<I", word))[0]
+    for digits in range(1, 8):
+        text = f"{x:.{digits}g}"
+        if struct.unpack("<I", struct.pack("<f", float(text)))[0] == word:
+            text = repr(float(text))  # (50.0, not 5e+01)
+            return (text if "." in text or "e" in text else text + ".0") + "f"
+    return None
+
+
+def link_options(image: Image, entry: str | None, map_path: Path, program: Path) -> list[str]:
     """LINK.EXE's options for a program set as your copy's is: its address (/BASE), entry point, subsystem, stack and
     heap, /FIXED when it has no base relocations (tools/assemble.py --link takes them too)."""
     argv = ["/nologo", "/NODEFAULTLIB", "/INCREMENTAL:NO", "/OPT:NOREF", "/MACHINE:IX86",
-            f"/BASE:0x{image.base:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}",
+            f"/BASE:0x{image.base:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}" if entry else "/NOENTRY",
             f"/SUBSYSTEM:{SUBSYSTEMS.get(image.subsystem, 'WINDOWS')},"
             f"{image.subsystem_version[0]}.{image.subsystem_version[1]:02d}",
             f"/STACK:0x{image.stack[0]:X},0x{image.stack[1]:X}",
@@ -1404,6 +2140,8 @@ def link_options(image: Image, entry: str, map_path: Path, program: Path) -> lis
     argv.append("/FIXED:NO" if relocated else "/FIXED")  # (6.0's makes .exes /FIXED)
     if image.characteristics & 0x20:
         argv.append("/LARGEADDRESSAWARE")
+    if image.characteristics & DLL:
+        argv.append("/DLL")
     if image.file_alignment < 0x1000:
         argv.append("/OPT:NOWIN98")  # (6.0's linker: 512-byte file alignment; later ones have it as default)
     return argv
@@ -1435,13 +2173,13 @@ def read_map(path: Path) -> dict[str, int]:
 
 
 def finish(program: Path, image: Image, placed: dict[str, int], overlay: bytes, overlay_at: int) -> bool:
-    """The linked program's import directories where its import tables are now (the linker sets them only for tables
+    """The linked program's import (and a DLL's export) directories where its tables are now (the linker sets them only for tables
     it makes itself, from import libraries), and what your copy has after its last section (`overlay`, from
     `overlay_at` in its file: data some games keep there) but its signature (a signature is of the program it signed:
     the linked one is unsigned). Says whether there was a signature."""
     exe = bytearray(program.read_bytes())
     opt = struct.unpack_from("<I", exe, 0x3C)[0] + 24
-    for directory, name in ((IMPORTS, "__relink_imports"), (IAT, "__relink_iat")):
+    for directory, name in ((IMPORTS, "__relink_imports"), (IAT, "__relink_iat"), (EXPORTS, "__relink_exports")):
         if name in placed:
             struct.pack_into("<II", exe, opt + 96 + 8 * directory, placed[name] - image.base, image.dirs[directory][1])
     overlay = bytearray(overlay)
@@ -1494,23 +2232,40 @@ def main() -> None:
     if not args.link:
         fail("it links with Visual C++ 6.0's linker: install Visual C++ 6.0 in decompdecomp's Setup (Compilers & "
              "tools), then run tools/configure.py again")
-    relink = Relink(info, Image(exe), root, Path(args.build), args.all_c, args.pad)
-    if args.asm:
-        if not args.ml:
-            fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
-        relink.source = (Path(args.asm), Path(args.build) / "source", [*([args.wrapper] if args.wrapper else []), args.ml])
-    report = relink.write([*([args.wrapper] if args.wrapper else []), args.link])
+    wrapper = [args.wrapper] if args.wrapper else []
+    delink = _sibling("delink")
+    for module, (path, sha1, base) in delink.programs(info).items():  # (the .exe, then each DLL of the game's)
+        data = exe if not module else (root / path).read_bytes()
+        if module and hashlib.sha1(data).hexdigest() != sha1:
+            fail(f"{path} isn't the copy this project was made from")
+        # (a DLL at the address the project gives it, as functions.json has its functions; moved back after)
+        relink = Relink(info, Image(data if base is None else delink.rebase(data, base)), root, Path(args.build),
+                        args.all_c, args.pad if not module else 0, module)
+        if args.asm and not module:  # (a DLL's source isn't written yet: from your copy)
+            if not args.ml:
+                fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
+            relink.source = (Path(args.asm), Path(args.build) / "source", [*wrapper, args.ml])
+        report = relink.write([*wrapper, args.link])
+        if base is not None:
+            linked = root / report["program"]
+            linked.write_bytes(delink.rebase(linked.read_bytes(), Image(data).base))
+        say(report, relink, args.asm if args.asm and not module else "your copy")
+
+
+def say(report: dict, relink: Relink, origin: str) -> None:
+    """What a relink made, in a few lines."""
     how = "every function and global at the game's address" if report["same_layout"] else \
         f"{len(report['moved'])} functions and {len(report['data_moved'])} globals moved"
     code = ", every section byte for byte your copy's (its header is the linker's)" if report["same_sections"] else \
         ", its code byte for byte the game's" if report["same_code"] else ""
     print(f"{report['program']}: linked by LINK.EXE from {report['functions']:,} functions "
-          f"({len(report['c']):,} from C), {report['pointers']:,} pointers in the data, {report['imports']:,} "
+          f"({len(report['c']):,} from C), "
+          + (f"{len(report['data_c']):,} globals from C, " if report["data_c"] else "")
+          + f"{report['pointers']:,} pointers in the data, {report['imports']:,} "
           f"imports; {how}{code}")
-    origin = args.asm if args.asm else "your copy"
     if relink.asm_units is not None:
         changed = relink.source_changed
-        print(f"  what isn't from C came from {args.asm}" + (f", where {len(changed)} files changed size: "
+        print(f"  what isn't from C came from {origin}" + (f", where {len(changed)} files changed size: "
               + ", ".join(changed[:SHOWN]) + ("…" if len(changed) > SHOWN else "") if changed else ""))
     if report["follows"] is not None:
         wrong = report["follows"]["wrong"]
@@ -1526,7 +2281,6 @@ def main() -> None:
               f"from {origin}: --all-c takes them from C too (a mod)")
     for what in report["trusted"]:
         print(f"  note: {what}")
-
 
 if __name__ == "__main__":
     main()

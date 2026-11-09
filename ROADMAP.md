@@ -490,7 +490,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   table, its debug symbols, classes, Reimport) read each program. Left out, each with why in the import's log: the C
   runtime, Windows' own names (a wrapper's ddraw.dll), middleware, copy protection, ASI plugins, ones the import
   can't start, and ones built a year or more after the program (mods). `consoles/pc/scratch.py` (find_modules),
-  `Console.program_in` (a game that is a folder).
+  `Console.program_in` (a game that is a folder). `ninja relink` links each DLL again after the .exe, from its own
+  source files and copy at the project's address, then moves it back to its own (build/<version>/relink/<dll>): /DLL
+  (/NOENTRY where it has no entry point), its export tables kept in its data, each RVA a relocation (an exported
+  function's to the function), the header's export directory set to them. The demo with a DLL of its own (built with
+  Visual C++ 6.0) relinks both with every section byte for byte, the DLL at its own address and its exports as they
+  were. Left: a DLL as source (Export writes the .exe's only).
 - **A Windows PC project rebuilds the whole game.** A PC project compiled each function and compared it with the one
   cut out of the user's .exe, but nothing put the program back together: its export was "—". `ninja rebuild`
   (tools/rebuild.py, standard library only) writes the whole .exe again, every function at its address from what
@@ -533,6 +538,21 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   games link that way with every section byte for byte their copy's, and with --all-c the very program the
   copy-based relink makes; 16 bytes added in the assembly of the Visual C++ 6.0 one beside its 260 functions
   from C, each of the 15,854 words its base relocations name follows.
+- **A Windows PC game's data as C.** Export writes the program's data as C (source/data/, a file per part of up to
+  64 KiB, and data.h declaring every global): each global in a section of its own named for its place
+  (`#pragma data_seg(".data$00517000")`, const_seg, bss_seg: Visual C++ 6.0 aligns a char[5] to 4 and moves an
+  all-zero array to .bss, so only a section per global keeps the game's layout, and the linker puts them in the
+  order of their names), a string as a string (several, NULs between them), words of floats as floats, a pointer
+  as the address of what it points at (a global, a function by its convention, a place in code, an import's
+  slot); the import tables, which hold RVAs C can't write, stay MASM, as does a pointer whose bytes the code names
+  one by one. tools/assemble.py compiles it with Visual C++ 6.0's compiler beside its MASM: the four games and the
+  demo come out byte for byte, link back from source with every section their copy's, and with --all-c the very
+  program the copy-based relink makes; a string of the Visual C++ 6.0 one made 16 bytes longer, each of its
+  15,854 relocated words follows. And a global a project's C defines (`D_<address>`) whose bytes are the game's,
+  its pointers pointing where the game's do, comes from that C in `ninja relink`, at its place, with or without
+  source/ (two of a 2008 game's). In a program without base relocations a word in the middle of text is no longer taken for
+  a pointer because its value is an address ("SED\0" of "_PAUSED" is 0x00444553, in a game's code): 125, 143 and
+  2,661 of them in three games' strings, which a relink that moved the code would have changed.
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1212,8 +1232,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
-  with source/, `ninja relink-source` without C). Left: the data as C (a global C defines is the data's copy for
-  now), the game's DLLs relinked and as source too, and an Xbox game's XBE.
+  with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
+  C defines taken from it). Left: the data's types beyond words, floats and strings (a table of records is words
+  now: its struct from the code's reads, structs.py), the game's DLLs as source too (relinked: done), and an Xbox game's
+  XBE.
 
 ### A modding-ready check for the export
 
