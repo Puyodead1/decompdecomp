@@ -792,6 +792,11 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         "functions": functions, "units": unit_list, "data_files": data_files,
         "symbols": dict(sorted(symbols.items(), key=lambda kv: kv[1])),
         "got": cfg.get("got"),  # (where -fPIC code finds the GOT, and what each entry holds)
+        # names the program left weak and undefined (glibc's atexit reads __dso_handle, which no 2001 crtbegin.o
+        # had): 0 in every link, as in the original's, whether or not the C says weak
+        "weak": sorted({s.name for s in elf.get_section_by_name(".symtab").iter_symbols()
+                        if re.fullmatch(r"[A-Za-z_]\w*", s.name) and s["st_shndx"] == "SHN_UNDEF"
+                        and s["st_info"]["bind"] == "STB_WEAK"}),  # (not a versioned import's name@VERSION)
         # what the build needs of your copy otherwise: its layout and what it imports (the relink's linker script and
         # stubs), so a tree whose code and data are all source builds without it
         "layout": _layout(elf, functions), "imports": _imports(elf),

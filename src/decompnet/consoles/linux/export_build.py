@@ -254,7 +254,7 @@ def build_function(fn: dict, data: bytes) -> bytes:
         definitions = [export_data.Definition(n, a, size, sec, 0, "", "", "") for n, a, size, sec in fn["data"]["variables"]]
         variables = export_data.placer(res.obj, definitions)
         game_elf = ELFFile(BytesIO(data))
-        problem, _ = export_data.judge_data(res.obj, definitions, {**B["symbols"], **FUNCTIONS}.get,
+        problem, _ = export_data.judge_data(res.obj, definitions, {**dict.fromkeys(B.get("weak") or [], 0), **B["symbols"], **FUNCTIONS}.get,
                                             lambda a, n: file_bytes(game_elf, data, a, n) if n else b"",
                                             fn["vram"] - pad)
         if problem:
@@ -265,7 +265,7 @@ def build_function(fn: dict, data: bytes) -> bytes:
     # every name but the function's own at the program's address, those the C defines too: a C file that defines the
     # functions and globals before it (GCC 4.3 inlines them, as the game's file did) calls and reads the program's,
     # as the judge links it (a static the C defines is local to its object: the assignment doesn't touch it)
-    program = {**B["symbols"], **FUNCTIONS}
+    program = {**dict.fromkeys(B.get("weak") or [], 0), **B["symbols"], **FUNCTIONS}
     mine = set(fn.get("names") or [fn["name"]])
     symbols = "".join(f"{name} = 0x{addr:X};\n" for name, addr in program.items() if name not in mine)
     (work / f"{stem}.ld").write_text(
@@ -300,7 +300,7 @@ def check_data_file(found: dict, data: bytes) -> None:
         fail(f"{found['c']} doesn't compile:\n{res.log[-3000:]}")
     definitions = [export_data.Definition(n, a, size, sec, 0, "", "", "") for n, a, size, sec in found["data"]["variables"]]
     game = ELFFile(BytesIO(data))
-    problem, _ = export_data.judge_data(res.obj, definitions, {**B["symbols"], **FUNCTIONS}.get,
+    problem, _ = export_data.judge_data(res.obj, definitions, {**dict.fromkeys(B.get("weak") or [], 0), **B["symbols"], **FUNCTIONS}.get,
                                         lambda a, n: file_bytes(game, data, a, n) if n else b"")
     if problem:
         fail(f"{found['c']}: {problem}")

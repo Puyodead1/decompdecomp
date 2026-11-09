@@ -636,6 +636,12 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
         net.claim(agent, slug, name)
         result = net.attempt(agent, name, RELINK_DECLARATIONS + source, slug)
         assert result["matched"], (name, result["text"])
+    if not partial:  # glibc's atexit as an agent matched it: __dso_handle not said weak, which the program left undefined
+        net.claim(agent, slug, "atexit")
+        result = net.attempt(agent, "atexit", "extern void *__dso_handle;\nextern int __cxa_atexit(void (*)(), void *, "
+                             "void *);\nint atexit(void (*func)()) { return __cxa_atexit(func, 0, &__dso_handle ? "
+                             "__dso_handle : 0); }\n", slug)
+        assert result["matched"], result["text"]
     if partial == "bytes":
         from decompnet.consoles.linux import export as linux_export
 
@@ -660,7 +666,7 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     [program_file] = (out / "src").glob("*.c")
     whole = program_file.read_text()
     assert whole.count("static int calls;") == 1 and whole.index("int length(") < whole.index("int main(")
-    assert "__attribute__((constructor))" in whole and not list((out / "src").glob("*/*.c"))
+    assert "__attribute__((constructor))" in whole and [p.name for p in (out / "src").glob("*/*.c")] == ["atexit.c"]
     assert "void say(const char *s);" in (out / "include" / f"{program_file.stem}.h").read_text()
     # the hand-written code as assembly source a person reads, checked to assemble to the program's bytes
     assert "addl %eax, %eax" in (out / "src" / "asm" / "twice.s").read_text() and (out / "src" / "asm" / "answer.s").exists()
