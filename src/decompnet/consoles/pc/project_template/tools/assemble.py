@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Make the game's program from its source (what `tools/relink.py --source` wrote): every function, the data and the
-resources as MASM, the header and what follows the last section as they are, each assembled by Visual C++ 6.0's
-MASM (ml.exe 6.15) and put where the program has it, its references filled in, and checked against the SHA-1 the
-source names. A project that has the source and not your copy builds from this: it writes orig/<program> when there
+"""Make the game's program from its source (what `tools/relink.py --source` wrote): every function, the import
+tables and the resources as MASM, the data as C, the header and what follows the last section as they are, each
+assembled by Visual C++ 6.0's MASM (ml.exe 6.15) or compiled by its compiler (CL.EXE, beside it) and put where the
+program has it (a global of the C where its #pragma data_seg says), its references filled in, and checked against
+the SHA-1 the source names. A project that has the source and not your copy builds from this: it writes orig/<program> when there
 is none (and when there is one, says whether the source makes it).
 
     python tools/assemble.py SOURCE/program.json OBJECTS --ml ML.EXE [--wrapper WIBO] [--out PROGRAM]
     python tools/assemble.py SOURCE/program.json OBJECTS --ml ML.EXE --link LINK.EXE [--wrapper WIBO]
 
 With --link (`ninja relink-source`), Visual C++'s LINK.EXE links the program from the objects instead, as
-tools/relink.py links a project's: assembly you edited may make a function or a global longer or shorter, and
+tools/relink.py links a project's: assembly or C you edited may make a function or a global longer or shorter, and
 everything after it moves, what points at it following (writes OBJECTS/../relink-source/<program>).
 
 Standard library only. Made by decompdecomp.
@@ -38,12 +39,32 @@ def _relink():
     return module
 
 
+def compiler(ml: list[str]) -> list[str]:
+    """Visual C++ 6.0's compiler, CL.EXE, beside its MASM (the data's C is compiled with it), and what runs it."""
+    folder = Path(ml[-1]).parent
+    found = next((folder / n for n in ("CL.EXE", "cl.exe", "Cl.exe") if (folder / n).exists()), folder / "CL.EXE")
+    return [*ml[:-1], str(found)]
+
+
 def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list[tuple[dict, Path, object]]:
-    """Each piece of the source assembled (when its object is older than it): (piece, its object, the object read)."""
+    """Each piece of the source assembled, or compiled (the data's C), when its object is older than it: (piece, its
+    object, the object read)."""
     relink = _relink()
     objects.mkdir(parents=True, exist_ok=True)
     out = []
+    header = source / "data" / "data.h"
     for piece in program["pieces"]:
+        if "c" in piece:
+            c = source / piece["c"]
+            obj = objects / (Path(piece["c"]).stem + ".obj")
+            newest = max(c.stat().st_mtime, header.stat().st_mtime if header.exists() else 0)
+            if not obj.exists() or obj.stat().st_mtime < newest:
+                said = subprocess.run([*compiler(ml), "/nologo", "/c", "/Zl", "/Zm500", f"/Fo{os.path.relpath(obj, source)}",
+                                       piece["c"]], capture_output=True, text=True, errors="replace", cwd=source)
+                if said.returncode != 0 or not obj.exists():
+                    sys.exit(f"assemble: {piece['c']} doesn't compile:\n{(said.stdout + said.stderr).strip()}")
+            out.append((piece, obj, relink.Compiled(obj.read_bytes())))
+            continue
         asm = source / piece["asm"]
         obj = objects / (Path(piece["asm"]).stem + ".obj")
         if not obj.exists() or obj.stat().st_mtime < asm.stat().st_mtime:
@@ -59,6 +80,24 @@ def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list
 def _placed(sections: list[dict]) -> list[int]:
     """The numbers of an object's sections that are the program's (not its debug information or linker notes)."""
     return [n for n, sec in enumerate(sections, 1) if not (sec["name"].startswith(".debug$") or sec["flags"] & 0xA00)]
+
+
+def _where(piece: dict, read) -> dict[int, int]:
+    """Each of a piece's sections' address: one after the other from where program.json puts it, or (the data's C)
+    as its name says, <section>$<address> (its #pragma)."""
+    where, at = {}, piece["at"]
+    for n in _placed(read.sections):
+        name = read.sections[n - 1]["name"]
+        if "c" in piece:
+            place = name.partition("$")[2]
+            if len(place) == 8 and all(c in "0123456789ABCDEFabcdef" for c in place):
+                where[n] = int(place, 16)
+            elif read.sections[n - 1]["size"]:
+                where[n] = None  # (data of the C's own, with no place in the game: after the game's, when linked)
+            continue
+        where[n] = at
+        at += read.sections[n - 1]["size"]
+    return where
 
 
 def public_names(program: dict, placed: list[tuple[dict, object, dict[int, int]]]) -> dict[str, int]:
@@ -85,10 +124,10 @@ def assemble(program: dict, source: Path, objects: Path, ml: list[str]) -> bytes
     """The program, made from its source (`program`: program.json), each piece where program.json puts it."""
     placed = []  # (piece, the object read, each section's address)
     for piece, _, read in assembled(program, source, objects, ml):
-        at, where = piece["at"], {}
-        for number in _placed(read.sections):
-            where[number] = at
-            at += read.sections[number - 1]["size"]
+        where = _where(piece, read)
+        if None in where.values():
+            sys.exit(f"assemble: {piece['c']} has data with no place in the game (a global without a #pragma "
+                     "data_seg naming its address): it can be linked (--link), not put in the game's places")
         placed.append((piece, read, where))
     names = public_names(program, placed)
     base = program["base"]
@@ -135,23 +174,23 @@ def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: P
     IMAGEREL); the base relocations left out (the linker makes them again, for where everything is now). `skip(piece)`:
     a piece another object stands for (tools/relink.py --asm: a unit, whose functions it takes one by one).
     {"paths", "changed" (the pieces whose size isn't the game's), "placed" (each piece where program.json has it),
-    "skipped" ({a skipped piece's name: its object, read}), "image" (the header's settings)}."""
+    "skipped" ({a skipped piece's name: its object, read}), "where" ({each path: its sections' addresses}), "image"
+    (the header's settings)}."""
     relink = _relink()
     header = (source / "header.bin").read_bytes()
     image = relink.Image(header)
     table = relink.section_table(header)
     rel_rva = image.dirs[relink.BASE_RELOCATIONS][0] if relink.BASE_RELOCATIONS < len(image.dirs) else 0
     (folder / "objects").mkdir(parents=True, exist_ok=True)
-    paths, changed, placed, skipped = [], [], [], {}
+    paths, changed, placed, skipped, where_of = [], [], [], {}, {}
+    with_c = any("c" in piece for piece in program["pieces"])  # (the data as C: every part of it in a section named
+    # for its place, <section>$<address>, which the linker puts in the order of their names)
     for piece, obj, read in sorted(assembled(program, source, objects, ml), key=lambda p: p[0]["at"]):
         numbers = _placed(read.sections)
         size = sum(read.sections[n - 1]["size"] for n in numbers)
         if size != piece["size"]:
-            changed.append(f"{piece['asm']} ({piece['size']:,} -> {size:,} bytes)")
-        at, where = piece["at"], {}
-        for n in numbers:
-            where[n] = at
-            at += read.sections[n - 1]["size"]
+            changed.append(f"{piece.get('asm') or piece['c']} ({piece['size']:,} -> {size:,} bytes)")
+        where = _where(piece, read)
         placed.append((piece, read, where))
         if skip is not None and skip(piece):
             skipped[Path(piece["asm"]).stem] = read
@@ -169,6 +208,28 @@ def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: P
             name, flags = ".bss", (flags & ~relink.CNT_DATA) | relink.CNT_BSS
         elif name == ".rsrc":
             name = ".rsrc$01"  # (as the resource converter names resources for the linker)
+        if with_c and (name != ".rsrc$01" and not flags & relink.CNT_CODE or "c" in piece):
+            sections = {}
+            for n in numbers:
+                sec = read.sections[n - 1]
+                if "c" in piece:  # (its own sections: each global's, by its #pragma; the C's own data after the game's)
+                    own = sec["name"] if "$" in sec["name"] else sec["name"] + "$~"
+                    sections[n] = (own, (sec["flags"] & ~0x00F00000) | relink.ALIGN_1)
+                else:
+                    sections[n] = (f"{name}${where[n]:08X}", flags)
+            made, number = relink.regrouped(read, sections)
+            for off_n, new in number.items():  # (the words program.json says are RVAs: DIR32NB)
+                rvas = {piece["at"] + off for off in piece.get("rvas", [])}
+                made.sections[new - 1]["relocs"] = [
+                    (off, symbol, DIR32NB if where[off_n] is not None and where[off_n] + off in rvas else kind)
+                    for off, symbol, kind in made.sections[new - 1]["relocs"]]
+                if uninitialised and "c" not in piece:
+                    made.sections[new - 1]["data"] = None
+            path = folder / "objects" / obj.name
+            path.write_bytes(made.bytes())
+            paths.append(path)
+            where_of[str(path)] = {number[n]: a for n, a in where.items() if a is not None}
+            continue
         data = bytearray(obj.read_bytes())
         _, count, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", data, 0)
         rvas, at = set(piece.get("rvas", [])), 0
@@ -191,6 +252,7 @@ def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: P
         path = folder / "objects" / obj.name
         path.write_bytes(bytes(data))
         paths.append(path)
+        where_of[str(path)] = where
     aliases = dict(program.get("aliases", {}))
     if aliases:  # (weak externals, as the linker reads them; ML 6.15 stops on ALIAS)
         coff = relink.Coff()
@@ -198,7 +260,7 @@ def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: P
             coff.alias(name, default)
         (folder / "objects" / "aliases.obj").write_bytes(coff.bytes())
         paths.append(folder / "objects" / "aliases.obj")
-    return {"paths": paths, "changed": changed, "placed": placed, "skipped": skipped, "image": image}
+    return {"paths": paths, "changed": changed, "placed": placed, "skipped": skipped, "where": where_of, "image": image}
 
 
 def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list[str], out: Path) -> dict:

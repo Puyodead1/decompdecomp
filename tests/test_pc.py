@@ -753,6 +753,22 @@ def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
     assert report["same_sections"] and report["same_layout"] and clamp in report["c"], report
     program = root / "build" / version / "relink" / f"{version}.exe"
     assert program.read_bytes()[0x400:] == EXE.read_bytes()[0x400:]  # (the headers are the linker's)
+    # a global the C defines, the game's bytes (the level names' table, its pointers to the game's strings): from C,
+    # at its place, the data around it cut there
+    table = _map()["_g_level_names"]
+    image = scratch_pe._template_tool("relink").Image(EXE.read_bytes())
+    strings = [f"D_{image.word(table + 4 * k):08X}" for k in range(4)]
+    source = next(p for p in (root / "src").rglob("*.c*") if csource.find(p.read_text(), _addresses()["clamp_s32"]))
+    kept = source.read_text()
+    source.write_text(kept + "".join(f"extern char {s}[];\n" for s in strings)
+                      + f"char *D_{table:08X}[4] = {{{', '.join(strings)}}};\n")
+    try:
+        ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+        assert ok, out
+        report = json.loads((root / "build" / version / "relink" / "relink.json").read_text())
+        assert report["data_c"] == [f"_D_{table:08X}"] and report["same_sections"], report
+    finally:
+        source.write_text(kept)
 
     link = ["--link", str(toolchains.path("msvc") / "6.0" / "Bin" / "LINK.EXE"),
             *(["--wrapper", str(toolchains.binary("wibo"))] if sys.platform != "win32" else [])]
@@ -794,9 +810,10 @@ def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
                     reason="needs Visual C++ 6.0's MASM (a service pack's ml.exe, in the msvc pack)")
 def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_builds_from_it(pc, tmp_path):
     """Export writes a PC project's program as source (source/: every function MASM, a line per instruction with its
-    text, the data with its pointers named, program.json), kept out of git, and checks that Visual C++ 6.0's MASM
-    makes the user's copy from it; a clone of the project with that source and no copy of the game makes the program
-    from it and rebuilds it byte for byte."""
+    text; the data as C, each global at its place, strings as strings, pointers as addresses of what they point at,
+    the import tables MASM; program.json), kept out of git, and checks that Visual C++ 6.0's MASM and compiler make
+    the user's copy from it; a clone of the project with that source and no copy of the game makes the program from
+    it and rebuilds it byte for byte. Linked from it, edited (a function longer, a string longer), it still runs."""
     net, slug = pc
     root, version = Path(net.project_row(slug)["root"]), "demoquest"
     res = net.export_rom(slug, log=lambda *_: None)
@@ -804,9 +821,12 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
     program = json.loads((root / "source" / "program.json").read_text())
     unit = (root / "source" / program["pieces"][0]["asm"]).read_text(encoding="latin-1")
     assert " PROC NEAR" in unit and "; mov eax, dword ptr [esp + 4]" in unit
-    data = next((root / "source" / p["asm"]).read_text(encoding="latin-1") for p in program["pieces"]
-                if "data_" in p["asm"])
-    assert "dd OFFSET __d_00402000+" in data  # (the level names' pointers, to their strings)
+    data = "".join((root / "source" / p["c"]).read_text(encoding="latin-1") for p in program["pieces"] if "c" in p)
+    assert '#pragma data_seg(".data$' in data and '= "meadow";' in data  # (each global at its place; a string)
+    table = _map()["_g_level_names"]
+    assert re.search(rf"void \*D_{table:08X}\[4\] = {{\s*&D_[0-9A-F]{{8}}, ", data), data  # (its pointers: the strings)
+    assert f"extern void *D_{table:08X}[];" in (root / "source" / "data" / "data.h").read_text(encoding="latin-1")
+    assert any(p["asm"].startswith("asm/data_") for p in program["pieces"] if "asm" in p)  # (the import tables)
     assert "source/" in (root / ".gitignore").read_text().split()
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", str(root), str(clone)], check=True)
@@ -823,7 +843,7 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
     ok, out = fp.run(["ninja", "relink-source"], log=lambda *_: None)
     assert ok, out
     assert linked.read_bytes()[0x400:] == EXE.read_bytes()[0x400:]  # (the headers are the linker's)
-    code = next(p for p in program["pieces"] if p["asm"].startswith("asm/text_"))
+    code = next(p for p in program["pieces"] if p.get("asm", "").startswith("asm/text_"))
     asm = clone / "source" / code["asm"]
     lines = asm.read_text(encoding="latin-1").split("\n")
     at = next(i for i, line in enumerate(lines) if line.endswith(" PROC NEAR"))
@@ -837,12 +857,21 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
                               capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
         return "We came back" in said.stdout + said.stderr
     assert runs(linked)
+    # a string of the data's C made longer: what follows it moves, what points at it follows, and it still runs
+    strings = next(clone / "source" / p["c"] for p in program["pieces"] if "c" in p and
+                   '= "meadow";' in (clone / "source" / p["c"]).read_text(encoding="latin-1"))
+    before = strings.read_text(encoding="latin-1")
+    strings.write_text(re.sub(r'\[\d+\] = "meadow";', '[32] = "meadow, a longer name";', before), encoding="latin-1")
+    ok, out = fp.run(["ninja", "relink-source"], log=lambda *_: None)
+    assert ok, out
+    assert b"meadow, a longer name" in linked.read_bytes() and runs(linked)
     # `ninja relink` with source/: the C, and what isn't C from the source, edited, not from the copy
     ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
     assert ok, out
     report = json.loads((clone / "build" / version / "relink" / "relink.json").read_text())
     assert report["moved"] and runs(clone / "build" / version / "relink" / f"{version}.exe")
-    asm.write_text("\n".join(lines), encoding="latin-1")  # (as it was: the game's program again)
+    asm.write_text("\n".join(lines), encoding="latin-1")  # (as they were: the game's program again)
+    strings.write_text(before, encoding="latin-1")
     ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
     assert ok, out
     report = json.loads((clone / "build" / version / "relink" / "relink.json").read_text())
@@ -3503,6 +3532,20 @@ def test_a_game_folder_brings_its_dll_and_agents_match_the_dlls_functions(tmp_pa
     symbol = next(fn["name"] for fns in info["units"].values() for fn in fns if fn["name"].endswith(clamp))
     res = net.attempt(agent, symbol, csource.get(GAME.read_text(), "clamp_s32"), slug)
     assert res["matched"], res["text"]
+    # `ninja relink` links the DLL again too (at the project's address, then moved back to its own): with its
+    # matched function from C, every section is its copy's, its exports kept, and the program runs with it
+    fp = ForkProject(root)
+    ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+    assert ok, out
+    report = json.loads((root / "build" / "demoquest" / "relink" / "demoquest" / "relink.json").read_text())
+    assert report["same_sections"] and symbol in report["c"], report
+    relinked = root / "build" / "demoquest" / "relink"
+    assemble = scratch_pe._template_tool("assemble")
+    assert assemble.differing((folder / "demoquest.dll").read_bytes(), (relinked / "demoquest.dll").read_bytes()) == []
+    said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []),
+                           str(relinked / "demoquest.exe")], capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "WIBO_DEBUG": "1"}, cwd=relinked)
+    assert "We came back" in said.stdout + said.stderr, said.stdout[-2000:] + said.stderr[-2000:]
 
 
 def _own_copies(tmp_path, monkeypatch, *builds):
@@ -4005,6 +4048,29 @@ def _relink_tool():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_the_data_as_c_writes_strings_floats_and_pointers_as_c_reads_them_back():
+    """The data's C: a ? beside another is escaped (C reads ??) as ] before any escape: a 2008 game's "(gooch ???)"
+    came back "(gooch ?]"), a NUL before a digit is \\000; floats whose bytes print ("fff?" is 0.9f) aren't text,
+    and a float is the literal of its very bits; in a program without base relocations a word in the middle of text
+    isn't a pointer though its value is an address ("SED\\0" of "_PAUSED")."""
+    relink = _relink_tool()
+
+    def literal(text: bytes) -> str:
+        return "".join(relink._c_char(c, text[k + 1:k + 2], text[k - 1:k] if k else b"") for k, c in enumerate(text))
+    assert literal(b"(gooch ???) a?b") == "(gooch \\?\\?\\?) a?b"
+    assert literal(b"a\0" + b"1") == "a\\0001" and literal(b"a\0b") == "a\\0b"
+    assert not relink._text(b"fff?fff?fff?", 0x1000) and relink._text(b"WEAK POINT", 0x1000)
+    assert relink._text(b"meadow\0cave", 0x1000)
+    assert [relink._c_float(struct.unpack("<I", struct.pack("<f", x))[0]) for x in (50.0, 0.9, -3.25)] == \
+        ["50.0f", "0.9f", "-3.25f"]
+    assert relink._c_float(5) is None and relink._c_float(0) == "0.0f"
+
+    class Text:
+        def read(self, addr, n):
+            return b"_PAUSED\0\x34\x12\x40\x00"[addr:addr + n]
+    assert relink.in_text(Text(), 4) and not relink.in_text(Text(), 8)
 
 
 def test_the_relink_cuts_a_compiled_object_into_its_functions_and_writes_objects_linkexe_reads():

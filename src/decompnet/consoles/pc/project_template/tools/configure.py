@@ -13,9 +13,10 @@ compares every source file's functions with the original's. `ninja rebuild` puts
 them (tools/rebuild.py) and checks it against your copy; `ninja relink` links it again with Visual C++ 6.0's linker
 (tools/relink.py: code can change size and the rest moves with it; run it yourself for its options, --all-c and
 --pad). Without your copy of the game, a project with its program as source (source/, what decompdecomp's Export
-writes) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM), and `ninja relink-source` links the
-program from that source alone with the same linker (assembly you edited may change size: the rest moves with it);
-with source/, `ninja relink` takes what isn't from C from it, not from your copy. A game built with link-time code generation (LTCG = True:
+writes: its code as assembly, its data as C) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM
+and compiler), and `ninja relink-source` links the program from that source alone with the same linker (what you
+edited may change size: the rest moves with it); with source/, `ninja relink` takes what isn't from C from it, not
+from your copy. A game built with link-time code generation (LTCG = True:
 units with a driver in harness/) builds those units through tools/ltcg.py, whose linker runs through wine. Made by
 decompdecomp.
 """
@@ -248,12 +249,14 @@ def main() -> None:
         relinked = (BUILD / "relink" / Path(info["exe"]).name).as_posix()
         # (with the program as source, source/: what isn't from C comes from it, the assembly you edited, not your copy)
         source = Path("source/program.json").exists()
-        asm = sorted(p.as_posix() for p in Path("source").rglob("*.asm")) if source else []
+        asm = sorted(p.as_posix() for pattern in ("*.asm", "*.c", "*.h") for p in Path("source").rglob(pattern)) \
+            if source else []  # (its assembly, and its data as C)
         n.rule("relink", f"{PY} tools/relink.py {CONFIG.as_posix()} {BUILD.as_posix()} "
                + q([*linker(), *(["--asm", "source", *assembler()] if source else [])]).replace("$", "$$"))
-        n.build(relinked, "relink", [*targets, *objs], implicit=[CONFIG.as_posix(), exes[0], "tools/relink.py",
-                                                                 "tools/rebuild.py", *asm,
-                                                                 *(["tools/assemble.py"] if source else [])])
+        n.build([relinked, *((BUILD / "relink" / Path(m["exe"]).name).as_posix() for m in info.get("modules", []))],
+                "relink", [*targets, *objs], implicit=[CONFIG.as_posix(), *exes, "tools/relink.py", "tools/rebuild.py",
+                                                       "tools/delink.py", *asm,
+                                                       *(["tools/assemble.py"] if source else [])])
         n.build("relink", "phony", [relinked])
         if source:
             # the program linked by the same linker from its source alone (tools/assemble.py --link), no C: assembly
