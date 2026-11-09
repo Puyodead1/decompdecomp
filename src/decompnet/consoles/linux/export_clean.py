@@ -19,6 +19,7 @@ Each pass here writes one kind of that machinery as the C it stands for:
 - struct_fields: a read at an offset into a variable written as the field there, by the game's own types.
 - cross_reads: a read of rows past a variable's end written as the variable it lands in (what ASan finds).
 - varargs: a file's own va_start, which steps from an argument's address, the compiler's own in a plain build.
+- pool_constants: a constant read from the program's data by an address name, its literal in a plain build.
 - module_headers: common.h, which declared every file's names, cut into a header per source file of what the others
   read of it; each file includes those it uses.
 """
@@ -265,6 +266,15 @@ def own_helpers(build: dict):
 
 
 _NUMBER = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\b0[xX][0-9a-fA-F]+[uUlL]*\b', re.S)
+
+
+_BOTH = re.compile(r"^#ifdef NON_MATCHING\n.*?^#endif\n", re.M | re.S)
+
+
+def _in_both(text: str):
+    """Whether a place of `text` is in a `#ifdef NON_MATCHING` block (done already: both forms there)."""
+    spans = [(m.start(), m.end()) for m in _BOTH.finditer(text)]
+    return lambda at: any(a <= at < b for a, b in spans)
 
 
 def _non_matching(old: str, new: str) -> str | None:
@@ -735,7 +745,8 @@ def cross_reads(build: dict):
         """The reads by the variable they reach, else both (`#ifdef NON_MATCHING`): GCC 2.95 writes
         `initMaxAmmo - 18` as an offset into the file's own data, which no relink of the file places as the game
         has it, while the address is the game's by construction."""
-        found = items(text, rel)
+        done = _in_both(text)
+        found = [f for f in items(text, rel) if not done(f[0])]
         if not found:
             return
         new = apply(text, found)
@@ -762,12 +773,91 @@ def varargs(build: dict):
     return candidates
 
 
+_POOL = re.compile(r"^(?:static )?(?:const )?(?:unsigned |signed )?char (\w+)\[(\d+)\] = \{([^}]*)\};", re.M)
+_POOL_READ = re.compile(r"\(\*\(__typeof__\((\w+)\) \*\)(?:&(\w+)|\(\(char \*\)&(\w+) \+ (0x[0-9a-fA-F]+|\d+)\))\)")
+_KINDS = {"float": ("<f", 4), "double": ("<d", 8), "int": ("<i", 4), "unsigned int": ("<I", 4), "short": ("<h", 2),
+          "unsigned short": ("<H", 2), "long": ("<i", 4), "unsigned long": ("<I", 4)}
+
+
+def _literal(kind: str, raw: bytes) -> str | None:
+    """A constant's bytes as the C literal of its type: 384.0f, 1e-06, 0x43c80000, "string"."""
+    import math
+    if kind in ("char[]", "const char[]"):
+        end = raw.find(b"\0")
+        if end <= 0 or any(b < 32 and b not in (9, 10) or b > 126 for b in raw[:end]):
+            return None
+        body = raw[:end].decode("ascii").replace("\\", "\\\\").replace('"', '\\"')
+        return '"' + body.replace("\n", "\\n").replace("\t", "\\t") + '"'
+    fmt, size = _KINDS.get(kind.replace("const ", ""), (None, 0))
+    if fmt is None or len(raw) < size:
+        return None
+    value, = struct.unpack(fmt, raw[:size])
+    if fmt in ("<f", "<d"):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        text = repr(value if fmt == "<d" else struct.unpack("<f", struct.pack("<f", value))[0])
+        if fmt == "<f":  # (the shortest decimal that is this float)
+            for digits in range(1, 10):
+                short = f"{value:.{digits}g}"
+                if struct.pack("<f", float(short)) == raw[:4]:
+                    text = repr(float(short))
+                    break
+        if not re.search(r"[.eE]", text):
+            text += ".0"
+        return f"{text}f" if fmt == "<f" else text
+    return hex(value) if fmt in ("<I", "<H") and value > 9 else str(value)
+
+
+def pool_constants(build: dict, out: Path):
+    """A constant the C reads from the program's data by an address name (`(*(__typeof__(D_080A956C) *)
+    &D_080A956C_data)`, so GCC 2.95 reads it where the game keeps it) written as the literal it is (`400.0f`), under
+    NON_MATCHING: a literal is the compiler's to place. Only what the game keeps read-only (.rodata)."""
+    readonly: dict[str, set[str]] = {}
+    for entry in list(build.get("units") or []) + list(build.get("data_files") or []):
+        for name, _, _, section in (entry.get("data") or {}).get("variables") or []:
+            if section.startswith(".rodata"):
+                readonly.setdefault(entry.get("c") or "", set()).add(name)
+    headers = "\n".join(p.read_text(encoding="utf-8") for p in sorted((out / "include").glob("*.h")))
+
+    def kind_of(name: str, text: str) -> str | None:
+        m = re.search(rf"^extern ((?:const )?(?:unsigned |signed )?\w+) {re.escape(name)}(\[\])?\s*;", text + "\n"
+                      + headers, re.M)
+        if not m:
+            return None
+        return m.group(1) + "[]" if m.group(2) else m.group(1)
+
+    def candidates(text: str, rel: str):
+        pools = {m.group(1): bytes(int(v, 0) & 0xFF for v in m.group(3).split(",") if v.strip())
+                 for m in _POOL.finditer(text) if m.group(1) in readonly.get(rel, ())}
+        if not pools:
+            return
+        new, at, done = [], 0, _in_both(text)
+        for m in _POOL_READ.finditer(text):
+            if done(m.start()):
+                continue
+            pool = m.group(2) or m.group(3)
+            kind = kind_of(m.group(1), text) if pool in pools else None
+            if kind and kind.endswith("[]") and re.search(r"\)\s*\(?\s*$", text[:m.start()]):
+                continue  # (its bytes read as another type: not a string)
+            literal = _literal(kind, pools[pool][int(m.group(4) or "0", 0):]) if kind else None
+            if literal is not None:
+                new += [text[at:m.start()], literal]
+                at = m.end()
+        if not new:
+            return
+        both = _non_matching(text, "".join(new) + text[at:])
+        if both is not None:
+            yield both
+    return candidates
+
+
 PASSES = (("names the linker script gave", linked_names), ("helpers made each file's own", own_helpers),
           ("addresses written as numbers", numbered_addresses), ("the C library's tables read as calls", library_tables),
           ("functions called by their own names", called_by_name), ("variables by one name", set_names),
           ("offsets into variables read as their fields", struct_fields),
           ("reads past a variable's end as the one they reach", cross_reads),
-          ("varargs as the compiler's own", varargs))
+          ("varargs as the compiler's own", varargs),
+          ("constants read from the program's data as literals", pool_constants))
 ITEMIZED = {called_by_name, set_names, struct_fields}  # (passes whose changes are kept one by one: items, apply)
 
 
@@ -808,8 +898,8 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             changed[title] = count
             log(f"{title}: written as C in {count} files" + (f" ({refused} kept as they were)" if refused else ""))
             continue
-        rewrite = make(build, out) if make is numbered_addresses else make(build)
-        by_file = make in (numbered_addresses, cross_reads)  # (rewrite(text, rel))
+        rewrite = make(build, out) if make in (numbered_addresses, pool_constants) else make(build)
+        by_file = make in (numbered_addresses, cross_reads, pool_constants)  # (rewrite(text, rel))
         # (the names only the linker script gives reach nothing in a plain link: the new C mustn't read them)
         linked = {a for e in list(build.get("units") or []) + list(build.get("data_files") or [])
                   for a in ((e.get("data") or {}).get("link_aliases") or {})}
