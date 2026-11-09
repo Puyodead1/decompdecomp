@@ -415,6 +415,25 @@ def _symbol_value(obj: bytes, name: str) -> int:
     return next(s["st_value"] for s in symtab.iter_symbols() if s.name == name)
 
 
+def _local_tables(net, proj, hdr: str, rows: list, sources: list, program) -> list:
+    """`sources` with each copy from a literal the match placed at a table (`memcpy(vlist, "", sizeof(vlist))`)
+    the local array's initializer, the table read from the program where the game's code loads it."""
+    from . import export_clean
+    if program is None:
+        return sources
+    by_name = {r["name"]: r for r in rows}
+    out = []
+    for name, c in sources:
+        row = by_name.get(name)
+        if row is None or not export_clean._COPY_TABLE.search(c):
+            out.append((name, c))
+            continue
+        compiled = net._compile(proj, hdr, c, row)
+        reads = export_clean.literal_reads(compiled.obj, program.image, {name: row["vram"]}) if compiled.ok else {}
+        out.append((name, export_clean.local_table(c, reads.get(name) or {}, program.image) or c))
+    return out
+
+
 def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: str, hdr: str, syms, read,
                statics_at: dict[str, dict[str, int]] | None = None, program=None, asm_pieces=None,
                elsewhere: set[str] = frozenset(), sources=None):
@@ -436,6 +455,16 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
     asm_pieces = asm_pieces or {}
     if sources is None:
         sources = [(r["name"], r["matched_source"] or "") for r in rows]
+        # first with a table a function copies from a literal the match placed at it as the local array's
+        # initializer it was (export_clean.local_table): what the game's file has in its .rodata, where the literal
+        # would be one byte of its own
+        tabled = _local_tables(net, proj, hdr, rows, sources, program)
+        if tabled != sources:
+            for variant in (tabled, [(name, units.returned(c, name) or c) for name, c in tabled]):
+                found = _unit_file(net, proj, cfg, console, rows, include, own_header, hdr, syms, read, statics_at,
+                                   program, asm_pieces, elsewhere, variant)
+                if found[0] is not None:
+                    return found
         # first with each function that returns what GCC 2.95 left in %eax returning it (units.returned): the same
         # code where the file still matches, and a newer GCC's (make port) gets the value too
         fixed = [(name, units.returned(c, name) or c) for name, c in sources]
