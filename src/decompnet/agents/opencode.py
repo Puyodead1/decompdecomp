@@ -82,17 +82,20 @@ class Opencode(Agent):
 
     def model_efforts(self, model: str, catalog: dict) -> list[str] | None:
         """The reasoning efforts a model offers, as opencode's catalog says (DeepSeek V4.1 Flash on OpenCode Go: low,
-        high and max, and "#medium" stopped each of its sessions: "Variant unavailable"); None when it doesn't say."""
+        high and max, and "#medium" stopped each of its sessions: "Variant unavailable"); None when it doesn't say.
+        A model that reasons with options but no effort among them (MiMo's on/off toggle, or an empty list) has none
+        either: opencode makes no variants for it, so "#high" stopped its sessions the same way."""
         provider, _, name = model.split("#", 1)[0].partition("/")
         info = ((catalog.get(provider) or {}).get("models") or {}).get(name)
         if not isinstance(info, dict):
             return None
         if not info.get("reasoning"):
             return []
-        for o in info.get("reasoning_options") or []:
+        options = info.get("reasoning_options")
+        for o in options or []:
             if isinstance(o, dict) and o.get("type") == "effort" and isinstance(o.get("values"), list):
                 return [v for v in o["values"] if isinstance(v, str)]
-        return None
+        return [] if isinstance(options, list) else None
 
     def offered_effort(self, model: str) -> str:
         """The model with an effort it offers: the nearest one when it lacks the one asked for (the lower of two as

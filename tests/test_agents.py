@@ -1283,16 +1283,24 @@ def test_opencode_offers_and_sends_only_the_efforts_a_model_has(tmp_path, monkey
     cache.mkdir(parents=True)
     (cache / "models.json").write_text(json.dumps({"opencode-go": {"models": {
         "deepseek-v4.1-flash": {"reasoning": True, "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]},
-        "plain": {"reasoning": False}}}}))
+        "plain": {"reasoning": False},
+        "toggled": {"reasoning": True, "reasoning_options": [{"type": "toggle"}]},
+        "fixed": {"reasoning": True, "reasoning_options": []},
+        "unsaid": {"reasoning": True}}}}))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     oc = kinds.get("opencode")
-    rows = oc.read_models(["opencode-go/deepseek-v4.1-flash", "opencode-go/plain", "other/unknown"])
-    assert [r.get("efforts") for r in rows] == [["low", "high", "max"], [], None]
+    rows = oc.read_models(["opencode-go/deepseek-v4.1-flash", "opencode-go/plain", "other/unknown",
+                           "opencode-go/toggled", "opencode-go/fixed", "opencode-go/unsaid"])
+    assert [r.get("efforts") for r in rows] == [["low", "high", "max"], [], None, [], [], None]
     assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#medium") == "opencode-go/deepseek-v4.1-flash#low"
     assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#xhigh") == "opencode-go/deepseek-v4.1-flash#high"
     assert oc.offered_effort("opencode-go/deepseek-v4.1-flash#max") == "opencode-go/deepseek-v4.1-flash#max"
     assert oc.offered_effort("opencode-go/plain#high") == "opencode-go/plain"
     assert oc.offered_effort("other/unknown#medium") == "other/unknown#medium"  # (the catalog doesn't say)
+    # (a model that reasons with no effort to pick, an on/off toggle or none: opencode has no variants for it)
+    assert oc.offered_effort("opencode-go/toggled#high") == "opencode-go/toggled"
+    assert oc.offered_effort("opencode-go/fixed#medium") == "opencode-go/fixed"
+    assert oc.offered_effort("opencode-go/unsaid#high") == "opencode-go/unsaid#high"
 
     monkeypatch.setattr(oc, "config_model", lambda: None)
     monkeypatch.setitem(kinds.known_versions, "opencode", (0, "2.1.4"))
