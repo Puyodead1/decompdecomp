@@ -1159,6 +1159,24 @@ processor's `Arch.field_accesses` (`arch/ppc.py`, `arch/arm.py`), which `classes
 x86's do (`arch/x86_fields.py`). GBA gains the ARM reader too. Until then their agents aren't offered `get_class` or
 `guess_struct`.
 
+### Exports that are the game's own source
+
+An export a person builds and mods as if it were the original source tree: plain C, real headers, a plain Makefile,
+no decompdecomp machinery; the byte-matching build beside it (`make match`). Started on Linux:
+`consoles/linux/export_clean.py` writes what only the matching build's linker script supplied as C, each change kept
+only where GCC 2.95 still builds the file's code (both, `#ifdef NON_MATCHING`, where not), and `make` compiles the
+tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, in this order:
+
+- Reads that depend on where variables sit (`scrnHit + 0x12 + D*18`, which is `initMaxAmmo[D - 1]`): found by
+  running `make asan`, then written as the variable they read.
+- One prototype per function in module headers (`player.h`), instead of a caller's `__asm__` redeclarations and the
+  copies of `common.h` each file has (`common_<file>.h`).
+- Names: a `.set` alias as the name itself, a constant pool's `D_x_data` as its string literals, an offset into a
+  struct (`SegmentModel + 112`) as its field, from the game's debug information.
+- A source file made one file per function (`model.c`) whole.
+- Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects,
+  first on `projects/demo-pc`, then data as C and assembly source (the modding-ready check below).
+
 ### A modding-ready check for the export
 
 The export rebuilds the game byte for byte; mods need code that can move. Build a second copy with padding inserted

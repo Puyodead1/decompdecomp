@@ -4,25 +4,32 @@ standard library only). Building the program needs neither decompdecomp nor its 
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
-MAKEFILE = """\
-# Builds build/{program}: the program linked anew from this tree's C, with the compiler it was built with.
-#   make              the program (the first time, the compiler is downloaded into tools/: `make toolchain`)
+MAKEFILE = """\\
+# Builds {program} from this tree's C.
+#   make              build/plain/{program}: the C as plain source, compiled by the system's gcc (CC, CFLAGS) with
+#                     NON_MATCHING defined and linked against the system's libraries (LDLIBS){plain_note}
+#   make asan         build/asan/{program}: the same, with AddressSanitizer (reads past a variable, reported and
+#                     carried on from: ASAN_OPTIONS=halt_on_error=0)
+#   make match        build/{program}: the program linked anew from the C with the compiler it was built with, its
+#                     code GCC 2.95's, byte for byte the original's (`python build.py` checks it); the first time,
+#                     the compiler is downloaded into tools/ (`make toolchain`)
 #   make move         the same, its data laid out after the code too
 #   make toolchain    the compiler into tools/ (pinned downloads, each checked against its SHA-256)
-#   make port         build/port/{program}: the same C built by the system's GCC (PORT_CC, PORT_FLAGS: no matching
-#                     there), against the program's own C library headers from the toolchain, linked the same way;
-#                     each file from a copy (build/port/*.o.c) whose numbers that are the program's variables are names
-# Needs make, python3, curl or wget, tar and ar. `python build.py` (with decompdecomp installed) checks that the C
-# still rebuilds your copy byte for byte; building doesn't need it.
+#   make port         build/port/{program}: the C built by the system's GCC (PORT_CC, PORT_FLAGS: no matching
+#                     there) against the program's own C library headers from the toolchain, linked as `make match`
+#                     links it, its variables where the program has them
+# The matching builds need make, python3, curl or wget, tar and ar; `python build.py` (with decompdecomp installed)
+# checks that the C still rebuilds your copy byte for byte.
 PROGRAM := {program}
 TOOLCHAIN := {toolchain}
 TC ?= tools/$(TOOLCHAIN)
 PY ?= python3
 export TC
-CC := sh tools/cc.sh $(abspath $(TC))
+MATCH_CC := sh tools/cc.sh $(abspath $(TC))
 AS := $(abspath $(TC))/binutils/usr/bin/as
 LD := $(abspath $(TC))/binutils/usr/bin/ld
 export LD_LIBRARY_PATH := $(abspath $(TC))/binutils/usr/lib:$(abspath $(TC))/lib
@@ -35,7 +42,39 @@ PORT_FLAGS ?= -O2 -std=gnu89 -fno-pie -fno-pic -fno-stack-protector -fcf-protect
   -fno-strict-aliasing -fdata-sections -fno-toplevel-reorder -Wall -nostdinc -isystem $(shell $(PORT_CC) -print-file-name=include) -I$(abspath $(TC))/include
 PORT_STUBS := build/port/stubs
 
-all: build/$(PROGRAM)
+# the plain build: every source file, compiled and linked as any C program is
+CC ?= gcc
+CFLAGS ?= -O2
+PLAIN_FLAGS := -m32 -std=gnu89 -fno-pie -fcommon -fno-strict-aliasing -DNON_MATCHING
+LDLIBS ?= {ldlibs}
+SOURCES := {sources}
+ASSEMBLY := {assembly}
+PLAIN_OBJS := $(patsubst src/%.c,build/plain/%.o,$(SOURCES)) $(patsubst src/%.s,build/plain/%.o,$(ASSEMBLY))
+ASAN_OBJS := $(patsubst build/plain/%,build/asan/%,$(PLAIN_OBJS))
+ASAN_FLAGS := -g -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
+
+all: {default}
+
+build/plain/$(PROGRAM): $(PLAIN_OBJS)
+\t$(CC) -m32 -no-pie $(LDFLAGS) -o $@ $(PLAIN_OBJS) $(LDLIBS)
+build/plain/%.o: src/%.c $(HEADERS)
+\t@mkdir -p $(dir $@)
+\t$(CC) $(PLAIN_FLAGS) $(CFLAGS) -Iinclude -iquote $(dir $<) -c $< -o $@
+build/plain/%.o: src/%.s
+\t@mkdir -p $(dir $@)
+\t$(CC) -m32 -c $< -o $@
+
+asan: build/asan/$(PROGRAM)
+build/asan/$(PROGRAM): $(ASAN_OBJS)
+\t$(CC) -m32 -no-pie $(ASAN_FLAGS) $(LDFLAGS) -o $@ $(ASAN_OBJS) $(LDLIBS)
+build/asan/%.o: src/%.c $(HEADERS)
+\t@mkdir -p $(dir $@)
+\t$(CC) $(PLAIN_FLAGS) $(CFLAGS) $(ASAN_FLAGS) -Iinclude -iquote $(dir $<) -c $< -o $@
+build/asan/%.o: src/%.s
+\t@mkdir -p $(dir $@)
+\t$(CC) -m32 -c $< -o $@
+
+match: build/$(PROGRAM)
 
 toolchain: $(TOOLCHAIN_READY)
 $(TOOLCHAIN_READY):
@@ -60,7 +99,7 @@ build/relink/data.o: data/program.s | $(TOOLCHAIN_READY)
 $(STUBS)/stubs.txt: build.json $(OBJS) | build/relink $(TOOLCHAIN_READY)
 \t$(PY) tools/relink.py stubs $(STUBS)
 \twhile read lib stem; do \\
-\t  $(CC) $(STUBS)/$$stem.c $(STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
+\t  $(MATCH_CC) $(STUBS)/$$stem.c $(STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
 \t  map=; [ -s $(STUBS)/$$stem.map ] && map="--version-script $(STUBS)/$$stem.map"; \\
 \t  $(LD) -m elf_i386 -shared -soname $$lib $$map -o $(STUBS)/$$lib $(STUBS)/$$stem.o || exit 1; \\
 \tdone < $(STUBS)/stubs.txt
@@ -75,7 +114,7 @@ move: $(OBJS) {data_o}$(STUBS)/stubs.txt
 $(PORT_STUBS)/stubs.txt: build.json $(PORT_OBJS) | build/port $(TOOLCHAIN_READY)
 \tOBJDIR=build/port $(PY) tools/relink.py stubs $(PORT_STUBS)
 \twhile read lib stem; do \\
-\t  $(CC) $(PORT_STUBS)/$$stem.c $(PORT_STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
+\t  $(MATCH_CC) $(PORT_STUBS)/$$stem.c $(PORT_STUBS)/$$stem.o -fPIC -O0 -fno-builtin || exit 1; \\
 \t  map=; [ -s $(PORT_STUBS)/$$stem.map ] && map="--version-script $(PORT_STUBS)/$$stem.map"; \\
 \t  $(LD) -m elf_i386 -shared -soname $$lib $$map -o $(PORT_STUBS)/$$lib $(PORT_STUBS)/$$stem.o || exit 1; \\
 \tdone < $(PORT_STUBS)/stubs.txt
@@ -87,7 +126,7 @@ build/port/$(PROGRAM): $(PORT_OBJS) {data_o}$(PORT_STUBS)/stubs.txt
 clean:
 \trm -r -f build/relink build/port build/rules.mk build/rules.mk.tmp build/$(PROGRAM)
 
-.PHONY: all toolchain move port clean
+.PHONY: all asan match toolchain move port clean
 .DELETE_ON_ERROR:
 """
 
@@ -164,5 +203,28 @@ def write(out: Path, build: dict) -> None:
                                         encoding="utf-8")
     # (a tree whose code and data are all source links no data of your copy's: data/program.s isn't made)
     data_o = "" if build.get("standalone") else "build/relink/data.o "
-    (out / "Makefile").write_text(MAKEFILE.format(program=build["program"], toolchain=tid, prelude=prelude,
-                                                  data_o=data_o), encoding="utf-8")
+    sources = list(dict.fromkeys([u["c"] for u in build.get("units") or [] if u.get("c")]
+                                 + [f["c"] for f in build["functions"] if f.get("c")]
+                                 + [d["c"] for d in build.get("data_files") or [] if d.get("c")]))
+    assembly = list(dict.fromkeys(f["s"] for f in build["functions"] if (f.get("s") or "").startswith("src/")))
+    standalone = bool(build.get("standalone"))
+    (out / "Makefile").write_text(MAKEFILE.format(
+        program=build["program"], toolchain=tid, prelude=prelude, data_o=data_o, ldlibs=libraries(build),
+        sources=" \\\n  ".join(sources), assembly=" \\\n  ".join(assembly),
+        default="build/plain/$(PROGRAM)" if standalone else "build/$(PROGRAM)",
+        plain_note="" if standalone else (
+            "\n#                     (not yet the default: what isn't source yet is your copy's, which only the matching "
+            "build\n#                     links; `make` builds build/{0} as `make match` does)".format(build["program"]))),
+        encoding="utf-8")
+
+
+def libraries(build: dict) -> str:
+    """The plain link's libraries: what the program asked the loader for (libGL.so.1 is -lGL), the C library being
+    the compiler's own."""
+    needed = (build.get("imports") or {}).get("needed") or []
+    out = []
+    for lib in needed:
+        m = re.fullmatch(r"lib(.+?)\.so(?:\.[\d.]+)?", lib)
+        if m and m.group(1) != "c":
+            out.append(f"-l{m.group(1)}")
+    return " ".join(reversed(out))  # (a library before what it uses: GLUT before GL, as a person writes it)

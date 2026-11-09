@@ -720,12 +720,23 @@ def test_the_export_relinks_a_new_program_from_the_c_and_a_function_and_the_data
     subprocess.run(["git", "clone", "-q", str(out), str(clone)], check=True)
     fresh = tmp_path / "fresh-tc"
     (clone / "tools" / "toolchain.sh").write_text(f'#!/bin/sh\nmkdir -p "$1" && cp -a {tc}/. "$1"/\n')
-    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}"], cwd=clone, capture_output=True,
-                           text=True)
+    first = subprocess.run(["make", "-s", f"TC={fresh}", f"PY={sys.executable}", "match"], cwd=clone,
+                           capture_output=True, text=True)
     assert first.returncode == 0, first.stdout + first.stderr
     assert "from this tree alone" in first.stdout and (fresh / "crt" / "crt1.o").exists()
     cloned = clone / relinked.relative_to(out)
     assert (run(cloned).stdout, run(cloned).returncode) == (original.stdout, original.returncode)
+    # and `make`, the plain build: the system's gcc and libraries, nothing of decompdecomp's (where it links 32-bit)
+    makefile = (clone / "Makefile").read_text()
+    assert "all: build/plain/$(PROGRAM)" in makefile and "-DNON_MATCHING" in makefile
+    linkable = gcc and subprocess.run([gcc, "-m32", str(probe), "-o", str(tmp_path / "m32")],
+                                      capture_output=True).returncode == 0
+    if linkable:
+        plain = subprocess.run(["make", "-s"], cwd=clone, capture_output=True, text=True)
+        assert plain.returncode == 0, plain.stdout + plain.stderr
+        if Path("/lib/ld-linux.so.2").exists():
+            ran = subprocess.run([str(clone / "build" / "plain" / "relinkdemo")], capture_output=True, timeout=30)
+            assert (ran.stdout, ran.returncode) == (original.stdout, original.returncode)
 
     # C that writes an address in the old code as a number is refused, with the name to write
     greet_c = program_file
@@ -1389,3 +1400,71 @@ def test_the_ports_copy_reads_a_files_own_variable_by_its_name_not_another_objec
                          text=True, check=True).stdout
     assert "    #define table__f (*(char (*)[])&table)  /* note */" in out
     assert 'extern short later__f[2] __asm__("later");' in out  # (declared after: left as it is)
+
+
+def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_code(tmp_path):
+    """A plain build has no linker script to give `D_08EC894C` its place (`g_Camera + 12`) nor `inline` helpers one
+    definition each: the export writes them as C (export_clean.py), kept only where GCC 2.95 compiles the file to
+    the same code, every relocation reaching the same address; a number the C writes for a variable's address is
+    its name, or both under NON_MATCHING where GCC 2.95 builds the game's code only from the number."""
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean, export_make
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    (out / "src").mkdir(parents=True)
+    (out / "include").mkdir()
+    (out / "tools").mkdir()
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    build = {"symbols": {"D_08EC894C": 0x8EC894C}, "toolchain": gcc, "standalone": True,
+             "functions": [{"name": "read", "vram": 0x8048000, "c": "src/cam.c"},
+                           {"name": "where", "vram": 0x8048020, "c": "src/cam.c"},
+                           {"name": "add", "vram": 0x8048040, "c": "src/cam.c"},
+                           {"name": "count", "vram": 0x8048060, "c": "src/cam.c"}],
+             "units": [{"name": "cam", "c": "src/cam.c", "flags": ["-O2"],
+                        "data": {"defines": ["g_Camera"], "variables": [["g_Camera", 0x8EC8940, 64, ".data"],
+                                                                        ["count_calls", 0x8EC9000, 4, ".data"]],
+                                 "aliases": {"calls_7": ["count_calls", 0]},
+                                 "link_aliases": {"D_08EC894C": ["g_Camera", 12]}}}]}
+    source = ("struct cam { int a, b, c, d; int rest[12]; };\nstruct cam g_Camera = { 1 };\nextern int D_08EC894C;\n"
+              '#include "cam.h"\nstatic int count_calls __attribute__((used)) = 5;\n'
+              "inline int twice(int x) { return x + x; }\n"
+              "int read(void) { return twice(D_08EC894C); }\n"
+              "int *where(void) { return (int *)0x8ec8950; }\n"
+              "int add(int a, int b) { return a + b; }\n"
+              "int count(void)\n{\n    extern int add__count() __asm__(\"add\");  /* add as this function calls it, undeclared */\n"
+              "    return add__count(calls_7, 2);\n}\n"
+              '__asm__(".globl calls_7\\n\\t.set calls_7, count_calls");  /* the names the C reads these by */\n')
+    (out / "src" / "cam.c").write_text(source)
+    (out / "include" / "cam.h").write_text("extern int calls_7;\n")  # (as the program's header declares it)
+    (out / "build.json").write_text(__import__("json").dumps(build))
+    where = export_clean.addresses(build)  # (every name the first C reads, calls_7 too)
+    export_clean.clean(out, build, tc, log=lambda *_: None)
+    made = (out / "src" / "cam.c").read_text()
+    assert "(*(__typeof__(D_08EC894C) *)((char *)&g_Camera + 12))" in made  # (its place, as C)
+    assert "extern int D_08EC894C;" in made  # (what __typeof__ reads)
+    assert "static inline int twice" in made
+    assert "((int)&g_Camera + 0x10)" in made  # (the number by its name, the code the same)
+    assert "return add(count_calls, 2);" in made and "__asm__(\"add\")" not in made  # (called by its own name)
+    # one name for the variable: the definition's, where the C's is GCC's number for a function's static
+    assert ".set" not in made
+    assert export_clean.clean(out, build, tc, log=lambda *_: None) == dict.fromkeys(
+        [title for title, _ in export_clean.PASSES], 0)  # (done once: nothing left to do the second time)
+    # the check itself: the same place written two ways is the same code; another place isn't
+    flags = ["-O2"]
+    one = export_clean._compile(out, tc, out / "src" / "cam.c", flags, source)
+    assert export_clean.same_code(one, export_clean._compile(out, tc, out / "src" / "cam.c", flags, made), where)
+    other = source.replace("return twice(D_08EC894C)", "return twice(*(int *)((char *)&g_Camera + 8))")
+    assert not export_clean.same_code(one, export_clean._compile(out, tc, out / "src" / "cam.c", flags, other), where)
+    # both forms where only the number matches, as decompilations write them
+    both = export_clean._non_matching("int f(void)\n{\n    return *(int *)0x8ec8950;\n}\n",
+                                      "int f(void)\n{\n    return *(int *)((int)&g_Camera + 0x10);\n}\n")
+    assert both == ("int f(void)\n{\n#ifdef NON_MATCHING\n    return *(int *)((int)&g_Camera + 0x10);\n#else\n"
+                    "    return *(int *)0x8ec8950;\n#endif\n}\n")
+    assert export_clean._non_matching("#define X \\\n  0x8ec8950\n", "#define X \\\n  ((int)&g_Camera)\n") is None
+    # the plain link's libraries are what the program asked the loader for
+    assert export_make.libraries({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
+        == "-lglut -lGL -lm"
