@@ -817,6 +817,23 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
         assert ok, out
     assert (clone / "orig" / f"{version}.exe").read_bytes() == EXE.read_bytes()
     assert (clone / "build" / version / f"{version}.exe").read_bytes() == EXE.read_bytes()
+    # the same source linked by Visual C++'s linker: the game's sections; and with a function made longer in its
+    # assembly, everything after it moves and the program still runs to its end
+    linked = clone / "build" / version / "relink-source" / f"{version}.exe"
+    ok, out = fp.run(["ninja", "relink-source"], log=lambda *_: None)
+    assert ok, out
+    assert linked.read_bytes()[0x400:] == EXE.read_bytes()[0x400:]  # (the headers are the linker's)
+    code = next(p for p in program["pieces"] if p["asm"].startswith("asm/text_"))
+    asm = clone / "source" / code["asm"]
+    lines = asm.read_text(encoding="latin-1").split("\n")
+    at = next(i for i, line in enumerate(lines) if line.endswith(" PROC NEAR"))
+    asm.write_text("\n".join([*lines[:at + 1], *[" nop"] * 16, *lines[at + 1:]]), encoding="latin-1")
+    ok, out = fp.run(["ninja", "relink-source"], log=lambda *_: None)
+    assert ok, out
+    assert linked.read_bytes()[0x400:] != EXE.read_bytes()[0x400:]
+    said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(linked)],
+                          capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
+    assert "We came back" in said.stdout + said.stderr
 
 
 NEWER = ["8.0SP1", "9.0", "9.0SP1", "10.0", "10.0SP1"]  # the msvc8, msvc9 and msvc10 packs

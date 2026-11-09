@@ -13,7 +13,8 @@ compares every source file's functions with the original's. `ninja rebuild` puts
 them (tools/rebuild.py) and checks it against your copy; `ninja relink` links it again with Visual C++ 6.0's linker
 (tools/relink.py: code can change size and the rest moves with it; run it yourself for its options, --all-c and
 --pad). Without your copy of the game, a project with its program as source (source/, what decompdecomp's Export
-writes) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM). A game built with link-time code generation (LTCG = True:
+writes) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM), and `ninja relink-source` links the
+program from that source with the same linker (assembly you edited may change size: the rest moves with it). A game built with link-time code generation (LTCG = True:
 units with a driver in harness/) builds those units through tools/ltcg.py, whose linker runs through wine. Made by
 decompdecomp.
 """
@@ -247,6 +248,16 @@ def main() -> None:
         n.build(relinked, "relink", [*targets, *objs], implicit=[CONFIG.as_posix(), exes[0], "tools/relink.py",
                                                                  "tools/rebuild.py"])
         n.build("relink", "phony", [relinked])
+        if Path("source/program.json").exists():
+            # the program linked by the same linker from its source (tools/assemble.py --link): assembly you edited
+            # may make a function longer or shorter, and the rest moves with it
+            from_source = (BUILD / "relink-source" / Path(info["exe"]).name).as_posix()
+            n.rule("relink_source", f"{PY} tools/assemble.py source/program.json {(BUILD / 'source').as_posix()} "
+                   + q([*assembler(), *linker()]).replace("$", "$$"))
+            n.build(from_source, "relink_source", ["source/program.json"],
+                    implicit=[*(p.as_posix() for p in sorted(Path("source").rglob("*.asm"))), "tools/assemble.py",
+                              "tools/relink.py"])
+            n.build("relink-source", "phony", [from_source])
         # the source folders, not each file: on a game of 9,608 files every edit rewrote build.ninja (20-37 s)
         n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *folders("src", "include"),
                                              *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()],
