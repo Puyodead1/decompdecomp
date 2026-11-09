@@ -513,6 +513,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   out with every section byte for byte their copy's (the header is the linker's); `--all-c` takes every function
   from its C (a mod: a function other code jumps into the middle of, or whose C needs a name nothing defines, stays
   your copy's, and says so) and `--pad` moves everything, the demo still running to its end.
+- **A Windows PC game's program as source.** Export writes it into the project's source/ (kept out of git, as the
+  user's copy is): every function as MASM, a line per instruction with its text (capstone's), each relocated word
+  `dd OFFSET` what it points at and each call or jump to another function by its name; the data in files of up to
+  64 KiB, every global labelled and every pointer named; the resources; the header and what follows the last
+  section as they are. tools/assemble.py makes the program from it with Visual C++ 6.0's own MASM (ml.exe 6.15,
+  under wibo) and checks it against the SHA-1, and a project without the user's copy makes `orig/` from it before
+  anything else: the four games above and the demo come out byte for byte (10,159 files for the largest).
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1190,8 +1197,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   is whole).
 - Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects
   (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
-  data as C and assembly source (the modding-ready check below), the game's DLLs relinked too, and an Xbox game's
-  XBE.
+  the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
+  from, so a project builds without it). Left: the data as C (a global C defines is the data's copy for now), source
+  edited in assembly taken by the relink (it links from the program the source makes, which must be the game's),
+  the game's DLLs relinked and as source too, and an Xbox game's XBE.
 
 ### A modding-ready check for the export
 

@@ -29,6 +29,7 @@ own DLLs (functions.json's "modules") are not relinked yet. Standard library onl
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import importlib.util
 import json
@@ -59,6 +60,7 @@ ABSOLUTE = {"__except_list": 0, "__fltused": 0x9875}
 IMPORTS, RESOURCES, SECURITY, BASE_RELOCATIONS, TLS, LOAD_CONFIG, IAT = 1, 2, 4, 5, 9, 10, 12
 SUBSYSTEMS = {1: "NATIVE", 2: "WINDOWS", 3: "CONSOLE"}
 SHOWN = 8
+PART = 0x10000  # the most of a section one source file has (ML 6.15 stopped on 6 MB of a game's data)
 RVA = "$rva"  # (a name for an address outside the program, as a relative jump to it names it)
 
 
@@ -209,6 +211,7 @@ class Coff:
         self.symbols: list[tuple] = []  # (name, value, section, type, class, aux bytes)
         self.index: dict[str, int] = {}  # external symbols by name
         self.position: dict[int, int] = {}  # a symbol's index in the table -> its place in self.symbols
+        self.aliases: dict[str, str] = {}  # (what masm() wrote as a name standing for another)
         self.count = 0  # records in the table (auxiliary ones too)
 
     def section(self, name: str, data: bytes | None, flags: int, size: int = 0,
@@ -221,6 +224,160 @@ class Coff:
         self.sections[-1]["symbol"] = self.symbol(name, 0, number, cls=STATIC, aux=bytes(18)) if comdat else \
             self.symbol(f"$S{number}", 0, number, cls=STATIC)
         return number
+
+    def masm(self, sections: list[int], names: dict[int, str], note: str = "",
+             span: tuple[int, int] | None = None,
+             texts: dict[int, dict[int, tuple[int, str]]] | None = None) -> tuple[str, list[int]]:
+        """These sections as MASM source (ML 6.15, Visual C++ 6.0's: tools/assemble.py assembles it), one after the
+        other, and where in them (from the first's start) a word is an RVA (MASM 6.15 has no IMAGEREL: the word holds
+        the address, assemble.py makes it an RVA). `names`: a public name for a section's start, by its number, where
+        another file points into it. `span`: only this part of the one section (ML 6.15 stops on a file of 6 MB).
+        `texts`: by section, its instructions (offset: (length, text)): a line of bytes each, the text its comment. Functions are PROCs; a relocated word is `dd OFFSET name+n`, a relative call
+        or jump `call`/`jmp`/`jcc NEAR PTR name` (all rel32, as the game has them)."""
+        index_of = {k: i for i, k in self.position.items()}
+        mine = set(sections)
+        referred = {index for s in sections for off, index, _ in self.sections[s - 1]["relocs"]
+                    if span is None or span[0] <= off < span[1]}
+        called = {index for s in sections for _, index, kind in self.sections[s - 1]["relocs"] if kind == REL32}
+        labels: dict[int, list[tuple[int, str, bool, bool]]] = {s: [] for s in sections}  # offset, name, public, proc
+        local: dict[int, str] = {}  # symbol index -> the name the source gives it
+        extern, aliases, absolute = {}, [], []
+        for k, (name, value, section, typ, cls, aux) in enumerate(self.symbols):
+            i = index_of[k]
+            if cls == WEAK_EXTERNAL:
+                aliases.append((name, self.symbols[self.position[struct.unpack_from("<I", aux, 0)[0]]][0]))
+                local[i] = name
+            elif section in mine:
+                head = name.startswith("$S") and cls == STATIC and value == 0
+                if head and section not in names and i not in referred:
+                    continue  # (a section's start nothing here names)
+                if span is not None and not span[0] <= value < span[1] and not (value == span[1] == self.sections[
+                        section - 1]["size"]):
+                    local[i] = names.get(section, name) if head else name  # (another part's: by its name)
+                    if not (head and section in names) and cls != EXTERNAL:
+                        fail(f"{name} is in another part of its section than what refers to it")
+                    extern[local[i]] = "BYTE"
+                    continue
+                label = names.get(section, name) if head else name
+                labels[section].append((value, label, cls == EXTERNAL or head and section in names,
+                                        typ == FUNCTION and cls == EXTERNAL))
+                local[i] = label
+            elif section > 0:  # (another file's: its public name)
+                local[i] = names[section] if name.startswith("$S") and cls == STATIC else name
+                extern[local[i]] = "BYTE"
+            elif section == -1 and cls == EXTERNAL:
+                absolute.append((name, value))
+                local[i] = name
+            else:
+                local[i] = name
+                extern[name] = "NEAR" if typ == FUNCTION or i in called else "BYTE"
+        out = [f"; {note}" if note else "", ".386", "OPTION CASEMAP:NONE", "OPTION DOTNAME", "OPTION NOSCOPED", ""]
+        defined = {label for s in sections for _, label, _, _ in labels[s]} | {n for n, _ in absolute}
+        used = {local[i] for i in referred if i in local}  # (what this file refers to: a part of a big section
+        # declares only its own, and the names that are no place, aliases and numbers, are its first part's)
+        out += [f"EXTRN {name}:{kind}" for name, kind in sorted(extern.items()) if name not in defined and name in used]
+        out += [f"PUBLIC {label}" for s in sections for _, label, public, _ in labels[s] if public]
+        if span is None or span[0] == 0:
+            # (a name that stands for another: program.json's "aliases", which assemble.py reads; ML 6.15 stopped
+            # on ALIAS)
+            out += [f"; {name} stands for {default}" for name, default in aliases]
+            self.aliases.update(aliases)
+            out += [line for name, value in absolute
+                    for line in (f"PUBLIC {name}", f"{name} EQU 0{value & 0xFFFFFFFF:X}h")]
+        rvas, at = [], 0
+        jcc = ["jo", "jno", "jb", "jae", "jz", "jnz", "jbe", "ja", "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg"]
+        for number in sections:
+            s = self.sections[number - 1]
+            seg = "CODE" if s["flags"] & CNT_CODE else f"S{number}"  # (a unit's functions: one segment, in order)
+            out += ["", f"{seg} SEGMENT BYTE PUBLIC USE32 '{'CODE' if s['flags'] & CNT_CODE else 'DATA'}' ; {s['name']}"]
+            marks = sorted(labels[number])
+            relocs = {off: (index, kind) for off, index, kind in s["relocs"]}
+            body, size = s["data"], s["size"]
+            lo = 0
+            if span is not None:  # (as if the section were only that part)
+                lo, size = span  # (the file's place: assemble.py puts it where its part starts)
+                body = body[:size] if body is not None else None
+            proc = None
+            run: list[str] = []
+            said = (texts or {}).get(number, {})  # (each instruction's text, where it starts: a comment)
+            first = [0]  # (where the bytes waiting to be written start)
+
+            def flush(run=run, out=out, said=said, first=first):
+                if run:
+                    text = said.get(first[0])
+                    out.append(" db " + ",".join(run) + (f" ; {text[1]}" if text else ""))
+                    run.clear()
+            m, i = 0, lo
+            while i < size or m < len(marks):
+                while m < len(marks) and marks[m][0] <= i:
+                    value, label, _, is_proc = marks[m]
+                    if value < i:
+                        fail(f"{label} is inside an instruction the source writes whole")
+                    flush()
+                    if is_proc:
+                        if proc:
+                            out.append(f"{proc} ENDP")
+                        out.append(f"{label} PROC NEAR")
+                        proc = label
+                    else:
+                        out.append(f"{label} LABEL BYTE")
+                    m += 1
+                if i >= size:
+                    break
+                following = marks[m][0] if m < len(marks) else size
+                if body is None:  # (uninitialised: as far as the next label, at once)
+                    flush()
+                    out += [f" ORG $+{following - i - 1}", " db ?"] if following - i > 1 else [" db ?"]
+                    i = following
+                    continue
+                def inside(width: int, m: int = m, i: int = i, marks: list = marks, out: list = out) -> int:
+                    """Labels in the middle of what's written whole next (`width` bytes: a relocated word, a call):
+                    set where they are (ORG forward and back), as other code points there."""
+                    while m < len(marks) and marks[m][0] < i + width:
+                        value, label, _, _ = marks[m]
+                        out.extend([f" ORG $+{value - i}", f"{label} LABEL BYTE", f" ORG $-{value - i}"])
+                        m += 1
+                    return m
+                if i + 1 in relocs and relocs[i + 1][1] == REL32 and body[i] in (0xE8, 0xE9) or \
+                        i + 2 in relocs and relocs[i + 2][1] == REL32 and body[i] == 0x0F and 0x80 <= body[i + 1] <= 0x8F:
+                    width = 1 if body[i] in (0xE8, 0xE9) else 2
+                    index, _ = relocs[i + width]
+                    inline = struct.unpack_from("<i", body, i + width)[0]
+                    op = "call" if body[i] == 0xE8 else "jmp" if body[i] == 0xE9 else jcc[body[i + 1] - 0x80]
+                    flush()
+                    m = inside(width + 4)
+                    out.append(f" {op} NEAR PTR {local[index]}{inline:+d}" if inline else
+                               f" {op} NEAR PTR {local[index]}")
+                    i += width + 4
+                    continue
+                if i in relocs:
+                    index, kind = relocs[i]
+                    if kind not in (DIR32, DIR32NB):
+                        fail(f"a relocation of a kind the source can't write ({kind}) in {s['name']}")
+                    inline = struct.unpack_from("<i", body, i)[0]
+                    flush()
+                    m = inside(4)
+                    out.append(f" dd OFFSET {local[index]}{inline:+d}" if inline else f" dd OFFSET {local[index]}")
+                    if kind == DIR32NB:
+                        out[-1] += " ; an RVA"
+                        rvas.append(at + i - lo)
+                    i += 4
+                    continue
+                if run and i in said:  # (a line per instruction)
+                    flush()
+                if not run:
+                    first[0] = i
+                run.append(f"0{body[i]:02X}h")
+                i += 1
+                if len(run) == 16 or i == following:
+                    flush()
+            flush()
+            if proc:
+                out.append(f"{proc} ENDP")
+            out.append(f"{seg} ENDS")
+            at += size - lo
+        out += ["", "END", ""]
+        return "\n".join(out), rvas
 
     def defined(self) -> set[str]:
         """The external names this object defines (an alias with its default too)."""
@@ -757,6 +914,8 @@ class Relink:
         self.header(program)
         return self.report(program, self.from_c, output)
 
+    resources_obj = None
+
     def resources_object(self) -> Path | None:
         """resources.obj: your copy's resources as the resource converter (CVTRES) writes them for the linker, their
         directory and data in .rsrc$01, each data entry's address a relocation; with the names the code gives places
@@ -776,6 +935,7 @@ class Relink:
         obj.sections[number - 1].update(data=bytes(body), size=len(body))
         for name, addr in self.in_resources:
             obj.symbol(name, addr - root, number)
+        self.resources_obj = obj
         path = self.out / "objects" / "resources.obj"
         path.write_bytes(obj.bytes())
         return path
@@ -877,7 +1037,7 @@ class Relink:
             if m is None:
                 continue
             addr = int(m.group(1), 16)
-            if (c := chunk_of(addr)) is not None:
+            if (c := chunk_of(addr) or chunk_of(addr, end_too=True)) is not None:  # (its end too: a loop's limit)
                 obj.symbol(name, addr - c[0], c[2])
             elif addr in self.starts:
                 obj.alias(name, self.starts[addr])
@@ -948,7 +1108,7 @@ class Relink:
         for name, value in ABSOLUTE.items():
             if name in wanted and name not in defined:
                 obj.symbol(name, value, -1)
-        self.pointers = pointers
+        self.pointers, self.chunks, self.data_obj = pointers, chunks, obj
         path = self.out / "objects" / "data.obj"
         path.write_bytes(obj.bytes())
         return path, labels
@@ -1004,6 +1164,96 @@ class Relink:
         path = self.out / "objects" / "thunks.obj"
         path.write_bytes(obj.bytes())
         return [path]
+
+    # ---------------------------------------------------------------------------------------------------- source
+    def write_source(self, folder: Path, disassemble=None) -> dict:
+        """The whole program as source, in `folder`: every function as MASM (asm/<unit>.asm, each a PROC; its C, where
+        it has any, is in src/ too), its data a file per section (asm/data_<address>.asm, every global labelled, every
+        pointer `dd OFFSET` what it points at), its resources (asm/resources.asm), and program.json: where each goes,
+        the program's header and what follows its last section (header.bin, overlay.bin), its SHA-1. tools/assemble.py
+        makes the program from it, byte for byte: a project without your copy builds from it. `disassemble(code,
+        address)`: its instructions ([(offset, length, text)]), each function's comments (decompdecomp gives one; this
+        tool alone has no disassembler)."""
+        if self.out.exists():
+            shutil.rmtree(self.out)
+        (self.out / "objects").mkdir(parents=True)
+        self.code()
+        self.from_c, self.from_copy = set(), set()  # (every function as your copy has it)
+        defined, wanted = set(), set()
+        for unit in self.units:
+            obj = self.unit(unit, {})
+            defined |= obj.defined()
+            wanted |= obj.undefined()
+        self.jumped_into = set()
+        data_path, labels = self.data(wanted, defined)
+        (folder / "asm").mkdir(parents=True, exist_ok=True)
+        pieces = []
+
+        def write(name: str, obj: Coff, sections: list[int], at: int, names: dict[int, str], note: str,
+                  span: tuple[int, int] | None = None, texts=None) -> None:
+            text, rvas = obj.masm(sections, names, note, span, texts)
+            (folder / "asm" / f"{name}.asm").write_text(text, encoding="latin-1")
+            size = span[1] - span[0] if span else sum(obj.sections[s - 1]["size"] for s in sections)
+            pieces.append({"asm": f"asm/{name}.asm", "at": at, "size": size, **({"rvas": rvas} if rvas else {})})
+        for unit in self.units:
+            obj = self.unit(unit, labels)
+            first = min(self.info["units"][unit], key=lambda fn: fn["addr"])
+            start = self.leads[first["name"]]["addr"] if first["name"] in self.leads else first["addr"]
+            texts, at = {}, start
+            for number, s in enumerate(obj.sections, 1):  # (each section a function, in order from `start`)
+                if disassemble is not None and s["data"]:
+                    texts[number] = {off: (n, text) for off, n, text in disassemble(self.image.read(at, s["size"]), at)}
+                at += s["size"]
+            write(unit, obj, list(range(1, len(obj.sections) + 1)), start, {},
+                  f"{unit}: functions as your copy has them (decompdecomp's tools/relink.py wrote this)", texts=texts)
+        names = {number: f"__d_{start:08X}" for start, _, number in self.chunks}
+        for start, end, number in self.chunks:
+            relocs = sorted(off for off, _, _ in self.data_obj.sections[number - 1]["relocs"])
+            lo = 0
+            while lo < end - start:  # (in parts of 64 KiB, none cutting a relocated word)
+                hi = min(end - start, lo + PART)
+                while any(hi - 4 < off < hi for off in relocs[bisect.bisect_left(relocs, hi - 3):][:1]):
+                    hi += 1
+                write(f"data_{start + lo:08X}", self.data_obj, [number], start + lo, names,
+                      f"the program's data from 0x{start + lo:08X} to 0x{start + hi:08X}", span=(lo, hi))
+                lo = hi
+        if self.resources_object() is not None:
+            write("resources", self.resources_obj, [1], self.image.directory(RESOURCES)[0], {},
+                  "the program's resources (their directory, then their data)")
+        # what no file has (the base relocations, which the linker makes again): its bytes, as they are
+        covered = sorted((p["at"], p["at"] + p["size"]) for p in pieces)
+        for s in self.image.sections:
+            pos, end = s["addr"], s["addr"] + len(s["raw"])
+            for a, b in [*covered, (end, end)]:
+                if b <= pos:
+                    continue
+                while pos < min(a, end):
+                    hi = min(a, end, pos + PART)
+                    obj = Coff()
+                    obj.section(s["name"], self.image.read(pos, hi - pos), CNT_DATA | READ_WRITE)
+                    write(f"raw_{pos:08X}", obj, [1], pos, {}, f"{s['name']} from 0x{pos:08X} to 0x{hi:08X}, as it is")
+                    pos = hi
+                pos = max(pos, b)
+                if pos >= end:
+                    break
+        exe = self.image.exe
+        pe = struct.unpack_from("<I", exe, 0x3C)[0]
+        count, opt_size = struct.unpack_from("<H", exe, pe + 6)[0], struct.unpack_from("<H", exe, pe + 20)[0]
+        table = []
+        for i in range(count):
+            name, vsize, va, raw_size, raw_at = struct.unpack_from("<8sIIII", exe, pe + 24 + opt_size + 40 * i)
+            tail = exe[raw_at + min(vsize, raw_size):raw_at + raw_size]
+            table.append({"name": name.rstrip(b"\0").decode("latin-1"), "addr": self.image.base + va, "vsize": vsize,
+                          "raw_at": raw_at, "raw_size": raw_size, **({"tail": tail.hex()} if tail.strip(b"\0") else {})})
+        first = min((s["raw_at"] for s in table if s["raw_size"]), default=len(exe))
+        ends = max((s["raw_at"] + s["raw_size"] for s in table), default=len(exe))
+        (folder / "header.bin").write_bytes(exe[:first])
+        (folder / "overlay.bin").write_bytes(exe[ends:])
+        aliases = {**self.data_obj.aliases, **(self.resources_obj.aliases if self.resources_obj else {})}
+        program = {"exe": self.info["exe"], "sha1": hashlib.sha1(exe).hexdigest(), "base": self.image.base,
+                   "size": len(exe), "sections": table, "pieces": pieces, "aliases": aliases}
+        (folder / "program.json").write_text(json.dumps(program, indent=1), encoding="utf-8")
+        return program
 
     # ---------------------------------------------------------------------------------------------------- report
     def report(self, program: Path, from_c: set[str], said: str) -> dict:
@@ -1062,10 +1312,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Links the game's program again with Visual C++'s linker")
     parser.add_argument("config")
     parser.add_argument("build")
-    parser.add_argument("--link", required=True, help="Visual C++'s LINK.EXE")
+    parser.add_argument("--link", default="", help="Visual C++'s LINK.EXE")
     parser.add_argument("--wrapper", default="", help="what runs it (wibo, off Windows)")
     parser.add_argument("--all-c", action="store_true",
                         help="every function the C defines, not only those it compiles to the game's code (a mod)")
+    parser.add_argument("--source", metavar="FOLDER",
+                        help="write the whole program as source there instead (MASM; tools/assemble.py makes it again)")
     parser.add_argument("--pad", type=lambda s: int(s, 0), default=0,
                         help="this many bytes (int3s) before the game's code: everything moves, as with a mod's longer "
                              "code (does the program still work?)")
@@ -1077,6 +1329,12 @@ def main() -> None:
         fail(f"{info['exe']} isn't the copy this project was made from")
     if exe[0x28:0x2C] == b"XBEH":  # (decompdecomp's consoles/xbox: the XBE inside a Windows program made of it)
         fail("an Xbox game's program is relinked as a Windows one, not an XBE, yet: `ninja rebuild` rebuilds it")
+    if args.source:
+        relink = Relink(info, Image(exe), root, Path(args.build))
+        program = relink.write_source(Path(args.source))
+        print(f"{args.source}: {info['exe']} as source, {len(program['pieces'])} files of MASM (tools/assemble.py "
+              "makes the program again from it)")
+        return
     if not args.link:
         fail("it links with Visual C++ 6.0's linker: install Visual C++ 6.0 in decompdecomp's Setup (Compilers & "
              "tools), then run tools/configure.py again")
