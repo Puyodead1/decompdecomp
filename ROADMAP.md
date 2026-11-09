@@ -526,6 +526,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   in its assembly moves everything after it. The four games link back with every section byte for byte their
   copy's; 16 bytes added to a function of the Visual C++ 6.0 one, each of the 15,854 words its base relocations
   name still points where it did, moved; the demo, edited so, runs to its end.
+- **A Windows PC project links its C and its assembly source together.** With source/, `ninja relink`
+  (tools/relink.py --asm) takes every function that isn't from C from the source, each function a segment of
+  its own (ML then writes a relocation for each call and jump between functions, so they can be taken one by
+  one), and the data and resources from the source too: C and assembly a person edited, in one program. The four
+  games link that way with every section byte for byte their copy's, and with --all-c the very program the
+  copy-based relink makes; 16 bytes added in the assembly of the Visual C++ 6.0 one beside its 260 functions
+  from C, each of the 15,854 words its base relocations name follows.
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1204,10 +1211,9 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
 - Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects
   (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
-  from, so a project builds without it), and that source, edited, linked again (done: `ninja relink-source`). Left:
-  the data as C (a global C defines is the data's copy for now), the C and the edited assembly in one link (the
-  relink takes C and your copy; relink-source the assembly alone), the game's DLLs relinked and as source too, and
-  an Xbox game's XBE.
+  from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
+  with source/, `ninja relink-source` without C). Left: the data as C (a global C defines is the data's copy for
+  now), the game's DLLs relinked and as source too, and an Xbox game's XBE.
 
 ### A modding-ready check for the export
 

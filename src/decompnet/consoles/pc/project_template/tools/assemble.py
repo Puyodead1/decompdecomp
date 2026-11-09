@@ -128,22 +128,34 @@ def assemble(program: dict, source: Path, objects: Path, ml: list[str]) -> bytes
         (source / "overlay.bin").read_bytes()
 
 
-def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list[str], out: Path) -> dict:
-    """The program linked by Visual C++'s LINK.EXE from its source's objects, as tools/relink.py links a project's:
-    each piece in the program's section it's in (by its name and flags; the part of a section past its bytes in the
-    file is .bss, as a compiler's uninitialised data), in the order program.json has them, so a function or global the
-    source makes longer or shorter moves everything after it, and what points at it follows. The base relocations
-    are the linker's (the source's copy of them isn't linked); the header the linker's, set as your copy's is, with
-    its import directories and what follows its last section (relink.py's finish). Says which pieces changed size."""
+def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: Path, skip=None) -> dict:
+    """The source's objects as Visual C++'s LINK.EXE links them, in `folder`/objects: each piece in the program's
+    section it's in (by its name and flags; the part of a section past its bytes in the file is .bss, as a compiler's
+    uninitialised data), in the order program.json has them, the words it names as RVAs DIR32NB (MASM 6.15 has no
+    IMAGEREL); the base relocations left out (the linker makes them again, for where everything is now). `skip(piece)`:
+    a piece another object stands for (tools/relink.py --asm: a unit, whose functions it takes one by one).
+    {"paths", "changed" (the pieces whose size isn't the game's), "placed" (each piece where program.json has it),
+    "skipped" ({a skipped piece's name: its object, read}), "image" (the header's settings)}."""
     relink = _relink()
     header = (source / "header.bin").read_bytes()
     image = relink.Image(header)
     table = relink.section_table(header)
     rel_rva = image.dirs[relink.BASE_RELOCATIONS][0] if relink.BASE_RELOCATIONS < len(image.dirs) else 0
-    folder = out.parent
     (folder / "objects").mkdir(parents=True, exist_ok=True)
-    paths, changed, placed = [], [], []
+    paths, changed, placed, skipped = [], [], [], {}
     for piece, obj, read in sorted(assembled(program, source, objects, ml), key=lambda p: p[0]["at"]):
+        numbers = _placed(read.sections)
+        size = sum(read.sections[n - 1]["size"] for n in numbers)
+        if size != piece["size"]:
+            changed.append(f"{piece['asm']} ({piece['size']:,} -> {size:,} bytes)")
+        at, where = piece["at"], {}
+        for n in numbers:
+            where[n] = at
+            at += read.sections[n - 1]["size"]
+        placed.append((piece, read, where))
+        if skip is not None and skip(piece):
+            skipped[Path(piece["asm"]).stem] = read
+            continue
         s = next((s for s in table if s["addr"] <= piece["at"] < s["addr"] + max(s["vsize"], s["raw_size"])), None)
         if s is None:
             sys.exit(f"assemble: {piece['asm']} is at 0x{piece['at']:08X}, in none of the program's sections")
@@ -157,15 +169,6 @@ def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list
             name, flags = ".bss", (flags & ~relink.CNT_DATA) | relink.CNT_BSS
         elif name == ".rsrc":
             name = ".rsrc$01"  # (as the resource converter names resources for the linker)
-        numbers = _placed(read.sections)
-        size = sum(read.sections[n - 1]["size"] for n in numbers)
-        if size != piece["size"]:
-            changed.append(f"{piece['asm']} ({piece['size']:,} -> {size:,} bytes)")
-        at, where = piece["at"], {}
-        for n in numbers:
-            where[n] = at
-            at += read.sections[n - 1]["size"]
-        placed.append((piece, read, where))
         data = bytearray(obj.read_bytes())
         _, count, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", data, 0)
         rvas, at = set(piece.get("rvas", [])), 0
@@ -195,6 +198,18 @@ def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list
             coff.alias(name, default)
         (folder / "objects" / "aliases.obj").write_bytes(coff.bytes())
         paths.append(folder / "objects" / "aliases.obj")
+    return {"paths": paths, "changed": changed, "placed": placed, "skipped": skipped, "image": image}
+
+
+def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list[str], out: Path) -> dict:
+    """The program linked by Visual C++'s LINK.EXE from its source's objects (prepare), as tools/relink.py links a
+    project's: a function or global the source makes longer or shorter moves everything after it, and what points at
+    it follows. The header is the linker's, set as your copy's is, with its import directories and what follows its
+    last section (relink.py's finish). Says which pieces changed size."""
+    relink = _relink()
+    folder = out.parent
+    made = prepare(program, source, objects, ml, folder)
+    paths, changed, placed, image = made["paths"], made["changed"], made["placed"], made["image"]
     entry = program.get("entry")
     if entry is None:  # (a source written before program.json named it: the public name where the program starts)
         names = public_names(program, placed)
