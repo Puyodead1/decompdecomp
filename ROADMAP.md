@@ -565,7 +565,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   64 KiB, and data.h declaring every global): each global in a section of its own named for its place
   (`#pragma data_seg(".data$00517000")`, const_seg, bss_seg: Visual C++ 6.0 aligns a char[5] to 4 and moves an
   all-zero array to .bss, so only a section per global keeps the game's layout, and the linker puts them in the
-  order of their names), a string as a string (several, NULs between them), words of floats as floats, a pointer
+  order of their names), a string as a string (several, NULs between them), words of floats as floats, a table
+  whose pointers, floats and numbers repeat at one stride as an array of a struct (`struct S_<address>`, a field
+  per word: a pointer to a string a `const char *`, other pointers `void *`; a table of strings a
+  `const char *[]`), a C++ function's exception table (its FuncInfo) a global of its own, a pointer
   as the address of what it points at (a global, a function by its convention, a place in code, an import's
   slot); the import tables, which hold RVAs C can't write, stay MASM, as does a pointer whose bytes the code names
   one by one. tools/assemble.py compiles it with Visual C++ 6.0's compiler beside its MASM: the four games and the
@@ -1187,8 +1190,8 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
   with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
-  C defines taken from it). Left: the data's types beyond words, floats and strings (a table of records is words
-  now: its struct from the code's reads, structs.py), the game's DLLs as source too (relinked: done), and an Xbox game's
+  C defines taken from it; a table of records as an array of a struct of its own, done). Left: the fields' names
+  and types from the code's reads (structs.py), the game's DLLs as source too (relinked: done), and an Xbox game's
   XBE.
 
 ### A modding-ready check for the export

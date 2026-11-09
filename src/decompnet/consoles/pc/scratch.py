@@ -3034,7 +3034,8 @@ copy of its program and compared with what `src/` compiles to, function by funct
    game's comes from the C too, at its place.
 6. decompdecomp's Export writes the whole program as source in `source/` (kept out of git: it's your copy's code
    and data): every function as MASM, and the data as C (`source/data/`, each global at its place by a
-   `#pragma data_seg`, strings as strings, pointers as addresses of what they point at; `data.h` declares them all;
+   `#pragma data_seg`, strings as strings, pointers as addresses of what they point at, a table of records as an
+   array of a struct; `data.h` declares them all;
    the import tables stay MASM). With it and without your copy, `tools/configure.py` makes `orig/{version}.exe` from
    it first (`tools/assemble.py`, Visual C++ 6.0's MASM and compiler), byte for byte. With `source/`, `ninja relink`
    takes what isn't from C from it rather than from your copy: edit a function's assembly or a global's C and it may

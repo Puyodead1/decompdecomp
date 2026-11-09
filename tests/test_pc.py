@@ -824,8 +824,8 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
     data = "".join((root / "source" / p["c"]).read_text(encoding="latin-1") for p in program["pieces"] if "c" in p)
     assert '#pragma data_seg(".data$' in data and '= "meadow";' in data  # (each global at its place; a string)
     table = _map()["_g_level_names"]
-    assert re.search(rf"void \*D_{table:08X}\[4\] = {{\s*&D_[0-9A-F]{{8}}, ", data), data  # (its pointers: the strings)
-    assert f"extern void *D_{table:08X}[];" in (root / "source" / "data" / "data.h").read_text(encoding="latin-1")
+    assert re.search(rf"\nchar \*D_{table:08X}\[4\] = {{\s*D_[0-9A-F]{{8}}, ", data), data  # (a table of strings)
+    assert f"extern char *D_{table:08X}[];" in (root / "source" / "data" / "data.h").read_text(encoding="latin-1")
     assert any(p["asm"].startswith("asm/data_") for p in program["pieces"] if "asm" in p)  # (the import tables)
     assert "source/" in (root / ".gitignore").read_text().split()
     clone = tmp_path / "clone"
@@ -4071,6 +4071,27 @@ def test_the_data_as_c_writes_strings_floats_and_pointers_as_c_reads_them_back()
         def read(self, addr, n):
             return b"_PAUSED\0\x34\x12\x40\x00"[addr:addr + n]
     assert relink.in_text(Text(), 4) and not relink.in_text(Text(), 8)
+
+
+def test_the_data_as_c_writes_a_table_of_records_as_an_array_of_a_struct():
+    """A table whose pointers, floats and numbers repeat at one stride is an array of a struct of its own (a menu's
+    {name, handler, value}: a pointer to a string a const char *, another a void *, a float a float); a stride where
+    a pointer would share a column with a number isn't one, a table of one kind stays an array, and pointers to
+    strings alone are a const char *[]."""
+    relink = _relink_tool()
+    assert relink._record(list("spi" * 4), 2) == ["s", "p", "i"]
+    assert relink._record(list("sfz" * 3), 2) == ["s", "f", "i"]  # (a column of zeros: numbers)
+    assert relink._record(list("pi" + "ip" * 3), 2) is None  # (a pointer where a number was)
+    assert relink._record(list("ffff"), 2) is None and relink._record(list("ss"), 1) is None
+    assert relink._record(list("fi" * 2), 3) is None  # (no pointers: at least 3 records)
+    words = (0x1000, 0x2000, 0x3F800000, 0x1010, 0, 0, 0, 0, 0)
+    decl, text = relink.Relink.c_records("const ", "D_00401000", ["s", "p", "f"],
+                                         ["D_00403000", "&func_00402000", "0x3F800000", "D_00403010", "0", "0",
+                                          "0", "0", "0"], words)
+    assert decl == ("struct S_00401000 {\n    const char *unk0;\n    void *unk4;\n    float unk8;\n};\n"
+                    "extern const struct S_00401000 D_00401000[];")
+    assert text == ("const struct S_00401000 D_00401000[3] = {\n    {D_00403000, &func_00402000, 1.0f},\n"
+                    "    {D_00403010}\n};")
 
 
 def test_the_relink_cuts_a_compiled_object_into_its_functions_and_writes_objects_linkexe_reads():

@@ -1787,6 +1787,12 @@ class Relink:
         bounds |= {a for a, _, _ in pointers.values() if a is not None and self.chunk_holding(a) is not None}
         for lo, hi in keep:
             bounds |= {lo, hi}
+        for start, end, number in self.chunks:  # (a C++ function's exception table, the compiler's FuncInfo: its own
+            # global, what it starts with its magic number, not the end of the unwind map before it)
+            body = obj.sections[number - 1]["data"]
+            if body is not None and not self.place_of(start)[1] & 0x80000000:
+                bounds |= {start + k for k in range(-start % 4, len(body) - 11, 4)
+                           if struct.unpack_from("<I", body, k)[0] in FUNC_INFO}
 
         def cuts_word(b: int) -> bool:  # (inside a pointer: no global starts there)
             k = bisect.bisect_left(places, b - 3)
@@ -1811,6 +1817,17 @@ class Relink:
         def holder(addr: int) -> dict | None:
             k = bisect.bisect_right(starts, addr) - 1
             return globals_[k] if k >= 0 and addr < globals_[k]["hi"] else None
+        texts = {g["lo"]: g for g in globals_ if self.text_of(g, image, pointers) is not None}
+
+        def string(addr: int | None) -> tuple[str, bool] | None:
+            """A pointer into a string of the C: its C (the string's name, which is its address, or past it) and
+            whether the string is const; None for a pointer to anything else."""
+            g = None if addr is None or kept(addr) is not None else holder(addr)
+            if g is None or g["lo"] not in texts:
+                return None
+            name = f"D_{g['lo']:08X}"
+            return (name if addr == g["lo"] else f"{name} + {addr - g['lo']}"), \
+                g["pragma"].startswith("#pragma const_seg")
         def target(addr: int) -> tuple[str, int]:
             """The name an address is reached by, and how far past it: a global's of the C (or one past its end), or
             a label where the import tables are."""
@@ -1870,7 +1887,7 @@ class Relink:
                      "data_seg), which the linker puts in that order. decompdecomp's tools/relink.py wrote this. */",
                      '#include "data.h"', ""]
             for g in group:
-                decl, text = self.c_global(g, image, pointers, pointer)
+                decl, text = self.c_global(g, image, pointers, pointer, string)
                 lines += [g["pragma"], text, ""]
                 declared.append(decl)
             path = f"data/data_{lo:08X}.c"
@@ -1948,12 +1965,24 @@ class Relink:
         fail(f"the data points at {name}, which C has no name for")
         return name
 
-    def c_global(self, g: dict, image: Image, pointers: dict, pointer) -> tuple[str, str]:
-        """A global as C: its declaration (for data.h) and its definition (after its #pragma)."""
+    @staticmethod
+    def text_of(g: dict, image: Image, pointers: dict) -> bytes | None:
+        """A global's text, when it's a string (or strings one after another, NULs between them): what C writes as
+        one. None otherwise."""
+        lo, hi = g["lo"], g["hi"]
+        if g["bss"] or any(p in pointers for p in range(lo, hi)):
+            return None
+        text = image.read(lo, hi - lo).rstrip(b"\0")
+        return text if len(text) < hi - lo and _text(text, lo) else None
+
+    def c_global(self, g: dict, image: Image, pointers: dict, pointer, string) -> tuple[str, str]:
+        """A global as C: its declaration (for data.h) and its definition (after its #pragma). `string`: write_data_c's,
+        a pointer into a string of the C as C."""
         lo, hi = g["lo"], g["hi"]
         n = hi - lo
         name = f"D_{lo:08X}"
         const = "const " if g["pragma"].startswith("#pragma const_seg") else ""
+        text = self.text_of(g, image, pointers)
         g["pragma"] += f'{lo:08X}")'
         if g["bss"]:
             if n == 4 and lo % 4 == 0:
@@ -1961,20 +1990,33 @@ class Relink:
             return f"extern u8 {name}[];", f"u8 {name}[{n}];"
         body = image.read(lo, n)
         mine = [p for p in sorted(pointers) if lo <= p < hi]
-        if mine:
-            words = []
-            for k in range(0, n, 4):
-                if lo + k in pointers:
-                    addr, target, inline = pointers[lo + k]
-                    words.append(pointer(addr, target, inline, lo + k))
+        if (lo % 4 == 0 or mine) and n % 4 == 0 and text is None:  # (pointers off a multiple of 4 too: c_globals
+            # makes them a global of their own)
+            words = struct.unpack(f"<{n // 4}I", body)
+            kinds, values = [], []
+            for k, w in enumerate(words):  # (each word: a pointer to a string, another pointer, a float, a number)
+                if lo + 4 * k in pointers:
+                    addr, target, inline = pointers[lo + 4 * k]
+                    s = string(addr)
+                    kinds.append(("s" if s[1] else "S") if s else "p")
+                    values.append(s[0] if s else pointer(addr, target, inline, lo + 4 * k))
                 else:
-                    words.append(f"0x{struct.unpack_from('<I', body, k)[0]:X}")
-            if all(lo + k in pointers for k in range(0, n, 4)):
-                values, kind = words, f"void *{const}"
-            else:
-                values = [f"(u32){w}" if lo + 4 * k in pointers else w for k, w in enumerate(words)]
-                kind = f"{const}u32 "
-            return self.c_array(kind, name, values, n // 4)
+                    f = _c_float(w)
+                    kinds.append("z" if w == 0 else "f" if f else "i")
+                    values.append("0" if w == 0 else f"0x{w:X}")
+            record = _record(kinds, 2 if mine else 3)
+            if record:
+                return self.c_records(const, name, record, values, words)
+            if mine:
+                types = set(kinds) - {"z"}
+                if types <= {"s", "S"}:  # (a table of strings)
+                    kind = f"{'const ' if types == {'s'} else ''}char *{const}"
+                    return self.c_array(kind, name, values, n // 4)
+                if not types - {"s", "S", "p"}:
+                    values = [v if kinds[k] == "p" or v == "0" else f"(void *){v}" for k, v in enumerate(values)]
+                    return self.c_array(f"void *{const}", name, values, n // 4)
+                values = [f"(u32){v}" if kinds[k] in "sSp" else v for k, v in enumerate(values)]
+                return self.c_array(f"{const}u32 ", name, values, n // 4)
         text = body.rstrip(b"\0")
         if len(text) < n and _text(text, lo):  # (a string, or strings one after another, NULs between them)
             pieces = [_c_char(c, text[k + 1:k + 2], text[k - 1:k] if k else b"") for k, c in enumerate(text)]
@@ -1996,6 +2038,33 @@ class Relink:
         if lo % 2 == 0 and n == 2:
             return f"extern {const}u16 {name};", f"{const}u16 {name} = 0x{struct.unpack('<H', body)[0]:X};"
         return self.c_array(f"{const}u8 ", name, [f"0x{c:02X}" for c in body], n)
+
+    @staticmethod
+    def c_records(const: str, name: str, columns: list[str], values: list[str],
+                  words: tuple[int, ...]) -> tuple[str, str]:
+        """A table of records as an array of a struct of its own (struct S_<address>), a field per word: a pointer
+        to a string a char *, another pointer a void *, a float a float, the rest a u32 (unk<offset> each, as
+        nothing names them yet)."""
+        types = {"s": "const char *", "S": "char *", "p": "void *", "f": "float ", "i": "u32 "}
+        size = len(columns)
+        tag = f"S_{name[2:]}"
+        fields = [f"    {types[c]}unk{4 * k:X};" for k, c in enumerate(columns)]
+        rows = []
+        for r in range(0, len(values), size):
+            row = []
+            for k, c in enumerate(columns):
+                v, w = values[r + k], words[r + k]
+                row.append(_c_float(w) if c == "f" else v)
+            rows.append(row)
+        zero = {"0", "0.0f"}
+        while rows and all(v in zero for v in rows[-1]):
+            rows.pop()
+        for row in rows:
+            while len(row) > 1 and row[-1] in zero:
+                row.pop()
+        body = ",\n    ".join("{" + ", ".join(row) + "}" for row in rows) or "{0}"
+        decl = f"struct {tag} {{\n" + "\n".join(fields) + f"\n}};\nextern {const}struct {tag} {name}[];"
+        return decl, f"{const}struct {tag} {name}[{len(values) // size}] = {{\n    {body}\n}};"
 
     @staticmethod
     def c_array(kind: str, name: str, values: list[str], count: int) -> tuple[str, str]:
@@ -2087,6 +2156,30 @@ def regrouped(read: Compiled, sections: dict[int, tuple[str, int]]) -> tuple[Cof
         for off, symbol, kind in read.sections[n - 1]["relocs"]:
             obj.reloc(number[n], off, index[symbol], kind)
     return obj, number
+
+
+FUNC_INFO = (0x19930520, 0x19930521, 0x19930522)  # (Visual C++'s exception tables' magic numbers, by version)
+
+
+def _record(kinds: list[str], rows: int) -> list[str] | None:
+    """The fields of a table of records, when its words are one: the shortest stride (2 to 32 words, at least `rows`
+    of them) at which every pointer is in a column of pointers, and whose columns aren't all of one kind (a column of
+    strings, of other pointers, of floats, of numbers: "s"/"S" a const/writable string's, "p", "f", "i"). A column of
+    zeros is numbers; one of numbers and floats, numbers. None when there's no such stride."""
+    for size in range(2, min(32, len(kinds) // rows) + 1):
+        if len(kinds) % size:
+            continue
+        columns = []
+        for k in range(size):
+            seen = set(kinds[k::size]) - {"z"}
+            pointers = seen & {"s", "S", "p"}
+            if pointers and seen - pointers:
+                break
+            columns.append("p" if "p" in seen or len(pointers) > 1 else seen.pop() if len(seen) == 1 else "i")
+        else:
+            if len({c for k, c in enumerate(columns) if set(kinds[k::size]) != {"z"}}) > 1:
+                return columns
+    return None
 
 
 def _c_char(c: int, after: bytes, before: bytes = b"") -> str:
