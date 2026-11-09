@@ -856,6 +856,11 @@ def pool_constants(build: dict, out: Path):
 _COPY = re.compile(r'\bmemcpy\s*\(\s*([^,;]+?)\s*,\s*"((?:\\.|[^"\\])*)"\s*,\s*(sizeof\s*\(\s*\w+\s*\)|0x[0-9a-fA-F]+|\d+)\s*\)')
 
 
+# a copy into a local array of all of it, from a literal or a name of the program's address
+_COPY_TABLE = re.compile(r'\bmemcpy\s*\(\s*(\w+)\s*,\s*(?:"((?:\\.|[^"\\])*)"|(?:\(\s*(?:const\s+)?void\s*\*\s*\)\s*)?&?'
+                         r'(D_[0-9A-F]{8})\b)\s*,\s*(sizeof\s*\(\s*\w+\s*\))\s*\)')
+
+
 def _program_bytes(image: bytes, address: int, size: int) -> bytes | None:
     """`size` bytes of the program at `address`, from its sections."""
     from io import BytesIO
@@ -883,6 +888,108 @@ def _sizeof(text: str, name: str) -> int | None:
     return elem
 
 
+def literal_reads(obj: bytes, image: bytes, where: dict[str, int]) -> dict[str, dict[bytes, set[int]]]:
+    """Each game function's literals, by the program addresses the game's code loads where the object loads them
+    (an immediate, `mov $table,%esi` or `push $table`: not a constant read in place, `flds 256.0f`, whose bytes may
+    start as a literal's). The matched code is the game's, so the relocated word there is the game's address."""
+    sections, symbols = _sections(obj)
+    reads: dict[str, dict[bytes, set[int]]] = {}
+    funcs = [(sym["name"], sym["value"], sym["size"], sym["shndx"]) for sym in symbols
+             if sym["type"] == 2 and sym["name"] in where]
+    for rs in sections:
+        if rs["type"] != 9:
+            continue
+        target = sections[rs["info"]]
+        for k in range(rs["size"] // 8):
+            off, info = struct.unpack_from("<II", obj, rs["offset"] + k * 8)
+            sym = symbols[info >> 8]
+            if sym["type"] != 3 or not sections[sym["shndx"]]["name"].startswith(".rodata"):
+                continue
+            if not off or not (obj[target["offset"] + off - 1] in range(0xB8, 0xC0)
+                               or obj[target["offset"] + off - 1] == 0x68):
+                continue
+            home = sections[sym["shndx"]]
+            addend, = struct.unpack_from("<i", obj, target["offset"] + off)
+            start = home["offset"] + addend
+            end = obj.find(b"\0", start, home["offset"] + home["size"])
+            if end < 0:
+                continue
+            for name, lo, size, shndx in funcs:
+                if shndx == rs["info"] and lo <= off < lo + size:
+                    game = _program_bytes(image, where[name] + off - lo, 4)
+                    if game is not None:
+                        reads.setdefault(name, {}).setdefault(obj[start:end], set()).add(struct.unpack("<I", game)[0])
+    return reads
+
+
+_SCALAR_NAMES = {"ushort": "unsigned short", "uint": "unsigned int", "uchar": "unsigned char", "u8": "unsigned char",
+                 "u16": "unsigned short", "u32": "unsigned int", "s16": "short", "s32": "int", "s8": "char"}
+_UNPACK = {1: "b", 2: "h", 4: "i"}
+
+
+def local_table(source: str, reads: dict[bytes, set[int]], image: bytes) -> str | None:
+    """`T v[12][3]; ... memcpy(v, "", sizeof(v));` (a copy from a literal the match placed at a table, or from a
+    name of its address, `(void *)D_080A899C`) as the
+    table's initializer, where the copy was: `{ T v[12][3] = { { 0, 1, 2 }, ... }; ... }`, a block to the end of the
+    one the copy is in. What GCC 2.95 builds the same code from, its table in the file's .rodata as the game's."""
+    from ...units import _mask
+    out = source
+    for m in reversed(list(_COPY_TABLE.finditer(source))):
+        var, count = m.group(1), m.group(4)
+        if re.search(r"\w+", count[6:]).group(0) != var:
+            continue
+        decl = re.search(rf"^([ \t]*)((?:unsigned |signed )?\w+) {re.escape(var)}((?:\[\d+\])+)\s*;[^\n]*\n", out[:m.start()],
+                         re.M)
+        if m.group(2) is not None:  # (a literal the match placed: where the game's code loads it)
+            literal = bytes(m.group(2), "ascii").decode("unicode_escape").encode("latin-1")
+            places = reads.get(literal) or set()
+        else:  # (a name of the program's address: `(void *)D_080A899C`)
+            literal, places = b"", {int(m.group(3)[2:], 16)}
+        kind = _SCALAR_NAMES.get(decl.group(2), decl.group(2)) if decl else None
+        if not decl or kind not in _SCALAR or len(places) != 1 or re.search(rf"\b{re.escape(var)}\b",
+                                                                              out[decl.end():m.start()]):
+            continue
+        dims = [int(d) for d in re.findall(r"\d+", decl.group(3))]
+        size = _SCALAR[kind]
+        count_all = 1
+        for d in dims:
+            count_all *= d
+        table = _program_bytes(image, next(iter(places)), size * count_all)
+        if table is None or size not in _UNPACK or not table.startswith(literal):
+            continue
+        values = list(struct.unpack("<" + (_UNPACK[size].upper() if kind.startswith("unsigned") else _UNPACK[size])
+                                    * count_all, table))
+
+        def nested(vals: list, shape: list[int]) -> str:
+            if len(shape) == 1:
+                return "{ " + ", ".join(str(v) for v in vals) + " }"
+            step = len(vals) // shape[0]
+            return "{ " + ", ".join(nested(vals[i:i + step], shape[1:]) for i in range(0, len(vals), step)) + " }"
+        # the statement's end, and the end of the block it's in
+        stmt_end = out.index(";", m.end()) + 1
+        masked = _mask(out)
+        depth, k = 0, stmt_end
+        while k < len(masked):
+            if masked[k] == "{":
+                depth += 1
+            elif masked[k] == "}":
+                if depth == 0:
+                    break
+                depth -= 1
+            k += 1
+        else:
+            continue
+        line_start = out.rfind("\n", 0, m.start()) + 1
+        close = out.rfind("\n", 0, k) + 1
+        if out[line_start:m.start()].strip() or close <= stmt_end or out[close:k].strip():
+            continue  # (the copy starts its line, and the block's `}` its own)
+        indent = out[line_start:m.start()]
+        out = (out[:decl.start()] + out[decl.end():line_start]
+               + f"{indent}{{\n{indent}{decl.group(2)} {var}{decl.group(3)} = {nested(values, dims)};"
+               + out[stmt_end:close] + f"{indent}}}\n" + out[close:])
+    return out if out != source else None
+
+
 def copied_literals(build: dict, out: Path, tc: Path, flags_of: dict[str, list[str]]):
     """`memcpy(vlist, "", sizeof(vlist))`: the code copies a table the game keeps (a local array's initializer) from
     where GCC 2.95 put a literal its C wrote, and the match placed that literal at the table's address: a plain build
@@ -898,37 +1005,7 @@ def copied_literals(build: dict, out: Path, tc: Path, flags_of: dict[str, list[s
         obj = _compile(out, tc, out / rel, flags_of.get(rel, []), text)
         if obj is None:
             return
-        sections, symbols = _sections(obj)
-        # each function's literal reads: (string, offset in the function) from its relocations into string sections
-        reads: dict[str, dict[bytes, set[int]]] = {}
-        funcs = [(sym["name"], sym["value"], sym["size"], sym["shndx"]) for sym in symbols
-                 if sym["type"] == 2 and sym["name"] in where]
-        for rs in sections:
-            if rs["type"] != 9:
-                continue
-            target = sections[rs["info"]]
-            for k in range(rs["size"] // 8):
-                off, info = struct.unpack_from("<II", obj, rs["offset"] + k * 8)
-                sym = symbols[info >> 8]
-                if sym["type"] != 3 or not sections[sym["shndx"]]["name"].startswith(".rodata"):
-                    continue
-                home = sections[sym["shndx"]]
-                addend, = struct.unpack_from("<i", obj, target["offset"] + off)
-                start = home["offset"] + addend
-                end = obj.find(b"\0", start, home["offset"] + home["size"])
-                if end < 0:
-                    continue
-                # (an address the code loads as an immediate, `mov $table,%esi` or `push $table`: not a constant the
-                # code reads in place, `flds 256.0f`, whose bytes may start as the literal's)
-                if not off or not (obj[target["offset"] + off - 1] in range(0xB8, 0xC0) or
-                                   obj[target["offset"] + off - 1] == 0x68):
-                    continue
-                for name, lo, size, shndx in funcs:
-                    if shndx == rs["info"] and lo <= off < lo + size:
-                        game = _program_bytes(image, where[name] + off - lo, 4)
-                        if game is not None:
-                            reads.setdefault(name, {}).setdefault(obj[start:end], set()).add(
-                                struct.unpack("<I", game)[0])
+        reads = literal_reads(obj, image, where)
         from ...units import chunks
         new, at = [], 0
         done = _in_both(text)

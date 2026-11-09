@@ -1631,8 +1631,8 @@ def test_a_table_copied_from_a_literal_the_match_placed_is_the_tables_bytes_in_a
                     "-o", str(out / "baserom"), str(tmp_path / "game.o")], check=True, capture_output=True,
                    env={"LD_LIBRARY_PATH": str(tc / "binutils" / "usr" / "lib")})
     # its decompilation: the literal the match placed at the table
-    (out / "src" / "tris.c").write_text('#include "common.h"\nvoid tris(unsigned short *out) { unsigned short v[12][3];\n'
-                                        '    memcpy(v, "", sizeof(v));\n    memcpy(out, v, sizeof(v)); }\n')
+    (out / "src" / "tris.c").write_text('#include "common.h"\nvoid tris(unsigned short *out)\n{\n    unsigned short v[12][3];\n'
+                                        '\n    memcpy(v, "", sizeof(v));\n    memcpy(out, v, sizeof(v));\n}\n')
     build = {"symbols": {}, "toolchain": gcc, "standalone": True,
              "functions": [{"name": "tris", "vram": 0x8048000, "c": "src/tris.c", "flags": ["-O2"]}]}
     (out / "build.json").write_text(json.dumps(build))
@@ -1640,3 +1640,19 @@ def test_a_table_copied_from_a_literal_the_match_placed_is_the_tables_bytes_in_a
     made = next(rewrite((out / "src" / "tris.c").read_text(), "src/tris.c"), "")
     body = "".join(f"\\{b:03o}" for b in struct.pack("<36H", *range(36)))
     assert f'#ifdef NON_MATCHING\n    memcpy(v, "{body}", sizeof(v));\n#else\n    memcpy(v, "", sizeof(v));\n#endif\n' in made
+    # and as the local array's initializer it was (what the export joins a file with): the same code, the table in
+    # the file's own .rodata where the game has it; from a name of the table's address alike
+    source = (out / "src" / "tris.c").read_text()
+    image = (out / "baserom").read_bytes()
+    obj = export_clean._compile(out, tc, out / "src" / "tris.c", ["-O2"], source)
+    reads = export_clean.literal_reads(obj, image, {"tris": 0x8048000})
+    table = "{ " + ", ".join("{ %d, %d, %d }" % (k, k + 1, k + 2) for k in range(0, 36, 3)) + " }"
+    made = export_clean.local_table(source, reads["tris"], image)
+    assert made == ('#include "common.h"\nvoid tris(unsigned short *out)\n{\n\n    {\n'
+                    f"    unsigned short v[12][3] = {table};\n    memcpy(out, v, sizeof(v));\n    }}\n}}\n")
+    made_obj = export_clean._compile(out, tc, out / "src" / "tris.c", ["-O2"], made)
+    assert export_clean._resolved(made_obj, {"tris": 0x8048000})[(".text", "tris")][0] == \
+        export_clean._resolved(obj, {"tris": 0x8048000})[(".text", "tris")][0]  # (the same instructions)
+    [address] = reads["tris"][b""]
+    named = source.replace('memcpy(v, "", sizeof(v))', f"memcpy(v, (void *)D_{address:08X}, sizeof(v))")
+    assert export_clean.local_table(named, {}, image) == made

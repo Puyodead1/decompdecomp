@@ -1121,14 +1121,17 @@ no decompdecomp machinery; the byte-matching build beside it (`make match`). Sta
 only where GCC 2.95 still builds the file's code (both, `#ifdef NON_MATCHING`, where not), and `make` compiles the
 tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, in this order:
 
-- Reads that depend on where variables sit (`scrnHit + 0x12 + D*18`, which is `initMaxAmmo[D - 1]`): found by
-  running `make asan`, then written as the variable they read.
+- Reads that depend on where variables sit: a read of rows past a table's end is written as the table it lands in
+  (done, under NON_MATCHING: `initMaxAmmo[Difficulty - 1]`); more come from running `make asan` longer.
 - One prototype per function: module headers (`player.h`, what the rest of the program reads of player.c) replace
   `common.h`'s declarations and its per-file copies (done), but where two files declare a function differently each
   keeps its own declaration, and a caller's `__asm__` redeclarations stay where the header's prototype changes code.
-- Names: a `.set` alias as the name itself, a constant pool's `D_x_data` as its string literals, an offset into a
-  struct (`SegmentModel + 112`) as its field, from the game's debug information.
-- A source file made one file per function (`model.c`) whole.
+- Names: an offset into a variable is its field (done, by the game's own types), a constant read from the program's
+  data is its literal in a plain build (done); left: a `.set` alias as the name itself where another file's
+  declaration blocks it, and an offset into a variable whose type has no layout.
+- A source file made one file per function joined whole: a table a function copies from a literal the match placed
+  (`memcpy(vlist, "", sizeof(vlist))`) is the local array's initializer it was (done: an arcade game's last such file
+  is whole).
 - Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects,
   first on `projects/demo-pc`, then data as C and assembly source (the modding-ready check below).
 
