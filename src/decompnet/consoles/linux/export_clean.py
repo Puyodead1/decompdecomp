@@ -1057,10 +1057,30 @@ def _header_varargs(out: Path) -> None:
                                            + m.group(0) + "#endif\n", text, count=1), encoding="utf-8")
 
 
+_EXTERN_INLINE = re.compile(r"^extern\s+(?:__inline__|__inline|inline)\b(?=[^;]*\{)", re.M)
+
+
+def _header_inlines(out: Path) -> None:
+    """The headers' gnu89 `extern __inline` functions (the copies of glibc 2.2's <bits/mathinline.h>, __rint_mode
+    and rint, a file of the game's had) always inlined in a plain build: gnu89 never emits an out-of-line copy of
+    one, so at -O0, where GCC inlines nothing, nothing defined them (NON_MATCHING: the matching build has them as
+    they were)."""
+    for header in sorted((out / "include").glob("*.h")):
+        text = header.read_text(encoding="utf-8")
+        if not _EXTERN_INLINE.search(text) or "DECOMP_EXTERN_INLINE" in text:
+            continue
+        first = _EXTERN_INLINE.search(text).start()
+        macro = ("#ifdef NON_MATCHING\n#define DECOMP_EXTERN_INLINE extern __inline __attribute__((__always_inline__))"
+                 "\n#else\n#define DECOMP_EXTERN_INLINE extern __inline\n#endif\n")
+        header.write_text(text[:first] + macro + _EXTERN_INLINE.sub("DECOMP_EXTERN_INLINE", text[first:]),
+                          encoding="utf-8")
+
+
 def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
     """Each pass over each C source file of the tree, kept where the file still compiles to the same code. Returns
     how many files each pass changed."""
     _header_varargs(out)  # (not read by the matching build: NON_MATCHING)
+    _header_inlines(out)
     where = addresses(build)
     files = [(u["c"], tuple(u.get("flags") or [])) for u in build.get("units") or [] if u.get("c")]
     files += [(f["c"], tuple(f.get("flags") or [])) for f in build["functions"] if f.get("c") and not f.get("file")
