@@ -520,6 +520,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   section as they are. tools/assemble.py makes the program from it with Visual C++ 6.0's own MASM (ml.exe 6.15,
   under wibo) and checks it against the SHA-1, and a project without the user's copy makes `orig/` from it before
   anything else: the four games above and the demo come out byte for byte (10,159 files for the largest).
+- **A Windows PC game's assembly source, edited, linked again.** `ninja relink-source` (tools/assemble.py --link)
+  links the program from source/ with Visual C++ 6.0's LINK.EXE, each file in the section the game has it in, the
+  part of a section past its bytes in the file as .bss, the base relocations the linker's: a function made longer
+  in its assembly moves everything after it. The four games link back with every section byte for byte their
+  copy's; 16 bytes added to a function of the Visual C++ 6.0 one, each of the 15,854 words its base relocations
+  name still points where it did, moved; the demo, edited so, runs to its end.
 - **A Windows game's own debug symbols.** A PC game that shipped its program database (.pdb), its linker's map or
   COFF symbols imported as if it had none. The import reads them now (Visual C++ 6.0's PDB 2.0 and the MSF 7.00 of
   .NET 2002 on, read by decompdecomp itself, no new dependency), using a PDB only with the build whose CodeView
@@ -1198,9 +1204,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
 - Then Windows PC projects, to the same end: a relink with Visual C++'s own LINK.EXE from the delinked objects
   (done: `ninja relink`, tools/relink.py; four games of 1999-2008 relink with every section byte for byte), then
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
-  from, so a project builds without it). Left: the data as C (a global C defines is the data's copy for now), source
-  edited in assembly taken by the relink (it links from the program the source makes, which must be the game's),
-  the game's DLLs relinked and as source too, and an Xbox game's XBE.
+  from, so a project builds without it), and that source, edited, linked again (done: `ninja relink-source`). Left:
+  the data as C (a global C defines is the data's copy for now), the C and the edited assembly in one link (the
+  relink takes C and your copy; relink-source the assembly alone), the game's DLLs relinked and as source too, and
+  an Xbox game's XBE.
 
 ### A modding-ready check for the export
 

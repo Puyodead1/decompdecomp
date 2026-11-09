@@ -889,20 +889,7 @@ class Relink:
         entry = self.starts.get(self.image.base + self.image.entry)
         if entry is None:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
-        argv = [*link, "/nologo", "/NODEFAULTLIB", "/INCREMENTAL:NO", "/OPT:NOREF", "/MACHINE:IX86",
-                f"/BASE:0x{self.image.base:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}",
-                f"/SUBSYSTEM:{SUBSYSTEMS.get(self.image.subsystem, 'WINDOWS')},"
-                f"{self.image.subsystem_version[0]}.{self.image.subsystem_version[1]:02d}",
-                f"/STACK:0x{self.image.stack[0]:X},0x{self.image.stack[1]:X}",
-                f"/HEAP:0x{self.image.heap[0]:X},0x{self.image.heap[1]:X}",
-                f"/MAP:{self.out / 'relink.map'}", f"/OUT:{program}"]
-        argv.append("/FIXED" if self.image.relocated() is None else "/FIXED:NO")  # (6.0's makes .exes /FIXED)
-        if self.image.characteristics & 0x20:
-            argv.append("/LARGEADDRESSAWARE")
-        if self.image.file_alignment < 0x1000:
-            argv.append("/OPT:NOWIN98")  # (6.0's linker: 512-byte file alignment; later ones have it as default)
-        # the data first: it isn't code, so the linker still puts the code first, and the data stays where the game
-        # has it while the compiled objects' own constants (strings, floats) go after it
+        argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program)]
         argv += [str(data), *map(str, objects), *map(str, imports)]
         if res is not None:
             argv.append(str(res))
@@ -941,38 +928,15 @@ class Relink:
         return path
 
     def header(self, program: Path) -> None:
-        """The import directories in the program's header, where its import tables are now (the linker sets them
-        only for tables it makes itself, from import libraries)."""
-        placed = self.placed()
-        exe = bytearray(program.read_bytes())
-        opt = struct.unpack_from("<I", exe, 0x3C)[0] + 24
-        for directory, name in ((IMPORTS, "__relink_imports"), (IAT, "__relink_iat")):
-            if name in placed:
-                struct.pack_into("<II", exe, opt + 96 + 8 * directory, placed[name] - self.image.base,
-                                 self.image.dirs[directory][1])
-        # what your copy has after its last section (an overlay: data some games keep there), but its signature
-        # (a signature is of the program it signed: the relinked one is unsigned)
+        """The program's header and overlay, as your copy has them (finish)."""
         image = self.image.exe
-        pe = struct.unpack_from("<I", image, 0x3C)[0]
-        count, opt_size = struct.unpack_from("<H", image, pe + 6)[0], struct.unpack_from("<H", image, pe + 20)[0]
-        ends = [sum(struct.unpack_from("<II", image, pe + 24 + opt_size + 40 * i + 16)) for i in range(count)]
-        overlay = bytearray(image[max(ends, default=len(image)):])
-        signed_at, signed = self.image.dirs[SECURITY] if SECURITY < len(self.image.dirs) else (0, 0)
-        if signed:
-            start = signed_at - max(ends)
-            del overlay[max(0, start):max(0, start + signed)]
+        ends = max((s["raw_at"] + s["raw_size"] for s in section_table(image)), default=len(image))
+        if finish(program, self.image, self.placed(), image[ends:], ends):
             self.trusted.append("its signature isn't carried over: the relinked program is unsigned")
-        program.write_bytes(bytes(exe) + bytes(overlay))
 
     def placed(self) -> dict[str, int]:
         """Every public symbol's address, from the linker's map."""
-        out = {}
-        for line in (self.out / "relink.map").read_text(encoding="latin-1").splitlines():
-            parts = line.split()
-            if len(parts) >= 3 and re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{8}", parts[0]) and \
-                    re.fullmatch(r"[0-9a-fA-F]{8}", parts[2]):
-                out[parts[1]] = int(parts[2], 16)
-        return out
+        return read_map(self.out / "relink.map")
 
     # ------------------------------------------------------------------------------------------------------ data
     def data(self, wanted: set[str], defined: set[str]) -> tuple[Path, dict[str, list[tuple[str, int]]]]:
@@ -1251,7 +1215,8 @@ class Relink:
         (folder / "overlay.bin").write_bytes(exe[ends:])
         aliases = {**self.data_obj.aliases, **(self.resources_obj.aliases if self.resources_obj else {})}
         program = {"exe": self.info["exe"], "sha1": hashlib.sha1(exe).hexdigest(), "base": self.image.base,
-                   "size": len(exe), "sections": table, "pieces": pieces, "aliases": aliases}
+                   "size": len(exe), "sections": table, "pieces": pieces, "aliases": aliases,
+                   "entry": self.starts.get(self.image.base + self.image.entry)}  # (assemble.py --link: its /ENTRY)
         (folder / "program.json").write_text(json.dumps(program, indent=1), encoding="utf-8")
         return program
 
@@ -1298,6 +1263,69 @@ class Relink:
                   "trusted": self.trusted, "linker": said}
         (self.out / "relink.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
         return report
+
+
+def link_options(image: Image, entry: str, map_path: Path, program: Path) -> list[str]:
+    """LINK.EXE's options for a program set as your copy's is: its address (/BASE), entry point, subsystem, stack and
+    heap, /FIXED when it has no base relocations (tools/assemble.py --link takes them too)."""
+    argv = ["/nologo", "/NODEFAULTLIB", "/INCREMENTAL:NO", "/OPT:NOREF", "/MACHINE:IX86",
+            f"/BASE:0x{image.base:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}",
+            f"/SUBSYSTEM:{SUBSYSTEMS.get(image.subsystem, 'WINDOWS')},"
+            f"{image.subsystem_version[0]}.{image.subsystem_version[1]:02d}",
+            f"/STACK:0x{image.stack[0]:X},0x{image.stack[1]:X}",
+            f"/HEAP:0x{image.heap[0]:X},0x{image.heap[1]:X}",
+            f"/MAP:{map_path}", f"/OUT:{program}"]
+    relocated = BASE_RELOCATIONS < len(image.dirs) and image.dirs[BASE_RELOCATIONS][1]
+    argv.append("/FIXED:NO" if relocated else "/FIXED")  # (6.0's makes .exes /FIXED)
+    if image.characteristics & 0x20:
+        argv.append("/LARGEADDRESSAWARE")
+    if image.file_alignment < 0x1000:
+        argv.append("/OPT:NOWIN98")  # (6.0's linker: 512-byte file alignment; later ones have it as default)
+    return argv
+
+
+def section_table(exe: bytes) -> list[dict]:
+    """A program's section headers as they are: name, address, sizes, where in the file, flags."""
+    pe = struct.unpack_from("<I", exe, 0x3C)[0]
+    count, opt_size = struct.unpack_from("<H", exe, pe + 6)[0], struct.unpack_from("<H", exe, pe + 20)[0]
+    base = struct.unpack_from("<I", exe, pe + 24 + 28)[0]
+    table = []
+    for i in range(count):
+        name, vsize, va, raw_size, raw_at, _, _, _, _, flags = struct.unpack_from("<8sIIIIIIHHI", exe,
+                                                                                    pe + 24 + opt_size + 40 * i)
+        table.append({"name": name.rstrip(b"\0").decode("latin-1"), "addr": base + va, "vsize": vsize,
+                      "raw_at": raw_at, "raw_size": raw_size, "flags": flags})
+    return table
+
+
+def read_map(path: Path) -> dict[str, int]:
+    """Every public symbol's address, from a linker's map."""
+    out = {}
+    for line in path.read_text(encoding="latin-1").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{8}", parts[0]) and \
+                re.fullmatch(r"[0-9a-fA-F]{8}", parts[2]):
+            out[parts[1]] = int(parts[2], 16)
+    return out
+
+
+def finish(program: Path, image: Image, placed: dict[str, int], overlay: bytes, overlay_at: int) -> bool:
+    """The linked program's import directories where its import tables are now (the linker sets them only for tables
+    it makes itself, from import libraries), and what your copy has after its last section (`overlay`, from
+    `overlay_at` in its file: data some games keep there) but its signature (a signature is of the program it signed:
+    the linked one is unsigned). Says whether there was a signature."""
+    exe = bytearray(program.read_bytes())
+    opt = struct.unpack_from("<I", exe, 0x3C)[0] + 24
+    for directory, name in ((IMPORTS, "__relink_imports"), (IAT, "__relink_iat")):
+        if name in placed:
+            struct.pack_into("<II", exe, opt + 96 + 8 * directory, placed[name] - image.base, image.dirs[directory][1])
+    overlay = bytearray(overlay)
+    signed_at, signed = image.dirs[SECURITY] if SECURITY < len(image.dirs) else (0, 0)
+    if signed:
+        start = signed_at - overlay_at
+        del overlay[max(0, start):max(0, start + signed)]
+    program.write_bytes(bytes(exe) + bytes(overlay))
+    return bool(signed)
 
 
 def _sibling(name: str):
