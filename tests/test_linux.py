@@ -4,7 +4,9 @@ check is the demo program built with the same toolchain (projects/demo-linux, an
 
 import json
 import re
+import shutil
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1656,3 +1658,32 @@ def test_a_table_copied_from_a_literal_the_match_placed_is_the_tables_bytes_in_a
     [address] = reads["tris"][b""]
     named = source.replace('memcpy(v, "", sizeof(v))', f"memcpy(v, (void *)D_{address:08X}, sizeof(v))")
     assert export_clean.local_table(named, {}, image) == made
+
+
+def test_a_headers_gnu89_extern_inline_functions_link_in_a_plain_build_at_o0(tmp_path):
+    """A header's gnu89 `extern __inline` functions (a game's copy of glibc 2.2's <bits/mathinline.h>: __rint_mode,
+    rint) are always inlined in a plain build: gnu89 never emits one out of line, so at -O0, where GCC inlines nothing,
+    the plain build didn't link (a tester's `make CFLAGS=-O0`). The matching build reads them as they were."""
+    from decompnet.consoles.linux import export_clean
+
+    (tmp_path / "include").mkdir()
+    header = tmp_path / "include" / "common.h"
+    header.write_text("extern double half(double x);\nextern __inline double half(double x) {\n    return x / 2;\n}\n",
+                      encoding="utf-8")
+    export_clean._header_inlines(tmp_path)
+    text = header.read_text(encoding="utf-8")
+    assert "DECOMP_EXTERN_INLINE double half(double x) {" in text and "extern double half(double x);" in text
+    export_clean._header_inlines(tmp_path)  # (once: done already)
+    assert header.read_text(encoding="utf-8") == text
+    matching = subprocess.run(["cpp", "-P", "-Iinclude", "include/common.h"], cwd=tmp_path, capture_output=True,
+                              text=True) if shutil.which("cpp") else None
+    if matching is not None:
+        assert "extern __inline double half" in matching.stdout and "always_inline" not in matching.stdout
+    if shutil.which("gcc") is None:
+        pytest.skip("needs gcc")
+    (tmp_path / "main.c").write_text('#include "common.h"\nint main(void) { return half(4.0) == 2.0 ? 0 : 1; }\n',
+                                     encoding="utf-8")
+    built = subprocess.run(["gcc", "-O0", "-std=gnu89", "-DNON_MATCHING", "-Iinclude", "main.c", "-o", "main"],
+                           cwd=tmp_path, capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    assert subprocess.run([str(tmp_path / "main")]).returncode == 0
