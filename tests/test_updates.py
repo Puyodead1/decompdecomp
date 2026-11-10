@@ -257,6 +257,34 @@ def test_an_install_from_main_updates_on_releases_only():
     assert updates.installed()["channel"] == "branch"
 
 
+def test_mains_commits_chosen_in_settings_are_the_updates_but_not_a_website_edit(monkeypatch):
+    """A fork's user wanted each commit to main as it's pushed, not only its releases: Settings' branch `main` was
+    turned back into releases. Chosen there, it stays main's commits; a commit that changes only the website or the
+    CI isn't one to install."""
+    head, have = "4" * 40, "5" * 40
+    files = {"value": [{"filename": "src/decompnet/units.py"}]}
+
+    def fake(url):
+        if url.endswith("commits/main"):
+            return {"sha": head, "commit": {"message": "Linux export: rebuilds", "committer": {}}}
+        if "/compare/" in url:
+            return {"status": "ahead", "commits": [{"commit": {"message": "Linux export: rebuilds"}}],
+                    "files": files["value"]}
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(updates, "_json", fake)
+    monkeypatch.setattr(updates, "_branch_version", lambda repo, sha: "1.0.9a4+puyo.46")
+    found = updates.switch_to("branch", "main")
+    assert found["current"]["channel"] == "branch" and found["current"]["chosen"] is True
+    updates.info_file().parent.mkdir(parents=True, exist_ok=True)
+    updates.info_file().write_text(json.dumps({"channel": "branch", "branch": "main", "commit": have,
+                                               "chosen": True, "repo": updates.REPO}))
+    assert updates.installed()["channel"] == "branch"  # (chosen: not turned back into releases)
+    assert updates.check()["available"]
+    files["value"] = [{"filename": "site/public/index.html"}, {"filename": ".github/workflows/site.yml"}]
+    assert not updates.check()["available"]
+
+
 def test_an_update_from_1_0_2_restarts_into_the_new_version_with_a_window(monkeypatch):
     """1.0.2's updater restarts into the new version with `--no-browser --port N` and no word about a window (it had
     a browser tab): the new `decomp` must take those arguments, or the update ends the app, and open its window."""
@@ -300,7 +328,7 @@ def test_settings_switch_between_releases_and_a_branch(monkeypatch):
         updates.switch_to("branch", "a b")
     updates.record("branch", "polish-everywhere", head)
     monkeypatch.setattr(updates, "_get", lambda url, timeout=15: b'VERSION="0.0.1"\n')  # older than the branch
-    back = updates.switch_to("branch", "main")  # main is what releases are made from
+    back = updates.switch_to("release")
     assert back["available"] and back["current"]["channel"] == "release" and back["latest"]["version"] == "0.0.1"
     monkeypatch.setattr(updates, "can_apply", lambda: (True, ""))
     installed = []

@@ -45,9 +45,11 @@ def installed() -> dict:
         data = {}
     if not isinstance(data, dict) or data.get("channel") not in ("release", "branch"):
         data = {"channel": "release"}
-    if data["channel"] == "branch" and data.get("branch") in ("", None, "main"):
+    if data["channel"] == "branch" and (data.get("branch") in ("", None) or
+                                        data.get("branch") == "main" and not data.get("chosen")):
         # main is the release line: installed from a checkout of it, every commit (a website edit too) was offered
-        # as an update; it updates on releases, as an install from the installer does
+        # as an update; it updates on releases, as an install from the installer does, unless the user chose its
+        # commits in Settings (`chosen`)
         data = {**data, "channel": "release", "branch": "", "commit": ""}
     data.setdefault("repo", REPO)
     data["version"] = __version__
@@ -128,6 +130,10 @@ def _check_branch(cur: dict) -> dict:
             cmp = _json(f"https://api.github.com/repos/{repo}/compare/{have}...{sha}")
             if cmp.get("status") in ("identical", "behind"):
                 available = False
+            # only the website or the CI changed: nothing of the app's (main's commits, a site edit among them)
+            files = [f.get("filename") or "" for f in cmp.get("files") or []]
+            if files and all(f.startswith(("site/", ".github/")) for f in files):
+                available = False
             notes = [_first_line(c["commit"]["message"]) for c in reversed(cmp.get("commits") or [])][:12]
         except (urllib.error.HTTPError, KeyError, ValueError):  # a commit GitHub doesn't know (never pushed)
             pass
@@ -147,8 +153,8 @@ def switch_to(channel: str, branch: str = "") -> dict:
     """What check() says, for another source than this copy's: releases, or a branch's newest commit. Always
     "available": a source isn't newer or older, the user chose it (Settings, Get decompdecomp from)."""
     branch = branch.strip()
-    if channel == "branch" and branch in ("", "main"):
-        channel = "release"  # main is what releases are made from
+    if channel == "branch" and not branch:
+        channel = "release"
     if channel not in ("release", "branch"):
         raise ValueError("get decompdecomp from releases or a branch")
     if channel == "branch" and (not BRANCH_NAME.match(branch) or ".." in branch):
@@ -156,6 +162,8 @@ def switch_to(channel: str, branch: str = "") -> dict:
     cur = installed()
     target = {**cur, "channel": channel, "branch": branch if channel == "branch" else "", "commit": "",
               "version": "0"}  # (nothing installed from there: whatever it has is the one to install)
+    # main's newest commits, by choice: what releases are made from, every commit an update (installed())
+    target["chosen"] = channel == "branch" and branch == "main"
     out = {"current": target, "error": None, "checked": time.time(), "can_apply": can_apply()[0],
            "why_not": can_apply()[1]}
     try:
@@ -230,6 +238,8 @@ def install(found: dict, log=print) -> dict:
     data = {"channel": cur["channel"], "repo": cur.get("repo") or REPO, "branch": cur.get("branch") or "",
             "commit": found["latest"].get("commit") or "", "version": found["latest"].get("version") or "",
             "t": time.time()}
+    if cur.get("chosen"):
+        data["chosen"] = True  # (main's commits, chosen in Settings: installed())
     info_file().parent.mkdir(parents=True, exist_ok=True)
     info_file().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return data
