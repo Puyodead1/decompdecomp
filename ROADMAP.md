@@ -214,8 +214,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   holds each as released (libs/lua-5.1.4); Match library sources compiles every source file with the game's
   compiler and sets aside each function it makes byte for byte as library code, and the libraries' headers are in
   every compile. On Demo Quest of 2008, zlib's source set aside 56 of its 57 functions. Left: a whole-file compile
-  puts a function's strings beside its file's others, so a function with strings (zlibVersion) isn't taken; header-
-  only template code (boost, the C++ library) instantiated in the game's own files isn't matched from its source yet.
+  puts a function's strings beside its file's others, so a function with strings (zlibVersion) isn't taken. Header
+  code (the C++ library's and a libs/ library's templates the compiler wrote out in the game's own files) and
+  proprietary middleware's own (Scaleform GFx, no source anywhere) are set aside as no one's to write (done: of a
+  2008 C++ program's 49,000 open functions, 28,589: 13,286 the C++ library's, 7,629 Scaleform's, 5,925 boost's).
   On a 2008 C++ program: 5,245 functions (Ogre's and boost's code in its files, luabind, Lua, OIS, TinyXML, libogg,
   libvorbis, libtheora, libpng, zlib), each library tried with its own builds (-O0 -march=amdfam10 in its tree, its
   configure's flags in decompdecomp-flags.txt). The x86 judge links -fPIC code's GOT and PLT relocations (GOTPC,

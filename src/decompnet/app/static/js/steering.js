@@ -590,9 +590,8 @@ async function renderLibraries() {
   try { r = await api(`/api/libraries?slug=${S.slug}`); } catch { box.hidden = true; return; }
   box.hidden = false;
   $("librariesText").textContent = r.libraries.length
-    ? `Library sources in libs/: ${r.libraries.join(", ")}. Their headers are in every compile; matching compiles their source files with the game's compiler and sets aside each function they make byte for byte as library code.`
-    : "A library the game has built into it (Lua, boost...) can be matched from its own source: put each, as it was released, in a folder of its own in the project folder's libs/ (libs/lua-5.1.4), then match.";
-  $("librariesBtn").disabled = !r.libraries.length;
+    ? `Library sources in libs/: ${r.libraries.join(", ")}. Their headers are in every compile; matching compiles their source files with the game's compiler and sets aside each function they make byte for byte as library code, then the code no one writes by hand: the C++ library's and these libraries' templates the compiler wrote out in the game's files, and proprietary middleware's own (Scaleform GFx).`
+    : "A library the game has built into it (Lua, boost...) can be matched from its own source: put each, as it was released, in a folder of its own in the project folder's libs/ (libs/lua-5.1.4), then match. Matching also sets aside the C++ library's template code and proprietary middleware's own, which no one writes by hand.";
 }
 $("librariesBtn").onclick = async () => {
   const button = $("librariesBtn"), log = $("librariesLog"), work = $("librariesWork");

@@ -1826,3 +1826,50 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
                                    (t.index("int f(void)\n{"), t.index("}\n") + 1) if n == "f" else None)) == \
         ("#ifdef NON_MATCHING\nlong f(void);\n#else\nint f(void);\n#endif\n#ifdef NON_MATCHING\nint f(void)\n{\n"
          "    return 2;\n}\n#else\nint f(void)\n{\n    return 1;\n}\n#endif\n")
+
+
+def test_header_code_and_middleware_are_set_aside_and_the_games_own_code_stays(demo43, tmp_path):
+    """A 2008 C++ program had 54,000 functions, half of them no one's to write: template code of the C++ library's and
+    boost's the compiler wrote out in the game's own files (13,286 and 5,925), luabind's and Ogre's, and Scaleform
+    GFx's own code (7,629, proprietary: no source anywhere). They're set aside by the namespace their demangled name
+    is in (std, and each one a library in libs/ opens first in its headers) and, for the middleware, by its classes'
+    names where the program has enough of them and they have no debug information; the game's own code stays, a
+    namespace of its own named as boost names a nested one (`debug`) too."""
+    import json as json_
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.app.engine.libraries import library_namespaces, outer_name
+
+    program, factory = demo43
+    work = factory.mktemp("header")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    proj = net._project(slug)
+    root = Path(proj["root"])
+    for path, text in (("libs/boost_1_36_0/boost/a.hpp", "namespace boost {\nnamespace debug {\n}\n}\n"),
+                       ("libs/boost_1_36_0/boost/b.hpp", "namespace boost {\n}\n"),
+                       ("libs/boost_1_36_0/libs/x/example/e.hpp", "namespace example {\n}\n"),
+                       ("libs/boost_1_36_0/libs/x/example/f.hpp", "namespace example {\n}\n")):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    assert library_namespaces(root) == {"boost": "boost_1_36_0"}  # (not `debug`, nor its examples' `example`)
+    assert outer_name("void boost::function_requires<boost::a<int> >(void)") == "boost"
+    assert outer_name("non-virtual thunk to GFxSprite::OnTimer(void*)") == "GFxSprite"
+    game = {"debug": {"source": "src/graphics/x.cpp"}}
+    rows = [("_ZNSt6vectorIiE4push", "std::vector<int, std::allocator<int> >::push_back(int const&)", game),
+            ("_ZN5boost17function_req", "void boost::function_requires<int>(void)", game),
+            ("_ZN8graphics4ChangeEv", "graphics::Transition::Change()", game),
+            ("_ZN5debug3LogEi", "debug::Log(int)", game),  # (the game's own debug namespace)
+            ("_ZN2GT8IteratorEv", "GT::Iterator::next()", game),  # (a game class named G + capital, with debug)
+            ("_ZN9GRenderer4DrawEv", "GRenderer::Draw()", {})]
+    rows += [(f"_ZN9GFxSprite{i}Ev", f"GFxSprite::f{i}()", {}) for i in range(200)]
+    with net.store.tx() as db:
+        for k, (name, demangled, meta) in enumerate(rows):
+            db.execute("INSERT INTO functions(project_id, name, size, status, vram, meta) VALUES(?,?,?,?,?,?)",
+                       (proj["id"], name, 4, "open", 0x9000000 + 16 * k, json_.dumps({**meta, "demangled": demangled})))
+    found = net.set_aside_header_code(slug, log=lambda *_: None)
+    assert found == {"the C++ library's": 1, "boost_1_36_0": 1, "Scaleform GFx": 201}, found
+    status = {r["name"]: r["status"] for r in net.store.all("SELECT name, status FROM functions WHERE project_id=?",
+                                                            proj["id"])}
+    assert status["_ZN8graphics4ChangeEv"] == status["_ZN5debug3LogEi"] == status["_ZN2GT8IteratorEv"] == "open"
+    assert status["_ZN9GRenderer4DrawEv"] == status["_ZNSt6vectorIiE4push"] == "asm"
