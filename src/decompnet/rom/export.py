@@ -25,6 +25,7 @@ from .. import toolchains
 from ..hostenv import NO_WINDOW, console_python
 from ..limits import capped
 from ..project import compiler_for
+from ..units import only_own
 from . import match
 from .symbols import AUTO_NAME
 
@@ -51,7 +52,7 @@ def exported_header(text: str) -> str:
     return _TEMPLATE_NOTE.sub("", text, count=1)
 
 
-def exported_source(prelude: str, include: str, source: str, name: str = "", others: set[str] = frozenset()) -> str:
+def exported_source(prelude: str, include: str, source: str) -> str:
     """A matched function's file in the export: its header first, as the judge compiled it. The judge offers the
     shared header as context.h, and some agents include it themselves: the export's header has the project's own
     name (common.h), so their #include "context.h" names that instead (#4: Champions of Norrath's export stopped
@@ -59,13 +60,9 @@ def exported_source(prelude: str, include: str, source: str, name: str = "", oth
     C that said `#pragma decompdecomp no_context` was judged without the shared header, with the real headers it
     includes itself: so it's exported, the pragma (the app's, nothing to a compiler) left out. With common.h first,
     a Linux program's function that includes <math.h> stopped the rebuild ("redefinition of `_IEEE_'": common.h
-    has the program's copy of math.h's declarations).
-    `name`'s file keeps only its own definition of the program's functions (`others`): units.only_own."""
+    has the program's copy of math.h's declarations)."""
     from ..compiler import NO_CONTEXT
-    from ..units import only_own
 
-    if name and others:
-        source = only_own(source, name, set(others))
     if NO_CONTEXT.search(source):
         return f"{prelude}{NO_CONTEXT.sub('', source).strip()}\n"
     return f'{prelude}#include "{include}"\n\n{CONTEXT_INCLUDE.sub(f"#include \"{include}\"", source.strip())}\n'
@@ -189,12 +186,19 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
             continue
         unit = net._effective_unit(row, units)
         hdr = net._context(proj["id"], unit)["header"]
-        compiled = net._compile(proj, hdr, row["matched_source"], row)
+        # its own definition only (units.only_own), checked as it's written; else as it matched (a function GCC
+        # inlines another of the file into matches only with that one's C before it)
+        for own in dict.fromkeys((only_own(row["matched_source"], row["name"], program_functions),
+                                  row["matched_source"])):
+            compiled = net._compile(proj, hdr, own, row)
+            linked = match.link(compiled.obj, row["name"], net._rom_target(row), net.symbols(proj["id"]),
+                                net.reader(proj)) if compiled.ok else None
+            if linked is not None and linked.exact:
+                break
         if not compiled.ok:
             as_fallback.append((f["name"], "doesn't compile any more"))
             f["kind"] = "asm"
             continue
-        linked = match.link(compiled.obj, row["name"], net._rom_target(row), net.symbols(proj["id"]), net.reader(proj))
         if not linked.exact:
             as_fallback.append((f["name"], "no longer matches"))
             f["kind"] = "asm"
@@ -214,8 +218,7 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
         src.parent.mkdir(parents=True, exist_ok=True)
         include = "common.h" if not unit else f"common_{unit}.h"
         prelude = toolchains.get(compiler_for(cfg, row["vram"])["toolchain"]).prelude
-        src.write_text(exported_source(prelude, include, row["matched_source"], row["name"], program_functions),
-                       encoding="utf-8")
+        src.write_text(exported_source(prelude, include, own), encoding="utf-8")
         f["kind"] = "c"
         f["src"] = src.relative_to(out).as_posix()
         f["obj"] = f"build/src/{f['seg']}/{f['name']}.o"

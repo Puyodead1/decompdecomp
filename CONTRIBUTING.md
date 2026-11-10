@@ -251,6 +251,13 @@ Example: PC has Visual C++ 6.0 to 2010, and you want Visual C++ 2012 (11.0).
    for the PS2's compilers, `projects/demo-pc/build.py <version>` for Visual C++) and add it to that console's test
    (`OTHER_COMPILERS` in `tests/test_ps2.py`, `NEWER` in `tests/test_pc.py`), skipped
    when it isn't installed: `pytest.mark.skipif(toolchains.installed(...) is None, reason="needs ...")`.
+   Matching isn't the whole of it: **export that demo and check it rebuilds and relinks** with the new compiler too
+   (`res["identical"]` and `res["relinked"]` from `export_rom`; `projects/demo-linux/build.py <toolchain>` and
+   `test_a_program_egcs_built_matches_from_its_c_rebuilds_and_relinks` in `tests/test_linux.py`). egcs 1.1.2 was
+   added with its functions matching, and the first export of a program it built stopped five times: an option it
+   predates (`-fdata-sections`), a linker script its binutils 2.9.1 can't read, the STABS string table that binutils
+   writes, and weak imports its linker made of glibc's aliases. A compiler's own limits are facts in its
+   `toolchains.toml` entry (`data_sections = false`), not guesses from its name.
 9. **Say it**: the compiler in ROADMAP.md, README.md and docs/GUIDE.md where they list the console's compilers.
 
 ### Adding a kit (a compiler or SDK users bring)

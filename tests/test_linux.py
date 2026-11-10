@@ -81,6 +81,21 @@ def test_a_header_written_once_is_put_back_in_each_unit_with_its_types_numbered_
     assert number != "2" and (0x20, f"v:G({number},1)", 0, 0) in b and (0x20, "w:G(0,1)", 0, 0) in b
 
 
+def test_the_first_units_source_at_string_offset_0_is_read():
+    """binutils 2.9.1 (egcs 1.1.2's) merges .stabstr with the first unit's source name at offset 0, no empty string
+    first: read as none, that unit was lost, and with it each header it wrote for the rest (N_BINCL), so an egcs
+    program's later files had no types for their globals."""
+    strings = b"a.c\0h.h\0T:t(1,1)=s4x:(0,1),0,32;;\0b.c\0v:G(1,1)\0"
+    at = {name: strings.index(name.encode() + b"\0") for name in ("a.c", "h.h", "b.c", "v:G(1,1)")}
+    at["T"] = strings.index(b"T:t(")
+    stab = (_stab(0, 0, len(strings))
+            + _stab(at["a.c"], 0x64, 0) + _stab(at["h.h"], 0x82, 9) + _stab(at["T"], 0x80, 0) + _stab(0, 0xA2, 0)
+            + _stab(at["b.c"], 0x64, 0) + _stab(at["h.h"], 0xC2, 9) + _stab(at["v:G(1,1)"], 0x20, 0))
+    assert at["a.c"] == 0
+    (first, a), (second, b) = debuginfo.entries(stab, strings)
+    assert (first, second) == ("a.c", "b.c") and any(t.startswith("T:t(") for _, t, *_ in b)
+
+
 def test_a_typedefs_anonymous_struct_numbered_apart_is_written_with_its_body():
     """GCC 2.95 for i386 writes `typedef struct { ... } Foo;` as Foo:t(1,1)=(1,2)=s...: the struct isn't one of its
     file's named types, and the header declared it without its body (64 fields of a 2001 Linux game incomplete)."""
@@ -1093,6 +1108,66 @@ def test_a_program_gcc_4_3_built_matches_from_its_c_and_rebuilds(demo43):
         assert out["matched"], (name, out["text"][:600])
     res = net.export_rom(slug, log=lambda *_: None)
     assert res["identical"] and res["matched"] == len(names), res["log"][-2000:]
+    assert res["relinked"], res["log"][-2000:]
+
+
+EGCS = "egcs-1.1.2-linux"
+
+
+@pytest.fixture(scope="module")
+def demo_egcs(tmp_path_factory):
+    """Demo Quest built -g with Slackware 7.0's egcs 1.1.2 and binutils 2.9.1 (projects/demo-linux/build.py
+    egcs-1.1.2-linux)."""
+    import json
+    import subprocess
+    import sys
+
+    from decompnet import toolchains
+
+    from .test_consoles import ROOT, ZLIB
+
+    if toolchains.installed(EGCS) is None or not ZLIB.exists():
+        pytest.skip(f"needs {EGCS} and zlib")
+    folder = ROOT / "projects" / "demo-linux"
+    build = folder / f"build-{EGCS}"
+    if not (build / "demo.json").exists():
+        subprocess.run([sys.executable, str(folder / "build.py"), EGCS], check=True)
+    return build / json.loads((build / "demo.json").read_text())["game"], tmp_path_factory
+
+
+def test_a_program_egcs_built_matches_from_its_c_rebuilds_and_relinks(demo_egcs):
+    """Each compiler a console offers gets its demo exported and relinked: egcs 1.1.2 was added with its functions
+    matched, and a 1999 program's export then stopped at -fdata-sections (which egcs predates) and at a linker script
+    binutils 2.9.1 can't read. A function whose C carried another function's definition keeps only its own."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.forks import csource
+
+    from .test_consoles import DEMO_GAME
+
+    program, factory = demo_egcs
+    work = factory.mktemp("egcs")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    assert net.cfg(net._project(slug))["compiler"]["toolchain"] == EGCS
+    game = DEMO_GAME.read_text()
+    defines = "".join(f"{line}\n" for line in (DEMO_GAME.parent / "game.h").read_text().splitlines()
+                      if line.startswith("#define"))
+    agent, _ = net.local_agent("claude-opus-5.5-1")
+    names = ("abs_s32", "rng_next", "lerp", "add_score", "count_alive_entities", "clamp_s32", "player_take_damage",
+             "entity_update_physics", "checksum_save", "entity_default_hp", "entity_collides", "entity_spawn",
+             "game_tick")
+    for name in names:
+        src = csource.get(game, name)
+        if name == "clamp_s32":  # (an agent's C that defines another of the program's functions too)
+            src += "\n" + csource.get(game, "abs_s32")
+        net.claim(agent, slug, name)
+        out = net.attempt(agent, name, defines + src, slug)
+        assert out["matched"], (name, out["text"][:600])
+    kept = net.store.one("SELECT matched_source FROM functions WHERE name='clamp_s32'")["matched_source"]
+    assert "s32 abs_s32(s32 v) {" not in kept and "abs_s32(s32 v);" in kept  # (its own definition only)
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"] and res["matched"] == len(names), res["log"][-2000:]
+    assert res["relinked"], res["log"][-2000:]
 
 
 REDHAT = "gcc-4.3.2-redhat-linux"

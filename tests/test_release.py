@@ -331,3 +331,27 @@ def test_a_brief_leaves_out_notes_that_only_say_an_open_function_matches(tmp_pat
     section = "\n".join(net.notes_for_brief(net.store.one("SELECT * FROM functions WHERE id=?", fid)))
     assert "no work needed" not in section and "1 note saying it already matches left out" in section
     assert "[out of date" in section and "func_0206d4f8" in section
+
+
+def test_a_match_keeps_only_its_own_definition_of_the_programs_functions_where_that_still_matches(tmp_path):
+    """An agent's C for one function of a Linux program's file defined three more of it: the judge compares only the
+    function judged, and saves, briefs and the export had them twice, one never judged ("undefined reference to
+    `sin'" in the export's build). A match keeps its C without them where that still matches; the attempt is as
+    sent."""
+    from types import SimpleNamespace
+
+    net, _ = _game(tmp_path, [("f", 10, "open"), ("g", 10, "open")])
+    a, _ = net.local_agent("a")
+    source = "int f(void)\n{\n    return 1;\n}\n\nint g(void)\n{\n    return 2;\n}\n"
+    compiled = []
+    net._compile = lambda proj, header, src, fn=None: (compiled.append(src), SimpleNamespace(ok=True, obj=b""))[1]
+    net._context = lambda project_id, unit="": {"header": "", "version": 1}
+    trimmed = "int f(void)\n{\n    return 1;\n}\nint g(void);\n"
+    for still_matches, kept in ((True, trimmed), (False, source)):
+        net._judged_exact = lambda proj, fn, obj, near=True, ok=still_matches: ok
+        fn = net.store.one("SELECT * FROM functions WHERE name='f'")
+        net._record(fn, a, 0, source, 1, matched=True)
+        row = net.store.one("SELECT matched_source, best_source FROM functions WHERE name='f'")
+        assert row["matched_source"] == kept and row["best_source"] == kept
+        assert compiled[-1] == trimmed  # (judged as it'd be kept)
+        assert net.store.one("SELECT source FROM attempts ORDER BY id DESC LIMIT 1")["source"] == source

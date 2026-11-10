@@ -1601,10 +1601,31 @@ class Network:
         return (f"\nWaiting for this one: {', '.join(r['name'] for r in rows)}. They come first in the queue now; "
                 f"claim_function(function=\"{rows[0]['name']}\") takes one next.")
 
+    def _own_source(self, fn, source: str) -> str:
+        """A match's C as the function's own: without the definitions it carried of the program's other functions
+        (units.only_own), where that still matches; else as it was. The judge compares only the function judged, and
+        an agent's C for one function of a Linux program's file defined three more of it: saves, briefs and the
+        export had them twice, one never judged ("undefined reference to `sin'" in the export's build)."""
+        from . import units
+
+        names = {r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=?", fn["project_id"])}
+        trimmed = units.only_own(source, fn["name"], names)
+        if trimmed == source:
+            return source
+        try:
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            result = self._compile(proj, self._context(proj["id"], fn["unit"])["header"], trimmed, fn)
+            if result.ok and self._judged_exact(proj, fn, result.obj, near=False):
+                return trimmed
+        except Exception:  # (a project mode's function, a compiler gone: keep what matched)
+            pass
+        return source
+
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent"):
         now = time.time()
         compiled = score is not None if compiled is None else compiled
+        kept = self._own_source(fn, source) if matched else source  # (the attempt is as it was sent)
         with self.store.tx() as db:
             db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
                        "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
@@ -1616,7 +1637,7 @@ class Network:
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
                            "matched_at=?, best_score=0, best_source=? WHERE id=?",
-                           (source, agent.id, now, source, fn["id"]))
+                           (kept, agent.id, now, kept, fn["id"]))
                 db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
         if matched:

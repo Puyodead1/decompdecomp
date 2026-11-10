@@ -75,7 +75,9 @@ def entries(stab: bytes, strings: bytes) -> list[tuple[str, list[tuple[int, str,
             base, next_base = next_base, next_base + value
             continue
         at = base + strx
-        text = strings[at:strings.index(b"\0", at)].decode("latin-1") if strx and at < len(strings) else ""
+        # (offset 0 is a string like any other: binutils 2.9.1's merged table starts with the first unit's source,
+        # `main.c`, no empty string first; read as none, that unit and the headers it wrote for the rest were lost)
+        text = strings[at:strings.index(b"\0", at)].decode("latin-1") if at < len(strings) else ""
         if code == N_SO and text and not text.endswith("/"):
             unit, open_ranges = [], []
             files = [0]
