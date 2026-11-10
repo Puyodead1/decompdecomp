@@ -404,7 +404,8 @@ class RangeChecks:
             if fn:
                 self.net.set_priority(proj["slug"], fn["name"], False)
         with self.net.store.tx() as db:
-            self.net._event(db, proj["id"], None, "compiler", f"range check #{c['id']} ({short}): {text}")
+            self.net._event(db, proj["id"], None, "compiler", f"range check #{c['id']} of suggestion #{c.get('suggestion')} "
+                                                               f"({short}): {text}")
 
     def _save(self, proj, c: dict, said: str, resolve: str | None = None) -> None:
         c["said"] = said

@@ -483,7 +483,8 @@ class FileCompilers:
             for f in self._rows_by_file(proj).get(source, ()):
                 self.net.set_priority(slug, f["name"], False)
         with self.net.store.tx() as db:
-            self.net._event(db, proj["id"], None, "compiler", f"range check #{c['id']} ({compiler}): {text}")
+            self.net._event(db, proj["id"], None, "compiler", f"range check #{c['id']} of suggestion #{c.get('suggestion')} "
+                                                               f"({compiler}): {text}")
 
     def _save(self, slug: str, c: dict, said: str, resolve: str | None = None) -> None:
         c["said"] = said

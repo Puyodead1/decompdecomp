@@ -310,3 +310,12 @@ def test_a_linux_program_is_taken_by_the_page(gui):
     "isn't a game file decompdecomp can start from" before, and the server never saw it)."""
     linux = gui["checks"]["linux"]
     assert linux["good"] == ["linux", "Linux program (i386 ELF)", 0x08048A20] and linux["wide"] is None
+
+
+def test_a_suggestion_shows_its_number():
+    """Range checks, agents' notes and the event log name suggestions by number; the cards said only "suggested", so
+    which was which couldn't be told (tests/gui_suggestions.js)."""
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_suggestions.js"))], check=True,
+                   capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)

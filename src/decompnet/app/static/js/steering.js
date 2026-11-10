@@ -122,7 +122,8 @@ const saidText = (text) => `<div class="said-text">${miniMarkdown(text)}</div>`;
 const tcName = (id) => (S.st?.toolchains || []).find((t) => t.id === id)?.name || id;
 function suggestionHtml(s) {
   const ok = s.check && s.check.includes("matches the game");
-  return `<div class="note">${saidHead(s.agents.length > 1 ? `${s.agents.length} agents agree` : "suggested", s.agents, s.t, true)}${saidText(s.text)}
+  // (its number: what a range check, an agent's note and the event log call it, "range check #2 (suggestion #8)")
+  return `<div class="note">${saidHead(`suggestion #${s.id}` + (s.agents.length > 1 ? ` · ${s.agents.length} agents agree` : ""), s.agents, s.t, true)}${saidText(s.text)}
     ${s.check ? `<p class="said-check${ok ? " ok" : ""}">${ok ? "✓ " : ""}${esc(s.check)}</p>` : ""}
     ${s.toolchain ? "" : `<p class="small muted">Said in words only, untested: nothing here to apply. Where each file has flags of its own, agents' search_flags now keeps the ones that match; read this, then dismiss it.</p>`}
     <div class="row">${s.toolchain ? `<button class="primary small-btn" type="button" data-apply="${s.id}">Use ${esc(tcName(s.toolchain))} ${esc(s.flags.join(" "))}${(s.ranges || []).length ? ` for ${plural(s.ranges.length, "part")}` : ""}</button>` : ""}<button class="ghost small-btn" type="button" data-dismiss="${s.id}">${s.toolchain ? "Not now" : "Dismiss"}</button></div></div>`;
