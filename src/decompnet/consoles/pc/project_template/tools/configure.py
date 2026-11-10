@@ -210,7 +210,7 @@ def main() -> None:
                         variables={"objects": (BUILD / folder).as_posix()})
         targets = [(BUILD / "target" / f"{u}.obj").as_posix() for u in units]
         n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"], implicit=[exe])
-        objs = []
+        objs, debug_objs = [], []
         versions, more = file_compilers(), file_flags()
         harness, harness_files = set(), []
         if LTCG:  # ---- harness mode (tools/ltcg.py, tools/dll2coff.py)
@@ -238,6 +238,14 @@ def main() -> None:
                                "runner": q(runner(version)).replace("$", "$$"),
                                "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
             objs.append(obj)
+            # the same with CodeView (/Z7) for `ninja reccmp`: its PDB's lines are how reccmp finds a function of the C
+            debug_objs.append((BUILD / "reccmp-src" / src.with_suffix(".obj")).as_posix())
+            n.build(debug_objs[-1], "cl", src_posix,
+                    implicit=[*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"],
+                    variables={"cl": q([cl]).replace("$", "$$"),
+                               "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
+                               "runner": q(runner(version)).replace("$", "$$"),
+                               "cflags": q([*more.get(src_posix, []), "/Z7"]).replace("$", "$$")})
         n.build("all_source", "phony", objs)
         n.build("prepare", "phony", [*targets, *objs])
         # the whole program, from what src/ compiles to and the delinked functions (not the default: a build for
@@ -270,7 +278,7 @@ def main() -> None:
         n.rule("reccmp", f"{PY} tools/relink.py {CONFIG.as_posix()} {BUILD.as_posix()} --pdb "
                + q([*linker(), *(["--asm", "source", *assembler()] if source else [])]).replace("$", "$$"))
         n.build([compared, *((BUILD / "reccmp" / Path(m["exe"]).name).as_posix() for m in info.get("modules", []))],
-                "reccmp", [*targets, *objs], implicit=[CONFIG.as_posix(), *exes, "tools/relink.py", "tools/rebuild.py",
+                "reccmp", [*targets, *objs, *debug_objs], implicit=[CONFIG.as_posix(), *exes, "tools/relink.py", "tools/rebuild.py",
                                                        "tools/delink.py", *asm,
                                                        *(["tools/assemble.py"] if source else [])])
         n.build("reccmp", "phony", [compared])

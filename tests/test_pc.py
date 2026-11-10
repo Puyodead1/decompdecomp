@@ -3593,13 +3593,24 @@ def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
     project = (root / "reccmp-project.yml").read_text()
     assert "  DEMOQUEST:\n    filename: demoquest.exe" in project and "filename: demoquest.dll" in project
     assert "reccmp-user.yml" in (root / ".gitignore").read_text()
+    # (paths from the project's folder: absolute ones written on Linux didn't load on Windows)
+    assert "project: .\n" in (root / "reccmp-build.yml").read_text() and \
+        "path: orig/demoquest.exe\n" in (root / "reccmp-user.yml").read_text()
     assert "// GLOBAL: DEMOQUEST 0x" in (root / "source" / "data").glob("*.c").__next__().read_text()
+    # two functions given C: reccmp finds them by the lines the C's CodeView (/Z7) puts in the PDB, so `ninja reccmp`
+    # links those objects whole; a publics-only PDB (the C cut into the game's pieces) paired none of them
+    unit = next(p for p in (root / "src" / "auto").glob("text_00401*.cpp"))
+    unit.write_text(unit.read_text() + "\nextern \"C\" int func_004011A0(int v, int lo, int hi)\n{\n"
+                    "    if (v < lo) {\n        return lo;\n    }\n    if (v > hi) {\n        return hi;\n    }\n"
+                    "    return v;\n}\n\nextern \"C\" int func_004011C0(int v)\n{\n    return v < 0 ? -v : v;\n}\n")
     ok, out = fp.run(["ninja", "reccmp"], log=lambda *_: None)
     assert ok, out
     from decompnet.consoles.pc import pdb as pdb_reader
 
     made = root / "build" / "demoquest" / "reccmp"
-    publics = {d.name for d in pdb_reader.read((made / "demoquest.exe.pdb").read_bytes()).publics}
+    read = pdb_reader.read((made / "demoquest.exe.pdb").read_bytes())
+    assert {p.name for p in read.procedures} >= {"func_004011A0", "func_004011C0"}, read.procedures
+    publics = {d.name for d in read.publics}
     assert (made / "demoquest.exe").exists() and any("func_00401" in n for n in publics), sorted(publics)[:9]
     assert (made / "demoquest.dll.pdb").exists()  # (the DLL's its own: both programs are named demoquest)
     # --pad moves the DLL's code too, and the program, which imports a function of the DLL's and adds what it

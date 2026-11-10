@@ -15,7 +15,6 @@ Annotations written before are replaced, so an export again leaves one of each.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from pathlib import Path
 
@@ -104,16 +103,17 @@ def project_files(root: Path, info: dict, version: str) -> None:
     lines = ["# reccmp (https://github.com/isledecomp/reccmp): compares the program `ninja reccmp` builds with your copy,",
              "# function by function, by the `// FUNCTION:` and `// GLOBAL:` lines above each in the C. Written by",
              "# decompdecomp's Export.", "targets:"]
-    user, build = ["targets:"], [f"project: {json.dumps(str(root))}", "targets:"]
+    # (paths from the project's folder: one written on Linux or WSL, its absolute paths, didn't load on Windows)
+    user, build = ["targets:"], ["project: .", "targets:"]
     for exe in programs:
         copy = root / exe
         sha = hashlib.sha256(copy.read_bytes()).hexdigest() if copy.exists() else ""
         lines += [f"  {target(exe)}:", f"    filename: {Path(exe).name}", "    source-root: .", "    hash:",
                   f"      sha256: {sha}"]
-        user += [f"  {target(exe)}:", f"    path: {json.dumps(str(copy))}"]
-        made = root / "build" / version / "reccmp" / Path(exe).name
-        build += [f"  {target(exe)}:", f"    path: {json.dumps(str(made))}",
-                  f"    pdb: {json.dumps(str(made.with_name(made.name + '.pdb')))}"]
+        user += [f"  {target(exe)}:", f"    path: {Path(exe).as_posix()}"]
+        made = Path("build") / version / "reccmp" / Path(exe).name
+        build += [f"  {target(exe)}:", f"    path: {made.as_posix()}",
+                  f"    pdb: {made.with_name(made.name + '.pdb').as_posix()}"]
     (root / "reccmp-project.yml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (root / "reccmp-user.yml").write_text("\n".join(user) + "\n", encoding="utf-8")
     (root / "reccmp-build.yml").write_text("\n".join(build) + "\n", encoding="utf-8")
