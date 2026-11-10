@@ -14,7 +14,8 @@ arguments, each in a child process of its own, and compares what they return (al
 pointer arguments reach. The program's other functions are stubs that return 0, its variables memory whose every
 word is an address in that memory and a float between 1 and 1.25 (a field read either way leads somewhere), and
 the pointer arguments' memory random floats, or, where a function crashes on those, the same addresses. A function
-that crashes or loops even so is "untestable". Prints each function that differs, and exits 1 if one does.
+that crashes or loops even so is "untestable". Prints each function that differs, and exits 1 if one does or a file
+couldn't be checked.
 
 Written by decompdecomp (https://github.com/n-delic/decompdecomp) with the export; build.json says what's where.
 """
@@ -65,11 +66,27 @@ static float rf(void) { unsigned r = rnd(); float u = (r & 0xFFFF) / 65536.0f; s
 static char (*bufs)[BUF];
 extern void stub_fill(unsigned (*)(void));
 static unsigned word(void) { return POOL + (rnd() %% (POOL_SIZE / 4)) * 4; }
-/* mode 0: the pointer arguments' memory random floats (-360 to 360); 1, where that crashes: pointers there too */
-static void fill(int mode) {
-  unsigned *w = (unsigned *)POOL, j;
+double sqrt(double);
+static void put_float(int at, float f) { memcpy((char *)bufs + 4 * at, &f, 4); }
+static float get_float(int at) { float f; memcpy(&f, (char *)bufs + 4 * at, 4); return f; }
+/* mode 0: the pointer arguments' memory floats, of four kinds in turn so that a function's branches run: mixed
+   magnitudes (-360 to 360), unit groups of four (a rotation, a direction), the other arguments' memory as the first's
+   or a hair from it (a nearly equal pair: slerp's other branch), and values near 0; 1, where those crash: pointers
+   there too */
+static void fill(int mode, int it) {
+  unsigned *w = (unsigned *)POOL, j, k, words = NP * BUF / 4, per = BUF / 4;
   for (j = 0; j < POOL_SIZE / 4; j++) w[j] = word();
-  if (!mode) for (j = 0; j < NP * BUF / 4; j++) { float f = rf(); memcpy((char *)bufs + 4 * j, &f, 4); }
+  if (!mode) {
+    int shape = it %% 4;
+    for (j = 0; j < words; j += 4) {
+      float v[4]; double m = 0;
+      for (k = 0; k < 4; k++) { v[k] = shape == 3 ? rf() * 0.001f : shape ? (rnd() & 0xFFFF) / 32768.0f - 1 : rf(); m += v[k] * v[k]; }
+      for (k = 0; k < 4; k++) put_float(j + k, shape == 1 || shape == 2 ? (m > 0 ? v[k] / sqrt(m) : 1) : v[k]);
+    }
+    if (shape == 2)  /* (the others the first's: exactly every other time, else a hair off) */
+      for (k = 1; k < NP; k++) for (j = 0; j < per; j++)
+        put_float(k * per + j, get_float(j) * (it & 4 ? 1 : 1 + ((int)(rnd() %% 201) - 100) * 1e-6f));
+  }
   stub_fill(word);
 }
 static void put(int fd, const void *p, int n) { while (n > 0) { int w = write(fd, p, n); if (w <= 0) _exit(3); p = (const char *)p + w; n -= w; } }
@@ -81,7 +98,7 @@ static void side(int fn, int alt, int n, int fd, int mode)
   close(1); close(2);  /* (what the function prints: not the report) */
   for (it = 0; it < n; it++) {
     long double r = 0; int ri = 0;
-    fill(mode);
+    fill(mode, it);
     switch (fn * 2 + alt) {
 %(cases)s
     }
@@ -270,7 +287,25 @@ def undefined(objects: list[Path], tc: Path) -> dict[str, str]:
                 continue
             k = "f" if m.group(1) in ("R_386_PC32", "R_386_PLT32") else "d"
             kinds[name] = "d" if "d" in (k, kinds.get(name, k)) else "f"
-    return {n: k for n, k in kinds.items() if n not in defined and not LIBRARY.match(n)}
+    return {n: k for n, k in kinds.items() if n not in defined and not LIBRARY.match(n) and n not in library(tc)}
+
+
+_LIBRARY: set[str] | None = None
+
+
+def library(tc: Path) -> set[str]:
+    """What the program's own C library, maths library and libgcc define: never a stub (a stub malloc returning 0
+    stopped glibc's start-up before the harness ran)."""
+    global _LIBRARY
+    if _LIBRARY is None:
+        _LIBRARY = set()
+        archives = [tc / "crt" / "libc.a", tc / "crt" / "libm.a", *(tc / "gcc").rglob("libgcc.a")]
+        for archive in archives:
+            if archive.exists():
+                said = subprocess.run([tool("nm", tc), "-g", "--defined-only", str(archive)], capture_output=True,
+                                      text=True, env=_binutils_env(tc)).stdout
+                _LIBRARY |= {line.split()[-1] for line in said.splitlines() if len(line.split()) >= 3}
+    return _LIBRARY
 
 
 def stubs(names: dict[str, str]) -> str:
@@ -278,6 +313,10 @@ def stubs(names: dict[str, str]) -> str:
     lines = [f"int {n}() {{ return 0; }}" if k == "f" else f"unsigned {n}[1024];" for n, k in sorted(names.items())]
     fill = "".join(f"  for (j = 0; j < 1024; j++) {n}[j] = word();\n" for n, k in sorted(names.items()) if k == "d")
     return "\n".join(lines) + f"\nvoid stub_fill(unsigned (*word)(void))\n{{\n  int j;\n{fill}}}\n"
+
+
+class HarnessError(Exception):
+    """The check's own program didn't run: not the plain build's fault, and no verdict on its floats."""
 
 
 class Check:
@@ -367,6 +406,8 @@ class Check:
         said = subprocess.run(argv, capture_output=True, text=True, errors="replace",
                               timeout=SECONDS * 4 * (1 if only else max(1, len(self.order))) + 60)  # (two kinds of
         # memory, two builds)
+        if said.returncode != 0:
+            raise HarnessError(f"the check itself stopped (exit {said.returncode}): {(said.stdout + said.stderr)[-300:]}")
         out: dict[str, int | None] = {}
         for line in said.stdout.splitlines():
             if m := re.match(r"(\S+) (\d+)/\d+$", line):
@@ -386,7 +427,7 @@ def main() -> None:
     args = parser.parse_args()
     build = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
     own = {u["c"]: u.get("plain_flags") or [] for u in build.get("units") or [] if u.get("c")}
-    differ = 0
+    differ = failed = 0
     with tempfile.TemporaryDirectory(prefix="floatcheck-") as tmp:
         for rel in args.sources:
             check = Check(rel, Path(tmp) / Path(rel).stem, shlex.split(args.cc),
@@ -397,9 +438,16 @@ def main() -> None:
                 continue
             if not check.defs:
                 continue
-            res = check.run(inputs=args.n)
+            try:
+                res = check.run(inputs=args.n)
+            except HarnessError as e:
+                print(f"{rel}: {e}")
+                failed += 1
+                continue
             if not res:
-                print(f"{rel}: the plain build doesn't compile it")
+                why = check.compile_plain((ROOT / rel).read_text(encoding="utf-8"))
+                print(f"{rel}: the plain build doesn't compile it: {(why or '').strip()[-300:]}")
+                failed += 1
                 continue
             bad = {n: c for n, c in res.items() if c}
             untestable = sorted(n for n, c in res.items() if c is None)
@@ -408,7 +456,7 @@ def main() -> None:
                   + ("; differ: " + ", ".join(f"{n} ({c}/{args.n})" for n, c in sorted(bad.items())) if bad else "")
                   + (f"; untestable: {', '.join(untestable)}" if untestable else "")
                   + (f"; not called (their arguments): {', '.join(check.untyped)}" if check.untyped else ""))
-    sys.exit(1 if differ else 0)
+    sys.exit(1 if differ or failed else 0)
 
 
 if __name__ == "__main__":
