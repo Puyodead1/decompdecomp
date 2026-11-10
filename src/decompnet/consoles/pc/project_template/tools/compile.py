@@ -19,6 +19,22 @@ WINE_QUIET = {"WINEDEBUG": "-all", "WINEDLLOVERRIDES": "mscoree,mshtml="}
 SERVER_IDLE_SECONDS = 600
 
 
+def searchable(folder: str) -> bool:
+    """Whether a PATH folder's files can be looked at: under WSL, a Windows folder mounted in /mnt can refuse even
+    that, and wibo, looking for the compiler's c1 along PATH, stopped CL.EXE on it ("status: Permission denied")."""
+    try:
+        os.stat(os.path.join(folder, "c1"))
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return True
+
+
+# (this file is what runs the compiler, by hand too: its PATH without the folders that stop wibo)
+os.environ["PATH"] = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep) if d and searchable(d))
+
+
 def windows_path(path: str) -> str:
     """A path as a Windows program under wine reads it: /home/me/x.h is Z:\\home\\me\\x.h (wine's Z: is /), and
     a relative one keeps its place with backslashes. cl.exe reads /home/... as a switch."""

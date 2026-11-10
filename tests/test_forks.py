@@ -1038,3 +1038,34 @@ def test_a_set_aside_list_by_address_alone_is_read_with_the_projects_functions(t
     (conf / "set_aside.json").write_text(json.dumps({"functions": {"0x00002000": "the C runtime"}}))
     fp = type("FP", (), {"root": tmp_path, "manifest": {"version": "v"}})()
     assert _set_aside(fp) == {"_strlen": "the C runtime"}
+
+
+def test_a_path_folder_that_refuses_a_look_is_left_out_of_a_builds_path(tmp_path, monkeypatch):
+    """Under WSL a Windows folder mounted in /mnt can refuse even a stat of a file in it, and wibo, looking along PATH
+    for the c1 that CL.EXE starts, stopped the compiler there ("status: Permission denied"): a build's PATH, and the
+    project's compile.py run by hand, leave such a folder out."""
+    import importlib.util
+    import os
+
+    from decompnet.forks import project
+
+    refused = str(tmp_path / "refuses")
+    real = os.stat
+
+    def stat(path, *a, **k):
+        if str(path).startswith(refused):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *a, **k)
+    monkeypatch.setattr(os, "stat", stat)
+    assert not project._searchable(refused)
+    assert project._searchable(str(tmp_path)) and project._searchable(str(tmp_path / "missing"))
+    monkeypatch.setenv("PATH", os.pathsep.join([refused, str(tmp_path)]))
+    spec = importlib.util.spec_from_file_location("compile_tool", Path(project.__file__).parent.parent / "consoles" /
+                                                  "pc" / "project_template" / "tools" / "compile.py")
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert os.environ["PATH"] == str(tmp_path)
+    (tmp_path / "proj").mkdir()
+    monkeypatch.setenv("PATH", os.pathsep.join([refused, os.environ["PATH"], os.path.dirname(sys.executable)]))
+    ok, out = ForkProject(tmp_path / "proj").run(["python", "-c", "import os; print(os.environ['PATH'])"],
+                                                 log=lambda *_: None)
+    assert ok and refused not in out and str(tmp_path) in out

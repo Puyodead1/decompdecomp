@@ -116,6 +116,18 @@ _NOISE = re.compile(r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbo
                     r"Section '\.note\.split' is unknown)")
 
 
+def _searchable(folder: str) -> bool:
+    """Whether a PATH folder's files can be looked at. Under WSL a Windows folder mounted in /mnt can refuse even that,
+    and wibo, looking along PATH for the c1 CL.EXE starts, stopped the compiler on it ("status: Permission denied")."""
+    try:
+        os.stat(os.path.join(folder, "c1"))
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _tool_dirs() -> list[Path]:
     """Where decompdecomp's own build tools (the ninja Python package's ninja) are: beside its Python, or, in the
     Windows setup's bundle (packages installed with --target), in the `bin` folder beside those packages, which the
@@ -474,7 +486,8 @@ class ForkProject:
         are added to `failed`. `platform`: its console, for a project whose manifest isn't written yet (its import's
         first build: a game built with Visual C++ 2017 then built without wine's settings)."""
         env = dict(os.environ)
-        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()), env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()),
+                                       *(d for d in env.get("PATH", "").split(os.pathsep) if d and _searchable(d))])
         # what its console's builds need (Console.build_env)
         if (platform := (self.manifest or {}).get("platform") or platform):
             from .. import consoles
