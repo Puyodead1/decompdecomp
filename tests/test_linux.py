@@ -984,8 +984,32 @@ def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
     for said in ("GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)", "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-8)"):
         assert linux.default_compiler({"compiler_guess": said}, "") == "gcc-4.3.2-redhat-linux"
     assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 2.95.3 20010315 (release)"}, "") == "gcc-2.95.3-linux"
-    assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 3.3.6"}, "") == "gcc-2.95.3-linux"
+    info = {"compiler_guess": "GCC: (GNU) 3.3.6"}
+    assert linux.default_compiler(info, "") == "gcc-2.95.3-linux"
+    assert "'GCC: (GNU) 3.3.6'" in info["compiler_why"]  # (the import says it has none of that one)
     assert linux.default_compiler({}, "") == "gcc-2.95.3-linux"
+    # egcs 1.1.2, as Slackware 7.0 and Red Hat 6 built it: a 1999 program's sound server was matched with GCC 2.95.3
+    # for weeks, its agents taking egcs's `leal 0(,%reg,2)` for "a different 2.95.3 build"
+    info = {"compiler_guess": "GCC: (GNU) egcs-2.91.66 19990314/Linux (egcs-1.1.2 release)"}
+    assert linux.default_compiler(info, "") == "egcs-1.1.2-linux" and "compiler_why" not in info
+
+
+def test_egcs_writes_what_gcc_2_95_never_does():
+    """egcs 1.1.2's `x * 2` into another register is `leal 0(,%reg,2)` (7 bytes), which GCC 2.95.3 always writes as
+    `leal (%reg,%reg)` or `addl`: the instruction an egcs program's functions have, and no C gives 2.95.3."""
+    from decompnet import compiler, toolchains
+    from decompnet.project import compiler_config
+
+    if toolchains.installed("egcs-1.1.2-linux") is None:
+        pytest.skip("needs egcs-1.1.2-linux")
+    for toolchain, lea in (("egcs-1.1.2-linux", True), ("gcc-2.95.3-linux", False)):
+        if toolchains.installed(toolchain) is None:
+            continue
+        cfg = compiler_config(Path("."), {"compiler": {"toolchain": toolchain, "flags": ["-O2"], "timeout": 60}})
+        res = compiler.compile_source(cfg, "", "int g(int);\nint k(int c)\n{\n    return g(c * 2);\n}\n",
+                                      trusted=True)
+        assert res.ok, res.log
+        assert (b"\x8d\x04\x55\x00\x00\x00\x00" in res.obj) == lea, toolchain  # (leal 0(,%edx,2),%eax)
 
 
 @pytest.fixture(scope="module")

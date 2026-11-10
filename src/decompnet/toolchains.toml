@@ -72,6 +72,45 @@ subdir = "usr/lib"
 into = "crt"
 platforms = ["linux-x86_64"]
 
+["egcs-1.1.2-linux"]
+name = "egcs 1.1.2 for Linux (Slackware 7.0)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-2.0"
+source = "Slackware 7.0's own packages: d1/egcs.tgz, d1/binutils.tgz, d1/glibc.tgz (its headers)"
+description = "The egcs 1.1.2 (egcs-2.91.66 19990314) and binutils 2.9.1 Slackware 7.0 shipped, with glibc 2.1.2's headers: what Linux programs of 1999-2000 were built with (Red Hat 6 shipped the same egcs). Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc-lib/i386-slackware-linux/egcs-2.91.66"; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/egcs-2.91.66" -B"$g/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+[["egcs-1.1.2-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-7.0/slakware/d1/egcs.tgz"
+sha256 = "dc5ab92916da0f615276ef4d0594f881079d65fd7d0a4a9e3967496f6fa37fea"
+file = "slackware-7.0-egcs.tgz"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["egcs-1.1.2-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-7.0/slakware/d1/binutils.tgz"
+sha256 = "70a0560e929fdd4cab4b204876e6f5eb2fdb6debe5da4429b5ff12c78f8d73db"
+file = "slackware-7.0-binutils.tgz"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["egcs-1.1.2-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-7.0/slakware/d1/glibc.tgz"
+sha256 = "54a549ce9fc2ac9446a7ef427b12bf1c8e7b750320f37f782186d488cfd34c91"
+file = "slackware-7.0-glibc.tgz"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["egcs-1.1.2-linux".parts]]
+# (its C runtime objects, crt1.o, crti.o, crtn.o and libc_nonshared.a: what a Linux export's build links a new program with)
+url = "https://slackware.uk/slackware/slackware-7.0/slakware/d1/glibc.tgz"
+sha256 = "54a549ce9fc2ac9446a7ef427b12bf1c8e7b750320f37f782186d488cfd34c91"
+file = "slackware-7.0-glibc.tgz"
+subdir = "usr/lib"
+into = "crt"
+platforms = ["linux-x86_64"]
+
 ["gcc-4.3.2-linux"]
 name = "GCC 4.3.2 for Linux (Debian 5.0)"
 platform = "Linux"
