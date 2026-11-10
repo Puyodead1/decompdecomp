@@ -784,6 +784,9 @@ class Relink:
         # own, its program beside the .exe's)
         self.module, self.out = module, build / "relink" / module if module else build / "relink"
         self.folder, self.pdb = "relink", False  # (--pdb: build/<version>/reccmp/, with a PDB, for reccmp)
+        self.whole: dict[str, Path] = {}  # (--pdb: a unit's C object linked as it is, its CodeView with it: whole_c)
+        self.provided: set[str] = set()  # (the functions those define: not cut out of your copy too)
+        self.not_whole: set[str] = set()  # (units whose functions the data points inside: cut, as without --pdb)
         self.name = next((Path(m["exe"]).name for m in info.get("modules", []) if m["name"] == module),
                          None) if module else Path(info["exe"]).name
 
@@ -914,13 +917,34 @@ class Relink:
             self.from_c |= mine if self.all_c else same
             self.other_c |= mine - same
 
+    def whole_c(self) -> None:
+        """--pdb: each unit's C as `ninja reccmp` compiles it (build/<version>/reccmp-src/, with /Z7) linked as it is,
+        its CodeView, the lines reccmp finds a function of the C by, kept with it (the C cut into the game's pieces
+        keeps none); the functions it defines aren't cut out of your copy then. Where it lands is the linker's:
+        reccmp pairs by the PDB, not by address."""
+        self.whole, self.provided, self.whole_names, self.whole_wanted = {}, set(), set(), set()
+        for unit in self.units:
+            if unit in self.not_whole:
+                continue
+            path = self.root / self.build / "reccmp-src" / "src" / "auto" / f"{unit}.obj"
+            if not path.is_file():
+                continue
+            read = Compiled(path.read_bytes())
+            mine = {fn["name"] for fn in self.info["units"][unit]} & read.defined
+            if mine:
+                self.whole[unit], self.provided = path, self.provided | mine
+                self.whole_names |= read.defined
+                self.whole_wanted |= {s["name"] for s in read.symbols.values() if s["section"] == 0
+                                      and s["cls"] == EXTERNAL and not s["value"]}
+
     def unit(self, unit: str, labels: dict[str, list[tuple[str, int]]]) -> Coff:
         """A unit's object for the link: its functions in the game's order, each from C (cut out of what its C
         compiles to, with the helpers and constants that code reaches) or delinked from your copy, with the labels
         (D_<address> inside a function) other code and the data name."""
         obj = Coff()
         compiled = self.compiled.get(unit)
-        fns = sorted(self.info["units"][unit], key=lambda fn: fn["addr"])
+        fns = sorted((fn for fn in self.info["units"][unit] if fn["name"] not in self.provided),
+                     key=lambda fn: fn["addr"])
         if self.pad and unit == self.units[0]:  # (--pad: everything after it moves, a mod's longer code would)
             obj.section(self.code_name(fns[0]["addr"]), b"\xcc" * self.pad, CODE_EXACT)
         if fns and fns[0]["name"] in self.leads:  # (what its code section has before it)
@@ -1049,7 +1073,11 @@ class Relink:
         if self.source is not None:
             self.use_source(*self.source)
         self.code()
-        self.taken_data = self.globals_from_c()
+        from_c = set(self.from_c)
+        if self.pdb:
+            self.whole_c()
+            self.from_c = from_c - self.provided
+        self.taken_data = self.globals_from_c() if not self.whole else []
         self.from_copy: set[str] = set()  # (with --all-c: functions whose C isn't the game's code that other code
         # jumps into the middle of, or the data points into: their places are the game's code's)
         while True:
@@ -1061,8 +1089,17 @@ class Relink:
                 wanted |= obj.undefined()
             wanted |= self.c_wanted
             defined |= {g["name"] for g in self.taken_data}
+            if self.whole:  # (what the C objects linked whole define, and name)
+                defined |= self.whole_names
+                wanted |= self.whole_wanted
             self.jumped_into = set()
             data, labels = self.data(wanted, defined)
+            inside = {self.unit_of.get(name) for name in labels if name in self.provided}  # (a place inside a
+            if inside:  # function the C object defines, which only the cut unit names: that unit cut, as before)
+                self.not_whole |= inside
+                self.whole_c()
+                self.from_c = from_c - self.provided - self.from_copy
+                continue
             self.thunks = [(n, s) for n, s in self.thunks if n not in defined]
             imports = self.thunks_object()
             missing = wanted - defined - set(self.names) - set(self.import_names) - set(ABSOLUTE)
@@ -1112,17 +1149,20 @@ class Relink:
         if entry is None and self.image.entry:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
         argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program, self.shift)]
+        if self.whole:  # (a global the C defines is the data's too: the C's, linked first, is the one taken)
+            argv.append("/FORCE:MULTIPLE")
         if self.pdb:  # (the program reccmp compares: its PDB names where each function and global went)
             # (named for the whole file: a game's demoquest.exe and demoquest.dll would both be demoquest.pdb)
             argv += ["/DEBUG", "/DEBUGTYPE:CV", f"/PDB:{program.with_name(program.name + '.pdb')}"]
-        argv += [*map(str, self.source_objects if self.asm_units is not None else data_objects),
+        argv += [*map(str, self.whole.values()),  # (--pdb: first, so their definitions are the ones taken)
+                 *map(str, self.source_objects if self.asm_units is not None else data_objects),
                  *map(str, objects), *map(str, imports)]
         if res is not None:
             argv.append(str(res))
         (self.out / "link.txt").write_text(" ".join(argv[len(link):]) + "\n", encoding="utf-8")  # (to run it again)
         said = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         output = (said.stdout + said.stderr).strip()
-        if said.returncode != 0 or not program.is_file():
+        if (said.returncode != 0 and not self.whole) or not program.is_file():  # (/FORCE says it, and links)
             fail(f"the linker stopped:\n{output}")
         program.write_bytes(as_game(program.read_bytes(), self.image, self.shift, self.renamed, self.xbe))
         self.header(program)
