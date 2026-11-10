@@ -1531,6 +1531,48 @@ def test_a_weak_import_the_program_calls_is_one_of_its_imports():
     assert not _imported(undefined=False, weak=False, copied=False, value=0x804A9A4)  # _IO_stdin_used, its own
 
 
+def test_a_plain_build_has_the_c_librarys_types_and_functions_from_the_systems_headers(tmp_path):
+    """A 1999 program's common.h had glibc 2.1's types from its debug information (sigset_t, struct timeval), so a
+    file including <sys/select.h> itself defined them twice in a plain build ("conflicting types for `sigset_t'").
+    The matching build keeps them; a plain one includes the standard headers that define them (an internal header
+    glibc has no more, bits/sigset.h, by the standard one that included it), and a file's own way past them, and its
+    own declarations of the C library's functions, are the matching build's only."""
+    from decompnet.consoles.linux import export_clean
+
+    tc = tmp_path / "tc"
+    (tc / "include" / "bits").mkdir(parents=True)
+    (tc / "include" / "sys").mkdir()
+    (tc / "include" / "bits" / "sigset.h").write_text("typedef struct { unsigned long __val[32]; } __sigset_t;\n")
+    (tc / "include" / "signal.h").write_text("#include <bits/sigset.h>\ntypedef __sigset_t sigset_t;\n"
+                                             "enum\n{\n  SIG_X,\n#define SIG_X SIG_X\n  SIG_Y\n};\n")
+    (tc / "include" / "sys" / "select.h").write_text("struct timeval { long tv_sec; long tv_usec; };\n")
+    (tc / "include" / "unistd.h").write_text("extern int write __P ((int __fd, const void *__buf, unsigned int __n));\n")
+    out = tmp_path / "tree"
+    (out / "include").mkdir(parents=True)
+    (out / "src").mkdir()
+    (out / "include" / "common.h").write_text(
+        "/* shared */\ntypedef struct __sigset_t sigset_t;\nenum anonymous_enum {\n    SIG_X = 0,\n    SIG_Y = 1,\n};\n"
+        "struct timeval { /* 0x8 bytes */\n    long tv_sec; /* 0x0 */\n    long tv_usec; /* 0x4 */\n};\n"
+        "struct Game { int hp; };\n")
+    (out / "src" / "a.c").write_text(
+        '#include "common.h"\n#define timeval _g_timeval\n#define fd_set _g_fd_set\n#include <sys/select.h>\n\n'
+        "struct timeval {\n    long tv_sec;\n    long tv_usec;\n};\nint write(int fd, void *buf, int n);\n"
+        "int f(void) { return 0; }\n")
+    export_clean._header_system_types(out, tc)
+    export_clean._plain_system_includes(out)
+    export_clean._plain_libc_declarations(out, tc)
+    common = (out / "include" / "common.h").read_text()
+    assert "#ifdef NON_MATCHING" in common and "#include <signal.h>" in common and "#include <sys/select.h>" in common
+    assert "bits/sigset.h" not in common  # (glibc's own internal header: the standard one that includes it)
+    assert "#ifndef NON_MATCHING\ntypedef struct __sigset_t sigset_t;\n#endif" in common
+    assert "#ifndef NON_MATCHING\nenum anonymous_enum {" in common  # (an unnamed enum of glibc's values)
+    assert "#ifndef NON_MATCHING\nstruct timeval {" in common and "\nstruct Game { int hp; };" in common
+    a = (out / "src" / "a.c").read_text()
+    assert a.index("#ifndef NON_MATCHING") < a.index("#define timeval") < a.index("#endif\n#include <sys/select.h>")
+    assert "#ifndef NON_MATCHING\nstruct timeval {" in a
+    assert "#ifdef NON_MATCHING" in a and "#include <unistd.h>\n#else\nint write(int fd, void *buf, int n);" in a
+
+
 def test_a_call_passing_another_calls_argument_is_written_as_what_it_passed(tmp_path):
     """A 1999 program's `sprintf(path, "%s%s", get_arompath(romfilenames[i]))` matched (egcs leaves the argument on
     the stack for sprintf), get_arompath taking none: a plain build gave sprintf whatever was there. It's written as
