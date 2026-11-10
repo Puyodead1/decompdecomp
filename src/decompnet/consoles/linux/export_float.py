@@ -122,6 +122,35 @@ def long_double_local(body: str, var: str) -> str:
     return FLOAT_DECLARATION.sub(one, body)
 
 
+_OPERAND = r"(?:[A-Za-z_]\w*(?:(?:->|\.)\w+|\[[^\[\]]*\])*|\d+\.\d*[fF]?|\.\d+[fF]?)"
+PRODUCT = re.compile(rf"(?<![\w.>\])])({_OPERAND}\s*[*/]\s*{_OPERAND})(?![\w.(\[])")
+
+
+def products(body: str) -> list[tuple[int, int]]:
+    """Each product or quotient of two operands in a function's code (not its head): where it starts and ends."""
+    head = body.find("{") + 1
+    out = []
+    at = head
+    for m in _NOT_CODE.finditer(body):
+        out += [(head_m.start(1) + at, head_m.end(1) + at) for head_m in PRODUCT.finditer(body[at:m.start()])]
+        at = m.end()
+    out += [(m.start(1) + at, m.end(1) + at) for m in PRODUCT.finditer(body[at:])]
+    return [(a, b) for a, b in out if a >= head and "float" not in body[max(0, a - 8):a]]
+
+
+def spilled(body: str, at: tuple[int, int]) -> str:
+    """A product rounded to a float where it is, `(float)(a * b)`: what GCC 2.95 did where it ran out of x87
+    registers and spilled it to a float slot of the stack mid-expression (a particle renderer's `mag * cos`)."""
+    a, b = at
+    return body[:a] + f"(float)({body[a:b]})" + body[b:]
+
+
+def volatile_local(body: str, var: str) -> str:
+    """A float local `var` declared `volatile float`: stored and read again at each use, rounded where the game's code
+    rounded it (GCC's default precision keeps a float in a register, all 80 bits, where it likes)."""
+    return long_double_local(body, var).replace(f"long double {var}", f"volatile float {var}", 1)
+
+
 def _assigned_after(body: str, var: str, at: int) -> int | None:
     """Where `var` is assigned again after `at`."""
     m = re.compile(rf"(?<![\w.>])\b{re.escape(var)}\s*(=(?!=)|\+=|-=|\*=|/=)").search(body, at)
@@ -231,19 +260,21 @@ def _float_names(text: str, headers: dict[str, str]) -> set[str]:
 class _File:
     """One source file's search."""
 
-    def __init__(self, out: Path, rel: str, tool, work: Path, headers: dict[str, str], tc: Path | None = None):
+    def __init__(self, out: Path, rel: str, tool, work: Path, headers: dict[str, str], tc: Path | None = None,
+                 archive: Path | None = None):
         self.out, self.rel, self.tool = out, rel, tool
         self.text = (out / rel).read_text(encoding="utf-8")
         self.original = self.text
         self.headers: dict[str, str] = {}  # (include/<name> -> its text, where this file's search changed it)
         self.tree_headers = headers
-        self.check = tool.Check(rel, work, ["gcc"], [*DEFAULT, STANDARD], tc)
-        self.default = tool.Check(rel, work.with_name(work.name + "-default"), ["gcc"], DEFAULT, tc)
+        self.check = tool.Check(rel, work, ["gcc"], [*DEFAULT, STANDARD], tc, archive)
+        self.default = tool.Check(rel, work.with_name(work.name + "-default"), ["gcc"], DEFAULT, tc, archive)
+        self.active = self.check  # (the precision the search judges C in: standard, then GCC's default)
         self.tries = 0
 
     def score(self, text: str, headers: dict[str, str], fn: str | None = None) -> dict:
         self.tries += 1
-        return self.check.run(text, {**headers} or None, only=fn, inputs=INPUTS)
+        return self.active.run(text, {**headers} or None, only=fn, inputs=INPUTS)
 
     def header_text(self, name: str) -> str:
         return self.headers.get(name) or self.tree_headers[name]
@@ -275,6 +306,11 @@ class _File:
             head = body[:body.find("{")]  # (its parameters: `float t` assigned in it, slerp's `sin(t = t * omega)`)
             floats |= set(re.findall(r"\bfloat\s+([A-Za-z_]\w*)\s*[,)]", head))
             options = [(text[:a] + long_double_local(body, var) + text[b:]) for var in float_locals(body)]
+            if self.active is self.check:  # (standard precision rounds a cast: a spill said in C)
+                options += [(text[:a] + spilled(body, at) + text[b:]) for at in products(body)]
+            if self.active is self.default:  # (GCC's default keeps a float exact where it likes: volatile rounds it)
+                options += [(text[:a] + volatile_local(body, var) + text[b:]) for var in float_locals(body)
+                            if f"volatile float {var}" not in body]
             for at in inner_assignments(body, floats | set(float_locals(body))):
                 temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
                             if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
@@ -355,18 +391,36 @@ class _File:
                         self.text = changed
                     else:
                         self.headers[name] = changed
+        results = self._rounds(start)
+        standard = (self.text, dict(self.headers), results)
+        # and in GCC's default precision, which keeps the file's other functions as they are: the file builds in
+        # whichever comes closer (GCC takes the precision for a whole file; one function that only standard makes the
+        # game's kept a file of twelve that differ there on the default)
+        self.active, self.text, self.headers = self.default, self.original, {}
+        fixed = self._rounds(default)
+        both = [fn for fn in results if results[fn] is not None and fixed.get(fn) is not None]
+        start_default = sum(default.get(fn) or 0 for fn in both)
+        totals = {"standard": sum(results[fn] for fn in both), "default": sum(fixed[fn] for fn in both)}
+        mode = "standard" if totals["standard"] < totals["default"] else "default"
+        if mode == "standard":
+            self.text, self.headers, _ = standard
+        chosen = results if mode == "standard" else fixed
+        return {"mode": mode, "start": start_default, **totals,
+                "differ_default": sorted(fn for fn in both if default.get(fn)),
+                "differ": sorted(fn for fn in both if chosen[fn]),
+                "untestable": sorted(fn for fn, v in chosen.items() if v is None), "tries": self.tries}
+
+    def _rounds(self, start: dict) -> dict:
+        """Each function that differs fixed (fix), twice: a function another calls, fixed in the first round, fixes
+        that one too; what the file then gives."""
         results = dict(start)
-        for _ in range(2):  # (a function another calls fixed in the first round fixes that one too: scored again)
+        for _ in range(2):
             for fn in sorted(n for n, v in results.items() if v):
                 self.fix(fn, results[fn])
             results = self.score(self.text, self.headers) or results
             if not any(results.values()):
                 break
-        both = [fn for fn in results if results[fn] is not None and default.get(fn) is not None]
-        return {"default": sum(default[fn] for fn in both), "standard": sum(results[fn] for fn in both),
-                "differ_default": sorted(fn for fn in both if default[fn]),
-                "differ_standard": sorted(fn for fn in both if results[fn]),
-                "untestable": sorted(fn for fn, v in results.items() if v is None), "tries": self.tries}
+        return results
 
 
 def _prototype(text: str, name: str) -> tuple[int, int] | None:
@@ -428,7 +482,8 @@ def precision(out: Path, build: dict, tc: Path | None = None, log=print) -> dict
     headers = {f"include/{h.name}": h.read_text(encoding="utf-8") for h in sorted((out / "include").glob("*.h"))}
     done: dict[str, dict] = {}
     with tempfile.TemporaryDirectory(prefix="decompnet-float-") as tmp:
-        files = {rel: _File(out, rel, tool, Path(tmp) / re.sub(r"\W", "_", rel), headers, tc) for rel in rels}
+        game = tool.game_archive(Path(tmp), tc) if tc is not None else None  # (the rest of the program, linked in)
+        files = {rel: _File(out, rel, tool, Path(tmp) / re.sub(r"\W", "_", rel), headers, tc, game) for rel in rels}
         def search(rel: str) -> dict | None:
             try:
                 return files[rel].search()
@@ -442,9 +497,9 @@ def precision(out: Path, build: dict, tc: Path | None = None, log=print) -> dict
     changed_headers: dict[str, str] = {}
     for rel, res in done.items():
         f = files[rel]
-        standard = res["standard"] < res["default"]
+        standard = res["mode"] == "standard"
         res["plain_flags"] = [STANDARD] if standard else []
-        if not standard:
+        if f.text == f.original and not f.headers:
             continue
         # (the literals cast in the C both builds read, where GCC 2.95 still builds the game's code from it: a cast
         # to the type a literal has changes nothing there; the rest beside the matching C)
@@ -467,11 +522,12 @@ def precision(out: Path, build: dict, tc: Path | None = None, log=print) -> dict
         for name, body in f.headers.items():
             changed_headers[name] = merged(changed_headers.get(name, headers[name]), body, f.tool.span)
         for unit in build.get("units") or []:
-            if unit.get("c") == rel:
+            if unit.get("c") == rel and standard:
                 unit["plain_flags"] = [STANDARD]
-        log(f"{rel}: the plain build's floats the game's in {res['default'] - res['standard']} more of the calls "
-            f"tools/floatcheck.py makes, with -fexcess-precision=standard and NON_MATCHING C"
-            + (f" ({', '.join(res['differ_standard'])} still differ)" if res["differ_standard"] else ""))
+        log(f"{rel}: the plain build's floats the game's in {res['start'] - res[res['mode']]} more of the calls "
+            "tools/floatcheck.py makes, with NON_MATCHING C"
+            + (" and -fexcess-precision=standard" if standard else " (GCC's default precision)")
+            + (f" ({', '.join(res['differ'])} still differ)" if res["differ"] else ""))
     for name, text in changed_headers.items():
         (out / name).write_text(text, encoding="utf-8")
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
