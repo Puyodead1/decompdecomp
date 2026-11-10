@@ -8,7 +8,8 @@ data_seg, a string as a string, a pointer as the address of what it points at, a
 struct of its own; data.h declares every one), the
 import tables MASM; the resources, and program.json (tools/relink.py --source writes it). tools/assemble.py makes
 the program from that with Visual C++ 6.0's MASM and compiler, and the export checks it's the user's copy, byte for
-byte. source/ is
+byte. Each DLL of the game's (functions.json's "modules") is source too, in source/<its folder>/, at the address the
+project gives it; assemble.py moves what it makes back to the DLL's own. source/ is
 made from the user's copy: the project's .gitignore keeps it out of git, as orig/ is.
 """
 
@@ -22,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 from ... import toolchains
-from ...forks.project import ForkError
+from ...forks.project import ForkError, ForkProject
 
 SOURCE = "source"
 
@@ -63,26 +64,42 @@ def export_pc(root: Path, version: str, log=print) -> dict:
     out = root / SOURCE
     if (out / "program.json").exists():  # (one this wrote before: its files may name functions no longer there)
         shutil.rmtree(out)
-    log("writing the program as source (its code MASM, with each instruction's text; its data C)")
-    linker = relink.Relink(info, relink.Image(exe), root, Path("build") / version)
-    linker.out = root / "build" / version / "relink"  # (its own objects, as `ninja relink` writes them)
+    identical, files = True, 0
     try:
-        program = linker.write_source(out, disassemble=disassembler())
+        made_of = list(relink.programs(info, exe, root, Path("build") / version))
     except SystemExit as e:  # (the tool says why and stops: here, the export's error)
         raise ForkError(str(e.code)) from None
-    log(f"assembling and compiling its {len(program['pieces']):,} files with Visual C++ 6.0's MASM and compiler")
-    with tempfile.TemporaryDirectory() as tmp:
-        made = Path(tmp) / Path(info["exe"]).name
-        said = subprocess.run([sys.executable, str(Path(relink.__file__).with_name("assemble.py")),
-                               str(out / "program.json"), str(root / "build" / version / "source"),
-                               "--ml", ml()[-1], *(["--wrapper", ml()[0]] if len(ml()) > 1 else []), "--out", str(made)],
-                              capture_output=True, text=True, errors="replace", timeout=3600)
-        identical = said.returncode == 0 and made.exists() and made.read_bytes() == exe
-    log(f"{SOURCE}/ makes {info['exe']} byte for byte" if identical else
-        f"{SOURCE}/ doesn't make {info['exe']}: {(said.stdout + said.stderr).strip()[-500:]}")
+    for module, linker in made_of:  # (the .exe's in source/, each DLL of the game's in source/<its folder>/)
+        folder = out / module
+        name = linker.name
+        log(f"writing {name} as source (its code MASM, with each instruction's text; its data C)")
+        linker.out = root / linker.out  # (its own objects, as `ninja relink` writes them)
+        try:
+            program = linker.write_source(folder, disassemble=disassembler())
+        except SystemExit as e:
+            raise ForkError(str(e.code)) from None
+        files += len(program["pieces"])
+        log(f"assembling and compiling its {len(program['pieces']):,} files with Visual C++ 6.0's MASM and compiler")
+        with tempfile.TemporaryDirectory() as tmp:
+            made = Path(tmp) / name
+            said = subprocess.run([sys.executable, str(Path(relink.__file__).with_name("assemble.py")),
+                                   str(folder / "program.json"), str(root / "build" / version / "source" / module),
+                                   "--ml", ml()[-1], *(["--wrapper", ml()[0]] if len(ml()) > 1 else []),
+                                   "--out", str(made)],
+                                  capture_output=True, text=True, errors="replace", timeout=3600)
+            same = said.returncode == 0 and made.exists() and made.read_bytes() == (root / program["exe"]).read_bytes()
+        identical = identical and same
+        log(f"{folder.relative_to(root).as_posix()}/ makes {program['exe']} byte for byte" if same else
+            f"{folder.relative_to(root).as_posix()}/ doesn't make {program['exe']}: "
+            f"{(said.stdout + said.stderr).strip()[-500:]}")
+    # the build files again, now with the source: `ninja relink` takes what isn't from C from it, `ninja relink-source`
+    # links it alone (a build.ninja written before there was any has neither)
+    ok, said = ForkProject(root).reconfigure(version, log=lambda *_: None)
+    if not ok:
+        log(f"the project's build files weren't written again ({said.strip()[-300:]}): run tools/configure.py")
     ignore = root / ".gitignore"
     text = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
     if f"{SOURCE}/" not in text.split():
         ignore.write_text(text + ("" if text.endswith("\n") or not text else "\n") + f"{SOURCE}/\n", encoding="utf-8")
-    return {"path": str(root), "identical": identical, "source": len(program["pieces"]),
+    return {"path": str(root), "identical": identical, "source": files,
             "functions": sum(len(fns) for fns in info["units"].values())}
