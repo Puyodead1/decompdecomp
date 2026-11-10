@@ -31,6 +31,7 @@ from ...project import compiler_for
 from ...rom.export import exported_header, exported_source
 from ...rom.symbols import AUTO_NAME
 from ...toolchains import registry as toolchain_registry
+from ...units import only_own
 from . import export_float, export_make
 
 
@@ -648,11 +649,18 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
             continue
         unit = net._effective_unit(row, units)
         hdr = net._context(proj["id"], unit)["header"]
-        compiled = net._compile(proj, hdr, row["matched_source"], row)
+        # its own definition only (units.only_own), checked as it's written; else as it matched (a function GCC 4.3
+        # inlines another of the file into matches only with that one's C before it)
+        for own in dict.fromkeys((only_own(row["matched_source"], row["name"], program_functions),
+                                  row["matched_source"])):
+            compiled = net._compile(proj, hdr, own, row)
+            linked = (console.link_function(compiled.obj, row["name"], net._rom_target(row), syms, net.reader(proj))
+                      if compiled.ok else None)
+            if linked is not None and linked.exact:
+                break
         if not compiled.ok:
             fallback.append((row["name"], "doesn't compile any more"))
             continue
-        linked = console.link_function(compiled.obj, row["name"], net._rom_target(row), syms, net.reader(proj))
         if not linked.exact:
             fallback.append((row["name"], "no longer matches"))
             continue
@@ -673,8 +681,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
             (out / "include" / headers[unit]).write_text(exported_header(hdr), encoding="utf-8")
         src = out / "src" / _unit_name(row["unit"]) / f"{row['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text(exported_source("", headers[unit], row["matched_source"], row["name"], program_functions),
-                       encoding="utf-8")
+        src.write_text(exported_source("", headers[unit], own), encoding="utf-8")
         compiler = compiler_for(cfg, row["vram"])
         f.update({"c": src.relative_to(out).as_posix(), "toolchain": compiler["toolchain"],
                   "flags": list(compiler.get("flags") or [])})
