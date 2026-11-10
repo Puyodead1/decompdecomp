@@ -1309,7 +1309,51 @@ class Network:
         shown, said = asm_page(scoring.compact_asm(self._asm_text(fn, proj)).splitlines(), part, fn["name"])
         return "\n".join([f"## {fn['name']}: {said or 'its whole assembly'}", "```asm", *shown, "```"])
 
+    def _refresh_best(self, fn):
+        """An open function's best C as it compiles with today's shared header: written for an older one, where it no
+        longer compiles because it declares itself what the header declares now (tidy moved those in, or a helper's
+        edit_context added them), without its own copies, judged again: its best C and score from then on. On a 2001
+        Linux program 18 of 35 near misses' best C stopped at "conflicting types for `S_Text_Info'", and each agent
+        that claimed one began from C that didn't compile. Returns the function's row as it is now."""
+        from . import tidy
+
+        if fn["status"] != "open" or not fn["best_source"]:
+            return fn
+        try:
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            ctx = self._context(proj["id"], fn["unit"])
+            then = self.store.one("SELECT context_version FROM attempts WHERE function_id=? AND source=? "
+                                  "ORDER BY id DESC LIMIT 1", fn["id"], fn["best_source"])
+            if ctx is None or then is None or then["context_version"] == ctx["version"]:
+                return fn
+            if self._compile(proj, ctx["header"], fn["best_source"], fn).ok:
+                return fn
+            declared = {name for item in tidy.items(ctx["header"]) for name in item.names}
+            source = fn["best_source"]
+            for item in sorted(tidy.items(source), key=lambda i: -i.start):
+                if item.names and set(item.names) <= declared:
+                    source = source[:item.start] + source[item.end:]
+            if source == fn["best_source"]:
+                return fn
+            result = self._compile(proj, ctx["header"], source, fn)
+            if not result.ok:
+                return fn
+            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+            if cand is None:
+                return fn
+            d = scoring.diff(self._target_obj(fn, proj), cand)
+            # (one that matches now is the agent's first compile to record, as a match is: the score stays till then)
+            score = fn["best_score"] if (verdict if verdict is not None else d.bytes_match) else max(1, d.score)
+        except Exception:  # (a project mode's function, a compiler gone: the brief as it was)
+            return fn
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET best_source=?, best_score=? WHERE id=? AND best_source=? AND "
+                       "status='open'", (source, score, fn["id"], fn["best_source"]))
+        return self.store.one("SELECT * FROM functions WHERE id=?", fn["id"])
+
     def _brief(self, fn, agent: Agent | None, header: str) -> str:
+        if header == "CLAIMED":
+            fn = self._refresh_best(fn)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         ctx = self._context(proj["id"], fn["unit"])
         claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])

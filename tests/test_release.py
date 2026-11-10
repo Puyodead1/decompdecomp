@@ -355,3 +355,32 @@ def test_a_match_keeps_only_its_own_definition_of_the_programs_functions_where_t
         assert row["matched_source"] == kept and row["best_source"] == kept
         assert compiled[-1] == trimmed  # (judged as it'd be kept)
         assert net.store.one("SELECT source FROM attempts ORDER BY id DESC LIMIT 1")["source"] == source
+
+
+def test_a_claimed_functions_best_c_written_for_an_older_header_compiles_with_todays(tmp_path, monkeypatch):
+    """On a 2001 Linux program 141 open functions' best C no longer compiled: each declared itself what the shared
+    header came to declare ("conflicting types for `S_Text_Info'"), and an agent claiming one began from C that
+    didn't compile. Claimed, it's judged again without its own copies, and that's its best C and score."""
+    from types import SimpleNamespace
+
+    from decompnet import network
+
+    net, _ = _game(tmp_path, [("f", 10, "open")])
+    a, _ = net.local_agent("a")
+    fid = net.store.one("SELECT id FROM functions WHERE name='f'")["id"]
+    old = "typedef struct { short a; } S_Text_Info;\nextern int g_count;\nint f(void)\n{\n    return g_count;\n}\n"
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_source=?, best_score=40 WHERE id=?", (old, fid))
+        db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at) "
+                   "VALUES(?,?,?,?,?,?,?)", (fid, a.id, 40, 1, 1, old, time.time()))
+    header = "typedef struct { int a; } S_Text_Info;\n"
+    net._context = lambda project_id, unit="": {"header": header, "version": 2}
+    net._compile = lambda proj, hdr, src, fn=None: SimpleNamespace(ok="S_Text_Info;" not in src, obj=b"")
+    net._evaluate = lambda fn, proj, obj: (object(), None, None)
+    net._target_obj = lambda fn, proj: object()
+    monkeypatch.setattr(network.scoring, "diff", lambda target, cand: SimpleNamespace(bytes_match=False, score=35))
+    row = net._refresh_best(net.store.one("SELECT * FROM functions WHERE id=?", fid))
+    assert row["best_source"] == "extern int g_count;\nint f(void)\n{\n    return g_count;\n}\n"
+    assert row["best_score"] == 35
+    # judged with today's header already: left as it is
+    assert net._refresh_best(row)["best_source"] == row["best_source"]
