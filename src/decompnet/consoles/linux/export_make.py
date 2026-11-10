@@ -244,14 +244,16 @@ def precision(build: dict) -> str:
 
 def libraries(build: dict) -> str:
     """The plain link's libraries: what the program asked the loader for (libGL.so.1 is -lGL), the C library being
-    the compiler's own."""
+    the compiler's own, and the math library always: a 1999 program's sin() was glibc 2.1's inline code, which a
+    newer GCC calls instead ("libm.so.6: DSO missing from command line")."""
     needed = (build.get("imports") or {}).get("needed") or []
     out = []
     for lib in needed:
         m = re.fullmatch(r"lib(.+?)\.so(?:\.[\d.]+)?", lib)
         if m and m.group(1) != "c":
             out.append(f"-l{m.group(1)}")
-    return " ".join(reversed(out))  # (a library before what it uses: GLUT before GL, as a person writes it)
+    out = list(reversed(out))  # (a library before what it uses: GLUT before GL, as a person writes it)
+    return " ".join(out + ([] if "-lm" in out else ["-lm"]))
 
 
 # the Debian and Ubuntu packages whose :i386 build has a library's link name (libGL.so, not only libGL.so.1)

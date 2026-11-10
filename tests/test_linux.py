@@ -1531,6 +1531,36 @@ def test_a_weak_import_the_program_calls_is_one_of_its_imports():
     assert not _imported(undefined=False, weak=False, copied=False, value=0x804A9A4)  # _IO_stdin_used, its own
 
 
+def test_a_call_passing_another_calls_argument_is_written_as_what_it_passed(tmp_path):
+    """A 1999 program's `sprintf(path, "%s%s", get_arompath(romfilenames[i]))` matched (egcs leaves the argument on
+    the stack for sprintf), get_arompath taking none: a plain build gave sprintf whatever was there. It's written as
+    the program called it; a lone call with an argument too many is left (dropping it changes the code)."""
+    from decompnet.consoles.linux import export_clean
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "g.c").write_text("char *get_arompath(void)\n{\n    return 0;\n}\nint frames(void) { return 1; }\n")
+    src = ('void f(int i)\n{\n    sprintf(path, "%s(%s)", get_arompath(names[i]));\n    x = frames(i);\n'
+           '    /* get_arompath(old) */\n}\n')
+    assert list(export_clean.void_calls({}, tmp_path)(src)) == [src.replace("get_arompath(names[i])",
+                                                                             "get_arompath(), names[i]")]
+
+
+def test_a_name_the_linker_script_gave_is_its_symbol_in_the_c_the_files_own_declaration_too():
+    """A 1999 program's handle_code.c declared `extern volatile uint master_volume;` itself, after the shared header's
+    `extern uint master_volume;`: given the symbol under that name it was a second declaration, the file stayed as
+    it was, and a plain build's link had no master_volume (the program's is master_volume_0804FB64)."""
+    from decompnet.consoles.linux import export_clean
+
+    own = '#include "common.h"\nextern volatile uint master_volume;\nvoid f(int v) { master_volume = v; }\n'
+    assert export_clean._declared_as(own, {"master_volume": "master_volume_0804FB64"}) == (
+        '#include "common.h"\nextern volatile uint master_volume__master_volume_0804FB64 '
+        '__asm__("master_volume_0804FB64");\n#define master_volume master_volume__master_volume_0804FB64\n'
+        'void f(int v) { master_volume = v; }\n')
+    shared = '#include "common.h"\nint g(void) { return master_volume; }\n'
+    assert "extern __typeof__(master_volume) master_volume__master_volume_0804FB64" in export_clean._declared_as(
+        shared, {"master_volume": "master_volume_0804FB64"})
+
+
 def test_the_relinks_linker_script_is_one_binutils_2_9_reads(tmp_path):
     """egcs 1.1.2's binutils 2.9.1 stopped a 1999 sound server's relink at "program.ld:26: parse error": KEEP and
     EXCLUDE_FILE came in 2.10."""
@@ -1541,13 +1571,14 @@ def test_the_relinks_linker_script_is_one_binutils_2_9_reads(tmp_path):
     (tmp_path / "tools" / "relink.py").write_bytes(
         (Path(debuginfo.__file__).with_name("export_relink.py")).read_bytes())
     (tmp_path / "build.json").write_text(json.dumps({"functions": [], "units": [], "symbols": {}}))
-    script = ("  .init : { KEEP (*(.init)) } :code =0x9090\n"
+    script = ("  .init : { KEEP (*(.init)) } :code =0x9090\n  /DISCARD/ : { *(.comment) *(.note*) *(.stab*) }\n"
               "  .ctors : { KEEP (/tc/crtbegin.o(.ctors)) KEEP (*(EXCLUDE_FILE (/tc/crtend.o) .ctors)) KEEP (*(.ctors)) }\n"
               "  .init_array : { PROVIDE (__init_array_start = .); KEEP (*(.init_array)) PROVIDE (__init_array_end = .); }\n")
     out = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import relink; "
                           f"print(relink.for_old_ld({script!r}), end='')"], cwd=tmp_path, capture_output=True,
                          text=True, check=True).stdout
-    assert out == ("  .init : { *(.init) } :code =0x9090\n  .ctors : { *(.ctors) }\n"
+    assert out == ("  .init : { *(.init) } :code =0x9090\n  .stab 0 : { *(.stab) }\n  .stabstr 0 : { *(.stabstr) }\n"
+                   "  .comment 0 : { *(.comment) }\n  /DISCARD/ : { *(.note*) }\n  .ctors : { *(.ctors) }\n"
                    "  .init_array : { PROVIDE (__init_array_start = .); *(.init_array) PROVIDE (__init_array_end = .); }\n")
 
 
@@ -1616,6 +1647,8 @@ def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_c
     # the plain link's libraries are what the program asked the loader for
     assert export_make.libraries({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
         == "-lglut -lGL -lm"
+    # and the math library always: a 1999 program's sin() was inline in glibc 2.1's headers, called by a newer GCC
+    assert export_make.libraries({"imports": {"needed": ["libc.so.6"]}}) == "-lm"
     assert export_make.packages({"imports": {"needed": ["libc.so.6", "libm.so.6", "libGL.so.1", "libglut.so.3"]}}) \
         == "gcc-multilib freeglut3-dev:i386 libgl-dev:i386"
 

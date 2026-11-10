@@ -385,6 +385,10 @@ def build() -> None:
     data = original()
     image = bytearray(data)
     todo = pieces()
+    # (each compiler the tree's C is built with, installed first where it's free: compiling asked only whether it
+    # was, "toolchain egcs-1.1.2-linux is not installed" on a checkout that never had it)
+    for tid in sorted({toolchain(fn) for fn in todo}):
+        toolchains.ensure(tid, log=print)
     done, wrong, step = 0, [], max(len(todo) // 20, 1)
     t = B["text"]
     with ThreadPoolExecutor(max_workers=max(os.cpu_count() or 1, 1)) as pool:
