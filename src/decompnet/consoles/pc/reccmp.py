@@ -4,7 +4,8 @@ Export, so the project works with it and with what is built on it.
 
 - Each function of src/ whose C the project has is annotated as reccmp reads it, the line above its definition:
   `// FUNCTION: GAME 0x00401000` (the program's target, its address in the user's copy; a DLL's at its own base,
-  not the project's); each global of source/data/ too, `// GLOBAL: GAME 0x004C6388`.
+  not the project's); each global of source/data/ too, `// GLOBAL: GAME 0x004C6388`; each function with no C yet in
+  reccmp/library.h, `// LIBRARY: GAME 0x00401300` and its name, so calls into it pair as well.
 - reccmp-project.yml names each program a target (its file, its SHA-256), the project its source root.
 - reccmp-user.yml says where the user's copies are (orig/), reccmp-build.yml where the program a recompile makes is
   and its PDB, which reccmp reads with Microsoft's cvdump: `ninja reccmp` links it (tools/relink.py --pdb, into
@@ -60,13 +61,14 @@ def _definition(text: str, ids: list[tuple[str | None, str]]) -> int | None:
     return None
 
 
-def annotate(root: Path, info: dict) -> tuple[int, int]:
-    """Every function's and global's annotation written (module docstring); how many of each."""
+def annotate(root: Path, info: dict) -> tuple[int, int, int]:
+    """Every function's and global's annotation written (module docstring); how many of each, and how many of the
+    functions with no C are in reccmp/library.h."""
     names = info.get("names") or {}
     programs = {"": (info["exe"], 0)}
     for m in info.get("modules") or []:  # (a DLL at the project's address; reccmp reads it at its own)
         programs[m["name"]] = (m["exe"], (m.get("preferred_base") or m["image_base"]) - m["image_base"])
-    functions = 0
+    functions, annotated = 0, set()
     for unit, fns in (info.get("units") or {}).items():
         module = unit.rsplit("/", 1)[0] if "/" in unit else ""
         exe, shift = programs.get(module, programs[""])
@@ -80,6 +82,7 @@ def annotate(root: Path, info: dict) -> tuple[int, int]:
                 at = _definition(text, _identifiers(auto, names.get(auto)))
                 if at is not None:
                     places.append((at, f"// FUNCTION: {target(exe)} 0x{fn['addr'] + shift:08x}\n"))
+                    annotated.add(fn["name"])
             for at, line in sorted(set(places), reverse=True):
                 text = text[:at] + line + text[at:]
             functions += len(set(places))
@@ -93,7 +96,21 @@ def annotate(root: Path, info: dict) -> tuple[int, int]:
                                m.group(0) + f"// GLOBAL: {name} 0x{int(m.group(1), 16) + shift:08x}\n", text)
             globals_ += n
             path.write_text(text, encoding="utf-8")
-    return functions, globals_
+    # the functions with no C yet (the program's own assembly, source/asm/): by the name the recompiled program's PDB
+    # gives each, so a call into one pairs too, and reccmp lists it as a library function rather than not knowing it
+    lines = ["/* For reccmp: the program's functions that have no C yet (source/asm/), by the names the program `ninja",
+             " * reccmp` builds gives them. Written by decompdecomp's Export; not compiled. */", ""]
+    library = 0
+    for unit, fns in sorted((info.get("units") or {}).items()):
+        module = unit.rsplit("/", 1)[0] if "/" in unit else ""
+        exe, shift = programs.get(module, programs[""])
+        for fn in sorted(fns, key=lambda f: f["addr"]):
+            if fn["name"] not in annotated:
+                lines += [f"// LIBRARY: {target(exe)} 0x{fn['addr'] + shift:08x}", f"// {fn['name']}", ""]
+                library += 1
+    (root / "reccmp").mkdir(exist_ok=True)
+    (root / "reccmp" / "library.h").write_text("\n".join(lines), encoding="utf-8")
+    return functions, globals_, library
 
 
 def project_files(root: Path, info: dict, version: str) -> None:

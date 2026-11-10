@@ -3610,6 +3610,7 @@ def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
     made = root / "build" / "demoquest" / "reccmp"
     read = pdb_reader.read((made / "demoquest.exe.pdb").read_bytes())
     assert {p.name for p in read.procedures} >= {"func_004011A0", "func_004011C0"}, read.procedures
+    assert any(g.name.startswith("D_00403") for g in read.globals)  # (the data's C with CodeView: GLOBAL pairs)
     publics = {d.name for d in read.publics}
     assert (made / "demoquest.exe").exists() and any("func_00401" in n for n in publics), sorted(publics)[:9]
     assert (made / "demoquest.dll.pdb").exists()  # (the DLL's its own: both programs are named demoquest)
@@ -4236,8 +4237,10 @@ def test_the_export_annotates_the_c_for_reccmp(tmp_path):
                                         {"name": "_func_00401040", "addr": 0x401040}],
                       "hw/text_10011000": [{"name": "_func_10011000", "addr": 0x10011000}]},
             "modules": [{"name": "hw", "exe": "hw.dll", "image_base": 0x10000000, "preferred_base": 0x400000}]}
+    info["units"]["text_00401000"].append({"name": "@func_00401060@8", "addr": 0x401060})  # (no C yet)
     for _ in range(2):  # (again: the same, one annotation each)
-        assert reccmp.annotate(tmp_path, info) == (4, 0)
+        assert reccmp.annotate(tmp_path, info) == (4, 0, 1)
+    assert "// LIBRARY: GAME 0x00401060\n// @func_00401060@8\n" in (tmp_path / "reccmp" / "library.h").read_text()
     text = (tmp_path / "src" / "auto" / "text_00401000.cpp").read_text()
     assert text.count("// FUNCTION:") == 3
     assert "int func_00401000(int a);\n\n// FUNCTION: GAME 0x00401000\nint func_00401000(int a)\n{" in text

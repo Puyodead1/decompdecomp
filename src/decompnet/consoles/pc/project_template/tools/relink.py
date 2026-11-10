@@ -861,7 +861,8 @@ class Relink:
         assemble = _sibling("assemble")
         program = json.loads((folder / "program.json").read_text(encoding="utf-8"))
         units = {Path(u).name: u for u in self.units}  # (a DLL's unit by its name in its own folder: asm/<name>.asm)
-        made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p.get("asm", "")).stem in units)
+        made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p.get("asm", "")).stem in units,
+                                debug=self.pdb)
         self.asm_units = {units[name]: read for name, read in made["skipped"].items()}
         self.source_objects = made["paths"]
         self.source_where = made["where"]
@@ -1166,7 +1167,7 @@ class Relink:
             fail(f"the linker stopped:\n{output}")
         program.write_bytes(as_game(program.read_bytes(), self.image, self.shift, self.renamed, self.xbe))
         self.header(program)
-        report = self.report(program, self.from_c, output)
+        report = self.report(program, self.from_c | self.provided, output)  # (--pdb: the C linked whole is C too)
         if self.xbe:  # (an Xbox game's: its default.xbe, made of what was linked)
             report["xbe"] = write_xbe(program, self.image, report["same_sections"])
             (self.out / "relink.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
@@ -2560,7 +2561,8 @@ def main() -> None:
         if asm is not None and (asm / "program.json").exists():
             if not args.ml:
                 fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
-            relink.source = (asm, Path(args.build) / "source" / module, [*wrapper, args.ml])
+            relink.source = (asm, Path(args.build) / ("reccmp-source" if args.pdb else "source") / module,
+                             [*wrapper, args.ml])  # (--pdb: the data's C with CodeView, objects of its own)
         if args.pdb:
             relink.folder, relink.pdb = "reccmp", True
             relink.out = Path(args.build) / "reccmp" / module if module else Path(args.build) / "reccmp"
