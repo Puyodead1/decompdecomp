@@ -171,6 +171,18 @@ def _stop_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _searchable(folder: str) -> bool:
+    """Whether a PATH folder's files can be looked at. Under WSL a Windows folder mounted in /mnt can refuse even that,
+    and wibo, looking along PATH for the c1 CL.EXE starts, stopped the compiler on it ("status: Permission denied")."""
+    try:
+        os.stat(os.path.join(folder, "c1"))
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _tool_dirs() -> list[Path]:
     """Where decompdecomp's own build tools (the ninja Python package's ninja) are: beside its Python, or, in the
     Windows setup's bundle (packages installed with --target), in the `bin` folder beside those packages, which the
@@ -590,7 +602,8 @@ class ForkProject:
         finished on an agent's code (stuck under wibo, or CodeWarrior looping on one #pragma) kept the build, and
         the project's build lock, for hours (#114, whose fix this is)."""
         env = dict(os.environ)
-        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()), env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()),
+                                       *(d for d in env.get("PATH", "").split(os.pathsep) if d and _searchable(d))])
         # what its console's builds need (Console.build_env)
         if (platform := (self.manifest or {}).get("platform") or platform):
             from .. import consoles
