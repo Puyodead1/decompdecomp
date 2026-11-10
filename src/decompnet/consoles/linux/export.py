@@ -82,6 +82,48 @@ def _refs(row, syms) -> dict[int, str]:
     return refs
 
 
+def _own_constants(name: str, code: bytes, vram: int, refs: dict[int, str], syms, image: bytes):
+    """The constants a function that isn't C reads by their address in the program's .rodata and no symbol names (the
+    `.LC` doubles GCC wrote for it: `fldl 0x804b1f0`), as its own: (its references with those words by a label of its,
+    the .rodata it carries, where the program has that), or None. As numbers, the relinked program and the plain
+    builds read whatever was there (a 1999 program's volume read its own code's bytes in the plain build, and crashed
+    relinked)."""
+    import capstone
+
+    elf = ELFFile(BytesIO(image))
+    rodata = elf.get_section_by_name(".rodata")
+    if rodata is None:
+        return None
+    lo_ro, hi_ro = rodata["sh_addr"], rodata["sh_addr"] + rodata["sh_size"]
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    found: dict[int, tuple[int, int]] = {}  # offset of the word -> (address, size read)
+    for ins in md.disasm(code, vram):
+        for o in ins.operands:
+            if o.type != capstone.x86.X86_OP_MEM or o.mem.base or o.mem.index or not ins.disp_offset:
+                continue
+            at, dest = ins.address - vram + ins.disp_offset, o.mem.disp & 0xFFFFFFFF
+            if at in refs or not lo_ro <= dest < hi_ro or not syms.name_at(dest)[0].startswith("D_"):
+                continue
+            found[at] = (dest, max(o.size, 1))
+    if not found:
+        return None
+    lo = min(a for a, _ in found.values())
+    hi = min(hi_ro, max(a + n for a, n in found.values()))
+    if hi - lo > 512:  # (constants a function wrote together, not a table of the file's)
+        return None
+    blob = image[rodata["sh_offset"] + lo - lo_ro:rodata["sh_offset"] + hi - lo_ro]
+    labels = {a: f".L{name}_c{a:x}" for a, _ in found.values()}
+    lines = [".section .rodata", ".align 4"]
+    cuts = sorted({a - lo for a in labels} | {0, len(blob)})
+    for start, end in zip(cuts, cuts[1:]):
+        if lo + start in labels:
+            lines.append(f"{labels[lo + start]}:")
+        for off in range(start, end, 8):
+            lines.append(f"\t.byte {', '.join(f'0x{b:02x}' for b in blob[off:min(off + 8, end)])}")
+    return {**refs, **{at: labels[dest] for at, (dest, _) in found.items()}}, "\n".join(lines) + "\n", lo
+
+
 def assembly(name: str, code: bytes, refs: dict[int, str]) -> str:
     """A function that isn't C as GNU assembly: its bytes, each word in `refs` by name (the relinked program moves
     the code, so a number would point at nothing). (tools/relink.py has the same, for a checkout without asm/.)"""
@@ -109,10 +151,11 @@ def _unaligned_text(obj: bytes) -> bytes:
 
 
 def assembly_source(name: str, code: bytes, vram: int, refs: dict[int, str], names: dict[str, int], toolchain: str,
-                    work: Path) -> str | None:
+                    work: Path, constants: tuple[str, int] | None = None) -> str | None:
     """A function that isn't C as GNU assembly (arch/x86_gas.py), assembled and linked where the program has it
     with the toolchain's own as and ld and compared with its bytes: what comes out otherwise stays bytes, an
-    instruction at a time, and is checked again. None where it doesn't come out as the program's code."""
+    instruction at a time, and is checked again. None where it doesn't come out as the program's code. `constants`:
+    the .rodata it carries (_own_constants) and where the program has it, linked there for the check."""
     import tempfile
 
     from ... import toolchains
@@ -126,13 +169,14 @@ def assembly_source(name: str, code: bytes, vram: int, refs: dict[int, str], nam
     keep: set[int] = set()
     starts = [i.address for i in x86_gas.instructions(code, vram)]
     for _ in range(len(starts) + 1):
-        text = x86_gas.source(name, code, vram, refs, keep)
+        text = x86_gas.source(name, code, vram, refs, keep) + (constants[0] if constants else "")
         used = set(re.findall(r"[A-Za-z_][\w.]*", " ".join(refs.values()))) - {name}
         assigns = "".join(f"{n} = 0x{names[n]:X};\n" for n in sorted(used) if n in names)
         with tempfile.TemporaryDirectory(prefix="asm-", dir=work) as tmp:
             d = Path(tmp)
             (d / "f.s").write_text(text, encoding="utf-8")
-            (d / "f.ld").write_text(f"SECTIONS {{\n  .text 0x{vram:X} : {{ f.o(.text) }}\n  /DISCARD/ : {{ *(.comment) "
+            own = f"  .rodata 0x{constants[1]:X} : {{ f.o(.rodata) }}\n" if constants else ""
+            (d / "f.ld").write_text(f"SECTIONS {{\n  .text 0x{vram:X} : {{ f.o(.text) }}\n{own}  /DISCARD/ : {{ *(.comment) "
                                     f"*(.note*) }}\n}}\n{assigns}", encoding="utf-8")
             cfg = compiler_config(d, {"compiler": {"toolchain": toolchain}})
             env = f'export LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"; '
@@ -177,7 +221,9 @@ def _layout(elf, functions: list[dict]) -> dict:
     end = max((hi for _, _, hi in data), default=0)
     starts = {f["vram"]: f["name"] for f in functions}
     return {"dynamic": elf.get_section_by_name(".interp") is not None, "entry": starts.get(elf["e_entry"]),
-            "low": min(s["sh_addr"] for s in elf.iter_sections() if s["sh_addr"]) & ~0xFFF,
+            # (the loaded sections': a 1999 linker left a .note it doesn't load at 0x319, and the relinked program's
+            # headers went to address 0)
+            "low": min(s["sh_addr"] for s in elf.iter_sections() if s["sh_addr"] and s["sh_flags"] & 2) & ~0xFFF,
             "code": (end + 0xFFFFF) & ~0xFFFFF, "data": data}
 
 
@@ -496,7 +542,9 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
         if not compiled.ok:
             errors = [line for line in compiled.log.splitlines() if re.search(r":\d+: ", line) and not re.search(
                 r"warning|previous|In function|Each undeclared|for each function", line)]
-            return None, f"it doesn't compile as one file ({(errors or ['?'])[0][:160]})", {}
+            # (a system header by its own name: the README went out with this computer's toolchain folder in it)
+            first = re.sub(r"(?<![\w.])/\S*?/(include/\S+)", r"\1", (errors or ["?"])[0])
+            return None, f"it doesn't compile as one file ({first[:160]})", {}
         placed = export_data.placer(compiled.obj, definitions) if definitions else None
         problem, placements = judge_unit(console, compiled.obj, rows, targets, syms, read, placed)
         return (compiled.obj if not problem else None), problem, placements
@@ -815,8 +863,16 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         f["refs"] = {str(k): v for k, v in refs.items()}
         # as GNU assembly a person reads (src/asm/, the tree's own source: checked to assemble to your copy's
         # bytes where it lies), else as your copy's bytes (asm/, made from it, never in git)
-        written = assembly_source(f["name"], code, f["vram"], refs, names_at, cfg["compiler"]["toolchain"], work)
+        written = None
+        if (own := _own_constants(f["name"], code, f["vram"], refs, syms, image)) is not None:
+            # (its constants its own: build.json's references stay the program's, for asm/ made from your copy)
+            written = assembly_source(f["name"], code, f["vram"], own[0], names_at, cfg["compiler"]["toolchain"],
+                                      work, (own[1], own[2]))
+        if written is None:
+            written = assembly_source(f["name"], code, f["vram"], refs, names_at, cfg["compiler"]["toolchain"], work)
         if written is not None:
+            # (no executable stack asked for: a newer ld warned of the object without the note)
+            written += '.section .note.GNU-stack,"",@progbits\n'
             (out / "src" / "asm").mkdir(parents=True, exist_ok=True)
             (out / "src" / "asm" / f"{f['name']}.s").write_text(written, encoding="utf-8")
             f["s"] = f"src/asm/{f['name']}.s"
@@ -891,7 +947,9 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
                 "binutils")
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
-          data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build))
+          data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build),
+          # (the compiler the program was built with: "GCC 2.95.3" said of an egcs 1.1.2 program)
+          re.sub(r" for Linux\b.*", "", toolchain_registry()[build["toolchain"]].name))
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
     (out / ".gitignore").write_text("/build/\n/baserom*\n/asm/\n/data/\n/tools/*/\n/tools/.downloads/\n", encoding="utf-8")
@@ -911,7 +969,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
 
 def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program", whole: int = 0,
           unit_fallback=(), data_fallback=(), with_data: int = 0, standalone: bool = False,
-          packages: str = "gcc-multilib") -> None:
+          packages: str = "gcc-multilib", compiler: str = "GCC 2.95.3") -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
     notes += "".join(f"\n- `{u}`: one file per function in `src/{_unit_name(u)}/` for now: {why}"
                      for u, why in unit_fallback)
@@ -919,7 +977,7 @@ def _docs(out: Path, title: str, matched: int, total: int, fallback, program: st
     (out / "README.md").write_text(f"""# {title} (decompilation)
 
 A matching decompilation of {title}, a Linux (32-bit x86) program, started with [decompdecomp](https://github.com/n-delic/decompdecomp).
-{matched} of {total} functions are C that GCC 2.95.3 compiles to exactly the original code; the rest is still the
+{matched} of {total} functions are C that {compiler} compiles to exactly the original code; the rest is still the
 program's own bytes. {whole} of the program's source files are back together, each one C file that compiles to the
 original file's code, function after function; {with_data} of them define their data too, each variable with its
 type and the program's value. `build.py` rebuilds every decompiled file and function where it lies
@@ -940,7 +998,7 @@ in the program and checks the result against your original, byte for byte.
    "source; then it builds the C as any C program is built, with your system's gcc and libraries"} (`baserom` is in
    `.gitignore`; never commit it).
 2. `make match`: builds `build/{program}`, the program linked anew from the C with the compiler it was built with
-   (GCC 2.95.3), its code byte for byte the original's. The first time it downloads that compiler into `tools/`
+   ({compiler}), its code byte for byte the original's. The first time it downloads that compiler into `tools/`
    (`make toolchain`: pinned archives, each checked against its SHA-256; where the system has no 32-bit loader, a
    32-bit C runtime too). Needs make, python3, curl or wget, tar and ar; not decompdecomp.
 3. `python build.py` (with decompdecomp installed, and your copy as `baserom`) checks that the C still rebuilds your
@@ -1006,9 +1064,9 @@ with the rest. `asm/` and `data/` are made from your copy: keep them out of git 
 The program's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
 """, encoding="utf-8")
-    (out / "AGENTS.md").write_text("""# Working on this decompilation
+    (out / "AGENTS.md").write_text(f"""# Working on this decompilation
 
-- Goal: C that GCC 2.95.3 turns into exactly the original bytes. `python build.py` must end with "identical".
+- Goal: C that {compiler} turns into exactly the original bytes. `python build.py` must end with "identical".
 - Write a function as `src/<source file>/<name>.c` (one function, its header included first), then
   `python build.py check <name>`: it compiles it, links it at its address, compares it with the original and
   records it in `build.json`.

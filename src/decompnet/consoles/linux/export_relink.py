@@ -914,7 +914,12 @@ def placed_as_game() -> dict[str, str]:
 def for_old_ld(text: str) -> str:
     """A linker script as binutils before 2.10 reads it (egcs 1.1.2's 2.9.1: "program.ld:26: parse error"): no KEEP
     (only --gc-sections, which this link doesn't use, drops a section) and no EXCLUDE_FILE, the constructors' lists
-    in the order of the link's inputs, crtbegin.o's first and crtend.o's last, as its own scripts had them."""
+    in the order of the link's inputs, crtbegin.o's first and crtend.o's last, as its own scripts had them. The debug
+    information kept in sections loaded nowhere, as its scripts kept it: discarded, 2.9.1 wrote .stabstr over the
+    program headers (a 1999 program's relink, "LOPROC+0x23d29")."""
+    text = text.replace("  /DISCARD/ : { *(.comment) *(.note*) *(.stab*) }",
+                        "  .stab 0 : { *(.stab) }\n  .stabstr 0 : { *(.stabstr) }\n  .comment 0 : { *(.comment) }\n"
+                        "  /DISCARD/ : { *(.note*) }")
     text = re.sub(r"^  \.(ctors|dtors) : \{.*\}$", r"  .\1 : { *(.\1) }", text, flags=re.M)
     while (at := text.find("KEEP (")) >= 0:
         depth, i = 1, at + len("KEEP (")
@@ -959,7 +964,7 @@ def script(out_path: str, move: bool, old_ld: bool = False) -> None:
         secs = {n: elf.section(n) for n in DATA}
         end = max(s["addr"] + s["size"] for s in secs.values() if s)
         code = (end + 0xFFFFF) & ~0xFFFFF
-        low = min(s["addr"] for s in elf.sections if s["addr"]) & ~0xFFF
+        low = min(s["addr"] for s in elf.sections if s["addr"] and s["flags"] & SHF_ALLOC) & ~0xFFF  # (loaded ones)
     assigns = assigns + [f"PROVIDE({n} = 0);" for n in B.get("weak") or []]  # (left weak and undefined: 0)
     before, after = crt_files() if dyn else ([], [])
     begin, ending = (before[2], after[0]) if dyn else (None, None)

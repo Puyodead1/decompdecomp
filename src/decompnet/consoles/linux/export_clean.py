@@ -206,9 +206,13 @@ def _declared_as(text: str, names: dict[str, str]) -> str | None:
     """`text` with each of `names`' declarations given that symbol (`extern char D_08F78580[] __asm__("vect_ix");`),
     or None where one isn't declared in it: the C reads the name as before, the link finds the variable's own."""
     for word, symbol in names.items():
-        pattern = re.compile(rf"^([ \t]*extern\b[^;(){{}}]*\b{re.escape(word)}\s*(?:\[[^\]]*\])*)\s*;", re.M)
+        pattern = re.compile(rf"^([ \t]*extern\b[^;(){{}}]*\b){re.escape(word)}(\s*(?:\[[^\]]*\])*)\s*;", re.M)
         if pattern.search(text):
-            text = pattern.sub(lambda m, symbol=symbol: f'{m.group(1)} __asm__("{symbol}");', text)
+            # (its own declaration under a name of its own, the way it declared it: `volatile` kept; given the symbol
+            # under the shared header's name, GCC took it for a second declaration of that one, and the file stayed
+            # as it was, a plain build's link missing the name)
+            text = pattern.sub(lambda m, word=word, symbol=symbol: f'{m.group(1)}{word}__{symbol}{m.group(2)} '
+                               f'__asm__("{symbol}");\n#define {word} {word}__{symbol}', text)
             continue
         # (declared first in a header every file includes, where a symbol given again isn't taken: a name of the
         # file's own for it, declared so)
@@ -1033,7 +1037,52 @@ def copied_literals(build: dict, out: Path, tc: Path, flags_of: dict[str, list[s
     return candidates
 
 
-PASSES = (("names the linker script gave", linked_names), ("helpers made each file's own", own_helpers),
+_LITERAL_OR_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
+
+
+def _masked(text: str) -> str:
+    """`text` with its comments, strings and characters blanked, every offset where it was."""
+    return _LITERAL_OR_COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+_VOID_DEFINITION = re.compile(r"^[A-Za-z_][\w \t*]*?\b([A-Za-z_]\w*)\s*\(\s*void\s*\)\s*(?:\{|$)", re.M)
+
+
+def void_calls(build: dict, out: Path):
+    """A call passing an argument to a function the tree defines `(void)`, as another call's argument: what the
+    program passed the outer call (`sprintf(path, "%s%s", get_arompath(romfilenames[i]))` matched, egcs leaving the
+    argument on the stack for sprintf), written as that (`get_arompath(), romfilenames[i]`). A plain build gave
+    sprintf whatever was there ("unable to open './stv/arom/...'")."""
+    takes_none = set()
+    for path in sorted((out / "src").rglob("*.c")):
+        takes_none |= set(_VOID_DEFINITION.findall(path.read_text(encoding="utf-8", errors="replace")))
+
+    def candidates(text: str):
+        if not takes_none:
+            return
+        masked = _masked(text)
+        edits = []
+        for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", masked):
+            if m.group(1) not in takes_none:
+                continue
+            depth, i = 1, m.end()
+            while i < len(masked) and depth:
+                depth += {"(": 1, ")": -1}.get(masked[i], 0)
+                i += 1
+            args = text[m.end():i - 1]
+            before = masked[:m.start()].rstrip()[-1:]
+            after = masked[i:].lstrip()[:1]
+            if args.strip() and before in (",", "(") and after in (",", ")"):
+                edits.append((m.start(), i, f"{m.group(1)}(), {args.strip()}"))
+        if edits:
+            new = text
+            for start, end, repl in reversed(edits):
+                new = new[:start] + repl + new[end:]
+            yield new
+    return candidates
+
+
+PASSES = (("names the linker script gave", linked_names), ("calls passing another's arguments", void_calls), ("helpers made each file's own", own_helpers),
           ("addresses written as numbers", numbered_addresses), ("the C library's tables read as calls", library_tables),
           ("functions called by their own names", called_by_name), ("variables by one name", set_names),
           ("offsets into variables read as their fields", struct_fields),
@@ -1101,7 +1150,7 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
             changed[title] = count
             log(f"{title}: written as C in {count} files" + (f" ({refused} kept as they were)" if refused else ""))
             continue
-        rewrite = make(build, out) if make in (numbered_addresses, pool_constants) else \
+        rewrite = make(build, out) if make in (numbered_addresses, pool_constants, void_calls) else \
             make(build, out, tc, {rel: prelude + list(f) for rel, f in files}) if make is copied_literals else make(build)
         by_file = make in (numbered_addresses, cross_reads, pool_constants, copied_literals)  # (rewrite(text, rel))
         # (the names only the linker script gives reach nothing in a plain link: the new C mustn't read them)
