@@ -53,7 +53,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Save and restore (`progress/`, Open a saved project) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the project's git; best attempts saved | the project's git; best attempts saved | the project's git; best attempts saved; the PE view made again from your XBE or disc | the project's git; best attempts saved | ✓ | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
-| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves; Export writes the program as source, its code MASM and its data C, which builds it without your copy, and `ninja relink` links your C with that source, edited) | the project (`ninja rebuild` writes your default.xbe back, byte for byte) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves; Export writes the program as source, its code MASM and its data C, which builds it without your copy, and `ninja relink` links your C with that source, edited) | the project (`ninja rebuild` writes your default.xbe back, byte for byte; `ninja relink` links it again with LINK.EXE and writes the default.xbe of that, so code may grow and the rest moves) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -1002,7 +1002,9 @@ call sites do, and stand-ins, linked /LTCG by the compiler's own linker through 
 convention, `standins_for` writes a starting harness, and a register-convention function of a retail game matched
 through its driver.
 Briefs also say when a function is a member function (its `this` in any register) and of which struct, and an
-attempt whose function got another convention than the original's says which registers differ. What's next is real
+attempt whose function got another convention than the original's says which registers differ. `ninja relink`
+links the program again with LINK.EXE and writes the default.xbe of that (the demo's byte for byte, and with its
+code moved a page, an XBE whose sections, entry point and kernel thunks say where). What's next is real
 games: a whole one rebuilt from C, then the console's status can say recommended.
 
 ### Game Boy Advance from your own copy
@@ -1193,8 +1195,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
   with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
-  C defines taken from it; a table of records as an array of a struct of its own, done). Left: the fields' names
-  and types from the code's reads (structs.py), and an Xbox game's XBE (the game's DLLs: relinked and source, done).
+  C defines taken from it; a table of records as an array of a struct of its own, done; the game's DLLs, relinked
+  and as source, done; an Xbox game's XBE relinked, done: `ninja relink` writes its default.xbe). Left: the fields'
+  names and types from the code's reads (structs.py), and an Xbox project's Export as source (Export writes none
+  for an Xbox project yet: `Xbox.export_fork`).
 
 ### A modding-ready check for the export
 

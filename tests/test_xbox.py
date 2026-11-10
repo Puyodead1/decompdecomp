@@ -162,6 +162,32 @@ def test_the_rebuild_gives_back_the_xbe(demo, project):
     assert rebuilt.read_bytes() == demo[0].read_bytes()  # (your copy's XBE, byte for byte, its code from the C)
 
 
+def test_the_relink_writes_the_xbe_and_one_whose_code_moved(demo, project):
+    """`ninja relink` links an Xbox game's program again with LINK.EXE and writes its default.xbe from it, your copy's
+    byte for byte. LINK.EXE wouldn't put the view where it is (a page below the XBE's base: not a multiple of 64 KiB),
+    put the XBE's headers before .text, or keep the kernel's ordinals in its thunks; each moved the whole program or
+    broke its imports until the relink handled it. With everything moved (--pad), the XBE says where it all went."""
+    net, slug = project
+    fp = net.forks.get(slug)[1]
+    ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+    assert ok, out
+    relinked = fp.root / "build" / "demoquest" / "relink" / "default.xbe"
+    assert relinked.read_bytes() == demo[0].read_bytes()
+    link = ["--link", str(toolchains.path("msvc") / "6.0" / "Bin" / "LINK.EXE"),
+            *(["--wrapper", str(toolchains.binary("wibo"))] if sys.platform != "win32" else [])]
+    ok, out = fp.run([sys.executable, "tools/relink.py", "config/demoquest/functions.json", "build/demoquest", *link,
+                      "--pad", "0x1000"], log=lambda *_: None)
+    assert ok, out
+    old, new = xbox.read_xbe(demo[0].read_bytes()), xbox.read_xbe(relinked.read_bytes())
+    assert new.entry == old.entry + 0x1000
+    assert new.imports == {slot + 0x1000: ordinal for slot, ordinal in old.imports.items()}  # (NtClose's ordinal)
+    text = {s.name: s for s in new.sections}[".text"]
+    assert text.vsize == {s.name: s for s in old.sections}[".text"].vsize + 0x1000
+    assert new.data[text.offset:text.offset + 0x1000] == b"\xcc" * 0x1000
+    assert [s.va for s in new.sections[1:]] == [s.va + 0x1000 for s in old.sections[1:]]
+    assert new.image_size == old.image_size + 0x1000
+
+
 def test_an_early_game_builds_with_its_own_xdks_compiler(demo, tmp_path, monkeypatch):
     """Before XDK 5233 each XDK shipped a Visual C++ 7.0 build of its own (13.00.9254 in 3911, not the pack's 9466):
     with the user's XDK of that build set up, the game builds with it."""
