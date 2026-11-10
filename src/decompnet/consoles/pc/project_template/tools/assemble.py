@@ -55,9 +55,10 @@ def compiler(ml: list[str]) -> list[str]:
     return [*ml[:-1], str(found)]
 
 
-def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list[tuple[dict, Path, object]]:
+def assembled(program: dict, source: Path, objects: Path, ml: list[str],
+              debug: bool = False) -> list[tuple[dict, Path, object]]:
     """Each piece of the source assembled, or compiled (the data's C), when its object is older than it: (piece, its
-    object, the object read)."""
+    object, the object read). `debug`: the data's C with CodeView (/Z7), each global's record for reccmp."""
     relink = _relink()
     objects.mkdir(parents=True, exist_ok=True)
     out = []
@@ -69,7 +70,8 @@ def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list
             obj = objects / (Path(piece["c"]).stem + ".obj")
             newest = max(c.stat().st_mtime, header.stat().st_mtime if header.exists() else 0)
             if not obj.exists() or obj.stat().st_mtime < newest:
-                said = subprocess.run([*compiler(ml), "/nologo", "/c", "/Zl", "/Zm500", f"/Fo{os.path.relpath(obj, source)}",
+                said = subprocess.run([*compiler(ml), "/nologo", "/c", "/Zl", "/Zm500", *(["/Z7"] if debug else []),
+                                       f"/Fo{os.path.relpath(obj, source)}",
                                        piece["c"]], capture_output=True, text=True, errors="replace", cwd=source,
                                       env=env)
                 if said.returncode != 0 or not obj.exists():
@@ -185,12 +187,15 @@ def home(program: dict, exe: bytes) -> bytes:
     return _relink()._sibling("delink").rebase(exe, program["home"]) if program.get("home") else exe
 
 
-def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: Path, skip=None) -> dict:
+def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: Path, skip=None,
+            debug: bool = False) -> dict:
     """The source's objects as Visual C++'s LINK.EXE links them, in `folder`/objects: each piece in the program's
     section it's in (by its name and flags; the part of a section past its bytes in the file is .bss, as a compiler's
     uninitialised data), in the order program.json has them, the words it names as RVAs DIR32NB (MASM 6.15 has no
     IMAGEREL); the base relocations left out (the linker makes them again, for where everything is now). `skip(piece)`:
     a piece another object stands for (tools/relink.py --asm: a unit, whose functions it takes one by one).
+    `debug` (tools/relink.py --pdb, for reccmp): the data's C compiled with CodeView and linked as it is, its globals'
+    records kept (where each lands is the linker's then).
     {"paths", "changed" (the pieces whose size isn't the game's), "placed" (each piece where program.json has it),
     "skipped" ({a skipped piece's name: its object, read}), "where" ({each path: its sections' addresses}), "image"
     (the header's settings)}."""
@@ -203,7 +208,11 @@ def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: P
     paths, changed, placed, skipped, where_of = [], [], [], {}, {}
     with_c = any("c" in piece for piece in program["pieces"])  # (the data as C: every part of it in a section named
     # for its place, <section>$<address>, which the linker puts in the order of their names)
-    for piece, obj, read in sorted(assembled(program, source, objects, ml), key=lambda p: p[0]["at"]):
+    for piece, obj, read in sorted(assembled(program, source, objects, ml, debug), key=lambda p: p[0]["at"]):
+        if debug and "c" in piece:  # (as it is: regrouping it into its places would drop its CodeView)
+            paths.append(obj)
+            where_of[str(obj)] = {}
+            continue
         numbers = _placed(read.sections)
         size = sum(read.sections[n - 1]["size"] for n in numbers)
         if size != piece["size"]:

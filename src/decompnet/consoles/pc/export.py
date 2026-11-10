@@ -96,10 +96,10 @@ def export_pc(root: Path, version: str, log=print) -> dict:
     # reccmp's annotations and project files (reccmp.py): the project works with the LEGO Island decompilation's tool
     from . import reccmp
 
-    functions, globals_ = reccmp.annotate(root, info)
+    functions, globals_, library = reccmp.annotate(root, info)
     reccmp.project_files(root, info, version)
-    log(f"annotated {functions:,} functions and {globals_:,} globals for reccmp (reccmp-project.yml; `ninja reccmp` "
-        "builds the program and PDB it compares)")
+    log(f"annotated {functions:,} functions and {globals_:,} globals for reccmp, and {library:,} functions with no C "
+        "yet in reccmp/library.h (reccmp-project.yml; `ninja reccmp` builds the program and PDB it compares)")
     # the build files again, now with the source: `ninja relink` takes what isn't from C from it, `ninja relink-source`
     # links it alone (a build.ninja written before there was any has neither)
     ok, said = ForkProject(root).reconfigure(version, log=lambda *_: None)
