@@ -3,10 +3,12 @@ real game's run (Slackware 8.0's GCC 2.95.3 reproducing its functions byte for b
 check is the demo program built with the same toolchain (projects/demo-linux, and tests/test_consoles.py)."""
 
 import json
+import os
 import re
 import shutil
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1687,3 +1689,83 @@ def test_a_headers_gnu89_extern_inline_functions_link_in_a_plain_build_at_o0(tmp
                            cwd=tmp_path, capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     assert subprocess.run([str(tmp_path / "main")]).returncode == 0
+
+
+FLOATS = """typedef struct { float x, y, z, w; } Quat;
+static float xx, xy, xz, xw, yx, yy, yz, yw, zx, zy, zz, zw, wx, wy, wz, ww;
+void quat_mul(Quat *p, Quat *a, Quat *b)
+{
+    yz = a->y * b->z; zy = a->z * b->y; wx = a->w * b->x; xw = a->x * b->w;
+    zx = a->z * b->x; xz = a->x * b->z; wy = a->w * b->y; yw = a->y * b->w;
+    xy = a->x * b->y; yx = a->y * b->x; wz = a->w * b->z; zw = a->z * b->w;
+    ww = a->w * b->w; xx = a->x * b->x; yy = a->y * b->y; zz = a->z * b->z;
+    p->x = yz - zy + wx + xw;
+    p->y = zx - xz + wy + yw;
+    p->z = xy - yx + wz + zw;
+    p->w = ww - xx - yy - zz;
+}
+float quat_dot(Quat *a, Quat *b)
+{
+    return a->x * b->x + a->y * b->y + a->z * b->z + a->w * b->w;
+}
+void quat_scale(Quat *q)
+{
+    float m = quat_dot(q, q);
+    if (m != 0.0f) {
+        m = 1.0f / m;
+        q->x *= m;
+        q->y *= m;
+        q->z *= m;
+        q->w *= m * 0.1;
+    }
+}
+"""
+
+
+def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_so(tmp_path):
+    """GCC 2.95 kept x87 values exact in its 80-bit registers where a newer GCC rounds them (and the other way), so
+    the same C gave an arcade game other floats in its plain build (a quaternion multiply a bit off: frames some
+    pixels off). The export compares each float function of the game's code with the plain build's
+    (tools/floatcheck.py, `make floatcheck`) and finds the C that says what the game's code did: a product kept exact
+    for the reads after it, a float returned with all 80 bits, a local kept exact, a literal read as a double; the
+    file then builds with -fexcess-precision=standard (its Makefile rule), the C beside the matching C, NON_MATCHING,
+    and the matching build the same."""
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean, export_float, export_make
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None or not export_float.available():
+        pytest.skip(f"needs {gcc}, and the system's gcc (32-bit) and binutils")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    for folder in ("src", "include", "tools"):
+        (out / folder).mkdir(parents=True)
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    shutil.copyfile(Path(export_float.__file__).with_name("export_floatcheck.py"), out / "tools" / "floatcheck.py")
+    (out / "include" / "vec.h").write_text("float quat_dot(void *a, void *b);\n")
+    (out / "src" / "vec.c").write_text(FLOATS)
+    build = {"toolchain": gcc, "program": "vec", "functions": [],
+             "units": [{"name": "vec", "c": "src/vec.c", "flags": ["-O2"]}]}
+    (out / "build.json").write_text(json.dumps(build))
+    matching = export_clean._compile(out, tc, out / "src" / "vec.c", ["-O2"], FLOATS)
+    done = export_float.precision(out, build, tc, log=lambda *_: None)
+    res = done["src/vec.c"]
+    assert res["default"] > 0 and res["standard"] == 0, res  # (the game's, every call)
+    assert build["units"][0]["plain_flags"] == ["-fexcess-precision=standard"]
+    made = (out / "src" / "vec.c").read_text()
+    assert "#ifdef NON_MATCHING" in made and "long double quat_dot(" in made and "_exact" in made
+    # the matching build compiles what it did
+    assert export_clean.same_code(matching, export_clean._compile(out, tc, out / "src" / "vec.c", ["-O2"], made), {})
+    # and the tree's own check says so, as `make floatcheck` runs it
+    said = subprocess.run([sys.executable, "tools/floatcheck.py", "src/vec.c"], cwd=out, capture_output=True,
+                          text=True, env={**os.environ, "TC": str(tc), "CFLAGS": " ".join(export_float.DEFAULT)})
+    assert said.returncode == 0 and "3 of 3 functions the game's" in said.stdout, said.stdout + said.stderr
+    assert "build/plain/vec.o build/asan/vec.o: CFLAGS += -fexcess-precision=standard" in export_make.precision(build)
+    # what it writes: a literal not exact in its type as the double it was; a changed function beside the matching one
+    assert export_float.literal_casts('a * 0.1 + b * 0.5f + (1.0 / 180.0); printf("%5.2f", x); /* 0.1 */') == \
+        'a * (double)0.1 + b * 0.5f + (double)(1.0 / 180.0); printf("%5.2f", x); /* 0.1 */'
+    assert export_float.merged("int f(void);\nint f(void)\n{\n    return 1;\n}\n",
+                               "long f(void);\nint f(void)\n{\n    return 2;\n}\n", lambda t, n: (
+                                   (t.index("int f(void)\n{"), t.index("}\n") + 1) if n == "f" else None)) == \
+        ("#ifdef NON_MATCHING\nlong f(void);\n#else\nint f(void);\n#endif\n#ifdef NON_MATCHING\nint f(void)\n{\n"
+         "    return 2;\n}\n#else\nint f(void)\n{\n    return 1;\n}\n#endif\n")
