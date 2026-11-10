@@ -2508,8 +2508,8 @@ def programs(info: dict, exe: bytes, root: Path, build: Path, all_c: bool = Fals
         data = exe if not module else (root / path).read_bytes()
         if module and hashlib.sha1(data).hexdigest() != sha1:
             fail(f"{path} isn't the copy this project was made from")
-        relink = Relink(info, Image(data if base is None else delink.rebase(data, base)), root, build, all_c,
-                        pad if not module else 0, module)
+        relink = Relink(info, Image(data if base is None else delink.rebase(data, base)), root, build, all_c, pad,
+                        module)  # (--pad moves each DLL's code too)
         relink.home = Image(data).base if base is not None and base != Image(data).base else None
         yield module, relink
 

@@ -30,7 +30,9 @@ later compilers at NdrClientCall2 with /Zi (their PDB server), so MSF 7.00 PDBs 
     uv run python projects/demo-pc/build.py dll    ->  build/dll/demoquest.exe and build/dll/demoquest.dll
 
 Demo Quest as a game with a DLL of its own beside its program: the same code compiled again by Visual C++ 2010 SP1 and
-linked as a DLL that exports some of its functions by name, at 0x400000, the program's own address. So the import
+linked as a DLL that exports some of its functions by name, at 0x400000, the program's own address; the program
+imports one of its own (dllpart.c) that calls two of them and adds what it returns to its result, so a run tells
+whether the DLL still works. So the import
 moves it by its base relocations, as Windows does when two programs want one address, and builds its files with
 the Visual C++ its Rich header names, not the program's (tests/test_pc.py).
 
@@ -59,7 +61,7 @@ DLL = next((a for a in sys.argv[1:] if a in ("dll", "dll6")), None)
 PDB = "--pdb" in sys.argv[1:]
 VERSION = next((a for a in sys.argv[1:] if a not in ("dll", "dll6", "--pdb")), "6.0")
 BUILD = HERE / "build" / (DLL if DLL else "pdb" if PDB else "" if VERSION == "6.0" else VERSION)
-EXPORTS = ("player_take_damage", "entity_default_hp", "clamp_s32")  # what the DLL exports, by their own names
+EXPORTS = ("player_take_damage", "entity_default_hp", "clamp_s32", "dll_bonus")  # what the DLL exports, by their names
 DLL_VERSION = "6.0" if DLL == "dll6" else "10.0SP1"
 GAME = HERE.parent / "demo-n64" / "original"
 CFLAGS = ["/nologo", "/c", "/O2", "/Gd", "/W0"]
@@ -121,21 +123,24 @@ def main() -> None:
     if PDB and VERSION != "6.0":
         sys.exit("--pdb builds with Visual C++ 6.0 only (see this file's docstring)")
     debug = (["/Zi", "/Fdvc60.pdb"], ["/DEBUG", "/PDB:demoquest.pdb"]) if PDB else ([], [])
-    for src in ("game.c", "pcmain.c"):
-        run([*runs, next(p for p in (cl / "CL.EXE", cl / "cl.exe") if p.exists()), *CFLAGS, *debug[0], src], env=env)
-    run([*link, "/nologo", "/NODEFAULTLIB", "/ENTRY:start", "/SUBSYSTEM:CONSOLE", "/FIXED", "/OPT:NOREF",
-         *debug[1], "/MAP:symbols.map", "/OUT:demoquest.exe", "pcmain.obj", "game.obj"], env=env)
-    if DLL:
+    if DLL:  # (first: the program links with its import library, and calls two of its exports)
         objs = BUILD / "dll_objs"  # (a folder without a program of its own: the import looks in it, and finds .obj)
         objs.mkdir(exist_ok=True)
         dll_cl = toolchains.require(compiler_pack(DLL_VERSION)) / DLL_VERSION / "Bin"
         wibo, msvc = runner(compiler_pack(DLL_VERSION))[0], msvc_bin()
-        for src in ("game.c", "pcmain.c"):
+        shutil.copy(HERE / "dllpart.c", BUILD / "dllpart.c")
+        for src in ("game.c", "pcmain.c", "dllpart.c"):
             run([*wibo, next(p for p in (dll_cl / "CL.EXE", dll_cl / "cl.exe") if p.exists()), *CFLAGS,
                  f"/Fo{objs.name}/{Path(src).stem}.obj", src])
         run([*wibo, msvc / "LINK.EXE", "/nologo", "/NODEFAULTLIB", "/DLL", "/NOENTRY", "/BASE:0x400000", "/OPT:NOREF",
              *(f"/EXPORT:{name}" for name in EXPORTS), "/MAP:demoquest_dll.map", "/OUT:demoquest.dll",
-             f"{objs.name}/pcmain.obj", f"{objs.name}/game.obj"])
+             "/IMPLIB:demoquest.lib", f"{objs.name}/pcmain.obj", f"{objs.name}/game.obj", f"{objs.name}/dllpart.obj"])
+    for src in ("game.c", "pcmain.c"):
+        run([*runs, next(p for p in (cl / "CL.EXE", cl / "cl.exe") if p.exists()), *CFLAGS, *debug[0],
+             *(["/DDEMO_DLL"] if DLL and src == "pcmain.c" else []), src], env=env)
+    run([*link, "/nologo", "/NODEFAULTLIB", "/ENTRY:start", "/SUBSYSTEM:CONSOLE", "/FIXED", "/OPT:NOREF",
+         *debug[1], "/MAP:symbols.map", "/OUT:demoquest.exe", "pcmain.obj", "game.obj",
+         *(["demoquest.lib"] if DLL else [])], env=env)
     write_key()
     print(f"built {(BUILD / 'demoquest.exe').relative_to(HERE)} ({(BUILD / 'demoquest.exe').stat().st_size} bytes)")
 

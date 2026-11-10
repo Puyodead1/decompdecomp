@@ -1042,8 +1042,8 @@ def test_a_set_aside_list_by_address_alone_is_read_with_the_projects_functions(t
 
 def test_a_path_folder_that_refuses_a_look_is_left_out_of_a_builds_path(tmp_path, monkeypatch):
     """Under WSL a Windows folder mounted in /mnt can refuse even a stat of a file in it, and wibo, looking along PATH
-    for the c1 that CL.EXE starts, stopped the compiler there ("status: Permission denied"): a build's PATH, and the
-    project's compile.py run by hand, leave such a folder out."""
+    for the c1 that CL.EXE starts, stopped the compiler there ("status: Permission denied"): a build's PATH, the
+    project's compile.py run by hand, and assemble.py's compiles (Export's check) leave such a folder out."""
     import importlib.util
     import os
 
@@ -1059,13 +1059,19 @@ def test_a_path_folder_that_refuses_a_look_is_left_out_of_a_builds_path(tmp_path
     monkeypatch.setattr(os, "stat", stat)
     assert not project._searchable(refused)
     assert project._searchable(str(tmp_path)) and project._searchable(str(tmp_path / "missing"))
+    tools = Path(project.__file__).parent.parent / "consoles" / "pc" / "project_template" / "tools"
+    spec = importlib.util.spec_from_file_location("compile_tool", tools / "compile.py")
+    compile_tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(compile_tool)
+    assert compile_tool.clean_path(os.pathsep.join([refused, str(tmp_path)])) == str(tmp_path)
+    # (and tools/assemble.py's compiles, which Export runs in the app, outside a build's PATH)
+    spec = importlib.util.spec_from_file_location("assemble_tool", tools / "assemble.py")
+    assemble_tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assemble_tool)
     monkeypatch.setenv("PATH", os.pathsep.join([refused, str(tmp_path)]))
-    spec = importlib.util.spec_from_file_location("compile_tool", Path(project.__file__).parent.parent / "consoles" /
-                                                  "pc" / "project_template" / "tools" / "compile.py")
-    spec.loader.exec_module(importlib.util.module_from_spec(spec))
-    assert os.environ["PATH"] == str(tmp_path)
+    assert assemble_tool._env()["PATH"] == str(tmp_path)
     (tmp_path / "proj").mkdir()
-    monkeypatch.setenv("PATH", os.pathsep.join([refused, os.environ["PATH"], os.path.dirname(sys.executable)]))
+    monkeypatch.setenv("PATH", os.pathsep.join([refused, str(tmp_path), os.path.dirname(sys.executable)]))
     ok, out = ForkProject(tmp_path / "proj").run(["python", "-c", "import os; print(os.environ['PATH'])"],
                                                  log=lambda *_: None)
     assert ok and refused not in out and str(tmp_path) in out

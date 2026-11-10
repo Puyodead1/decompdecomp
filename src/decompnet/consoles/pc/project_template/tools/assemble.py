@@ -39,6 +39,15 @@ def _relink():
     return module
 
 
+def _env() -> dict:
+    """The environment CL.EXE and ML.EXE run in: PATH without the folders that stop wibo (tools/compile.py's
+    clean_path: under WSL, a Windows folder in /mnt that refuses a look stopped CL.EXE)."""
+    spec = importlib.util.spec_from_file_location("compile_tool", Path(__file__).with_name("compile.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {**os.environ, "PATH": module.clean_path(os.environ.get("PATH", ""))}
+
+
 def compiler(ml: list[str]) -> list[str]:
     """Visual C++ 6.0's compiler, CL.EXE, beside its MASM (the data's C is compiled with it), and what runs it."""
     folder = Path(ml[-1]).parent
@@ -53,6 +62,7 @@ def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list
     objects.mkdir(parents=True, exist_ok=True)
     out = []
     header = source / "data" / "data.h"
+    env = _env()
     for piece in program["pieces"]:
         if "c" in piece:
             c = source / piece["c"]
@@ -60,7 +70,8 @@ def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list
             newest = max(c.stat().st_mtime, header.stat().st_mtime if header.exists() else 0)
             if not obj.exists() or obj.stat().st_mtime < newest:
                 said = subprocess.run([*compiler(ml), "/nologo", "/c", "/Zl", "/Zm500", f"/Fo{os.path.relpath(obj, source)}",
-                                       piece["c"]], capture_output=True, text=True, errors="replace", cwd=source)
+                                       piece["c"]], capture_output=True, text=True, errors="replace", cwd=source,
+                                      env=env)
                 if said.returncode != 0 or not obj.exists():
                     sys.exit(f"assemble: {piece['c']} doesn't compile:\n{(said.stdout + said.stderr).strip()}")
             out.append((piece, obj, relink.Compiled(obj.read_bytes())))
@@ -70,7 +81,8 @@ def assembled(program: dict, source: Path, objects: Path, ml: list[str]) -> list
         if not obj.exists() or obj.stat().st_mtime < asm.stat().st_mtime:
             # (from the source's folder, by relative paths: ml.exe takes an absolute path off Windows for an option)
             said = subprocess.run([*ml, "/nologo", "/c", "/coff", "/Cp", f"/Fo{os.path.relpath(obj, source)}",
-                                   piece["asm"]], capture_output=True, text=True, errors="replace", cwd=source)
+                                   piece["asm"]], capture_output=True, text=True, errors="replace", cwd=source,
+                                  env=env)
             if said.returncode != 0 or not obj.exists():
                 sys.exit(f"assemble: {piece['asm']} doesn't assemble:\n{(said.stdout + said.stderr).strip()}")
         out.append((piece, obj, relink.Compiled(obj.read_bytes())))
@@ -288,14 +300,18 @@ def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list
     out.unlink(missing_ok=True)
     rel = [os.path.relpath(p, folder) for p in paths]  # (relative: LINK.EXE takes an absolute path off Windows for
     # an option)
-    argv = [*linker, *relink.link_options(image, entry, Path("link.map"), Path(out.name)), *rel]
-    (folder / "link.txt").write_text(" ".join(argv[len(linker):]) + "\n", encoding="utf-8")  # (to run it again)
+    # (each program's map and command its own: ninja links the .exe and a DLL beside it at once, into one folder,
+    # and a DLL that read the .exe's map put its directories at the .exe's addresses)
+    linked_map = f"{out.name}.map"
+    argv = [*linker, *relink.link_options(image, entry, Path(linked_map), Path(out.name)), *rel]
+    (folder / f"{out.name}.link.txt").write_text(" ".join(argv[len(linker):]) + "\n", encoding="utf-8")  # (to run
+    # it again)
     said = subprocess.run(argv, capture_output=True, text=True, errors="replace", cwd=folder)
     output = (said.stdout + said.stderr).strip()
     if said.returncode != 0 or not out.is_file():
         sys.exit(f"assemble: the linker stopped:\n{output}")
     ends = max(s["raw_at"] + s["raw_size"] for s in program["sections"])
-    relink.finish(out, image, relink.read_map(folder / "link.map"), (source / "overlay.bin").read_bytes(), ends)
+    relink.finish(out, image, relink.read_map(folder / linked_map), (source / "overlay.bin").read_bytes(), ends)
     out.write_bytes(home(program, out.read_bytes()))
     return {"program": out, "changed": changed, "linker": output}
 

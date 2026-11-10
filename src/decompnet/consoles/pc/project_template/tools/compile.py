@@ -31,8 +31,10 @@ def searchable(folder: str) -> bool:
     return True
 
 
-# (this file is what runs the compiler, by hand too: its PATH without the folders that stop wibo)
-os.environ["PATH"] = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep) if d and searchable(d))
+def clean_path(path: str) -> str:
+    """PATH without the folders that stop wibo (searchable): what the compiler runs with, by hand too, and
+    tools/assemble.py's compiles (Export runs those in the app)."""
+    return os.pathsep.join(d for d in path.split(os.pathsep) if d and searchable(d))
 
 
 def windows_path(path: str) -> str:
@@ -74,6 +76,7 @@ def wine_setup() -> tuple[str, dict]:
 
 def main() -> int:
     """Keep the compiler's arguments intact, and never rename symbols after a failed compile."""
+    os.environ["PATH"] = clean_path(os.environ.get("PATH", ""))
     parser = argparse.ArgumentParser()
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--include", required=True, action="append")  # each searched in turn: Visual C++'s, an SDK's

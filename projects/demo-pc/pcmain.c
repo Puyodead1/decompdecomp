@@ -19,6 +19,12 @@ __declspec(naked) void _ftol(void) {
     }
 }
 
+#ifdef DEMO_DLL
+/* The DLL build's program calls the game's DLL (dllpart.c, through its import library), so what the run returns
+ * depends on the DLL's code: a relinked DLL that's wrong shows */
+__declspec(dllimport) s32 dll_bonus(s32 total);
+#endif
+
 const char *g_level_names[4] = {"meadow", "cave", "castle", "keep"};
 s32 g_settings[6];
 
@@ -68,5 +74,8 @@ s32 start(void) {
         total += entity_points(i % 8) + settings_get(i, 7);
     }
     total += count_alive_entities() + (s32)lerp(0.0f, 8.0f, 0.5f) + checksum_save((const u8 *)g_settings, 24);
+#ifdef DEMO_DLL
+    total += dll_bonus(total);
+#endif
     return mix_score(total, level_name_length(total)) + g_score;
 }

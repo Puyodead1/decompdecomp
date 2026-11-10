@@ -3576,6 +3576,22 @@ def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
         made = root / "build" / "demoquest" / target / "demoquest.dll"
         assert assemble.differing((folder / "demoquest.dll").read_bytes(), made.read_bytes()) == [], target
     assert "came from source/demoquest" in said["relink"], said["relink"]  # (the DLL's source, not your copy)
+    # --pad moves the DLL's code too, and the program, which imports a function of the DLL's and adds what it
+    # returns to its result, still runs to its end with it
+    link = ["--link", str(toolchains.path("msvc") / "6.0" / "Bin" / "LINK.EXE"),
+            *(["--wrapper", str(toolchains.binary("wibo"))] if sys.platform != "win32" else [])]
+    ok, out = fp.run([sys.executable, "tools/relink.py", "config/demoquest/functions.json", "build/demoquest", *link,
+                      "--pad", "0x1000"], log=lambda *_: None)
+    assert ok, out
+    relinked = root / "build" / "demoquest" / "relink"
+    for report in (relinked / "relink.json", relinked / "demoquest" / "relink.json"):
+        moved = json.loads(report.read_text())
+        assert moved["moved"] and len(moved["moved"]) == moved["functions"], report
+    ran = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []),
+                          str(relinked / "demoquest.exe")], capture_output=True, text=True, timeout=60,
+                         env={**os.environ, "WIBO_DEBUG": "1"}, cwd=relinked)
+    assert "loaded external module demoquest.dll" in ran.stdout + ran.stderr or sys.platform == "win32"
+    assert "We came back" in ran.stdout + ran.stderr or sys.platform == "win32", ran.stderr[-2000:]
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", str(root), str(clone)], check=True)
     shutil.copytree(root / "source", clone / "source")
