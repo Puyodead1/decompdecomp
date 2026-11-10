@@ -229,7 +229,7 @@ async function showSettingsPage() {
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
     <div class="field"><span>Get decompdecomp from a branch</span><div class="row"><input id="srcBranch" class="mono grow" placeholder="its name on GitHub" value="${inst.channel === "branch" ? esc(inst.branch) : ""}">
       <button class="ghost small-btn" id="srcBranchGo" type="button">Switch to it</button>${inst.channel === "branch" ? `<button class="ghost small-btn" id="srcRelease" type="button">Back to releases</button>` : ""}</div>
-      <p class="muted small">A branch is a change being tested before it's released: it can break. Use one when you're asked to, and say so when you report a problem.</p></div>`}
+      <p class="muted small">A branch is a change being tested before it's released: it can break. Use one when you're asked to, and say so when you report a problem. <code>main</code> gets every change as it's made, before a release.</p></div>`}
     <div class="row"><a class="link small" href="https://github.com/n-delic/decompdecomp" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
