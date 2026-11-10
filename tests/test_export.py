@@ -182,3 +182,13 @@ def test_an_agents_own_include_of_context_h_names_the_exports_header():
     text = exported_source("", "common_ovl.h", '#include "context.h"\n\nint f(void) { return 1; }')
     assert text == '#include "common_ovl.h"\n\n#include "common_ovl.h"\n\nint f(void) { return 1; }\n'
     assert "context.h" not in exported_source("", "common.h", '  # include "context.h"\nint g;')
+
+
+def test_c_matched_without_the_shared_header_is_exported_without_it():
+    """A Linux program's function matched with `#pragma decompdecomp no_context` and <math.h> stopped its export's
+    rebuild: common.h before it holds the program's copy of math.h's declarations ("redefinition of `_IEEE_'")."""
+    from decompnet.rom.export import exported_source
+
+    src = "#pragma decompdecomp no_context\n#define _POSIX_C_SOURCE 1\n#include <math.h>\nfloat f(float x)\n{ return exp(x); }"
+    assert exported_source("", "common.h", src) == ("#define _POSIX_C_SOURCE 1\n#include <math.h>\nfloat f(float x)\n"
+                                                    "{ return exp(x); }\n")

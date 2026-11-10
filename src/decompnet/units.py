@@ -231,6 +231,18 @@ def _without_copies(cs: list[Chunk], own: set[str]) -> list[Chunk]:
     return out
 
 
+def only_own(source: str, name: str, others: set[str]) -> str:
+    """A function's matched C as its own file: without the definitions it carried of `others` (the program's
+    functions with files of their own), each its prototype instead (_without_copies). The judge compares only the
+    function judged, so an agent's C for one function of a Linux program's file defined three more of it as well,
+    and its export defined them twice, one of them never judged ("undefined reference to `sin'")."""
+    cs = chunks(source)
+    if not any(c.kind == "func" and c.names and c.names[0] in others and c.names[0] != name for c in cs):
+        return source
+    return "".join(c.text for c in _without_copies(cs, {name} | {c.names[0] for c in cs if c.kind == "func"
+                                                                  and c.names and c.names[0] not in others}))
+
+
 def _top_level_asm(source: str) -> str:
     """A function's GNU assembly as top-level asm in C, aligned as GCC aligns a function, and back in whatever
     section GCC was in after it (`.previous`)."""
@@ -368,8 +380,15 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     the functions; `placed` ((line, definition)) goes before the first function whose `func_lines` entry is after it, as
     the file had them. `asm_pieces` ({name: GNU assembly}): a function that isn't C yet, at its place in the file
     as top-level assembly (GCC writes it out where it is, between the functions)."""
+    from .compiler import NO_CONTEXT
+
     own_data = own_data or {}
     asm_pieces = asm_pieces or {}
+    # C judged without the shared header (`#pragma decompdecomp no_context`, the real headers it includes itself)
+    # can't share a file that starts with it: <math.h> after a Linux program's common.h is "redefinition of `_IEEE_'"
+    alone = [name for name, source in functions if name not in asm_pieces and NO_CONTEXT.search(source)]
+    if alone:
+        return Merged(None, problem=f"{alone[0]}'s C was matched without the shared header (no_context)")
     order = [name for name, _ in functions]  # (with the functions in assembly, at their places)
     functions = [(name, source) for name, source in functions if name not in asm_pieces]
     own = [name for name, _ in functions]

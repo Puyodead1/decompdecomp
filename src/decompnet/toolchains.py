@@ -72,6 +72,9 @@ class Toolchain:
     # it ships its system's own headers, pinned with it (a Linux distribution's glibc): agents' C may include them,
     # inline asm and all, as the game's files did (`#include <sys/io.h>` for outb)
     system_headers: bool = False
+    # it takes -fdata-sections (each variable a section of its own), which a Linux export's relink compiles a file's
+    # data with to place each variable as the game has it; egcs 1.1.2 predates it ("Invalid option")
+    data_sections: bool = True
     wine: bool = False  # Windows programs wibo can't run: through wine on Linux and macOS (wine.py)
     # toolchains whose Include folder a pack's compilers search after their own, in order: a Windows SDK several packs
     # share, downloaded once (installed first, like `requires`; INCLUDES says where in each version's folder)

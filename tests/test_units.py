@@ -55,6 +55,24 @@ def test_what_cant_be_one_file_says_why():
     merged = units.merge(two, "common.h", "x.h")
     assert merged.c is None and "n" in merged.problem
     assert "once" in units.merge([("f", "int g(void) { return 0; }\n")], "common.h").problem
+    # C matched without the shared header can't be in a file that starts with it
+    alone = units.merge([("f", "int f(void) { return 0; }\n"),
+                         ("g", "#pragma decompdecomp no_context\n#include <math.h>\ndouble g(void) { return exp(1); }\n")],
+                        "common.h")
+    assert alone.c is None and "no_context" in alone.problem
+
+
+def test_a_functions_file_keeps_only_its_own_definition_of_the_programs_functions():
+    """A Linux program: an agent's C for one function defined three more of its file; the judge compares only the
+    function judged, and the export defined them twice, one of them never judged ("undefined reference to `sin'")."""
+    src = ("double sin(double x);\n\nvoid set_volume(int v)\n{\n    level = v;\n}\n\n"
+           "/* a copy */\nfloat wobble(float a, int n)\n{\n    return a * sin(n);\n}\n\n"
+           "static int helper(int x)\n{\n    return x + 1;\n}\n")
+    out = units.only_own(src, "set_volume", {"set_volume", "wobble", "other"})
+    assert "void set_volume(int v)\n{" in out and "return a * sin(n)" not in out
+    assert "float wobble(float a, int n);" in out  # (its prototype, for a call)
+    assert "static int helper(int x)\n{" in out  # (C of its own: no file of the program's defines it)
+    assert units.only_own(src, "set_volume", {"set_volume"}) == src
 
 
 def test_a_macro_two_functions_define_differently_is_each_ones():

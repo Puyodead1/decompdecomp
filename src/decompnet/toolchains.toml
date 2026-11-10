@@ -83,6 +83,7 @@ requires = ["runtime-i386"]
 cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc-lib/i386-slackware-linux/egcs-2.91.66"; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/egcs-2.91.66" -B"$g/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
 flags = ["-O2"]
 system_headers = true
+data_sections = false
 [["egcs-1.1.2-linux".parts]]
 url = "https://slackware.uk/slackware/slackware-7.0/slakware/d1/egcs.tgz"
 sha256 = "dc5ab92916da0f615276ef4d0594f881079d65fd7d0a4a9e3967496f6fa37fea"

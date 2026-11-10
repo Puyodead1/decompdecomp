@@ -1420,6 +1420,8 @@ def module_headers(out: Path, build: dict, tc: Path, files, prelude, where, log=
             fell_back.append(rel)
     for rel in fell_back + others:
         text = (out / rel).read_text(encoding="utf-8")
+        if not re.search(r'^#include "common(?:_[\w-]+)?\.h"$', text, re.M):
+            continue  # (it reads none of the shared headers: C matched with the real headers alone, no_context)
         text = re.sub(r'^#include "common\.h"$', '#include "common_full.h"', text, count=1, flags=re.M)
         stem = Path(rel).stem
         if rel in private:

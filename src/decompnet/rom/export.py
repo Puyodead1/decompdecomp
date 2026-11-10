@@ -51,11 +51,23 @@ def exported_header(text: str) -> str:
     return _TEMPLATE_NOTE.sub("", text, count=1)
 
 
-def exported_source(prelude: str, include: str, source: str) -> str:
+def exported_source(prelude: str, include: str, source: str, name: str = "", others: set[str] = frozenset()) -> str:
     """A matched function's file in the export: its header first, as the judge compiled it. The judge offers the
     shared header as context.h, and some agents include it themselves: the export's header has the project's own
     name (common.h), so their #include "context.h" names that instead (#4: Champions of Norrath's export stopped
-    at "context.h: No such file or directory"). Including it twice is what the judge compiled too."""
+    at "context.h: No such file or directory"). Including it twice is what the judge compiled too.
+    C that said `#pragma decompdecomp no_context` was judged without the shared header, with the real headers it
+    includes itself: so it's exported, the pragma (the app's, nothing to a compiler) left out. With common.h first,
+    a Linux program's function that includes <math.h> stopped the rebuild ("redefinition of `_IEEE_'": common.h
+    has the program's copy of math.h's declarations).
+    `name`'s file keeps only its own definition of the program's functions (`others`): units.only_own."""
+    from ..compiler import NO_CONTEXT
+    from ..units import only_own
+
+    if name and others:
+        source = only_own(source, name, set(others))
+    if NO_CONTEXT.search(source):
+        return f"{prelude}{NO_CONTEXT.sub('', source).strip()}\n"
     return f'{prelude}#include "{include}"\n\n{CONTEXT_INCLUDE.sub(f"#include \"{include}\"", source.strip())}\n'
 
 
@@ -168,6 +180,7 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
     functions.sort(key=lambda f: f["vram"])
 
     objects, private, as_fallback = [], [], []
+    program_functions = {r["name"] for r in rows.values()}  # (each its own file: a copy in another's C goes)
     for f in functions:
         row = rows.get(f["vram"])
         f["obj_asm"] = f"build/{Path(f['asm']).with_suffix('.o').as_posix()}"
@@ -201,7 +214,8 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
         src.parent.mkdir(parents=True, exist_ok=True)
         include = "common.h" if not unit else f"common_{unit}.h"
         prelude = toolchains.get(compiler_for(cfg, row["vram"])["toolchain"]).prelude
-        src.write_text(exported_source(prelude, include, row["matched_source"]), encoding="utf-8")
+        src.write_text(exported_source(prelude, include, row["matched_source"], row["name"], program_functions),
+                       encoding="utf-8")
         f["kind"] = "c"
         f["src"] = src.relative_to(out).as_posix()
         f["obj"] = f"build/src/{f['seg']}/{f['name']}.o"

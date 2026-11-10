@@ -27,6 +27,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
+# each of a file's variables a section of its own (game_layout), where the compiler has -fdata-sections: egcs 1.1.2
+# doesn't, and its file's .data is laid out as the game's is anyway (the game's own compiler)
+DATA_SECTIONS = "" if B.get("data_sections") is False else " -fdata-sections"
 TC = Path(os.environ.get("TC") or ROOT / "tools" / (B.get("toolchain") or "gcc-2.95.3-linux"))
 UNITS = {u["name"]: u for u in B.get("units") or []}  # (the source files that are one C file each)
 # where the C's objects are: build/relink, or build/port (`make port`: the same C built by the system's GCC); what
@@ -262,14 +265,14 @@ def rules() -> None:
         if "/data-" in obj:  # a source file's variables alone
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
+                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}{DATA_SECTIONS}\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ data:{fn['name']}\n")
             objs.append(obj)
             continue
         if "functions" in fn:  # a source file, compiled whole
             flags = " ".join(fn.get("flags") or ["-O2"])
             lines.append(f"{obj}: {fn['c']} $(HEADERS) | build/relink $(TOOLCHAIN_READY)\n"
-                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags} -fdata-sections\n"
+                         f"\t$(MATCH_CC) {fn['c']} $@.raw -Iinclude $(PRELUDE) {flags}{DATA_SECTIONS}\n"
                          f"\t$(PY) tools/relink.py fixup $@.raw $@ file:{fn['name']}\n")
             objs.append(obj)
             continue
@@ -841,8 +844,9 @@ def stubs(out_dir: str) -> None:
     by_lib: dict[str, dict[str | None, list[dict]]] = {lib: {} for lib in libs}
     copies = copied(elf)
     for k, sym in enumerate(syms):
-        if not sym["name"] or (sym["shndx"] != SHN_UNDEF and k not in copies) or (sym["bind"] == 2 and k not in copies):
-            continue  # (weak: nobody need define it)
+        if not sym["name"] or (sym["shndx"] != SHN_UNDEF and k not in copies) or (
+                sym["bind"] == 2 and k not in copies and not sym["value"]):
+            continue  # (weak and nowhere in the program: nobody need define it; malloc a 1999 linker made weak has its PLT)
         v = struct.unpack_from("<H", elf.raw, versym["offset"] + k * 2)[0] & 0x7FFF if versym else 0
         lib, ver = index.get(v, (plain, None))
         by_lib.setdefault(lib, {}).setdefault(ver, []).append(sym)
@@ -907,9 +911,35 @@ def placed_as_game() -> dict[str, str]:
     return out
 
 
-def script(out_path: str, move: bool) -> None:
+def for_old_ld(text: str) -> str:
+    """A linker script as binutils before 2.10 reads it (egcs 1.1.2's 2.9.1: "program.ld:26: parse error"): no KEEP
+    (only --gc-sections, which this link doesn't use, drops a section) and no EXCLUDE_FILE, the constructors' lists
+    in the order of the link's inputs, crtbegin.o's first and crtend.o's last, as its own scripts had them."""
+    text = re.sub(r"^  \.(ctors|dtors) : \{.*\}$", r"  .\1 : { *(.\1) }", text, flags=re.M)
+    while (at := text.find("KEEP (")) >= 0:
+        depth, i = 1, at + len("KEEP (")
+        while depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        text = text[:at] + text[at + len("KEEP ("):i - 1] + text[i:]
+    return text
+
+
+def ld_before_2_10(ld: str, env: dict) -> bool:
+    """Whether the toolchain's ld is older than binutils 2.10 (`GNU ld 2.9.1`), which reads no KEEP: for_old_ld."""
+    import subprocess
+
+    try:
+        first = subprocess.run([ld, "--version"], env=env, capture_output=True, text=True).stdout.split("\n")[0]
+    except OSError:
+        return False
+    m = re.search(r"(\d+)\.(\d+)", first.rsplit(")", 1)[-1]) or re.search(r"(\d+)\.(\d+)", first)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) < (2, 10)
+
+
+def script(out_path: str, move: bool, old_ld: bool = False) -> None:
     """The linker script: the program's dynamic sections first, the data where the game has it (or, `move`, after the
-    code), the code from above the data, where it may grow."""
+    code), the code from above the data, where it may grow. `old_ld`: as binutils before 2.10 reads it (for_old_ld)."""
     if STANDALONE:  # (the layout as build.json has it; no data of your copy's, only the names the C reads globals by)
         lay = B["layout"]
         dyn, entry, low, code = lay["dynamic"], lay["entry"], lay["low"], lay["code"]
@@ -988,7 +1018,7 @@ SECTIONS
   /DISCARD/ : {{ *(.comment) *(.note*) *(.stab*) }}
 }}
 """ + "\n".join(assigns) + "\n"
-    Path(out_path).write_text(text, encoding="utf-8")
+    Path(out_path).write_text(for_old_ld(text) if old_ld else text, encoding="utf-8")
     # the link's inputs, in order, for the Makefile
     first = " ".join(str(p) for p in before)
     last = " ".join(str(p) for p in after)
@@ -1136,14 +1166,16 @@ def link(out_path: str, mode: str = "") -> None:
 
     move_data = mode == "move" or STANDALONE
     ld_script = ROOT / OBJDIR / "program.ld"
-    script(str(ld_script), move_data)
+    ld = str(TC.resolve() / "binutils" / "usr" / "bin" / "ld")
+    env = {**os.environ, "LD_LIBRARY_PATH": f"{TC.resolve()}/binutils/usr/lib:{TC.resolve()}/lib"
+           + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")}
+    script(str(ld_script), move_data, ld_before_2_10(ld, env))
     first, last, extra, kind = ld_script.with_suffix(".inputs").read_text(encoding="utf-8").split("\n")[:4]
     old_code()
     data_o = [] if STANDALONE else ["build/relink/data.o"]
     objs = [obj for obj, _ in objects()]
     listing = ROOT / OBJDIR / "objects.txt"
     listing.write_text("\n".join(objs) + "\n", encoding="utf-8")
-    ld = str(TC.resolve() / "binutils" / "usr" / "bin" / "ld")
     if kind == "dynamic":
         stubs_dir = ROOT / OBJDIR / "stubs"
         libs = [f"{OBJDIR}/stubs/{line.split()[0]}" for line in
@@ -1154,8 +1186,6 @@ def link(out_path: str, mode: str = "") -> None:
         cmd = [ld, "-m", "elf_i386", "-static", "-T", str(ld_script), "-o", out_path, *objs, *data_o]
     # (where each object's sections went: the numbers C still writes for a variable now C follow it)
     cmd[1:1] = ["-Map", str(ROOT / OBJDIR / "program.map")]
-    env = {**os.environ, "LD_LIBRARY_PATH": f"{TC.resolve()}/binutils/usr/lib:{TC.resolve()}/lib"
-           + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")}
     res = subprocess.run([c for c in cmd if c], cwd=ROOT, env=env, capture_output=True, text=True)
     if res.returncode != 0:
         fail(f"the program doesn't link:\n{(res.stdout + res.stderr)[-3000:]}")
