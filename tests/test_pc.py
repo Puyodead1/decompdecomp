@@ -3576,6 +3576,32 @@ def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
         made = root / "build" / "demoquest" / target / "demoquest.dll"
         assert assemble.differing((folder / "demoquest.dll").read_bytes(), made.read_bytes()) == [], target
     assert "came from source/demoquest" in said["relink"], said["relink"]  # (the DLL's source, not your copy)
+    # a global of the data's C changed: the relink names it, where its section only said it differed
+    data = next((root / "source" / "data").glob("*.c"))
+    kept = data.read_text()
+    global_ = re.search(r"^u32 (D_[0-9A-F]{8}) = 0x0;$", kept, re.M).group(1)
+    data.write_text(kept.replace(f"u32 {global_} = 0x0;", f"u32 {global_} = 0x7;"))
+    try:
+        ok, out = fp.run(["ninja", "relink"], log=lambda *_: None)
+        assert ok, out
+        report = json.loads((root / "build" / "demoquest" / "relink" / "relink.json").read_text())
+        assert report["globals_differ"] == [global_] and f"1 global isn't your copy's: {global_}" in out, out
+    finally:
+        data.write_text(kept)
+    # reccmp's files (consoles/pc/reccmp.py): the C annotated, each program a target, and `ninja reccmp` a program
+    # and its PDB, which names the functions reccmp looks for
+    project = (root / "reccmp-project.yml").read_text()
+    assert "  DEMOQUEST:\n    filename: demoquest.exe" in project and "filename: demoquest.dll" in project
+    assert "reccmp-user.yml" in (root / ".gitignore").read_text()
+    assert "// GLOBAL: DEMOQUEST 0x" in (root / "source" / "data").glob("*.c").__next__().read_text()
+    ok, out = fp.run(["ninja", "reccmp"], log=lambda *_: None)
+    assert ok, out
+    from decompnet.consoles.pc import pdb as pdb_reader
+
+    made = root / "build" / "demoquest" / "reccmp"
+    publics = {d.name for d in pdb_reader.read((made / "demoquest.exe.pdb").read_bytes()).publics}
+    assert (made / "demoquest.exe").exists() and any("func_00401" in n for n in publics), sorted(publics)[:9]
+    assert (made / "demoquest.dll.pdb").exists()  # (the DLL's its own: both programs are named demoquest)
     # --pad moves the DLL's code too, and the program, which imports a function of the DLL's and adds what it
     # returns to its result, still runs to its end with it
     link = ["--link", str(toolchains.path("msvc") / "6.0" / "Bin" / "LINK.EXE"),
@@ -4179,3 +4205,35 @@ def test_the_relink_cuts_a_compiled_object_into_its_functions_and_writes_objects
     # the relocation names _b by its new number (the first, then undefined, then defined in the first copy)
     off, index, kind = read.sections[0]["relocs"][0]
     assert (off, read.symbols[index]["name"], read.symbols[index]["section"], kind) == (1, "_b", 2, relink.REL32)
+
+
+def test_the_export_annotates_the_c_for_reccmp(tmp_path):
+    """reccmp (the LEGO Island decompilation's tool) finds a function of the C by the line above its definition,
+    `// FUNCTION: <target> 0x<address in the user's copy>`: a plain function, a member function, one by the real name
+    it was given; a DLL's at its own base, not the project's. Exported again, each keeps one."""
+    from decompnet.consoles.pc import reccmp
+
+    (tmp_path / "src" / "auto" / "hw").mkdir(parents=True)
+    (tmp_path / "src" / "auto" / "text_00401000.cpp").write_text(
+        "int func_00401000(int a);\n\nint func_00401000(int a)\n{\n    return a;\n}\n\n"
+        "C_00401020::C_00401020(int x) : base(x) {\n}\n\nint Player_Hurt(int hp) {\n    return hp - 1;\n}\n")
+    (tmp_path / "src" / "auto" / "hw" / "text_10011000.cpp").write_text("int func_10011000(void)\n{\n    return 0;\n}\n")
+    (tmp_path / "game.exe").write_bytes(b"MZ")
+    info = {"exe": "game.exe", "names": {"func_00401040": "Player_Hurt", "func_00401020": "C_00401020::C_00401020"},
+            "units": {"text_00401000": [{"name": "_func_00401000", "addr": 0x401000},
+                                        {"name": "??0C_00401020@@QAE@H@Z", "addr": 0x401020},
+                                        {"name": "_func_00401040", "addr": 0x401040}],
+                      "hw/text_10011000": [{"name": "_func_10011000", "addr": 0x10011000}]},
+            "modules": [{"name": "hw", "exe": "hw.dll", "image_base": 0x10000000, "preferred_base": 0x400000}]}
+    for _ in range(2):  # (again: the same, one annotation each)
+        assert reccmp.annotate(tmp_path, info) == (4, 0)
+    text = (tmp_path / "src" / "auto" / "text_00401000.cpp").read_text()
+    assert text.count("// FUNCTION:") == 3
+    assert "int func_00401000(int a);\n\n// FUNCTION: GAME 0x00401000\nint func_00401000(int a)\n{" in text
+    assert "// FUNCTION: GAME 0x00401020\nC_00401020::C_00401020(int x)" in text
+    assert "// FUNCTION: GAME 0x00401040\nint Player_Hurt(int hp)" in text
+    dll = (tmp_path / "src" / "auto" / "hw" / "text_10011000.cpp").read_text()
+    assert dll.startswith("// FUNCTION: HW 0x00411000\n")  # (its own base: 0x400000, not the project's)
+    reccmp.project_files(tmp_path, info, "game")
+    assert "  HW:\n    filename: hw.dll\n    source-root: .\n" in (tmp_path / "reccmp-project.yml").read_text()
+

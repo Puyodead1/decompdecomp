@@ -1209,7 +1209,9 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
   with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
   C defines taken from it; a table of records as an array of a struct of its own, done; the game's DLLs, relinked
-  and as source, done; an Xbox game's XBE relinked, done: `ninja relink` writes its default.xbe). Left: the fields'
+  and as source, done; an Xbox game's XBE relinked, done: `ninja relink` writes its default.xbe; reccmp, the LEGO
+  Island decompilation's tool, reads the export: its annotations above each function and global, its project files,
+  and `ninja reccmp`, the relink with a PDB, done; the relink names each global that differs, done). Left: the fields'
   names and types from the code's reads (structs.py), and an Xbox project's Export as source (Export writes none
   for an Xbox project yet: `Xbox.export_fork`).
 

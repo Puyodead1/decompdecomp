@@ -10,7 +10,8 @@ import tables MASM; the resources, and program.json (tools/relink.py --source wr
 the program from that with Visual C++ 6.0's MASM and compiler, and the export checks it's the user's copy, byte for
 byte. Each DLL of the game's (functions.json's "modules") is source too, in source/<its folder>/, at the address the
 project gives it; assemble.py moves what it makes back to the DLL's own. source/ is
-made from the user's copy: the project's .gitignore keeps it out of git, as orig/ is.
+made from the user's copy: the project's .gitignore keeps it out of git, as orig/ is. The C and the data are
+annotated for reccmp too, with its project files (reccmp.py).
 """
 
 from __future__ import annotations
@@ -92,6 +93,13 @@ def export_pc(root: Path, version: str, log=print) -> dict:
         log(f"{folder.relative_to(root).as_posix()}/ makes {program['exe']} byte for byte" if same else
             f"{folder.relative_to(root).as_posix()}/ doesn't make {program['exe']}: "
             f"{(said.stdout + said.stderr).strip()[-500:]}")
+    # reccmp's annotations and project files (reccmp.py): the project works with the LEGO Island decompilation's tool
+    from . import reccmp
+
+    functions, globals_ = reccmp.annotate(root, info)
+    reccmp.project_files(root, info, version)
+    log(f"annotated {functions:,} functions and {globals_:,} globals for reccmp (reccmp-project.yml; `ninja reccmp` "
+        "builds the program and PDB it compares)")
     # the build files again, now with the source: `ninja relink` takes what isn't from C from it, `ninja relink-source`
     # links it alone (a build.ninja written before there was any has neither)
     ok, said = ForkProject(root).reconfigure(version, log=lambda *_: None)

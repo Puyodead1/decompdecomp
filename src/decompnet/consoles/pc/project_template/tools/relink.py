@@ -783,6 +783,7 @@ class Relink:
         # (a DLL of the game's, functions.json's "modules": its source files in its folder, its objects in one of its
         # own, its program beside the .exe's)
         self.module, self.out = module, build / "relink" / module if module else build / "relink"
+        self.folder, self.pdb = "relink", False  # (--pdb: build/<version>/reccmp/, with a PDB, for reccmp)
         self.name = next((Path(m["exe"]).name for m in info.get("modules", []) if m["name"] == module),
                          None) if module else Path(info["exe"]).name
 
@@ -1105,12 +1106,15 @@ class Relink:
             fail(f"{len(undefined)} names the code uses that nothing defines: {', '.join(undefined[:SHOWN])}"
                  + ("…" if len(undefined) > SHOWN else "")
                  + (" (the source was written without them: export again)" if self.asm_units is not None else ""))
-        program = self.build / "relink" / self.name  # (a DLL's beside the .exe's, as the game has them)
+        program = self.build / self.folder / self.name  # (a DLL's beside the .exe's, as the game has them)
         res = self.resources_object() if self.asm_units is None else None
         entry = self.starts.get(self.image.base + self.image.entry) if self.image.entry else None
         if entry is None and self.image.entry:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
         argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program, self.shift)]
+        if self.pdb:  # (the program reccmp compares: its PDB names where each function and global went)
+            # (named for the whole file: a game's demoquest.exe and demoquest.dll would both be demoquest.pdb)
+            argv += ["/DEBUG", "/DEBUGTYPE:CV", f"/PDB:{program.with_name(program.name + '.pdb')}"]
         argv += [*map(str, self.source_objects if self.asm_units is not None else data_objects),
                  *map(str, objects), *map(str, imports)]
         if res is not None:
@@ -2138,6 +2142,29 @@ class Relink:
         return f"extern {kind}{name}[];", f"{kind}{name}[{count}] = {{{body}}};"
 
     # ---------------------------------------------------------------------------------------------------- report
+    def globals_differ(self, new: Image, sections: dict[str, bool]) -> list[str]:
+        """Each global of a data section that differs whose bytes aren't your copy's (D_<address>, +0x<offset> where
+        the first byte that differs is inside it): what to look at, where a section only said it differed."""
+        starts = sorted({int(n[3:], 16) for n in self.names if DATA_SYMBOL.fullmatch(n)}
+                        | {g["addr"] for g in self.taken_data})
+        out = []
+        for s in self.image.sections:
+            if sections.get(s["name"], True) or s in self.code_sections or s["name"] in (".reloc", ".rsrc"):
+                continue
+            old, made = self.image.read(s["addr"], s["vsize"]), new.read(s["addr"], s["vsize"])
+            i = 0
+            while i < len(old):
+                if i < len(made) and old[i] == made[i]:
+                    i += 1
+                    continue
+                addr = s["addr"] + i
+                k = bisect.bisect_right(starts, addr) - 1
+                start = starts[k] if k >= 0 and starts[k] >= s["addr"] else s["addr"]
+                out.append(f"D_{start:08X}" + (f"+0x{addr - start:X}" if addr != start else ""))
+                after = starts[k + 1] if k + 1 < len(starts) else s["addr"] + len(old)
+                i = max(i + 1, min(after, s["addr"] + len(old)) - s["addr"])  # (the next global's start)
+        return out
+
     def report(self, program: Path, from_c: set[str], said: str) -> dict:
         """Where everything went (the linker's map), and whether it's the game's layout and code."""
         placed = self.placed()
@@ -2170,6 +2197,7 @@ class Relink:
                      moved_to(self.image.word(a)) is not None and new.word(to) != moved_to(self.image.word(a))]
             follows = {"relocated": len(self.relocated), "wrong": wrong[:SHOWN * 4]}
         report = {"program": program.relative_to(self.root).as_posix(), "follows": follows,
+                  "globals_differ": self.globals_differ(new, sections) if not data_moved else [],
                   "functions": sum(1 for fn in self.functions if not fn.get("lead")),
                   "c": sorted(from_c), "moved": moved, "data_moved": sorted(data_moved),
                   "data_c": [g["name"] for g in self.taken_data],
@@ -2464,6 +2492,8 @@ def main() -> None:
     parser.add_argument("--asm", metavar="FOLDER", help="what isn't from C from the program's source there (what "
                         "Export writes, maybe edited) instead of your copy: the functions, the data, the resources")
     parser.add_argument("--ml", default="", help="Visual C++ 6.0's MASM, ml.exe (for --asm)")
+    parser.add_argument("--pdb", action="store_true",
+                        help="link with a PDB, into build/<version>/reccmp/: what reccmp compares (`ninja reccmp`)")
     parser.add_argument("--pad", type=lambda s: int(s, 0), default=0,
                         help="this many bytes (int3s) before the game's code: everything moves, as with a mod's longer "
                              "code (does the program still work?)")
@@ -2491,6 +2521,9 @@ def main() -> None:
             if not args.ml:
                 fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
             relink.source = (asm, Path(args.build) / "source" / module, [*wrapper, args.ml])
+        if args.pdb:
+            relink.folder, relink.pdb = "reccmp", True
+            relink.out = Path(args.build) / "reccmp" / module if module else Path(args.build) / "reccmp"
         report = relink.write([*wrapper, args.link])
         if relink.home is not None:
             linked = root / report["program"]
@@ -2546,6 +2579,11 @@ def say(report: dict, relink: Relink, origin: str) -> None:
         print(f"  {xbe['program']}: " + ("byte for byte your copy's default.xbe" if xbe["identical"] else
               "the XBE of it" + ("" if xbe["signature"] else ", unsigned: it runs where signatures aren't checked "
                                  "(an emulator, a modded console)")))
+    if report.get("globals_differ"):
+        differ = report["globals_differ"]
+        print(f"  {len(differ):,} {'global isn' if len(differ) == 1 else 'globals aren'}'t your copy's: "
+              f"{', '.join(differ[:SHOWN])}"
+              + ("…" if len(differ) > SHOWN else "") + " (relink.json has them all)")
     for what in report["trusted"]:
         print(f"  note: {what}")
 

@@ -14,7 +14,8 @@ them (tools/rebuild.py) and checks it against your copy; `ninja relink` links it
 (tools/relink.py: code can change size and the rest moves with it; run it yourself for its options, --all-c and
 --pad). Without your copy of the game, a project with its program as source (source/, what decompdecomp's Export
 writes: its code as assembly, its data as C) makes it from that first (tools/assemble.py, with Visual C++ 6.0's MASM
-and compiler), and `ninja relink-source` links the program from that source alone with the same linker (what you
+and compiler), `ninja reccmp` links it with a PDB for reccmp (github.com/isledecomp/reccmp: reccmp-project.yml, which
+Export writes), and `ninja relink-source` links the program from that source alone with the same linker (what you
 edited may change size: the rest moves with it); with source/, `ninja relink` takes what isn't from C from it, not
 from your copy. A game built with link-time code generation (LTCG = True:
 units with a driver in harness/) builds those units through tools/ltcg.py, whose linker runs through wine. Made by
@@ -263,6 +264,16 @@ def main() -> None:
                                                        "tools/delink.py", *asm,
                                                        *(["tools/assemble.py"] if source else [])])
         n.build("relink", "phony", [relinked])
+        # the same with a PDB, into build/<version>/reccmp/: what reccmp compares with your copy (reccmp-build.yml,
+        # which Export writes with reccmp-project.yml); /DEBUG adds a debug directory, so not `ninja relink`'s
+        compared = (BUILD / "reccmp" / Path(info["exe"]).name).as_posix()
+        n.rule("reccmp", f"{PY} tools/relink.py {CONFIG.as_posix()} {BUILD.as_posix()} --pdb "
+               + q([*linker(), *(["--asm", "source", *assembler()] if source else [])]).replace("$", "$$"))
+        n.build([compared, *((BUILD / "reccmp" / Path(m["exe"]).name).as_posix() for m in info.get("modules", []))],
+                "reccmp", [*targets, *objs], implicit=[CONFIG.as_posix(), *exes, "tools/relink.py", "tools/rebuild.py",
+                                                       "tools/delink.py", *asm,
+                                                       *(["tools/assemble.py"] if source else [])])
+        n.build("reccmp", "phony", [compared])
         if source:
             # the program linked by the same linker from its source alone (tools/assemble.py --link), no C: assembly
             # you edited may make a function longer or shorter, and the rest moves with it
