@@ -994,6 +994,17 @@ def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
     assert linux.default_compiler(info, "") == "egcs-1.1.2-linux" and "compiler_why" not in info
 
 
+def test_an_export_relinks_with_data_sections_only_where_the_compiler_has_them():
+    """A 1999 sound server's export, egcs 1.1.2's: the relink stopped at "cc1: Invalid option `-fdata-sections'"."""
+    from decompnet import toolchains
+    from decompnet.consoles import linux
+
+    reg = toolchains.registry()
+    assert reg["egcs-1.1.2-linux"].data_sections is False and reg["gcc-2.95.3-linux"].data_sections is True
+    text = (Path(linux.__file__).with_name("export_relink.py")).read_text(encoding="utf-8")
+    assert "-fdata-sections\\n" not in text and text.count("{flags}{DATA_SECTIONS}") == 2
+
+
 def test_egcs_writes_what_gcc_2_95_never_does():
     """egcs 1.1.2's `x * 2` into another register is `leal 0(,%reg,2)` (7 bytes), which GCC 2.95.3 always writes as
     `leal (%reg,%reg)` or `addl`: the instruction an egcs program's functions have, and no C gives 2.95.3."""
@@ -1430,6 +1441,39 @@ def test_the_ports_copy_reads_a_files_own_variable_by_its_name_not_another_objec
                          text=True, check=True).stdout
     assert "    #define table__f (*(char (*)[])&table)  /* note */" in out
     assert 'extern short later__f[2] __asm__("later");' in out  # (declared after: left as it is)
+
+
+def test_a_weak_import_the_program_calls_is_one_of_its_imports():
+    """A 1999 sound server's linker made glibc's weak aliases weak imports (malloc, open, read, each at its PLT entry):
+    the export left them out of the relink's stubs as weak ones nobody need define, and the relink stopped at
+    "undefined reference to `malloc'". A weak import with no address (__gmon_start__) still goes."""
+    from decompnet.consoles.linux.export import _imported
+
+    assert _imported(undefined=True, weak=True, copied=False, value=0x8048574)  # malloc at its PLT entry
+    assert not _imported(undefined=True, weak=True, copied=False, value=0)  # __gmon_start__
+    assert _imported(undefined=True, weak=False, copied=False, value=0)  # printf
+    assert _imported(undefined=False, weak=False, copied=True, value=0x804E6C0)  # stdout, copied into the program
+    assert not _imported(undefined=False, weak=False, copied=False, value=0x804A9A4)  # _IO_stdin_used, its own
+
+
+def test_the_relinks_linker_script_is_one_binutils_2_9_reads(tmp_path):
+    """egcs 1.1.2's binutils 2.9.1 stopped a 1999 sound server's relink at "program.ld:26: parse error": KEEP and
+    EXCLUDE_FILE came in 2.10."""
+    import subprocess
+    import sys
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "relink.py").write_bytes(
+        (Path(debuginfo.__file__).with_name("export_relink.py")).read_bytes())
+    (tmp_path / "build.json").write_text(json.dumps({"functions": [], "units": [], "symbols": {}}))
+    script = ("  .init : { KEEP (*(.init)) } :code =0x9090\n"
+              "  .ctors : { KEEP (/tc/crtbegin.o(.ctors)) KEEP (*(EXCLUDE_FILE (/tc/crtend.o) .ctors)) KEEP (*(.ctors)) }\n"
+              "  .init_array : { PROVIDE (__init_array_start = .); KEEP (*(.init_array)) PROVIDE (__init_array_end = .); }\n")
+    out = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import relink; "
+                          f"print(relink.for_old_ld({script!r}), end='')"], cwd=tmp_path, capture_output=True,
+                         text=True, check=True).stdout
+    assert out == ("  .init : { *(.init) } :code =0x9090\n  .ctors : { *(.ctors) }\n"
+                   "  .init_array : { PROVIDE (__init_array_start = .); *(.init_array) PROVIDE (__init_array_end = .); }\n")
 
 
 def test_the_exports_c_is_made_plain_only_where_gcc_2_95_still_builds_the_same_code(tmp_path):

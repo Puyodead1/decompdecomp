@@ -30,6 +30,7 @@ from ...limits import capped
 from ...project import compiler_for
 from ...rom.export import exported_header, exported_source
 from ...rom.symbols import AUTO_NAME
+from ...toolchains import registry as toolchain_registry
 from . import export_float, export_make
 
 
@@ -179,6 +180,16 @@ def _layout(elf, functions: list[dict]) -> dict:
             "code": (end + 0xFFFFF) & ~0xFFFFF, "data": data}
 
 
+def _imported(undefined: bool, weak: bool, copied: bool, value: int) -> bool:
+    """Whether a dynamic symbol is one the program imports: undefined in it, or a copy of a library's variable it
+    has (R_386_COPY); not a weak one with no address in the program (__gmon_start__: nobody need define it). A 1999
+    linker made glibc's weak aliases weak imports (malloc, open, read), each at its PLT entry: those are imports, or
+    the relink stopped at "undefined reference to `malloc'"."""
+    if not undefined and not copied:
+        return False
+    return copied or not weak or bool(value)
+
+
 def _imports(elf) -> dict:
     """What the program imports, for the relink's stubs: {"needed": [libraries], "symbols": [[name, library,
     version or "", kind (1 data, 2 function), size]]}, an import the dynamic linker copies into the program (R_386_COPY:
@@ -207,7 +218,8 @@ def _imports(elf) -> dict:
     out = []
     for k, sym in enumerate(dynsym.iter_symbols()):
         undefined = sym["st_shndx"] == "SHN_UNDEF"
-        if not sym.name or (not undefined and k not in copies) or (sym["st_info"]["bind"] == "STB_WEAK" and k not in copies):
+        if not sym.name or not _imported(undefined, sym["st_info"]["bind"] == "STB_WEAK", k in copies,
+                                         sym["st_value"]):
             continue
         ndx = versym.get_symbol(k)["ndx"] if versym is not None else 0
         ndx = ndx & 0x7FFF if isinstance(ndx, int) else 0
@@ -628,6 +640,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
 
     log("checking the matched functions and writing them as C")
     functions, fallback = [], []
+    program_functions = {r["name"] for r in rows}  # (each its own file: a copy in another's C goes)
     for row in rows:
         f = {"name": row["name"], "vram": row["vram"], "size": len(row["target"]), "unit": row["unit"]}
         functions.append(f)
@@ -660,7 +673,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
             (out / "include" / headers[unit]).write_text(exported_header(hdr), encoding="utf-8")
         src = out / "src" / _unit_name(row["unit"]) / f"{row['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text(exported_source("", headers[unit], row["matched_source"]), encoding="utf-8")
+        src.write_text(exported_source("", headers[unit], row["matched_source"], row["name"], program_functions),
+                       encoding="utf-8")
         compiler = compiler_for(cfg, row["vram"])
         f.update({"c": src.relative_to(out).as_posix(), "toolchain": compiler["toolchain"],
                   "flags": list(compiler.get("flags") or [])})
@@ -817,6 +831,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         "decompdecomp": __import__("decompnet").__version__,  # (build.py's checks need this one or later)
         "program": re.sub(r"[^\w.-]", "_", Path(cfg["rom"].get("program") or cfg["rom"]["file"]).name),
         "sha1": hashlib.sha1(image).hexdigest(), "toolchain": cfg["compiler"]["toolchain"],
+        # (the relink compiles a file's variables each in a section of its own where the compiler can: tools/relink.py)
+        "data_sections": toolchain_registry()[cfg["compiler"]["toolchain"]].data_sections,
         "text": {"vram": text["sh_addr"], "offset": text["sh_offset"], "size": text["sh_size"]},
         "functions": functions, "units": unit_list, "data_files": data_files,
         "symbols": dict(sorted(symbols.items(), key=lambda kv: kv[1])),
