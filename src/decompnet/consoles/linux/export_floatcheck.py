@@ -193,7 +193,8 @@ def definitions(text: str) -> dict[str, tuple[str, list[str]]]:
     """name -> (what it returns, [each argument]) of each function `text` defines whose arguments the harness can
     make (a number, a pointer: not a struct by value, not `...`), in the kinds of C_TYPE."""
     out = {}
-    for m in DEFINITION.finditer(strip_comments(text)):
+    plain = strip_comments(text)
+    for m in DEFINITION.finditer(plain):
         ret = re.sub(r"\b(static|inline|extern|__inline__|__inline)\b", "", m.group(1)).strip()
         if ret in ("if", "while", "for", "switch", "return", "else", "do") or (kind := _kind(ret)) is None:
             continue
@@ -204,6 +205,9 @@ def definitions(text: str) -> dict[str, tuple[str, list[str]]]:
             kinds.append(None if p == "..." or name is None else
                          _kind(p[:name.start()] + ("*" if name.group(2) else "")))
         if None not in kinds:
+            where = span(text, m.group(2))
+            if where and kind != "v" and not re.search(r"\breturn\s*[^\s;]", plain[where[0]:where[1]]):
+                kind = "v"  # (declared to return one, returns nothing: what a register holds then is no result)
             out[m.group(2)] = (kind, kinds)
     return out
 
