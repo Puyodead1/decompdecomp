@@ -14,8 +14,9 @@ Files:
 
 The compilers are the distributions' own (toolchains.toml): gcc-2.95.3-linux, Slackware 8.0's GCC 2.95.3 and binutils
 with glibc 2.2.3's headers; gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; and
-gcc-4.3.2-redhat-linux, Fedora 10's (Red Hat's 4.3.2-7, C and C++); all run on the pinned 32-bit runtime. The
-program's .comment says which (default_compiler)."""
+gcc-4.3.2-redhat-linux, Fedora 10's (Red Hat's 4.3.2-7, C and C++); egcs-1.1.2-linux, Slackware 7.0's egcs 1.1.2
+(egcs-2.91.66) and binutils 2.9.1 with glibc 2.1.2's headers; all run on the pinned 32-bit runtime. The program's
+.comment says which (default_compiler), and the import says when it names one there's none of."""
 
 from __future__ import annotations
 
@@ -48,6 +49,8 @@ class Linux(Console):
     layout = "elf"
     compilers = (Compiler("gcc-2.95.3-linux", "GCC 2.95.3 (Slackware 8.0)", "Linux programs of 2001-2002",
                           "GCC: (GNU) 2.95.3 20010315 (release)"),
+                 Compiler("egcs-1.1.2-linux", "egcs 1.1.2 (Slackware 7.0)", "Linux programs of 1999-2000",
+                          "GCC: (GNU) egcs-2.91.66 19990314/Linux (egcs-1.1.2 release)"),
                  Compiler("gcc-4.3.2-linux", "GCC 4.3.2 (Debian 5.0)", "Linux programs of 2008-2009",
                           "GCC: (Debian 4.3.2-1.1) 4.3.2"),
                  Compiler("gcc-4.3.2-redhat-linux", "GCC 4.3.2 (Red Hat, Fedora 10)",
@@ -79,6 +82,11 @@ class Linux(Console):
         for wanted in (f"gcc-{version}-{vendor}linux", f"gcc-{version}-linux"):
             if version and wanted in ids:
                 return wanted
+        if said:  # (a sound program of egcs 1.1.2 was matched with GCC 2.95.3 for weeks: its `leal 0(,%reg,2)`, which
+            # no C makes 2.95.3 write, read as "a different 2.95.3 build" by the agents. Say so at the import.)
+            info["compiler_why"] = (f"the program's .comment says {said!r}, which no compiler decompdecomp has is: "
+                                    f"{self.compilers[0].name} instead, whose code differs from it in places (no C "
+                                    "makes it the game's there); ROADMAP.md, Linux, lists the compilers to come")
         return self.compilers[0].id
 
     def library_flags(self, flags: list[str]) -> list[list[str]]:

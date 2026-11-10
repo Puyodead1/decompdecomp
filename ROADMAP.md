@@ -253,7 +253,9 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   types), `.init_array`'s programs (GCC 4.7 and later) tried, thread-local storage and PIE programs, and C++
   exception tables for code still in assembly.
 - Pieces of functions joined to their function (no ROM console has it yet).
-- egcs 1.1.2 and GCC 2.7.2.3 for the same era's other programs, and C++ (g++ 2.95's classes and methods).
+- GCC 2.7.2.3 for the same era's other programs (egcs 1.1.2: done, Slackware 7.0's, picked by the program's
+  .comment; a 1999 sound server's functions match with it that no C made GCC 2.95.3 build), and C++ (g++ 2.95's
+  classes and methods).
 
 ## Recently done
 
