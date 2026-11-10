@@ -179,6 +179,41 @@ def _combined(kept: str, base: str, other: str) -> str | None:
     return out
 
 
+def inner_assignments(body: str, floats: set[str]) -> list[tuple[int, int, str]]:
+    """Each assignment of a float variable whose value an expression takes (`sin(t = t * omega)`): (where it starts,
+    where it ends, the variable)."""
+    out = []
+    for m in re.finditer(r"(?<![\w.>\]])([A-Za-z_]\w*)\s*=(?!=)", body):
+        before = body[:m.start()].rstrip()
+        if m.group(1) not in floats or not before or before[-1] not in "(,":
+            continue
+        depth, end = 0, None
+        for i in range(m.end(), len(body)):
+            c = body[i]
+            if c == "(":
+                depth += 1
+            elif c in "),;" and depth == 0:
+                end = i
+                break
+            elif c == ")":
+                depth -= 1
+        if end is not None and body[end] != ";":
+            out.append((m.start(), end, m.group(1)))
+    return out
+
+
+def exact_value(body: str, at: tuple[int, int, str], temp: str) -> str:
+    """`v = E` whose value an expression takes as `(v = temp = E, temp)`: v rounded as the C says, the expression
+    given E exact, as the game's code passed on the register it computed E in."""
+    lo, hi, var = at
+    assignment = body[lo:hi]
+    rhs = assignment.split("=", 1)[1]
+    new = body[:lo] + f"({var} = {temp} ={rhs}, {temp})" + body[hi:]
+    brace = new.index("{")
+    return new[:brace + 1] + f"\n    long double {temp};  /* the game's code passed {var} on exact here */" + \
+        new[brace + 1:]
+
+
 def _reads(body: str, at: tuple[int, int, str]) -> int:
     lo, hi, var = at
     nxt = _assigned_after(body, var, hi)
@@ -237,7 +272,13 @@ class _File:
                 text, headers, best = new_text, {**headers, **changed}, got
         while best and tried < TRIES:
             a, b, body = body_of(text)
+            head = body[:body.find("{")]  # (its parameters: `float t` assigned in it, slerp's `sin(t = t * omega)`)
+            floats |= set(re.findall(r"\bfloat\s+([A-Za-z_]\w*)\s*[,)]", head))
             options = [(text[:a] + long_double_local(body, var) + text[b:]) for var in float_locals(body)]
+            for at in inner_assignments(body, floats | set(float_locals(body))):
+                temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
+                            if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
+                options.append(text[:a] + exact_value(body, at, temp) + text[b:])
             for at in float_assignments(body, floats | set(float_locals(body))):
                 temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
                             if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))

@@ -1708,6 +1708,15 @@ float quat_dot(Quat *a, Quat *b)
 {
     return a->x * b->x + a->y * b->y + a->z * b->z + a->w * b->w;
 }
+void *malloc(unsigned);
+double sin(double);
+void quat_spin(Quat *q, float t)
+{
+    float *kept = malloc(4);
+    *kept = sin(t = t * q->x) * q->z;
+    q->y = *kept;
+    q->w = t;
+}
 void quat_scale(Quat *q)
 {
     float m = quat_dot(q, q);
@@ -1727,7 +1736,8 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
     the same C gave an arcade game other floats in its plain build (a quaternion multiply a bit off: frames some
     pixels off). The export compares each float function of the game's code with the plain build's
     (tools/floatcheck.py, `make floatcheck`) and finds the C that says what the game's code did: a product kept exact
-    for the reads after it, a float returned with all 80 bits, a local kept exact, a literal read as a double; the
+    for the reads after it, a float returned with all 80 bits, a local kept exact, a literal read as a double, an
+    assignment's exact value passed on (slerp's `sin(t = t * omega)`, which kept a game's frames some pixels off); the
     file then builds with -fexcess-precision=standard (its Makefile rule), the C beside the matching C, NON_MATCHING,
     and the matching build the same."""
     from decompnet import toolchains
@@ -1759,11 +1769,16 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
     # and the tree's own check says so, as `make floatcheck` runs it
     said = subprocess.run([sys.executable, "tools/floatcheck.py", "src/vec.c"], cwd=out, capture_output=True,
                           text=True, env={**os.environ, "TC": str(tc), "CFLAGS": " ".join(export_float.DEFAULT)})
-    assert said.returncode == 0 and "3 of 3 functions the game's" in said.stdout, said.stdout + said.stderr
+    # (quat_spin calls malloc: the check's stubs are never the C library's, whose start-up a stub malloc stopped)
+    assert said.returncode == 0 and "4 of 4 functions the game's" in said.stdout, said.stdout + said.stderr
     assert "build/plain/vec.o build/asan/vec.o: CFLAGS += -fexcess-precision=standard" in export_make.precision(build)
     # what it writes: a literal not exact in its type as the double it was; a changed function beside the matching one
     assert export_float.literal_casts('a * 0.1 + b * 0.5f + (1.0 / 180.0); printf("%5.2f", x); /* 0.1 */') == \
         'a * (double)0.1 + b * 0.5f + (double)(1.0 / 180.0); printf("%5.2f", x); /* 0.1 */'
+    # an assignment whose value an expression takes: the variable rounded, the expression given the exact value
+    body = "void f(float t)\n{\n    s = sin(t = t * w) * o;\n}\n"
+    (at,) = export_float.inner_assignments(body, {"t"})
+    assert "s = sin((t = t_exact = t * w, t_exact)) * o;" in export_float.exact_value(body, at, "t_exact")
     assert export_float.merged("int f(void);\nint f(void)\n{\n    return 1;\n}\n",
                                "long f(void);\nint f(void)\n{\n    return 2;\n}\n", lambda t, n: (
                                    (t.index("int f(void)\n{"), t.index("}\n") + 1) if n == "f" else None)) == \
