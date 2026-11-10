@@ -1248,15 +1248,17 @@ def test_an_api_helper_asks_its_model_for_the_effort_it_was_given(tmp_path, monk
 def test_opencode_titles_its_sessions_with_the_helpers_own_model(tmp_path, monkeypatch):
     """opencode titles each session with its "small model", OpenCode Zen's paid nano one by default: a free-only
     account saw it called by every helper ("Insufficient account funds"). The helper's own model does it, without
-    its effort."""
+    its effort; opencode 1 gets that effort as --variant."""
     monkeypatch.setattr(kinds.get("opencode"), "config_model", lambda: None)
     monkeypatch.setitem(kinds.known_versions, "opencode", (0, "1.19.3"))
     m = _manager(tmp_path, monkeypatch, "opencode")
     s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "opencode/deepseek-v4.1-flash-free#high"})
     work = tmp_path / "oc"
     work.mkdir()
-    m._command(s, "tok", work)
+    cmd = m._command(s, "tok", work)[0]
     assert json.loads((work / "opencode.json").read_text())["small_model"] == "opencode/deepseek-v4.1-flash-free"
+    # opencode 1 takes the effort as --variant: "-m opencode/<model>#medium" was "Model not found: ...#medium"
+    assert cmd[cmd.index("-m") + 1] == "opencode/deepseek-v4.1-flash-free" and cmd[cmd.index("--variant") + 1] == "high"
 
 
 
@@ -1310,7 +1312,7 @@ def test_opencode_offers_and_sends_only_the_efforts_a_model_has(tmp_path, monkey
     work = tmp_path / "oc"
     work.mkdir()
     cmd = m._command(s, "tok", work)[0]
-    assert cmd[cmd.index("-m") + 1] == "opencode-go/deepseek-v4.1-flash#low"
+    assert cmd[cmd.index("-m") + 1] == "opencode-go/deepseek-v4.1-flash#low" and "--variant" not in cmd
 
 def test_a_cli_that_retries_a_usage_limit_is_stopped_and_the_helper_waits(tmp_path, monkeypatch):
     """OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence (a helper's session

@@ -44,7 +44,7 @@ class Opencode(Agent):
     signin = "Run `opencode auth login` once to add a provider (DeepSeek, OpenRouter, ...)."
     docs = "https://opencode.ai"
     models_args = ("models",)
-    takes_effort = True  # opencode 2 picks a model's reasoning effort as a variant of it: provider/model#high
+    takes_effort = True  # a model's reasoning effort is a variant of it: provider/model#high (opencode 1: --variant high)
     # OpenCode Zen's free models: "Free usage limit reached", then opencode retried in silence for as long as it let it
     # (a helper's session hung, then counted as a failure)
     limit_hangs = True
@@ -168,6 +168,11 @@ class Opencode(Agent):
         # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag. No --log-level either: before
         # 2.0 it took only ERROR, from 2.0 only error, and either stops the other at once.)
         cmd = [exe, "run", *(["--standalone"] if self.standalone(exe) else []), "--format", "json", "--print-logs"]
+        if model and "#" in model and not self.standalone(exe):
+            # (opencode 1 takes the effort as --variant: its -m is provider/model alone, and "#medium" was read as
+            # part of the model's name, "Model not found: opencode/<model>#medium. Did you mean: <model>")
+            name, _, effort = model.partition("#")
+            return cmd + ["-m", name, "--variant", effort], {}
         return cmd + (["-m", model] if model else []), {}
 
     def parse(self, event: dict, state: dict) -> list[tuple[str, str] | None]:
