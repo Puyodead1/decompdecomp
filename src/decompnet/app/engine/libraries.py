@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import time
 from pathlib import Path
 
@@ -43,6 +44,59 @@ NOT_LIBRARY = {"test", "tests", "testing", "example", "examples", "sample", "sam
                "build", "win32", "win32s", "macosx", "osx", "msvc", "vc6", "vc7", "vc8", "vs2005", "vs2008", "android",
                "iphone", "dox", "scripts", "etc"}
 HEADER_ROOTS = ("boost", "luabind", "OIS", "Ogre", "ParticleUniverse")  # a folder named so: its parent is a root
+
+
+# header code: what the compiler writes out wherever the game's code uses a library's templates and inline functions
+# (a 2008 C++ program's own files held 13,276 functions of the C++ library's and 7,500 of boost's): never the game's
+# to write, and no library source file makes it; the library's headers do, once the game's code that uses them is C
+COMPILERS_OWN = ("std", "__gnu_cxx", "__cxxabiv1")  # (the C++ library's namespaces: always header code)
+THUNK = re.compile(r"^(?:non-virtual thunk to |virtual thunk to |covariant return thunk to |guard variable for )")
+# proprietary middleware a program has linked in, with no source anywhere: its own code, by its classes' names, where
+# the program has enough of it to be sure (Scaleform GFx: GFx*, GAS* and its G* support classes, none with debug
+# information); only what has none is taken (a game's own G-classes, GT, have theirs)
+MIDDLEWARE = (("Scaleform GFx", re.compile(r"^G[A-Z]"), re.compile(r"^GFx"), 200),)
+HEADER_FILES = 30_000  # the most of a library's headers read for its namespaces
+
+
+def outer_name(demangled: str) -> str:
+    """A demangled function's qualified name, its templates' arguments left out, and the namespace or class it's
+    in first: `void boost::function_requires<...>(void)` -> "boost"."""
+    text = THUNK.sub("", demangled)
+    text = re.sub(r"operator(<<=|<<|<=|<|>>=|>>|>=|>|\(\)|->)", "operator", text)
+    out, depth = [], 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and depth:
+            depth -= 1
+        elif depth == 0:
+            out.append(ch)
+    head = "".join(out).split("(", 1)[0].strip().split(" ")[-1]
+    return head.split("::", 1)[0] if "::" in head else ""
+
+
+def library_namespaces(root: Path) -> dict[str, str]:
+    """The namespaces the project's libraries put their code in: the first each header opens at a line's start (its
+    outermost, `namespace boost {`; boost opens its nested ones there too, `debug`, `api`, which a game's own could
+    be called), in at least two headers: namespace -> its library."""
+    seen: dict[str, dict[str, int]] = {}
+    for library in library_folders(root):
+        read = 0
+        for folder in include_dirs(library):
+            for header in folder.rglob("*"):
+                if header.suffix not in HEADERS or not header.is_file() or read >= HEADER_FILES or any(
+                        part.lower() in NOT_LIBRARY or part == "libs" for part in header.relative_to(folder).parts[:-1]):
+                    continue  # (not its tests', examples' or tools': boost's libs/*/example open `example`, `http`)
+                read += 1
+                try:
+                    text = header.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if (first := re.search(r"^namespace\s+([A-Za-z_]\w*)\s*\{?", text, re.M)):
+                    seen.setdefault(first.group(1), {}).setdefault(library.name, 0)
+                    seen[first.group(1)][library.name] += 1
+    return {name: max(libs, key=libs.get) for name, libs in seen.items()
+            if sum(libs.values()) >= 2 and name not in ("detail", "impl", "internal")}
 
 
 def library_folders(root: Path) -> list[Path]:
@@ -97,6 +151,11 @@ def library_includes(root: Path) -> list[str]:
     return [str(d.relative_to(root)) for lib in library_folders(root) for d in include_dirs(lib)]
 
 
+def _in(meta: dict) -> str:
+    source = (meta.get("debug") or {}).get("source")
+    return f" (here in {Path(source).name})" if source else ""
+
+
 class LibraryMixin:
     def scan_libraries(self, slug: str) -> dict:
         """Look at the project's libs/ folder again: its libraries' include folders for every compile."""
@@ -119,7 +178,10 @@ class LibraryMixin:
                                "recognised by its own analysis)")
         root = Path(proj["root"])
         libraries = library_folders(root)
-        if not libraries:
+        if not libraries:  # (the C++ library's header code and middleware need no source: set aside all the same)
+            header = self.set_aside_header_code(slug, log=log)
+            if header:
+                return {"found": 0, "compiled": 0, "failed": 0, "header": header}
             raise NetworkError(f"put each library's source in a folder of its own in {root / LIBS}, as it was "
                                f"released (libs/lua-5.1.4, libs/boost_1_36_0), then try again")
         includes = self.scan_libraries(slug)["includes"]
@@ -188,7 +250,61 @@ class LibraryMixin:
                 + (f" (built {' or '.join(best)})" if best else ""))
         log(f"{found:,} functions set aside as library code; {compiled} files compiled, {failed} didn't "
             f"({time.time() - started:.0f}s)")
-        return {"found": found, "compiled": compiled, "failed": failed}
+        header = self.set_aside_header_code(slug, log=log)  # (what no library source file makes: its headers do)
+        return {"found": found, "compiled": compiled, "failed": failed, "header": header}
+
+    def set_aside_header_code(self, slug: str, log=print, dry: bool = False) -> dict:
+        """Set aside the open functions that are header code (the C++ library's, and the templates and inline
+        functions of a library in libs/, by the namespace their demangled name is in) or proprietary middleware's
+        own (MIDDLEWARE): none is the game's to write. Returns how many of each, by what they are."""
+        proj = self._project(slug)
+        root = Path(proj["root"])
+        namespaces = {name: lib for name, lib in library_namespaces(root).items()}
+        rows = self.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND status='open'", proj["id"])
+        metas = [(r, json.loads(r["meta"] or "{}")) for r in rows]
+        middleware = [(name, pattern) for name, pattern, sign, least in MIDDLEWARE
+                      if sum(1 for r, m in metas if not m.get("debug") and sign.match(outer_name(
+                          m.get("demangled") or "") or (m.get("demangled") or "").split("::", 1)[0])) >= least]
+        found: dict[str, int] = {}
+        changes = []
+        for row, meta in metas:
+            demangled = meta.get("demangled") or ""
+            if not demangled:
+                continue
+            outer = outer_name(demangled)
+            cls = outer or THUNK.sub("", demangled).split("(", 1)[0].split("::", 1)[0].split(" ")[-1]
+            what = why = None
+            if outer in COMPILERS_OWN:
+                what = "the C++ library's"
+                why = (f"header code: the C++ library's templates and inline functions, which the compiler writes out "
+                       f"wherever the game's code uses them{_in(meta)}; the library's headers make it, once that "
+                       "code is C")
+            elif outer and outer in namespaces:
+                what = namespaces[outer]
+                why = (f"header code: {outer}'s ({namespaces[outer]}, in libs/) templates and inline functions, which "
+                       f"the compiler writes out wherever the game's code uses them{_in(meta)}; its headers make it")
+            elif not meta.get("debug"):
+                for name, pattern in middleware:
+                    if pattern.match(cls):
+                        what, why = name, (f"middleware: {name}'s own code, linked into the game, whose source "
+                                           "nobody has: it stays the program's assembly")
+                        break
+            if what is None:
+                continue
+            found[what] = found.get(what, 0) + 1
+            meta["set_aside"] = why
+            changes.append((json.dumps(meta), row["id"]))
+        if not dry and changes:
+            with self.store.tx() as db:
+                db.executemany("DELETE FROM claims WHERE function_id=?", [(i,) for _, i in changes])
+                db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", changes)
+                self._event(db, proj["id"], None, "not_c", f"{len(changes):,} functions set aside as header code "
+                            "and middleware: " + ", ".join(f"{n:,} {w}" for w, n in sorted(found.items(),
+                                                                                      key=lambda x: -x[1])))
+        if found:
+            log(f"{sum(found.values()):,} functions set aside as header code and middleware, no one's to write: "
+                + ", ".join(f"{n:,} {w}" for w, n in sorted(found.items(), key=lambda x: -x[1])))
+        return found
 
     def _library_code(self, fn, where: str, flags: str) -> None:
         meta = json.loads(fn["meta"] or "{}")
