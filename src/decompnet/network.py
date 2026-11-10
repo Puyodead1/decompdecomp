@@ -273,11 +273,14 @@ _INFRA_NOTE = re.compile(
     r"nothing can compile|OAuth|Failed to authenticate|not logged in|session limit|usage limit|hit your \w* ?limit",
     re.I)
 # A note saying the function can't get closer: true when it was written, until someone beats it (31 of 296 such
-# notes in one project: "plain C plateaus here" at 68.3% on a function another agent took to 95.1%)
+# notes in one project: "plain C plateaus here" at 68.3% on a function another agent took to 95.1%). "Floor" too, not
+# C's floor(): a Linux program's function at score 1 kept "Floor is 851 for every source shape" in its brief.
 _CEILING = re.compile(r"plateau|ceiling|not reachable|unreachable|can'?t (?:get|reach|go|be matched|match)|cannot|"
-                      r"impossible|dead[- ]end|capped|stuck at|won'?t match|best possible|no way to|maxed", re.I)
+                      r"impossible|dead[- ]end|capped|stuck at|won'?t match|best possible|no way to|maxed|"
+                      r"\bfloor\b(?!\s*\()", re.I)
 _PERCENT = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s*%")
-_SCORE = re.compile(r"\bscore\s*(?:of\s*|=\s*|:\s*)?(\d+)\b", re.I)
+# "score 851", "it still scores 851", "best is now 701", "the floor is 851"
+_SCORE = re.compile(r"\b(?:scores?|best|floor)\s*(?:(?:is|was|now|of|at|stays|=|:)\s*)*(\d+)\b(?!\s*%)", re.I)
 
 
 def _superseded(text: str, best_score: int | None, best_percent: float | None) -> bool:
@@ -292,9 +295,17 @@ def _superseded(text: str, best_score: int | None, best_percent: float | None) -
     return best_score is not None and bool(scores) and min(scores) > best_score
 
 
+def _best_text(score: int, fn, percent: bool) -> str:
+    """A best score as a brief gives it: its percentage too where the brief gives percentages (a project's)."""
+    if percent and fn["n_insns"]:
+        return f"{scoring.percent_text(max(0.0, 100.0 * (1 - score / (fn['n_insns'] * 100))))} (score {score})"
+    return str(score)
+
+
 def brief_notes(rows, fn, best_at: float | None = None, best_text: str = "", show: int | None = None,
                 when: bool = True) -> list[str]:
-    """A function's notes as its brief lists them (rows newest first: text, created_at, name). Notes about the
+    """A function's notes as its brief lists them (rows newest first: text, created_at, name, and best_then, the
+    best score when it was written, which a note gives when the best has been beaten since). Notes about the
     setup (_INFRA_NOTE) are left out, with a line saying how many; a note given word for word more than once is
     shown once; an older note that said it can't get closer, or described less than the best now (`best_text`,
     reached at `best_at`), is marked superseded and goes after the others, and so does a longer one saying a function
@@ -331,8 +342,17 @@ def brief_notes(rows, fn, best_at: float | None = None, best_text: str = "", sho
     lines = []
     for n, count, old in (fresh + stale)[:show]:
         text = stale_note((n["text"] or "").strip(), fn["status"])
+        # the best when it was written, when it's been beaten since: a note's claims are about that best, and some
+        # say what can't be done in words no pattern catches ("the bundled egcs is a different build", "release
+        # now"), which agents took over the brief's own score of 1 for hours
+        then = n["best_then"] if "best_then" in n.keys() else None
+        then_text = (_best_text(then, fn, "%" in best_text)
+                     if then is not None and best_score is not None and then > best_score else "")
         if old:
-            text = f"(superseded: best is now {best_text or fn['best_score']}) {text}"
+            was = f"written when the best was {then_text}; " if then_text else ""
+            text = f"(superseded: {was}best is now {best_text or fn['best_score']}) {text}"
+        elif then_text:
+            text = f"(written when the best was {then_text}) {text}"
         if count > 1:
             text += f" [noted {count} times]"
         who = f"{n['name']}, {_ago(n['created_at'])}" if when else f"{n['name']}"
@@ -1349,7 +1369,9 @@ class Network:
 
     def notes_for_brief(self, fn, best_text: str = "", show: int | None = None, when: bool = True) -> list[str]:
         """A function's notes for its brief (brief_notes), with when its best score was first reached."""
-        rows = self.store.all("SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+        rows = self.store.all("SELECT n.text, n.created_at, a.name, (SELECT MIN(t.score) FROM attempts t WHERE "
+                              "t.function_id=n.function_id AND t.score IS NOT NULL AND t.created_at<=n.created_at) "
+                              "AS best_then FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
                               f"WHERE n.function_id=? ORDER BY n.id DESC LIMIT {BRIEF_NOTES * 8}", fn["id"])
         best_at = None
         if fn["status"] != "matched" and fn["best_score"] is not None:

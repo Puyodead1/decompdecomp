@@ -260,6 +260,51 @@ def test_a_note_newer_than_the_best_or_better_than_it_isnt_superseded():
     assert out[2] == "- (c) (superseded: best is now 90.0%) stuck around 80% (score 2000)"
 
 
+def test_notes_say_the_best_they_were_written_at_and_a_floor_is_a_ceiling():
+    """A Linux program's function at score 1 (only its frame size differs) kept "Floor is 851 for every source shape"
+    and "the bundled egcs is a different build" in its brief: neither said "can't", so neither was marked, and agents
+    wrote "release now" over the brief's own score for hours."""
+    from decompnet.network import brief_notes
+
+    fn = {"status": "open", "best_score": 1, "n_insns": 41}
+    rows = [{"text": "only the frame differs now", "created_at": 30, "name": "d", "best_then": 1},
+            {"text": "the game's egcs is a different build; release now", "created_at": 8, "name": "c",
+             "best_then": 851},
+            {"text": "Floor is 851 for every source shape; it still scores 851 with any flags", "created_at": 6,
+             "name": "b", "best_then": 851},
+            {"text": "use floor(x) here, not a cast", "created_at": 4, "name": "a", "best_then": 2000}]
+    out = brief_notes(rows, fn, best_at=10, when=False)
+    assert out[0] == "- (d) only the frame differs now"
+    assert out[1] == "- (c) (written when the best was 851) the game's egcs is a different build; release now"
+    assert out[2] == "- (a) (written when the best was 2000) use floor(x) here, not a cast"  # C's floor(): no ceiling
+    assert out[3] == ("- (b) (superseded: written when the best was 851; best is now 1) Floor is 851 for every source "
+                      "shape; it still scores 851 with any flags")
+    # a project's brief gives percentages
+    out = brief_notes(rows[1:2], {"status": "open", "best_score": 100, "n_insns": 10}, best_at=10,
+                      best_text="90.0% (score 100)", when=False)
+    assert out == ["- (c) (written when the best was 14.9% (score 851)) the game's egcs is a different build; "
+                   "release now"]
+
+
+def test_a_brief_gives_each_note_the_best_score_it_was_written_at(tmp_path):
+    net, _ = _game(tmp_path, [("f", 41, "open")])
+    a, _ = net.local_agent("a")
+    fid = net.store.one("SELECT id FROM functions WHERE name='f'")["id"]
+    with net.store.tx() as db:
+        for score, t in ((851, 100), (1, 300)):
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,source,created_at) VALUES(?,?,?,?,?,?)",
+                       (fid, a.id, score, 1, "x", t))
+        for text, t in (("before any compile", 50), ("the frame is all that's left at 851", 200),
+                        ("only the frame differs", 400)):
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(1,?,?,?,?)",
+                       (fid, a.id, text, t))
+        db.execute("UPDATE functions SET best_score=1 WHERE id=?", (fid,))
+    lines = net.notes_for_brief(net.store.one("SELECT * FROM functions WHERE id=?", fid))
+    assert lines[0].startswith("- (a, ") and lines[0].endswith(") only the frame differs")
+    assert "(written when the best was 851) the frame is all that's left" in lines[1]
+    assert lines[2].endswith(") before any compile")  # no compile yet when it was written: nothing to say
+
+
 def test_the_prompts_count_only_claims_that_were_compiled():
     from decompnet.app import tools
 
