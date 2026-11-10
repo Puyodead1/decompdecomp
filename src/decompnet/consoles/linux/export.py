@@ -30,7 +30,7 @@ from ...limits import capped
 from ...project import compiler_for
 from ...rom.export import exported_header, exported_source
 from ...rom.symbols import AUTO_NAME
-from . import export_make
+from . import export_float, export_make
 
 
 def _unit_name(unit: str | None) -> str:
@@ -856,7 +856,16 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         from . import export_clean
 
         log("writing what only the matching build supplied as plain C")
-        export_clean.clean(out, build, Path(toolchains.ensure(build["toolchain"], log=lambda *_: None)), log=log)
+        tc = Path(toolchains.ensure(build["toolchain"], log=lambda *_: None))
+        export_clean.clean(out, build, tc, log=log)
+        # and its floats as the game's code computed them, where the C can say so (export_float.py)
+        if export_float.available():
+            log("comparing the plain build's floats with the game's code, function by function (tools/floatcheck.py)")
+            export_float.precision(out, build, tc, log=log)
+            export_make.write(out, build)  # (each source file's precision, build.json's plain_flags)
+        else:
+            log("the plain build's floats weren't compared with the game's: that needs the system's gcc (32-bit) and "
+                "binutils")
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
           data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build))
@@ -916,6 +925,11 @@ in the program and checks the result against your original, byte for byte.
 4. `make port`: the C built by your system's GCC (`PORT_CC`, default `gcc -m32`; `PORT_FLAGS`) against the
    program's own C library headers from `tools/`, linked as `make match` links it, its variables where the program
    has them.
+5. `make floatcheck`: whether the plain build's floats are what the game's code computes, bit for bit, function by
+   function (`tools/floatcheck.py`: each float function of the matching build and of the plain one called with the
+   same random arguments). GCC 2.95 used the x87's 80-bit registers, rounding a float only where it stored one; where
+   the C says so (a `long double` kept exact, a float function returning all 80 bits, a literal read as a
+   `(double)`), the file builds with `-fexcess-precision=standard` (its rule in the Makefile), which keeps it.
 
 Where the plain C and the C that compiles to the original's code differ (GCC 2.95 builds the game's code only from
 a number where a person writes the variable's name), the file has both, as decompilations write them:

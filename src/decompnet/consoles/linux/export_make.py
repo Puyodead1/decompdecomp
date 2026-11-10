@@ -22,6 +22,9 @@ MAKEFILE = """\\
 #   make port         build/port/{program}: the C built by the system's GCC (PORT_CC, PORT_FLAGS: no matching
 #                     there) against the program's own C library headers from the toolchain, linked as `make match`
 #                     links it, its variables where the program has them
+#   make floatcheck   whether the plain build's floats are the game's code's, bit for bit, function by function
+#                     (tools/floatcheck.py: the x87 rounded where GCC 2.95 stored a float; a source file whose C says
+#                     where builds with -fexcess-precision=standard, its rule below)
 # The matching builds need make, python3, curl or wget, tar and ar; `python build.py` (with decompdecomp installed)
 # checks that the C still rebuilds your copy byte for byte.
 PROGRAM := {program}
@@ -44,7 +47,7 @@ PORT_STUBS := build/port/stubs
 
 # the plain build: every source file, compiled and linked as any C program is
 CC ?= gcc
-CFLAGS ?= -O2
+CFLAGS ?= -O2 -fno-builtin-sin -fno-builtin-cos
 PLAIN_FLAGS := -m32 -std=gnu89 -fno-pie -fcommon -fno-strict-aliasing -DNON_MATCHING
 LDLIBS ?= {ldlibs}
 SOURCES := {sources}
@@ -63,6 +66,10 @@ build/plain/%.o: src/%.c $(HEADERS)
 build/plain/%.o: src/%.s
 \t@mkdir -p $(dir $@)
 \t$(CC) -m32 -c $< -o $@
+
+{precision}
+floatcheck: $(TOOLCHAIN_READY)
+	$(PY) tools/floatcheck.py --cc "$(CC)" --cflags "$(CFLAGS)" $(SOURCES)
 
 asan: build/asan/$(PROGRAM)
 build/asan/$(PROGRAM): $(ASAN_OBJS)
@@ -126,7 +133,7 @@ build/port/$(PROGRAM): $(PORT_OBJS) {data_o}$(PORT_STUBS)/stubs.txt
 clean:
 \trm -r -f build/relink build/port build/rules.mk build/rules.mk.tmp build/$(PROGRAM)
 
-.PHONY: all asan match toolchain move port clean
+.PHONY: all asan match toolchain move port clean floatcheck
 .DELETE_ON_ERROR:
 """
 
@@ -175,6 +182,7 @@ def write(out: Path, build: dict) -> None:
     tools = out / "tools"
     tools.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name("export_relink.py"), tools / "relink.py")
+    shutil.copyfile(Path(__file__).with_name("export_floatcheck.py"), tools / "floatcheck.py")
     if not (tc.cmd and tc.cmd[:2] == ["/bin/sh", "-c"]):
         return  # (a compiler run otherwise: build.py's relink only)
     (tools / "cc.sh").write_text("#!/bin/sh\n# compile one C file as decompdecomp does: cc.sh TOOLCHAIN SOURCE OBJECT "
@@ -210,12 +218,28 @@ def write(out: Path, build: dict) -> None:
     standalone = bool(build.get("standalone"))
     (out / "Makefile").write_text(MAKEFILE.format(
         program=build["program"], toolchain=tid, prelude=prelude, data_o=data_o, ldlibs=libraries(build),
+        precision=precision(build),
         sources=" \\\n  ".join(sources), assembly=" \\\n  ".join(assembly),
         default="build/plain/$(PROGRAM)" if standalone else "build/$(PROGRAM)",
         plain_note="" if standalone else (
             "\n#                     (not yet the default: what isn't source yet is your copy's, which only the matching "
             "build\n#                     links; `make` builds build/{0} as `make match` does)".format(build["program"]))),
         encoding="utf-8")
+
+
+def precision(build: dict) -> str:
+    """The rule of each source file whose floats the plain build makes the game's with standard excess precision
+    (export_float.py: build.json's plain_flags), the plain and ASan builds alike."""
+    lines = []
+    for unit in build.get("units") or []:
+        if unit.get("plain_flags") and (unit.get("c") or "").startswith("src/") and unit["c"].endswith(".c"):
+            stem = unit["c"][len("src/"):-len(".c")]
+            lines.append(f"build/plain/{stem}.o build/asan/{stem}.o: CFLAGS += {' '.join(unit['plain_flags'])}")
+    if not lines:
+        return ""
+    return ("# the x87 as the game's code used it: these files' C says where it kept a value exact (long double) and where "
+            "it\n# rounded one (a float), which -fexcess-precision=standard keeps (tools/floatcheck.py checks it)\n"
+            + "\n".join(lines) + "\n")
 
 
 def libraries(build: dict) -> str:
