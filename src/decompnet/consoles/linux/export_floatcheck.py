@@ -11,7 +11,8 @@ game's code uses the x87 and whose arguments it can make (numbers, pointers), th
 function (the game's code, compiled by tools/cc.sh) and the plain build's (the system's gcc with NON_MATCHING and
 the Makefile's CFLAGS, against the program's own C library headers, as `make port` compiles) with the same random
 arguments, each in a child process of its own, and compares what they return (all 80 bits) and the memory their
-pointer arguments reach. The program's other functions are stubs that return 0, its variables memory whose every
+pointer arguments reach. The program's other functions are its own (every source file as the matching build
+compiles it), or, where a function won't run with them, stubs that return 0; its other variables memory whose every
 word is an address in that memory and a float between 1 and 1.25 (a field read either way leads somewhere), and
 the pointer arguments' memory random floats, or, where a function crashes on those, the same addresses. A function
 that crashes or loops even so is "untestable". Prints each function that differs, and exits 1 if one does or a file
@@ -31,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -295,20 +297,23 @@ def undefined(objects: list[Path], tc: Path) -> dict[str, str]:
 
 
 _LIBRARY: set[str] | None = None
+_LIBRARY_LOCK = threading.Lock()
 
 
 def library(tc: Path) -> set[str]:
     """What the program's own C library, maths library and libgcc define: never a stub (a stub malloc returning 0
-    stopped glibc's start-up before the harness ran)."""
+    stopped glibc's start-up before the harness ran). Read once, whole before any check sees it (checks run in
+    threads: one that saw it half read stubbed malloc again)."""
     global _LIBRARY
-    if _LIBRARY is None:
-        _LIBRARY = set()
-        archives = [tc / "crt" / "libc.a", tc / "crt" / "libm.a", *(tc / "gcc").rglob("libgcc.a")]
-        for archive in archives:
-            if archive.exists():
-                said = subprocess.run([tool("nm", tc), "-g", "--defined-only", str(archive)], capture_output=True,
-                                      text=True, env=_binutils_env(tc)).stdout
-                _LIBRARY |= {line.split()[-1] for line in said.splitlines() if len(line.split()) >= 3}
+    with _LIBRARY_LOCK:
+        if _LIBRARY is None:
+            names: set[str] = set()
+            for archive in [tc / "crt" / "libc.a", tc / "crt" / "libm.a", *(tc / "gcc").rglob("libgcc.a")]:
+                if archive.exists():
+                    said = subprocess.run([tool("nm", tc), "-g", "--defined-only", str(archive)], capture_output=True,
+                                          text=True, env=_binutils_env(tc)).stdout
+                    names |= {line.split()[-1] for line in said.splitlines() if len(line.split()) >= 3}
+            _LIBRARY = names
     return _LIBRARY
 
 
@@ -319,6 +324,35 @@ def stubs(names: dict[str, str]) -> str:
     return "\n".join(lines) + f"\nvoid stub_fill(unsigned (*word)(void))\n{{\n  int j;\n{fill}}}\n"
 
 
+def game_archive(work: Path, tc: Path, workers: int = 8) -> Path | None:
+    """Every source file of the program's as the matching build compiles it, in one archive (work/game.a): the
+    rest of the program a check links in, so a function's calls reach the game's own functions (a stub's 0 left a
+    caller's out-arguments unset: what it then computed was nobody's)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    build = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
+    prelude = ["-include", "tools/prelude.h"] if (ROOT / "tools" / "prelude.h").exists() else []
+    units = [(u["c"], u.get("flags") or ["-O2"]) for u in build.get("units") or [] if u.get("c")]
+    objects = work / "game"
+    objects.mkdir(parents=True, exist_ok=True)
+
+    def one(unit) -> Path | None:
+        rel, flags = unit
+        obj = objects / (re.sub(r"\W", "_", rel) + ".o")
+        said = subprocess.run(["sh", "tools/cc.sh", str(tc), rel, str(obj), "-Iinclude", *prelude, *flags], cwd=ROOT,
+                              capture_output=True, text=True)
+        return obj if said.returncode == 0 and obj.exists() else None
+    with ThreadPoolExecutor(workers) as pool:
+        built = [o for o in pool.map(one, units) if o is not None]
+    if not built:
+        return None
+    archive = work / "game.a"
+    archive.unlink(missing_ok=True)
+    said = subprocess.run([tool("ar", tc), "rcs", str(archive), *map(str, built)], capture_output=True,
+                          env=_binutils_env(tc))
+    return archive if said.returncode == 0 else None
+
+
 class HarnessError(Exception):
     """The check's own program didn't run: not the plain build's fault, and no verdict on its floats."""
 
@@ -327,7 +361,8 @@ class Check:
     """One source file's check: its matching object and harness made once (prepare), then each plain C of it
     (run: the file as it is, or other text for it) compared with them."""
 
-    def __init__(self, rel: str, work: Path, cc: list[str], cflags: list[str], tc: Path | None = None):
+    def __init__(self, rel: str, work: Path, cc: list[str], cflags: list[str], tc: Path | None = None,
+                 archive: Path | None = None):
         build = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
         self.rel, self.work, self.cc, self.cflags = rel, work, cc, cflags
         self.tc = tc or Path(os.environ.get("TC") or ROOT / "tools" / (build.get("toolchain") or "gcc-2.95.3-linux"))
@@ -336,6 +371,7 @@ class Check:
         prelude = ["-include", "tools/prelude.h"] if (ROOT / "tools" / "prelude.h").exists() else []
         self.match_flags = [*prelude, *(unit.get("flags") or ["-O2"])]
         self.order: list[str] = []
+        self.archive = archive  # (game_archive: the rest of the program, where the check links it)
         work.mkdir(parents=True, exist_ok=True)
 
     def _cc(self, source: str, obj: Path, flags: list[str]) -> subprocess.CompletedProcess:
@@ -393,32 +429,46 @@ class Check:
         renames = [a for name in self.defs for a in ("--redefine-sym", f"{name}=P_{name}")]
         subprocess.run([tool("objcopy", tc), "--weaken", *renames, str(w / "new.o"), str(w / "p.o")], check=True,
                        env=_binutils_env(tc))
-        (w / "stubs.c").write_text(stubs(undefined([w / "old.o", w / "p.o"], tc)), encoding="utf-8")
-        self._cc(str(w / "stubs.c"), w / "stubs.o", ["-O0", "-w", "-fno-builtin"])
-        g = next((tc / "gcc").rglob("crtbegin.o"), None)
-        crt = tc / "crt"
-        said = subprocess.run([tool("ld", tc), "-m", "elf_i386", "-static", "-o", str(w / "h"), str(crt / "crt1.o"),
-                               str(crt / "crti.o"), *([str(g)] if g else []), str(w / "h.o"), str(w / "old.o"),
-                               str(w / "p.o"), str(w / "stubs.o"), "--allow-multiple-definition", "--no-warnings",
-                               "--unresolved-symbols=ignore-all", "--start-group", str(crt / "libm.a"),
-                               str(crt / "libc.a"), *([str(g.with_name("libgcc.a"))] if g else []), "--end-group",
-                               *([str(g.with_name("crtend.o"))] if g else []), str(crt / "crtn.o")],
-                              capture_output=True, text=True)
-        if said.returncode:
-            sys.exit(f"floatcheck: the harness doesn't link: {said.stderr[-1000:]}")
-        argv = [str(w / "h"), str(inputs)] + ([str(self.order.index(only))] if only else [])
-        said = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                              timeout=SECONDS * 4 * (1 if only else max(1, len(self.order))) + 60)  # (two kinds of
-        # memory, two builds)
-        if said.returncode != 0:
-            raise HarnessError(f"the check itself stopped (exit {said.returncode}): {(said.stdout + said.stderr)[-300:]}")
-        out: dict[str, int | None] = {}
-        for line in said.stdout.splitlines():
-            if m := re.match(r"(\S+) (\d+)/\d+$", line):
-                out[m.group(1)] = int(m.group(2))
-            elif m := re.match(r"(\S+) untestable$", line):
-                out[m.group(1)] = None
-        return out
+        outs = []
+        # the game's own functions where it has them (the archive), else stubs; a function that won't run with the
+        # game's (a null the game's state would have filled) is checked with stubs alone
+        for rest in ([self.archive] if self.archive else []) + [None]:
+            name = "h-game" if rest else "h"
+            (w / "stubs.c").write_text(stubs(undefined([w / "old.o", w / "p.o", *([rest] if rest else [])], tc)),
+                                       encoding="utf-8")
+            self._cc(str(w / "stubs.c"), w / "stubs.o", ["-O0", "-w", "-fno-builtin"])
+            g = next((tc / "gcc").rglob("crtbegin.o"), None)
+            crt = tc / "crt"
+            said = subprocess.run([tool("ld", tc), "-m", "elf_i386", "-static", "-o", str(w / name),
+                                   str(crt / "crt1.o"), str(crt / "crti.o"), *([str(g)] if g else []), str(w / "h.o"),
+                                   str(w / "old.o"), str(w / "p.o"), *([str(rest)] if rest else []),
+                                   str(w / "stubs.o"), "--allow-multiple-definition", "--no-warnings",
+                                   "--unresolved-symbols=ignore-all", "--start-group", str(crt / "libm.a"),
+                                   str(crt / "libc.a"), *([str(g.with_name("libgcc.a"))] if g else []), "--end-group",
+                                   *([str(g.with_name("crtend.o"))] if g else []), str(crt / "crtn.o")],
+                                  capture_output=True, text=True)
+            if said.returncode:
+                if rest:
+                    continue
+                raise HarnessError(f"the check doesn't link: {said.stderr[-500:]}")
+            argv = [str(w / name), str(inputs)] + ([str(self.order.index(only))] if only else [])
+            said = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                                  timeout=SECONDS * 4 * (1 if only else max(1, len(self.order))) + 60)
+            if said.returncode != 0:
+                if rest:
+                    continue
+                raise HarnessError(f"the check itself stopped (exit {said.returncode}): "
+                                   f"{(said.stdout + said.stderr)[-300:]}")
+            outs.append(said.stdout)
+        merged: dict[str, int | None] = {}
+        for text in outs:  # (the first that ran a function says how it went)
+            for line in text.splitlines():
+                if m := re.match(r"(\S+) (\d+)/\d+$", line):
+                    if merged.get(m.group(1)) is None:
+                        merged[m.group(1)] = int(m.group(2))
+                elif m := re.match(r"(\S+) untestable$", line):
+                    merged.setdefault(m.group(1), None)
+        return merged
 
 
 def main() -> None:
@@ -433,9 +483,11 @@ def main() -> None:
     own = {u["c"]: u.get("plain_flags") or [] for u in build.get("units") or [] if u.get("c")}
     differ = failed = 0
     with tempfile.TemporaryDirectory(prefix="floatcheck-") as tmp:
+        tc = Path(os.environ.get("TC") or ROOT / "tools" / (build.get("toolchain") or "gcc-2.95.3-linux"))
+        archive = game_archive(Path(tmp), tc)
         for rel in args.sources:
             check = Check(rel, Path(tmp) / Path(rel).stem, shlex.split(args.cc),
-                          [*shlex.split(args.cflags), *own.get(rel, [])])
+                          [*shlex.split(args.cflags), *own.get(rel, [])], tc, archive)
             why = check.prepare()
             if why:
                 print(f"{rel}: {why}")

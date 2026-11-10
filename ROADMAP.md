@@ -1194,11 +1194,12 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   (tools/floatcheck.py) calls each float function of the matching build and the plain one with the same random
   arguments, and the export searches for the C that says what the game's code did (a value kept exact as a long
   double, a float returned with all 80 bits, a literal read as a double), NON_MATCHING, a file built with
-  -fexcess-precision=standard where that brings it closer (done: on that game, 3 files switched, the calls that
-  differ 582 to 370, QuatMul and its callers exact as a hand-made patch had them). Left: a float GCC 2.95 spilled to
-  a float stack slot mid-expression (StormyReef's rule 4, a particle renderer), functions that only crash or loop on
-  the check's random memory, a function whose callees (stubs in the check) leave its out-arguments unset, branch coverage
-  reported per function, and plain builds other than x87's (SSE: other floats).
+  -fexcess-precision=standard where that brings it closer, else GCC's default with `volatile float` where the game
+  rounded (done: on that game a lockstep of 45 frames is 0 pixels, QuatMul and the slerp as a hand-made patch had
+  them). The check links the game's own other files, so a callee's out-arguments are the game's (stubs only where a
+  function won't run with them), and a product GCC 2.95 spilled to a float slot mid-expression is a `(float)` cast
+  (done). Left: functions that only crash or loop on the check's random memory, branch coverage reported per
+  function, and plain builds other than x87's (SSE: other floats).
 - A source file made one file per function joined whole: a table a function copies from a literal the match placed
   (`memcpy(vlist, "", sizeof(vlist))`) is the local array's initializer it was (done: an arcade game's last such file
   is whole).

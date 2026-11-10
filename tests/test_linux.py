@@ -1741,6 +1741,13 @@ void quat_spin(Quat *q, float t)
     q->y = *kept;
     q->w = t;
 }
+void quat_fill(Quat *q);
+float quat_filled(float s)
+{
+    Quat q;
+    quat_fill(&q);  /* (another file's: what it leaves in q is the game's only where the check runs the game's) */
+    return q.x * s + q.y;
+}
 void quat_scale(Quat *q)
 {
     float m = quat_dot(q, q);
@@ -1762,8 +1769,9 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
     (tools/floatcheck.py, `make floatcheck`) and finds the C that says what the game's code did: a product kept exact
     for the reads after it, a float returned with all 80 bits, a local kept exact, a literal read as a double, an
     assignment's exact value passed on (slerp's `sin(t = t * omega)`, which kept a game's frames some pixels off); the
-    file then builds with -fexcess-precision=standard (its Makefile rule), the C beside the matching C, NON_MATCHING,
-    and the matching build the same."""
+    file then builds with -fexcess-precision=standard (its Makefile rule), or GCC's default where that's closer, the
+    C beside the matching C, NON_MATCHING, and the matching build the same. The check links the game's own other
+    files, so a call's out-arguments are what the game's function leaves there, not a stub's nothing."""
     from decompnet import toolchains
     from decompnet.consoles.linux import export_clean, export_float, export_make
 
@@ -1778,13 +1786,17 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
     shutil.copyfile(Path(export_float.__file__).with_name("export_floatcheck.py"), out / "tools" / "floatcheck.py")
     (out / "include" / "vec.h").write_text("float quat_dot(void *a, void *b);\n")
     (out / "src" / "vec.c").write_text(FLOATS)
+    (out / "src" / "fill.c").write_text("typedef struct { float x, y, z, w; } Quat;\n"
+                                        "void quat_fill(Quat *q)\n{\n    q->x = 1.5f;\n    q->y = 0.25f;\n}\n")
     build = {"toolchain": gcc, "program": "vec", "functions": [],
-             "units": [{"name": "vec", "c": "src/vec.c", "flags": ["-O2"]}]}
+             "units": [{"name": "vec", "c": "src/vec.c", "flags": ["-O2"]},
+                       {"name": "fill", "c": "src/fill.c", "flags": ["-O2"]}]}
     (out / "build.json").write_text(json.dumps(build))
     matching = export_clean._compile(out, tc, out / "src" / "vec.c", ["-O2"], FLOATS)
     done = export_float.precision(out, build, tc, log=lambda *_: None)
     res = done["src/vec.c"]
-    assert res["default"] > 0 and res["standard"] == 0, res  # (the game's, every call)
+    assert "quat_filled" not in res["untestable"] + res["differ"]  # (quat_fill the game's own, not a stub's 0)
+    assert res["start"] > 0 and res["standard"] == 0 and res["mode"] == "standard", res  # (the game's, every call)
     assert build["units"][0]["plain_flags"] == ["-fexcess-precision=standard"]
     made = (out / "src" / "vec.c").read_text()
     assert "#ifdef NON_MATCHING" in made and "long double quat_dot(" in made and "_exact" in made
@@ -1794,11 +1806,17 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
     said = subprocess.run([sys.executable, "tools/floatcheck.py", "src/vec.c"], cwd=out, capture_output=True,
                           text=True, env={**os.environ, "TC": str(tc), "CFLAGS": " ".join(export_float.DEFAULT)})
     # (quat_spin calls malloc: the check's stubs are never the C library's, whose start-up a stub malloc stopped)
-    assert said.returncode == 0 and "4 of 4 functions the game's" in said.stdout, said.stdout + said.stderr
+    assert said.returncode == 0 and "5 of 5 functions the game's" in said.stdout, said.stdout + said.stderr
     assert "build/plain/vec.o build/asan/vec.o: CFLAGS += -fexcess-precision=standard" in export_make.precision(build)
     # what it writes: a literal not exact in its type as the double it was; a changed function beside the matching one
     assert export_float.literal_casts('a * 0.1 + b * 0.5f + (1.0 / 180.0); printf("%5.2f", x); /* 0.1 */') == \
         'a * (double)0.1 + b * 0.5f + (double)(1.0 / 180.0); printf("%5.2f", x); /* 0.1 */'
+    # a product GCC 2.95 spilled to a float slot mid-expression, rounded there; a float GCC's default precision keeps
+    # in a register, rounded by a store (volatile)
+    body = "void f(void)\n{\n    float m;\n    x = mag * ct + -sip * st;\n}\n"
+    spills = [export_float.spilled(body, at) for at in export_float.products(body)]
+    assert "x = (float)(mag * ct) + -sip * st;" in spills[0] and "-(float)(sip * st);" in spills[1]
+    assert "volatile float m;" in export_float.volatile_local(body, "m")
     # an assignment whose value an expression takes: the variable rounded, the expression given the exact value
     body = "void f(float t)\n{\n    s = sin(t = t * w) * o;\n}\n"
     (at,) = export_float.inner_assignments(body, {"t"})
