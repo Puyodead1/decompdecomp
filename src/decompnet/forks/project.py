@@ -128,6 +128,11 @@ def _searchable(folder: str) -> bool:
     return True
 
 
+def clean_path(path: str) -> str:
+    """PATH without the folders that refuse a look (_searchable): what a build, and the demo games' builds, run with."""
+    return os.pathsep.join(d for d in path.split(os.pathsep) if d and _searchable(d))
+
+
 def _tool_dirs() -> list[Path]:
     """Where decompdecomp's own build tools (the ninja Python package's ninja) are: beside its Python, or, in the
     Windows setup's bundle (packages installed with --target), in the `bin` folder beside those packages, which the
@@ -486,8 +491,7 @@ class ForkProject:
         are added to `failed`. `platform`: its console, for a project whose manifest isn't written yet (its import's
         first build: a game built with Visual C++ 2017 then built without wine's settings)."""
         env = dict(os.environ)
-        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()),
-                                       *(d for d in env.get("PATH", "").split(os.pathsep) if d and _searchable(d))])
+        env["PATH"] = os.pathsep.join([*(str(d) for d in _tool_dirs()), clean_path(env.get("PATH", ""))])
         # what its console's builds need (Console.build_env)
         if (platform := (self.manifest or {}).get("platform") or platform):
             from .. import consoles

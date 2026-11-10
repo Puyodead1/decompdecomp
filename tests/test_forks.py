@@ -1059,6 +1059,7 @@ def test_a_path_folder_that_refuses_a_look_is_left_out_of_a_builds_path(tmp_path
     monkeypatch.setattr(os, "stat", stat)
     assert not project._searchable(refused)
     assert project._searchable(str(tmp_path)) and project._searchable(str(tmp_path / "missing"))
+    assert project.clean_path(os.pathsep.join([refused, str(tmp_path)])) == str(tmp_path)  # (the demos' builds too)
     tools = Path(project.__file__).parent.parent / "consoles" / "pc" / "project_template" / "tools"
     spec = importlib.util.spec_from_file_location("compile_tool", tools / "compile.py")
     compile_tool = importlib.util.module_from_spec(spec)

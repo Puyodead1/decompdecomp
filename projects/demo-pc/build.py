@@ -45,6 +45,7 @@ relink and source with.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -55,6 +56,7 @@ from pathlib import Path
 from decompnet import toolchains, wine
 from decompnet.app import cli
 from decompnet.consoles.pc.scratch import compiler_pack
+from decompnet.forks.project import clean_path
 
 HERE = Path(__file__).resolve().parent
 DLL = next((a for a in sys.argv[1:] if a in ("dll", "dll6")), None)
@@ -70,6 +72,8 @@ CFLAGS = ["/nologo", "/c", "/O2", "/Gd", "/W0"]
 def run(argv, cwd=BUILD, env=None):
     # (output to a file: the services wine starts keep a pipe it was given open, and the build waiting on it)
     with tempfile.TemporaryFile() as said:
+        # (PATH without the folders that refuse a look: under WSL a Windows one in /mnt stopped wibo's CL.EXE)
+        env = {**(env or os.environ), "PATH": clean_path((env or os.environ).get("PATH", ""))}
         res = subprocess.run([str(a) for a in argv], stdout=said, stderr=said, stdin=subprocess.DEVNULL, cwd=cwd,
                              env=env)
         said.seek(0)

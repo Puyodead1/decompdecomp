@@ -41,6 +41,7 @@ from pathlib import Path
 from decompnet import toolchains, wine
 from decompnet.consoles.xbox.scratch import BASE, CL_FLAGS, KEYS
 from decompnet.forks.ltcg import XBOX_CL_FLAGS
+from decompnet.forks.project import clean_path
 
 HERE = Path(__file__).resolve().parent
 LTCG = "ltcg" in sys.argv[1:]
@@ -52,7 +53,9 @@ CERT, SECTIONS, STRINGS, LIBS = 0x180, 0x360, 0x500, 0x580  # where the headers'
 
 
 def run(argv, cwd=BUILD):
-    res = subprocess.run([str(a) for a in argv], capture_output=True, text=True, cwd=cwd)
+    # (PATH without the folders that refuse a look: under WSL a Windows one in /mnt stopped wibo's CL.EXE)
+    res = subprocess.run([str(a) for a in argv], capture_output=True, text=True, cwd=cwd,
+                         env={**os.environ, "PATH": clean_path(os.environ.get("PATH", ""))})
     if res.returncode != 0:
         sys.exit(f"failed: {' '.join(map(str, argv))}\n{res.stdout}{res.stderr}")
 
