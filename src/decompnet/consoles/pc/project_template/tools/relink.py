@@ -803,6 +803,7 @@ class Relink:
         self.relocated = image.relocated()  # (every word the game's base relocations name; None: it has none)
         self.needs: dict[str, set[str]] = {}  # a function from C whose code isn't the game's: the names it needs
         self.source: tuple[Path, Path, list[str]] | None = None  # (--asm: the source's folder, ML's objects, ML)
+        self.home: int | None = None  # (a DLL: the address its header puts it at, where what is made of it goes back to)
         self.asm_units: dict[str, Compiled] | None = None
         self._asm_starts: dict[str, list[tuple[int, int, str]]] = {}  # (--asm: each unit's functions as source/ has them)
         self.source_objects: list[Path] = []  # (--asm: the data, resources and the rest, from source/)
@@ -820,12 +821,13 @@ class Relink:
         and the rest as tools/assemble.py links them (its prepare). `objects`: where ML's objects go."""
         assemble = _sibling("assemble")
         program = json.loads((folder / "program.json").read_text(encoding="utf-8"))
-        units = set(self.units)
+        units = {Path(u).name: u for u in self.units}  # (a DLL's unit by its name in its own folder: asm/<name>.asm)
         made = assemble.prepare(program, folder, objects, ml, self.out, skip=lambda p: Path(p.get("asm", "")).stem in units)
-        self.asm_units, self.source_objects = made["skipped"], made["paths"]
+        self.asm_units = {units[name]: read for name, read in made["skipped"].items()}
+        self.source_objects = made["paths"]
         self.source_where = made["where"]
         self.source_changed = made["changed"]
-        missing = sorted(units - set(self.asm_units))
+        missing = sorted(set(units.values()) - set(self.asm_units))
         if missing:
             fail(f"{len(missing)} units have no source in {folder}: {', '.join(missing[:SHOWN])} (export again)")
 
@@ -1652,7 +1654,7 @@ class Relink:
                 if disassemble is not None and s["data"]:
                     texts[number] = {off: (n, text) for off, n, text in disassemble(self.image.read(at, s["size"]), at)}
                 at += s["size"]
-            write(unit, obj, list(range(1, len(obj.sections) + 1)), start, {},
+            write(Path(unit).name, obj, list(range(1, len(obj.sections) + 1)), start, {},  # (a DLL's: in its folder)
                   f"{unit}: functions as your copy has them (decompdecomp's tools/relink.py wrote this)", texts=texts)
         self.write_data_c(folder, write, pieces)
         if self.resources_object() is not None:
@@ -1691,6 +1693,13 @@ class Relink:
         program = {"exe": self.info["exe"], "sha1": hashlib.sha1(exe).hexdigest(), "base": self.image.base,
                    "size": len(exe), "sections": table, "pieces": pieces, "aliases": aliases,
                    "entry": self.starts.get(self.image.base + self.image.entry)}  # (assemble.py --link: its /ENTRY)
+        if self.module:  # (a DLL of the game's: its source at the address the project gives it, its program at its
+            # own, the one its header names, where tools/assemble.py moves what it makes back to)
+            m = next(m for m in self.info.get("modules", []) if m["name"] == self.module)
+            own = (self.root / m["exe"]).read_bytes()
+            program.update({"exe": m["exe"], "sha1": hashlib.sha1(own).hexdigest()})
+            if Image(own).base != self.image.base:
+                program["home"] = Image(own).base
         (folder / "program.json").write_text(json.dumps(program, indent=1), encoding="utf-8")
         return program
 
@@ -2316,33 +2325,45 @@ def main() -> None:
         fail(f"{info['exe']} isn't the copy this project was made from")
     if exe[0x28:0x2C] == b"XBEH":  # (decompdecomp's consoles/xbox: the XBE inside a Windows program made of it)
         fail("an Xbox game's program is relinked as a Windows one, not an XBE, yet: `ninja rebuild` rebuilds it")
-    if args.source:
-        relink = Relink(info, Image(exe), root, Path(args.build))
-        program = relink.write_source(Path(args.source))
-        print(f"{args.source}: {info['exe']} as source, {len(program['pieces'])} files of MASM (tools/assemble.py "
-              "makes the program again from it)")
+    if args.source:  # (the .exe's in that folder, each DLL's in a folder of its own there)
+        for module, relink in programs(info, exe, root, Path(args.build)):
+            program = relink.write_source(Path(args.source) / module)
+            print(f"{Path(args.source) / module}: {program['exe']} as source, {len(program['pieces'])} files of MASM "
+                  "(tools/assemble.py makes the program again from it)")
         return
     if not args.link:
         fail("it links with Visual C++ 6.0's linker: install Visual C++ 6.0 in decompdecomp's Setup (Compilers & "
              "tools), then run tools/configure.py again")
     wrapper = [args.wrapper] if args.wrapper else []
     delink = _sibling("delink")
-    for module, (path, sha1, base) in delink.programs(info).items():  # (the .exe, then each DLL of the game's)
+    for module, relink in programs(info, exe, root, Path(args.build), args.all_c, args.pad):
+        # (a DLL's source in a folder of its own: from your copy where an older Export wrote none)
+        asm = Path(args.asm) / module if args.asm else None
+        if asm is not None and (asm / "program.json").exists():
+            if not args.ml:
+                fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
+            relink.source = (asm, Path(args.build) / "source" / module, [*wrapper, args.ml])
+        report = relink.write([*wrapper, args.link])
+        if relink.home is not None:
+            linked = root / report["program"]
+            linked.write_bytes(delink.rebase(linked.read_bytes(), relink.home))
+        say(report, relink, asm.as_posix() if relink.source is not None else "your copy")
+
+
+def programs(info: dict, exe: bytes, root: Path, build: Path, all_c: bool = False, pad: int = 0):
+    """The relink of each program of the project's: the .exe's, then each DLL of the game's (functions.json's
+    "modules"), each (its folder, "" for the .exe, and its Relink). A DLL is at the address the project gives it, as
+    functions.json has its functions; its Relink's `home` is where its header puts it, where what's made of it goes
+    back to (delink.rebase)."""
+    delink = _sibling("delink")
+    for module, (path, sha1, base) in delink.programs(info).items():
         data = exe if not module else (root / path).read_bytes()
         if module and hashlib.sha1(data).hexdigest() != sha1:
             fail(f"{path} isn't the copy this project was made from")
-        # (a DLL at the address the project gives it, as functions.json has its functions; moved back after)
-        relink = Relink(info, Image(data if base is None else delink.rebase(data, base)), root, Path(args.build),
-                        args.all_c, args.pad if not module else 0, module)
-        if args.asm and not module:  # (a DLL's source isn't written yet: from your copy)
-            if not args.ml:
-                fail("the source is assembled with Visual C++ 6.0's MASM: give --ml")
-            relink.source = (Path(args.asm), Path(args.build) / "source", [*wrapper, args.ml])
-        report = relink.write([*wrapper, args.link])
-        if base is not None:
-            linked = root / report["program"]
-            linked.write_bytes(delink.rebase(linked.read_bytes(), Image(data).base))
-        say(report, relink, args.asm if args.asm and not module else "your copy")
+        relink = Relink(info, Image(data if base is None else delink.rebase(data, base)), root, build, all_c,
+                        pad if not module else 0, module)
+        relink.home = Image(data).base if base is not None and base != Image(data).base else None
+        yield module, relink
 
 
 def say(report: dict, relink: Relink, origin: str) -> None:

@@ -163,8 +163,14 @@ def assemble(program: dict, source: Path, objects: Path, ml: list[str]) -> bytes
         if s.get("tail"):
             tail = bytes.fromhex(s["tail"])
             exe[s["raw_at"] + size:s["raw_at"] + size + len(tail)] = tail
-    return bytes(exe.ljust(program["size"] - len((source / "overlay.bin").read_bytes()), b"\0")) + \
-        (source / "overlay.bin").read_bytes()
+    return home(program, bytes(exe.ljust(program["size"] - len((source / "overlay.bin").read_bytes()), b"\0")) +
+                (source / "overlay.bin").read_bytes())
+
+
+def home(program: dict, exe: bytes) -> bytes:
+    """A DLL of the game's back at its own address, the one its header names (program.json's "home"): its source is
+    at the address the project gives it, where functions.json has its functions."""
+    return _relink()._sibling("delink").rebase(exe, program["home"]) if program.get("home") else exe
 
 
 def prepare(program: dict, source: Path, objects: Path, ml: list[str], folder: Path, skip=None) -> dict:
@@ -273,7 +279,8 @@ def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list
     made = prepare(program, source, objects, ml, folder)
     paths, changed, placed, image = made["paths"], made["changed"], made["placed"], made["image"]
     entry = program.get("entry")
-    if entry is None:  # (a source written before program.json named it: the public name where the program starts)
+    if entry is None and image.entry:  # (a source written before program.json named it: the public name where the
+        # program starts; a DLL may have none, /NOENTRY)
         names = public_names(program, placed)
         entry = next((n for n, a in names.items() if a == image.base + image.entry and not n.startswith("_D_")), None)
         if entry is None:
@@ -289,6 +296,7 @@ def link(program: dict, source: Path, objects: Path, ml: list[str], linker: list
         sys.exit(f"assemble: the linker stopped:\n{output}")
     ends = max(s["raw_at"] + s["raw_size"] for s in program["sections"])
     relink.finish(out, image, relink.read_map(folder / "link.map"), (source / "overlay.bin").read_bytes(), ends)
+    out.write_bytes(home(program, out.read_bytes()))
     return {"program": out, "changed": changed, "linker": output}
 
 

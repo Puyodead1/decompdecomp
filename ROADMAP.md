@@ -518,7 +518,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (/NOENTRY where it has no entry point), its export tables kept in its data, each RVA a relocation (an exported
   function's to the function), the header's export directory set to them. The demo with a DLL of its own (built with
   Visual C++ 6.0) relinks both with every section byte for byte, the DLL at its own address and its exports as they
-  were. Left: a DLL as source (Export writes the .exe's only).
+  were. Export writes each DLL as source too (source/<its folder>/, at the project's address; tools/assemble.py moves
+  what it makes back to the DLL's own): it makes the DLL byte for byte, `ninja relink` takes it from there,
+  `ninja relink-source` links it alone, and a clone without the game's files makes the .exe and the DLL from source
+  (the demo's DLL built with Visual C++ 6.0, `build.py dll6`).
 - **A Windows PC project rebuilds the whole game.** A PC project compiled each function and compared it with the one
   cut out of the user's .exe, but nothing put the program back together: its export was "—". `ninja rebuild`
   (tools/rebuild.py, standard library only) writes the whole .exe again, every function at its address from what
@@ -1191,8 +1194,7 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
   with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
   C defines taken from it; a table of records as an array of a struct of its own, done). Left: the fields' names
-  and types from the code's reads (structs.py), the game's DLLs as source too (relinked: done), and an Xbox game's
-  XBE.
+  and types from the code's reads (structs.py), and an Xbox game's XBE (the game's DLLs: relinked and source, done).
 
 ### A modding-ready check for the export
 

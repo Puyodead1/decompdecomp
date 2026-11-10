@@ -33,6 +33,11 @@ Demo Quest as a game with a DLL of its own beside its program: the same code com
 linked as a DLL that exports some of its functions by name, at 0x400000, the program's own address. So the import
 moves it by its base relocations, as Windows does when two programs want one address, and builds its files with
 the Visual C++ its Rich header names, not the program's (tests/test_pc.py).
+
+    uv run python projects/demo-pc/build.py dll6   ->  build/dll6/demoquest.exe and build/dll6/demoquest.dll
+
+The same with the DLL compiled by Visual C++ 6.0, the program's: what a machine with only 6.0 can test a DLL's
+relink and source with.
 """
 
 from __future__ import annotations
@@ -50,12 +55,12 @@ from decompnet.app import cli
 from decompnet.consoles.pc.scratch import compiler_pack
 
 HERE = Path(__file__).resolve().parent
-DLL = "dll" in sys.argv[1:]
+DLL = next((a for a in sys.argv[1:] if a in ("dll", "dll6")), None)
 PDB = "--pdb" in sys.argv[1:]
-VERSION = next((a for a in sys.argv[1:] if a not in ("dll", "--pdb")), "6.0")
-BUILD = HERE / "build" / ("dll" if DLL else "pdb" if PDB else "" if VERSION == "6.0" else VERSION)
+VERSION = next((a for a in sys.argv[1:] if a not in ("dll", "dll6", "--pdb")), "6.0")
+BUILD = HERE / "build" / (DLL if DLL else "pdb" if PDB else "" if VERSION == "6.0" else VERSION)
 EXPORTS = ("player_take_damage", "entity_default_hp", "clamp_s32")  # what the DLL exports, by their own names
-DLL_VERSION = "10.0SP1"
+DLL_VERSION = "6.0" if DLL == "dll6" else "10.0SP1"
 GAME = HERE.parent / "demo-n64" / "original"
 CFLAGS = ["/nologo", "/c", "/O2", "/Gd", "/W0"]
 

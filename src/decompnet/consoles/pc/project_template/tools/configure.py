@@ -195,13 +195,18 @@ def main() -> None:
         n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
 
         exe = Path(info["exe"]).as_posix()
-        if not Path(exe).exists() and Path("source/program.json").exists():
+        # each program of the game's and its source's folder: the .exe's source/, a DLL's source/<its folder>/
+        sourced = [(Path(p).as_posix(), Path("source") / m) for m, p in
+                   [("", info["exe"]), *((m["name"], m["exe"]) for m in info.get("modules", []))]]
+        missing = [(p, s) for p, s in sourced if not Path(p).exists() and (s / "program.json").exists()]
+        if missing:
             # no copy of the game here, its program as source (decompdecomp's Export): the program from that
-            n.rule("assemble", f"{PY} tools/assemble.py source/program.json {(BUILD / 'source').as_posix()} "
-                   + q(assembler()).replace("$", "$$"))
+            n.rule("assemble", f"{PY} tools/assemble.py $in $objects " + q(assembler()).replace("$", "$$"))
             # (once: it's your copy from then on, the assembly you edit afterwards doesn't make it again; ninja relink
             # takes those edits)
-            n.build(exe, "assemble", ["source/program.json"])
+            for program, folder in missing:
+                n.build(program, "assemble", [(folder / "program.json").as_posix()],
+                        variables={"objects": (BUILD / folder).as_posix()})
         targets = [(BUILD / "target" / f"{u}.obj").as_posix() for u in units]
         n.build(targets, "delink", [CONFIG.as_posix(), "tools/delink.py"], implicit=[exe])
         objs = []
@@ -261,12 +266,16 @@ def main() -> None:
         if source:
             # the program linked by the same linker from its source alone (tools/assemble.py --link), no C: assembly
             # you edited may make a function longer or shorter, and the rest moves with it
-            from_source = (BUILD / "relink-source" / Path(info["exe"]).name).as_posix()
-            n.rule("relink_source", f"{PY} tools/assemble.py source/program.json {(BUILD / 'source').as_posix()} "
+            n.rule("relink_source", f"{PY} tools/assemble.py $in $objects --out $out "
                    + q([*assembler(), *linker()]).replace("$", "$$"))
-            n.build(from_source, "relink_source", ["source/program.json"],
-                    implicit=[*asm, "tools/assemble.py", "tools/relink.py"])
-            n.build("relink-source", "phony", [from_source])
+            made = []
+            for program, folder in sourced:  # (each DLL's too, where Export wrote its source)
+                if (folder / "program.json").exists():
+                    made.append((BUILD / "relink-source" / Path(program).name).as_posix())
+                    n.build(made[-1], "relink_source", [(folder / "program.json").as_posix()],
+                            implicit=[*asm, "tools/assemble.py", "tools/relink.py", "tools/delink.py"],
+                            variables={"objects": (BUILD / folder).as_posix()})
+            n.build("relink-source", "phony", made)
         # the source folders, not each file: on a game of 9,608 files every edit rewrote build.ninja (20-37 s)
         n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), *folders("src", "include"),
                                              *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()],

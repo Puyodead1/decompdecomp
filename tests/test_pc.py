@@ -3548,6 +3548,45 @@ def test_a_game_folder_brings_its_dll_and_agents_match_the_dlls_functions(tmp_pa
     assert "We came back" in said.stdout + said.stderr, said.stdout[-2000:] + said.stderr[-2000:]
 
 
+@needs_tools
+def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
+    """Export writes each DLL of the game's as source too, in source/<its folder>/ (its units' assembly by their names
+    there), at the address the project gives it, and tools/assemble.py moves what it makes back to the DLL's own:
+    the source makes the DLL byte for byte, `ninja relink` takes it from there, `ninja relink-source` links it from
+    it alone (a DLL without an entry point: /NOENTRY), and a clone without the game's files makes both programs."""
+    from decompnet.app.engine import RomNetwork
+
+    folder = DEMO / "build" / "dll6"
+    if not (folder / "demoquest.dll").exists():
+        subprocess.run([sys.executable, str(DEMO / "build.py"), "dll6"], check=True, capture_output=True)
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    slug = net.import_rom(folder, confirmed=True, log=lambda *_: None)
+    root = Path(net.project_row(slug)["root"])
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"], res
+    program = json.loads((root / "source" / "demoquest" / "program.json").read_text())
+    assert program["exe"] == "orig/demoquest.dll" and program["home"] == 0x400000 and program["base"] > 0x400000
+    assert all(not p["asm"].startswith("asm/demoquest/") for p in program["pieces"] if "asm" in p)
+    fp = ForkProject(root)
+    assemble = scratch_pe._template_tool("assemble")
+    said = {}
+    for target in ("relink", "relink-source"):
+        ok, said[target] = fp.run(["ninja", target], log=lambda *_: None)
+        assert ok, said[target]
+        made = root / "build" / "demoquest" / target / "demoquest.dll"
+        assert assemble.differing((folder / "demoquest.dll").read_bytes(), made.read_bytes()) == [], target
+    assert "came from source/demoquest" in said["relink"], said["relink"]  # (the DLL's source, not your copy)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(root), str(clone)], check=True)
+    shutil.copytree(root / "source", clone / "source")
+    cf = ForkProject(clone)
+    for cmd in ([sys.executable, "tools/configure.py", "demoquest", *scratch_pe.tool_args()], ["ninja", "rebuild"]):
+        ok, out = cf.run(cmd, log=lambda *_: None)
+        assert ok, out
+    for name in ("demoquest.exe", "demoquest.dll"):
+        assert (clone / "orig" / name).read_bytes() == (folder / name).read_bytes(), name
+
+
 def _own_copies(tmp_path, monkeypatch, *builds):
     """The user's Visual C++ copies (homemade stand-ins), set up in Setup."""
     monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
