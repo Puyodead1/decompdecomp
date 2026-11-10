@@ -33,7 +33,9 @@ import re
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+from ... import cfields
 from ...limits import capped
 
 _TOKEN = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\b[A-Za-z_]\w*\b', re.S)
@@ -1082,7 +1084,8 @@ def void_calls(build: dict, out: Path):
     return candidates
 
 
-PASSES = (("names the linker script gave", linked_names), ("calls passing another's arguments", void_calls), ("helpers made each file's own", own_helpers),
+PASSES = (("names the linker script gave", linked_names), ("calls passing another's arguments", void_calls),
+          ("helpers made each file's own", own_helpers),
           ("addresses written as numbers", numbered_addresses), ("the C library's tables read as calls", library_tables),
           ("functions called by their own names", called_by_name), ("variables by one name", set_names),
           ("offsets into variables read as their fields", struct_fields),
@@ -1104,6 +1107,188 @@ def _header_varargs(out: Path) -> None:
         if _VA_LIST.search(text) and "__builtin_va_list" not in text:
             header.write_text(_VA_LIST.sub(lambda m: "#ifdef NON_MATCHING\ntypedef __builtin_va_list va_list;\n#else\n"
                                            + m.group(0) + "#endif\n", text, count=1), encoding="utf-8")
+
+
+# the C and POSIX headers a plain build may include: what every glibc since has (2.1's libio.h, _G_config.h and db1/
+# are gone; a type of one is the standard header's that included it, stdio.h's struct _IO_FILE)
+_STANDARD_HEADERS = frozenset("""assert.h ctype.h errno.h float.h limits.h locale.h math.h setjmp.h signal.h stdarg.h
+stddef.h stdio.h stdlib.h string.h strings.h time.h unistd.h fcntl.h dirent.h pwd.h grp.h termios.h utime.h glob.h
+sys/types.h sys/stat.h sys/time.h sys/times.h sys/select.h sys/ioctl.h sys/mman.h sys/wait.h sys/resource.h
+sys/socket.h sys/uio.h sys/un.h sys/utsname.h sys/ipc.h sys/shm.h sys/sem.h sys/msg.h sys/stat.h netinet/in.h
+netdb.h arpa/inet.h pthread.h sched.h semaphore.h poll.h dlfcn.h wchar.h""".split())
+
+
+_ENUM = re.compile(r"^(?:typedef[ \t]+)?enum\b[^;{}]*\{[^{}]*\}[^;{}]*;[ \t]*\n?", re.M)
+
+
+def _enumerators(text: str) -> set[str]:
+    """An enum definition's values, as `enumerator NAME` (glibc's `#define _PC_LINK_MAX _PC_LINK_MAX` between)."""
+    body = text[text.find("{") + 1:text.rfind("}")] if "{" in text else ""
+    body = re.sub(r"^\s*#.*$", "", cfields._COMMENT.sub(" ", body), flags=re.M)
+    return {f"enumerator {e}" for e in re.findall(r"(?:^|,)\s*([A-Za-z_]\w*)", body.strip())}
+
+
+def _type_names(item) -> set[str]:
+    """What a type's declaration names: its own names, and an enum's values (`enumerator _PC_LINK_MAX`), which an
+    unnamed one has alone (the debug information's header calls it `enum anonymous_enum`: no name of the C's)."""
+    names = {n for n in item.names if not n.split()[-1].startswith("anonymous_")}
+    if re.match(r"\s*(?:typedef\s+)?enum\b", item.text):
+        names |= _enumerators(item.text)
+    return names
+
+
+# the kernel's types glibc's signal.h gave (its asm/sigcontext.h, which no compiler package had): signal.h's since
+_KERNEL_TYPES = {"struct sigcontext": {"signal.h"}, "struct _fpstate": {"signal.h"}, "struct _fpreg": {"signal.h"},
+                 "struct _fpxreg": {"signal.h"}, "struct _xmmreg": {"signal.h"}}
+
+
+def _system_names(tc: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The types the C library's headers (and the compiler's: stddef.h's size_t) define, by name (`struct timeval`,
+    `sigset_t`), each with the standard headers that give it ({name: headers}; none: only a header glibc has no
+    more), and which headers include each header."""
+    from ... import tidy
+
+    roots = [tc / "include"] + sorted({p.parent for p in (tc / "gcc").rglob("stddef.h")} if (tc / "gcc").is_dir() else [])
+    names: dict[str, set[str]] = {}
+    includers: dict[str, set[str]] = {}
+    for root in roots:
+        for path in sorted(root.rglob("*.h")) if root.is_dir() else []:
+            rel = path.relative_to(root).as_posix()
+            # (`__extension__ typedef unsigned long long int u_int64_t;`: a declaration all the same)
+            text = re.sub(r"\b__extension__\s+", "", path.read_text(encoding="utf-8", errors="replace"))
+            for inc in re.findall(r"^\s*#\s*include\s*<([^>]+)>", text, re.M):
+                includers.setdefault(inc, set()).add(rel)
+            for item in tidy.items(text):
+                if item.kind == "type":
+                    for name in _type_names(item):
+                        names.setdefault(name, set()).add(rel)
+                elif item.kind == "extern":  # (its functions and variables: `ssize_t read(int, void *, size_t);`)
+                    for name in item.names:
+                        names.setdefault(f"extern {name}", set()).add(rel)
+            for m in re.finditer(r"\benum\b[^;{}]*\{[^{}]*\}", text):  # (unnamed ones too, which tidy leaves)
+                for name in _enumerators(m.group(0)):
+                    names.setdefault(name, set()).add(rel)
+            # (its functions as glibc 2.1 declares them: `extern ssize_t read __P ((int __fd, ...));`)
+            for name in re.findall(r"^\s*extern\s+[^;{}()#]*?\b([A-Za-z_]\w*)\s*(?:__P\s*)?\(", text, re.M):
+                names.setdefault(f"extern {name}", set()).add(rel)
+            # (and an unnamed struct's typedef: `typedef struct { int quot; int rem; } div_t;`)
+            for m in re.finditer(r"\btypedef\s+(?:struct|union|enum)\s*\{[^{}]*\}\s*(\w+)\s*;", text):
+                names.setdefault(m.group(1), set()).add(rel)
+
+    def public(rel: str, seen: frozenset = frozenset()) -> set[str]:
+        if rel in _STANDARD_HEADERS:
+            return {rel}
+        found: set[str] = set()
+        for up in sorted(includers.get(rel, ())):
+            if up not in seen and len(seen) < 4:
+                found |= public(up, seen | {rel})
+        return found
+
+    found = {name: set().union(*(public(f) for f in files)) for name, files in names.items()}
+    for name, headers in _KERNEL_TYPES.items():
+        found.setdefault(name, set()).update(headers)
+    return found, includers
+
+
+def _header_system_types(out: Path, tc: Path) -> None:
+    """The shared headers' copies of the C library's own types (what the program's debug information described:
+    struct timeval, sigset_t, from the glibc it was built with) the matching build's only: a plain build includes
+    the system's headers that define them (NON_MATCHING), so a file including one of those too doesn't define them
+    twice ("conflicting types for `sigset_t'" in a 1999 program's select() loop)."""
+    from ... import tidy
+
+    if not (tc / "include").is_dir():
+        return
+    names, _ = _system_names(tc)
+    for header in sorted((out / "include").glob("*.h")):
+        text = header.read_text(encoding="utf-8")
+        if "DECOMP_SYSTEM_TYPES" in text:
+            continue
+        items = tidy.items(text)
+        taken = [(i.start, i.end) for i in items]
+        items += [SimpleNamespace(start=m.start(), end=m.end(), text=m.group(0), kind="type", names=())
+                  for m in _ENUM.finditer(text) if not any(a <= m.start() < b for a, b in taken)]
+        items.sort(key=lambda i: i.start)
+        def glibcs(item) -> bool:
+            own = _type_names(item)
+            # (a typedef of glibc's names: the tag the debug information gave its unnamed struct, `struct div_t`
+            # for `typedef struct { ... } div_t;`, is no name of glibc's)
+            plain = {n for n in own if " " not in n}
+            return bool(own) and (all(names.get(n) for n in own) or bool(plain) and all(names.get(n) for n in plain))
+
+        # (and its functions' declarations: the system's own prototypes, `read` with its size_t and ssize_t)
+        # (not what a block of a plain build's own has already: _header_varargs's va_list)
+        apart = [(m.start(), m.end()) for m in re.finditer(r"^#ifn?def NON_MATCHING\b.*?^#endif\b", text, re.M | re.S)]
+        chosen = [item for item in items if not any(a <= item.start < b for a, b in apart) and (
+            item.kind == "type" and glibcs(item) or item.kind == "extern" and item.names
+            and all(names.get(f"extern {n}") for n in item.names))]
+        if not chosen:
+            continue
+        wanted = sorted({h for item in chosen for n in (_type_names(item) if item.kind == "type" else
+                                                         {f"extern {x}" for x in item.names}) for h in names.get(n, ())},
+                        key=lambda h: (h != "sys/types.h", h))
+        for item in reversed(chosen):
+            text = text[:item.start] + "#ifndef NON_MATCHING\n" + text[item.start:item.end].rstrip("\n") + \
+                "\n#endif\n" + text[item.end:]
+        first = re.search(r"^(?!\s*(?:/\*|\*|//)).", text, re.M)  # (after the header's opening comment)
+        at = first.start() if first else 0
+        block = ("#ifdef NON_MATCHING  /* DECOMP_SYSTEM_TYPES: the C library's types, from the system's own headers */\n"
+                 + "".join(f"#include <{h}>\n" for h in wanted) + "#endif\n")
+        header.write_text(text[:at] + block + text[at:], encoding="utf-8")
+
+
+def _plain_libc_declarations(out: Path, tc: Path) -> None:
+    """A file's own declarations of the C library's functions (`int write(int, void *, int);`, written to match)
+    the matching build's only: a plain build includes the system's header for each instead, its own prototype."""
+    from ... import tidy
+
+    if not (tc / "include").is_dir():
+        return
+    names, _ = _system_names(tc)
+    for path in sorted((out / "src").rglob("*.c")):
+        text = path.read_text(encoding="utf-8")
+        if "DECOMP_LIBC_DECLARATIONS" in text:
+            continue
+        chosen = [item for item in tidy.items(text) if item.kind == "extern" and item.names
+                  and all(names.get(f"extern {n}") for n in item.names)]
+        if not chosen:
+            continue
+        for item in reversed(chosen):
+            headers = sorted({h for n in item.names for h in names[f"extern {n}"]})
+            text = (text[:item.start] + "#ifdef NON_MATCHING  /* DECOMP_LIBC_DECLARATIONS: the system's own */\n"
+                    + "".join(f"#include <{h}>\n" for h in headers) + "#else\n"
+                    + text[item.start:item.end].rstrip("\n") + "\n#endif\n" + text[item.end:])
+        path.write_text(text, encoding="utf-8")
+
+
+_SYSTEM_RENAME = re.compile(r"^#define[ \t]+([A-Za-z_]\w*)[ \t]+_\w*?\1[ \t]*\n", re.M)
+
+
+def _plain_system_includes(out: Path) -> None:
+    """A file's own way to include a system header past the shared header's copies of its types (`#define timeval
+    _g_timeval` ... `#include <sys/select.h>`, then its own `struct timeval`): the matching build's only. A plain
+    build has the system's types from the shared header (_header_system_types), and the include stays."""
+    from ... import tidy
+
+    for path in sorted((out / "src").rglob("*.c")):
+        text = path.read_text(encoding="utf-8")
+        renames = list(_SYSTEM_RENAME.finditer(text))
+        if len(renames) < 2 or "DECOMP_SYSTEM_RENAMES" in text:
+            continue
+        start = renames[0].start()
+        includes = re.compile(r"(?:^[ \t]*#[ \t]*include[ \t]*<[^>]+>[ \t]*\n)+", re.M).match(text, renames[-1].end())
+        if not includes:
+            continue
+        renamed = {m.group(1) for m in renames}
+        end = includes.end()
+        for item in tidy.items(text):  # (its own definitions of what it renamed, right after)
+            if item.start >= end and item.kind == "type" and {n.split()[-1] for n in item.names} & renamed \
+                    and not text[end:item.start].strip():
+                end = item.end
+        new = (text[:start] + "#ifndef NON_MATCHING  /* DECOMP_SYSTEM_RENAMES: the system's names past the shared "
+               "header's copies */\n" + text[start:includes.start()] + "#endif\n" + includes.group(0)
+               + "#ifndef NON_MATCHING\n" + text[includes.end():end].strip("\n") + "\n#endif\n" + text[end:])
+        path.write_text(new, encoding="utf-8")
 
 
 _EXTERN_INLINE = re.compile(r"^extern\s+(?:__inline__|__inline|inline)\b(?=[^;]*\{)", re.M)
@@ -1130,6 +1315,9 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
     how many files each pass changed."""
     _header_varargs(out)  # (not read by the matching build: NON_MATCHING)
     _header_inlines(out)
+    _header_system_types(out, tc)
+    _plain_system_includes(out)
+    _plain_libc_declarations(out, tc)
     where = addresses(build)
     files = [(u["c"], tuple(u.get("flags") or [])) for u in build.get("units") or [] if u.get("c")]
     files += [(f["c"], tuple(f.get("flags") or [])) for f in build["functions"] if f.get("c") and not f.get("file")
