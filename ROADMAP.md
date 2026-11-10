@@ -1239,8 +1239,10 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   the program as assembly source (done: Export's source/, MASM that Visual C++ 6.0's assembler makes the user's copy
   from, so a project builds without it), and that source, edited, linked again, with the C (done: `ninja relink`
   with source/, `ninja relink-source` without C), and the data as C (done: Export's source/data/, and a global the
-  C defines taken from it; a table of records as an array of a struct of its own, done). Left: the fields' names
-  and types from the code's reads (structs.py), and an Xbox game's XBE (the game's DLLs: relinked and source, done).
+  C defines taken from it; a table of records as an array of a struct of its own, done; the game's DLLs, relinked
+  and as source, done; an Xbox game's XBE relinked, done: `ninja relink` writes its default.xbe). Left: the fields'
+  names and types from the code's reads (structs.py), and an Xbox project's Export as source (Export writes none
+  for an Xbox project yet: `Xbox.export_fork`).
 
 ### A modding-ready check for the export
 

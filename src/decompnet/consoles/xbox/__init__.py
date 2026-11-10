@@ -18,7 +18,9 @@ inlines across files) are told at import (forks/ltcg.py, forks/convention.py), a
 
 The user's own XDK is a kit (kits/xdk.py, Console.kits): with it, the XDK's library code linked into .text (the C
 runtime, XAPI) is found by its libraries' bytes and set aside (xdklib.py), and a game of an early XDK builds with
-that XDK's own Visual C++ (MSVC/xdk-3911, one per XDK copy). `ninja rebuild` writes the game's default.xbe back out of the PE view.
+that XDK's own Visual C++ (MSVC/xdk-3911, one per XDK copy). `ninja rebuild` writes the game's default.xbe back out of the PE view,
+and `ninja relink` links the program again with LINK.EXE and writes the default.xbe of that (the PC template's
+tools/relink.py): code may change size and the rest moves, as a mod's does.
 
 """
 
@@ -55,8 +57,9 @@ class Xbox(WindowsPC):
     demo = "demo-xbox"
 
     def export_fork(self, net, slug, root, log=print):
-        """The project is the export (`ninja rebuild` writes default.xbe back): an XBE as source is planned
-        (ROADMAP.md), the Windows program decompdecomp made of it isn't the game's program."""
+        """The project is the export (`ninja rebuild` writes default.xbe back, `ninja relink` the XBE of a new link of
+        it): an XBE as source is planned (ROADMAP.md), the Windows program decompdecomp made of it isn't the game's
+        program."""
         return None
     import_options = (("ltcg", "Link-time code generation (/GL, /LTCG)", (
         ("auto", "Detect it from the program (recommended)"),

@@ -31,8 +31,13 @@ entry point, and /FIXED when it has no base relocations. Writes build/<version>/
 whether every function and global came out at the game's address and its code byte for byte the game's. The game's
 own DLLs (functions.json's "modules") are relinked after it, each from its folder's source files and its own copy at
 the address the project gives it, then moved back to its own (build/<version>/relink/<the DLL>), its export tables
-kept in its data as the imports are, the header's export directory set to them; with --asm a DLL still comes from
-your copy (its source isn't written yet). Standard library only. Made by decompdecomp.
+kept in its data as the imports are, the header's export directory set to them; with --asm, from its own folder of
+the source (source/<its folder>). Code goes in the game's section for it (.text; an Xbox game's XDK libraries' D3D).
+An Xbox game's program (decompdecomp's consoles/xbox makes the XBE a Windows program, its headers a section at the
+XBE's base) is linked a page higher, where LINK.EXE can put it, and moved down; its headers go first as the XBE has
+them, its kernel thunks keep the ordinals the XBE loader reads, and build/<version>/relink/default.xbe is written
+from it: your copy's byte for byte, or where code moved, the XBE of what moved (unsigned). Standard library only.
+Made by decompdecomp.
 """
 
 from __future__ import annotations
@@ -72,6 +77,15 @@ SUBSYSTEMS = {1: "NATIVE", 2: "WINDOWS", 3: "CONSOLE"}
 SHOWN = 8
 PART = 0x10000  # the most of a section one source file has (ML 6.15 stopped on 6 MB of a game's data)
 RVA = "$rva"  # (a name for an address outside the program, as a relative jump to it names it)
+GRANULE = 0x10000  # (LINK.EXE puts a program at a multiple of 64 KiB: /BASE:0xF000 is 0x10000)
+# an Xbox game's program, made a Windows one (decompdecomp's consoles/xbox): the XBE is in it, its place and size at
+# XBE_MARK, its headers a section of their own (XBE_HEADERS) at its base address, a page above the view's
+XBE_MARK, XBE_MAGIC, XBE_HEADERS = 0x28, b"XBEH", "XBEH"
+LINKERS_OWN = {".idata": "IDATA"}  # (a name the linker puts in a place of its own, and one it doesn't)
+XBE_SECTION = 56
+XBE_WRITABLE = 0x1  # (an XBE section's flag)  # an XBE section header's bytes
+XBE_KEYS = ((0xA8FC57AB, 0x5B6D40B6), (0x94859D4B, 0xEFB1F152))  # (its entry point's and kernel thunks' XOR keys:
+# retail, debug)
 
 
 def fail(why: str) -> None:
@@ -705,7 +719,7 @@ class Compiled:
                 assoc = self._associated(p["section"])
                 with_it = next((numbers[k] for k in kept if self.pieces[k]["section"] == assoc), 0) if assoc else 0
                 comdat = (head["aux"][14], with_it)
-            name = sec["name"]
+            name = relink.code_name(functions[0]["addr"]) if flags & CNT_CODE else sec["name"]
             if not flags & CNT_CODE and "$" not in name:
                 name += "$~"  # (after the game's data, which may be in sections named for each part's place)
             made = obj.section(name, None if body is None else b"", flags,
@@ -804,6 +818,13 @@ class Relink:
         self.needs: dict[str, set[str]] = {}  # a function from C whose code isn't the game's: the names it needs
         self.source: tuple[Path, Path, list[str]] | None = None  # (--asm: the source's folder, ML's objects, ML)
         self.home: int | None = None  # (a DLL: the address its header puts it at, where what is made of it goes back to)
+        # where LINK.EXE can't put it (not at a multiple of 64 KiB, as an Xbox game's view a page below its base):
+        # linked that much higher with base relocations, then moved down (write)
+        self.shift = -image.base % GRANULE if image.base % GRANULE else 0
+        self.xbe = image.exe[XBE_MARK:XBE_MARK + 4] == XBE_MAGIC
+        self.renamed: dict[str, str] = {}  # (a section's name in the objects -> the game's: object_name)
+        self.xbe_readonly = {name for name, row in zip(*xbe_sections(image)[4:]) if not row[0] & XBE_WRITABLE} \
+            if self.xbe else set()
         self.asm_units: dict[str, Compiled] | None = None
         self._asm_starts: dict[str, list[tuple[int, int, str]]] = {}  # (--asm: each unit's functions as source/ has them)
         self.source_objects: list[Path] = []  # (--asm: the data, resources and the rest, from source/)
@@ -814,6 +835,20 @@ class Relink:
         self.unit_of = {fn["name"]: unit for unit, fns in info["units"].items() for fn in fns}
         for lead, first in ((v["name"], k) for k, v in self.leads.items()):
             self.unit_of[lead] = self.unit_of.get(first)
+
+    def object_name(self, name: str) -> str:
+        """A data section's name in the objects: its own, but where the linker would put the section elsewhere than
+        the game has it (an Xbox game's view has its kernel imports in .idata after everything, which LINK.EXE puts
+        right after .data, its own place for it); finish names it as the game's again."""
+        if self.xbe and name in LINKERS_OWN:
+            self.renamed[LINKERS_OWN[name]] = name
+            return LINKERS_OWN[name]
+        return name
+
+    def code_name(self, addr: int) -> str:
+        """The section the code at `addr` goes in: the game's own (an Xbox game's XDK libraries have theirs, D3D)."""
+        s = self.image.section_of(addr)
+        return s["name"] if s is not None else ".text"
 
     def use_source(self, folder: Path, objects: Path, ml: list[str]) -> None:
         """Take what isn't from C from the program's source (`folder`: what Export and --source write, maybe edited)
@@ -886,7 +921,7 @@ class Relink:
         compiled = self.compiled.get(unit)
         fns = sorted(self.info["units"][unit], key=lambda fn: fn["addr"])
         if self.pad and unit == self.units[0]:  # (--pad: everything after it moves, a mod's longer code would)
-            obj.section(".text", b"\xcc" * self.pad, CODE_EXACT)
+            obj.section(self.code_name(fns[0]["addr"]), b"\xcc" * self.pad, CODE_EXACT)
         if fns and fns[0]["name"] in self.leads:  # (what its code section has before it)
             self.delinked(obj, self.leads[fns[0]["name"]], labels)
         taken = {fn["name"] for fn in fns} & self.from_c
@@ -905,7 +940,7 @@ class Relink:
         code = bytearray(self.image.read(fn["addr"], self.extent[fn["name"]]))
         if len(code) != self.extent[fn["name"]]:
             fail(f"{fn['name']} isn't in {self.info['exe']}")
-        number = obj.section(".text", b"", CODE_EXACT)
+        number = obj.section(self.code_name(fn["addr"]), b"", CODE_EXACT)
         obj.symbol(fn["name"], 0, number, FUNCTION)
         for label, at in labels.get(fn["name"], []):
             obj.symbol(label, at, number)
@@ -964,7 +999,7 @@ class Relink:
         sec = read.sections[piece["section"] - 1]
         lo, hi = piece["lo"], piece["hi"]
         code = bytearray(sec["data"][lo:hi])
-        number = obj.section(".text", b"", CODE_EXACT)
+        number = obj.section(self.code_name(fn["addr"]), b"", CODE_EXACT)
         obj.symbol(fn["name"], 0, number, FUNCTION)
         here = {fn["name"]}
         for s in read.symbols.values():  # (the labels the source has in it: _D_<address>, where other code points)
@@ -1075,7 +1110,7 @@ class Relink:
         entry = self.starts.get(self.image.base + self.image.entry) if self.image.entry else None
         if entry is None and self.image.entry:
             fail(f"the program starts at 0x{self.image.base + self.image.entry:08X}, which is no function's start")
-        argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program)]
+        argv = [*link, *link_options(self.image, entry, self.out / "relink.map", program, self.shift)]
         argv += [*map(str, self.source_objects if self.asm_units is not None else data_objects),
                  *map(str, objects), *map(str, imports)]
         if res is not None:
@@ -1085,8 +1120,13 @@ class Relink:
         output = (said.stdout + said.stderr).strip()
         if said.returncode != 0 or not program.is_file():
             fail(f"the linker stopped:\n{output}")
+        program.write_bytes(as_game(program.read_bytes(), self.image, self.shift, self.renamed, self.xbe))
         self.header(program)
-        return self.report(program, self.from_c, output)
+        report = self.report(program, self.from_c, output)
+        if self.xbe:  # (an Xbox game's: its default.xbe, made of what was linked)
+            report["xbe"] = write_xbe(program, self.image, report["same_sections"])
+            (self.out / "relink.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+        return report
 
     resources_obj = None
 
@@ -1123,7 +1163,7 @@ class Relink:
 
     def placed(self) -> dict[str, int]:
         """Every public symbol's address, from the linker's map."""
-        return read_map(self.out / "relink.map")
+        return {name: addr - self.shift for name, addr in read_map(self.out / "relink.map").items()}
 
     # ------------------------------------------------------------------------------------------------------ data
     def data(self, wanted: set[str], defined: set[str]) -> tuple[Path, dict[str, list[tuple[str, int]]]]:
@@ -1150,9 +1190,15 @@ class Relink:
         for s in kept:
             initialised = min(s["vsize"], len(s["raw"]))  # (its part in the file; the rest uninitialised, .bss)
             flags = s["flags"] & 0xFE0000E0
+            if self.xbe and s["name"] == XBE_HEADERS:  # (code to the linker, which puts code first: before .text,
+                flags = CNT_CODE | 0x60000000  # as the XBE has them; as_game gives it its own flags again)
+            elif self.xbe and (s["name"] in self.xbe_readonly or s["name"] == ".rdata"):  # (the view's data is
+                flags &= ~0x80000000  # all writable: the linker puts a writable .rdata after .data, where the XBE
+                # has it before, as the compiler's read-only .rdata is; your copy's flags come back in as_game)
             end = s["addr"] + initialised
             if initialised:
-                chunks.append((s["addr"], end, obj.section(s["name"], s["raw"][:initialised].ljust(initialised, b"\0"),
+                chunks.append((s["addr"], end, obj.section(self.object_name(s["name"]),
+                                                           s["raw"][:initialised].ljust(initialised, b"\0"),
                                                            aligned(s["addr"], flags & ~CNT_BSS))))
             if s["vsize"] > initialised:
                 chunks.append((end, s["addr"] + s["vsize"],
@@ -1574,6 +1620,9 @@ class Relink:
                 for table in {dll["lookup"], dll["iat"]} - {0}:
                     # (by ordinal: the address table as the lookup table has it, unbound: a number, no RVA)
                     rvas[table + 4 * k] = slot["entry"] if slot["entry"] is not None else -(0x80000000 | slot["ordinal"])
+                    if self.xbe and table == dll["iat"]:  # (an Xbox game's kernel thunks: the ordinals the XBE has,
+                        rvas[table + 4 * k] = -self.image.word(table + 4 * k)  # which its loader reads; the view's
+                        # lookup table only names them)
                 c = chunk_of(slot["slot"])
                 if c is None:
                     stray.append(f"{slot['symbol']} (its slot is outside the data)")
@@ -2228,18 +2277,19 @@ def _c_float(word: int) -> str | None:
     return None
 
 
-def link_options(image: Image, entry: str | None, map_path: Path, program: Path) -> list[str]:
+def link_options(image: Image, entry: str | None, map_path: Path, program: Path, shift: int = 0) -> list[str]:
     """LINK.EXE's options for a program set as your copy's is: its address (/BASE), entry point, subsystem, stack and
-    heap, /FIXED when it has no base relocations (tools/assemble.py --link takes them too)."""
+    heap, /FIXED when it has no base relocations (tools/assemble.py --link takes them too). `shift`: linked that
+    much higher, with base relocations to move it down by (as_game)."""
     argv = ["/nologo", "/NODEFAULTLIB", "/INCREMENTAL:NO", "/OPT:NOREF", "/MACHINE:IX86",
-            f"/BASE:0x{image.base:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}" if entry else "/NOENTRY",
+            f"/BASE:0x{image.base + shift:X}", f"/ENTRY:{re.sub(r'^_', '', entry)}" if entry else "/NOENTRY",
             f"/SUBSYSTEM:{SUBSYSTEMS.get(image.subsystem, 'WINDOWS')},"
             f"{image.subsystem_version[0]}.{image.subsystem_version[1]:02d}",
             f"/STACK:0x{image.stack[0]:X},0x{image.stack[1]:X}",
             f"/HEAP:0x{image.heap[0]:X},0x{image.heap[1]:X}",
             f"/MAP:{map_path}", f"/OUT:{program}"]
     relocated = BASE_RELOCATIONS < len(image.dirs) and image.dirs[BASE_RELOCATIONS][1]
-    argv.append("/FIXED:NO" if relocated else "/FIXED")  # (6.0's makes .exes /FIXED)
+    argv.append("/FIXED:NO" if relocated or shift else "/FIXED")  # (6.0's makes .exes /FIXED)
     if image.characteristics & 0x20:
         argv.append("/LARGEADDRESSAWARE")
     if image.characteristics & DLL:
@@ -2247,6 +2297,106 @@ def link_options(image: Image, entry: str | None, map_path: Path, program: Path)
     if image.file_alignment < 0x1000:
         argv.append("/OPT:NOWIN98")  # (6.0's linker: 512-byte file alignment; later ones have it as default)
     return argv
+
+
+def as_game(exe: bytes, image: Image, shift: int, renamed: dict[str, str], xbe: bool) -> bytes:
+    """The linked program at your copy's address (linked `shift` higher, moved down by its base relocations, which
+    then go: your copy has none), its sections named as your copy's (Relink.object_name), an Xbox game's with your
+    copy's flags too (its headers were code to the linker)."""
+    if shift:
+        exe = _sibling("delink").rebase(exe, image.base)
+    out = bytearray(exe)
+    pe = struct.unpack_from("<I", out, 0x3C)[0]
+    opt, count = pe + 24, struct.unpack_from("<H", out, pe + 6)[0]
+    table = opt + struct.unpack_from("<H", out, pe + 20)[0]
+    if shift and struct.unpack_from("<8s", out, table + 40 * (count - 1))[0].rstrip(b"\0") == b".reloc":
+        at = table + 40 * (count - 1)
+        cut = struct.unpack_from("<I", out, at + 20)[0]
+        out[at:at + 40] = bytes(40)
+        count -= 1
+        struct.pack_into("<H", out, pe + 6, count)
+        struct.pack_into("<II", out, opt + 96 + 8 * BASE_RELOCATIONS, 0, 0)
+        struct.pack_into("<H", out, pe + 22, struct.unpack_from("<H", out, pe + 22)[0] | 1)  # (relocations stripped)
+        last = table + 40 * (count - 1)
+        vsize, va = struct.unpack_from("<II", out, last + 8)
+        align = struct.unpack_from("<I", out, opt + 32)[0]
+        struct.pack_into("<I", out, opt + 56, (va + vsize + align - 1) // align * align)
+        del out[cut:]
+    flags = {s["name"]: s["flags"] for s in image.sections}
+    for i in range(count):
+        at = table + 40 * i
+        name = struct.unpack_from("<8s", out, at)[0].rstrip(b"\0").decode("latin-1")
+        name = renamed.get(name, name)
+        out[at:at + 8] = name.encode("latin-1").ljust(8, b"\0")
+        if xbe and name in flags:
+            struct.pack_into("<I", out, at + 36, flags[name])
+    return bytes(out)
+
+
+def xbe_sections(image: Image) -> tuple[bytes, int, int, int, list[str], list[tuple[int, ...]]]:
+    """The XBE in an Xbox game's view: its bytes, base address, headers' size, where its section headers are, and
+    each section's name and (flags, address, size, place in the file, bytes in the file)."""
+    at, size = struct.unpack_from("<II", image.exe, XBE_MARK + 4)
+    xbe = image.exe[at:at + size]
+    base, headers = struct.unpack_from("<II", xbe, 0x104)
+    count, table = struct.unpack_from("<II", xbe, 0x11C)
+    rows = [struct.unpack_from("<5I", xbe, table - base + XBE_SECTION * i) for i in range(count)]
+    names = [xbe[n:n + 8].split(b"\0", 1)[0].decode("latin-1") for n in
+             (struct.unpack_from("<I", xbe, table - base + XBE_SECTION * i + 20)[0] - base for i in range(count))]
+    return xbe, base, headers, table, names, rows
+
+
+def write_xbe(program: Path, image: Image, same: bool) -> dict:  # (same: every section your copy's)
+    """An Xbox game's default.xbe, beside the relinked program it's made of: your copy's XBE (in the view, `image`)
+    with each section's bytes the relinked program's at its address, and its headers the program's too (their pointers
+    point where what they point at went). Where a section moved or changed size (a mod's longer code), the XBE says
+    so: each section's address, sizes and place in the file, a section's digest where your copy's is one, the entry
+    point and kernel thunks (XORed with your copy's keys), the image's size. The signature can't be made again: a
+    changed XBE runs where signatures aren't checked (an emulator, a modded console)."""
+    old, base, headers, table, names, rows = xbe_sections(image)
+    new = Image(program.read_bytes())
+    head = bytearray(new.read(base, headers).ljust(headers, b"\0"))
+    by_name = {s["name"]: s for s in new.sections}
+    olds = {s["name"]: s for s in image.sections}
+    if any(n not in by_name for n in names):
+        fail(f"the relinked program has no {next(n for n in names if n not in by_name)} section, which the XBE has")
+
+    def moved(addr: int) -> int:  # (an address of your copy's, where its section is now)
+        s = image.section_of(addr)
+        return addr if s is None or s["name"] not in by_name else addr - s["addr"] + by_name[s["name"]]["addr"]
+    aligned = all(r[3] % 0x1000 == 0 for r in rows if r[4])  # (the sections' places in the file: a page each)
+    out = bytearray(old)
+    out[:headers] = head
+    same_places = all(by_name[n]["addr"] == r[1] and by_name[n]["vsize"] == olds[n]["vsize"]
+                      for n, r in zip(names, rows))
+    if not same_places:
+        out = bytearray(head)
+    for i, (name, (_, va, vsize, raw_at, raw)) in enumerate(zip(names, rows)):
+        s, h = by_name[name], table - base + XBE_SECTION * i
+        grown = s["vsize"] - olds[name]["vsize"]
+        n = raw if same_places else max(0, min(s["vsize"], raw + grown))
+        data = new.read(s["addr"], n).ljust(n, b"\0")
+        if same_places:
+            out[raw_at:raw_at + n] = data
+        else:
+            raw_at = len(out) if not n else -(-len(out) // (0x1000 if aligned else 4)) * (0x1000 if aligned else 4)
+            out += bytes(raw_at - len(out)) + data
+            struct.pack_into("<4I", out, h + 4, s["addr"], s["vsize"] - olds[name]["vsize"] + vsize, raw_at, n)
+        digest = old[h + 36:h + 56]
+        if digest == hashlib.sha1(struct.pack("<I", raw) + old[rows[i][3]:rows[i][3] + raw]).digest():
+            out[h + 36:h + 56] = hashlib.sha1(struct.pack("<I", n) + data).digest()
+    key = next(((ek, tk) for ek, tk in XBE_KEYS if struct.unpack_from("<I", old, 0x128)[0] ^ ek ==
+                image.base + image.entry), XBE_KEYS[0])
+    struct.pack_into("<I", out, 0x128, (new.base + new.entry) ^ key[0])
+    struct.pack_into("<I", out, 0x158, moved(struct.unpack_from("<I", old, 0x158)[0] ^ key[1]) ^ key[1])
+    if not same_places:
+        end = max(by_name[n]["addr"] + by_name[n]["vsize"] for n in names)
+        old_end = max(r[1] + r[2] for r in rows)
+        struct.pack_into("<I", out, 0x10C, struct.unpack_from("<I", old, 0x10C)[0] + end - old_end)
+    path = program.with_name("default.xbe")
+    path.write_bytes(out)
+    return {"program": path.as_posix(), "identical": bytes(out) == old,
+            "signature": bytes(out[4:headers]) == old[4:headers] and same}  # (what it signs: the headers, digests)
 
 
 def section_table(exe: bytes) -> list[dict]:
@@ -2323,8 +2473,6 @@ def main() -> None:
     exe = (root / info["exe"]).read_bytes()
     if hashlib.sha1(exe).hexdigest() != info.get("sha1", hashlib.sha1(exe).hexdigest()):
         fail(f"{info['exe']} isn't the copy this project was made from")
-    if exe[0x28:0x2C] == b"XBEH":  # (decompdecomp's consoles/xbox: the XBE inside a Windows program made of it)
-        fail("an Xbox game's program is relinked as a Windows one, not an XBE, yet: `ninja rebuild` rebuilds it")
     if args.source:  # (the .exe's in that folder, each DLL's in a folder of its own there)
         for module, relink in programs(info, exe, root, Path(args.build)):
             program = relink.write_source(Path(args.source) / module)
@@ -2393,6 +2541,11 @@ def say(report: dict, relink: Relink, origin: str) -> None:
     if report["other_c"]:
         print(f"  {len(report['other_c']):,} functions the C defines compile to other code than the game's and came "
               f"from {origin}: --all-c takes them from C too (a mod)")
+    if "xbe" in report:
+        xbe = report["xbe"]
+        print(f"  {xbe['program']}: " + ("byte for byte your copy's default.xbe" if xbe["identical"] else
+              "the XBE of it" + ("" if xbe["signature"] else ", unsigned: it runs where signatures aren't checked "
+                                 "(an emulator, a modded console)")))
     for what in report["trusted"]:
         print(f"  note: {what}")
 
