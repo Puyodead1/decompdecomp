@@ -15,10 +15,10 @@ from pathlib import Path
 
 from . import Kit
 
-MAX_DEPTH = 7  # (a library's folder in an SDK: NitroSDK-4_2/NitroSDK/lib/ARM9-TS/Rom)
-# (what each SDK's version header is, and which library it versions)
-VERSION_HEADERS = (("include/nitro/version.h", "NitroSDK"), ("include/twl/version.h", "TwlSDK"),
-                   ("include/nnsys/version.h", "NitroSystem"))
+MAX_DEPTH = 12  # (a library's folder in an SDK: NitroSDK-4_2/NitroSDK/lib/ARM9-TS/Rom, under a folder of SDKs)
+# (the folder of a library's version header, include/<folder>/version.h, and the library it versions)
+VERSION_HEADERS = {"nitro": "NitroSDK", "twl": "TwlSDK", "nnsys": "NitroSystem", "nitrowifi": "NitroWiFi",
+                   "nitrocrypto": "NitroCrypto"}
 
 
 def archives(folder: Path) -> list[Path]:
@@ -64,20 +64,24 @@ class Nitro(Kit):
         return None
 
     def build(self, folder: Path) -> str | None:
-        """Which SDKs the copy holds, by their version headers ("NitroSDK 4.2 (20090511)")."""
-        found = []
-        for rel, what in VERSION_HEADERS:
-            for header in sorted(folder.glob(f"**/{rel}"))[:3]:
-                try:
-                    text = header.read_text(encoding="latin-1")
-                except OSError:
-                    continue
-                major = re.search(r"VERSION_MAJOR\s+(\d+)", text)
-                minor = re.search(r"VERSION_MINOR\s+(\d+)", text)
-                date = re.search(r"VERSION_DATE\s+(\d+)", text)
-                if major and minor:
-                    found.append(f"{what} {major.group(1)}.{minor.group(1)}" + (f" ({date.group(1)})" if date else ""))
-        return ", ".join(dict.fromkeys(found)) or None
+        """Which SDKs the copy holds, by their version headers: "NitroSDK 4.2", or for a folder of many, each
+        library's versions ("NitroSDK 1.0, 2.0, 4.2; TwlSDK 5.1, 5.5")."""
+        found: dict[str, set[tuple[int, int]]] = {}
+        try:
+            headers = sorted(folder.glob("**/include/*/version.h"))
+        except OSError:
+            return None
+        for header in headers:
+            what = VERSION_HEADERS.get(header.parent.name.lower())
+            try:
+                text = header.read_text(encoding="latin-1") if what else ""
+            except OSError:
+                continue
+            major = re.search(r"VERSION_MAJOR\s+(\d+)", text)
+            minor = re.search(r"VERSION_MINOR\s+(\d+)", text)
+            if major and minor and not (what == "NitroSDK" and int(major.group(1)) >= 5):  # (TwlSDK's own copy)
+                found.setdefault(what, set()).add((int(major.group(1)), int(minor.group(1))))
+        return "; ".join(f"{what} " + ", ".join(f"{a}.{b}" for a, b in sorted(v)) for what, v in found.items()) or None
 
     def verify(self, folder: Path) -> str:
         n = len(archives(folder))

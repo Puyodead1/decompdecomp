@@ -371,7 +371,8 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     if archives := nintendo_libraries():
         from . import sdklib
 
-        log(f"finding Nintendo's library code with your copies of its libraries ({len(archives)} archives)")
+        log(f"finding Nintendo's library code with your copies of its libraries ({len(archives)} archives; the first "
+            "time, reading them takes a few minutes for every SDK version together, then they're cached)")
         sdklib.set_aside(root, version, archives, log=log)
 
     sources = []
