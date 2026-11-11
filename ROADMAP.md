@@ -270,7 +270,11 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   function against the game where ds-decomp found a function, relocated fields aside, and names it (OS_Init) and sets
   it aside (consoles/nds/sdklib.py, on xbox/xdklib.py's matcher). A function a few bytes long counts beside library
   code; one whose code several library functions share keeps its `func_` name, its reason naming them all. Laid out
-  as a game, NitroSDK 4.2's 814 ARM9 functions were all found; the DS demo imported with its zlib as a stand-in
+  as a game, NitroSDK 4.2's 814 ARM9 functions were all found, also against every SDK version together (16,611
+  libraries, 122,005 distinct functions: read once in 10 minutes, then 3 seconds from the cache; matched in 5,
+  looked up by the game's function starts), 633 named outright and 181 short ones whose code other library functions
+  share kept as `func_`; a function needs 16 bytes no relocation fills to count on its own, as a getter's few fit
+  the game's own getters too; the DS demo imported with its zlib as a stand-in
   library set all 31 of its functions aside (get_crc_table and zlibVersion, the same code, by their `func_` names) and
   still rebuilt byte for byte. Left: projects imported before get
   nothing yet (renaming a function other C calls by name needs its callers renamed too), and the ARM7's program

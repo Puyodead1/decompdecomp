@@ -1081,6 +1081,7 @@ def test_nintendos_library_code_is_found_by_your_copy_named_and_set_aside(tmp_pa
 
     if not toolchains.installed("mwccarm") or (sys.platform != "win32" and not toolchains.installed("wibo")):
         pytest.skip("CodeWarrior for DS isn't installed")
+    monkeypatch.setattr(sdklib, "_cache_dir", lambda: tmp_path / "cache")
     mw = Path(toolchains.path("mwccarm")) / "mwccarm" / "2.0" / "sp1p5" / "mwccarm.exe"
     wibo = [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
     (tmp_path / "os_tick.c").write_text(LIBRARY_C)
@@ -1096,7 +1097,7 @@ def test_nintendos_library_code_is_found_by_your_copy_named_and_set_aside(tmp_pa
     (sdk / "lib" / "ARM9-TS" / "Rom" / "libos.a").write_bytes(_archive({"os_tick.o": obj}))
     (sdk / "lib" / "ARM7" / "Rom" / "libos_sp.a").write_bytes(_archive({"os_tick.o": obj}))
     assert NITRO.locate(tmp_path) == tmp_path.resolve() and NITRO.locate(tmp_path / "NitroSDK" / "include") is None
-    assert NITRO.build(sdk) == "NitroSDK 4.2 (20090511)"
+    assert NITRO.build(sdk) == "NitroSDK 4.2"
     libs = archives(tmp_path)
     assert [p.name for p in libs] == ["libos.a"]  # (not the ARM7's)
     funcs = {name: (body, mask) for name, body, mask in sdklib.functions(obj)}
@@ -1118,6 +1119,8 @@ def test_nintendos_library_code_is_found_by_your_copy_named_and_set_aside(tmp_pa
     m.functions = {a: (n, False) for a, n in starts.items()}
     m.symbol_lines = (config / "symbols.txt").read_text().splitlines()
     found = sdklib.find([m], libs)
+    assert len(list((tmp_path / "cache").iterdir())) == 1  # (the archive's functions, read once)
+    assert sdklib.find([m], libs).keys() == found.keys()
     four = list(starts)[4]  # (OS_GetFour's code is OS_ReturnFour's too)
     assert {a: f.names for (_, a), f in found.items()} == {**{a: [n] for a, n in zip(list(starts)[1:4], (
         "OS_Tick", "OS_Twice", "OS_GetFive"))}, four: ["OS_GetFour", "OS_ReturnFour"]}
