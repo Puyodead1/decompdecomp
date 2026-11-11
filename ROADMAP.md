@@ -239,6 +239,22 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   their account identity and recorded usage across projects, including after a helper or account is removed.
   Remaining subscription allowance and automatic account switching are separate work.
 
+- **Nintendo's libraries in a DS game, found by your own copies.** Every DS and DSi game links Nintendo's libraries
+  prebuilt (NitroSDK and TwlSDK, NitroSystem and TwlSystem, NitroWiFi, DWC, CodeWarrior's runtime), and an import
+  put all of them in the queue as `func_02xxxxxx`. Setup takes the user's own copies (the `nitro` kit: any folder
+  holding their ARM9 `.a` libraries, several copies and versions at once), and the import matches each library
+  function against the game where ds-decomp found a function, relocated fields aside, and names it (OS_Init) and sets
+  it aside (consoles/nds/sdklib.py, on xbox/xdklib.py's matcher). A function a few bytes long counts beside library
+  code; one whose code several library functions share keeps its `func_` name, its reason naming them all. Laid out
+  as a game, NitroSDK 4.2's 814 ARM9 functions were all found; the DS demo imported with its zlib as a stand-in
+  library set all 31 of its functions aside (get_crc_table and zlibVersion, the same code, by their `func_` names) and
+  still rebuilt byte for byte. Left: projects imported before get
+  nothing yet (renaming a function other C calls by name needs its callers renamed too), and the ARM7's program
+  isn't decompiled. The XDK's matcher had the same fault the DS one first had: a small function's neighbour that
+  was library code didn't count unless it was small and unfound too, so few were found; fixed for both.
+- **DS copies with an encrypted secure area.** ds-decomp opens one only with the DS's ARM7 BIOS: the user's own dump
+  is a kit (`nds-bios`), given to dsd's extract and rom build, so the rebuild encrypts again and is the copy byte for
+  byte.
 - **Games built with Visual C++ 2017 (and 2015, 2019 and newer, with it).** The import's block for 2017 and newer is
   gone: 2017's Rich builds lead to the pack's `14.16` (build 27027 is its very own; another 2017 update's builds with
   it, said as the closest). A game of a version the packs don't have builds with the nearest by year, and the import

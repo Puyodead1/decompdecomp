@@ -37,7 +37,9 @@ class NintendoDS(Console):
     layout = "ds-decomp"
     compilers = tuple(Compiler(f"DS/{v}", f"CodeWarrior for DS {v}") for v in DS_VERSIONS)
     packs = (("mwccarm", "CodeWarrior for DS, the compilers of DS games (proprietary)"),)
-    kits = ("nds-bios",)  # the user's own ARM7 BIOS: opens a copy whose secure area is encrypted (kits/dsbios.py)
+    # the user's own ARM7 BIOS: opens a copy whose secure area is encrypted (kits/dsbios.py); their copies of
+    # Nintendo's libraries: their code in a game named and set aside (kits/nitro.py, sdklib.py)
+    kits = ("nds-bios", "nitro")
     guides = ("arm", "mwcc", "ds")
     compiler_guide = "ds"
     compiler_family = "mwcc"

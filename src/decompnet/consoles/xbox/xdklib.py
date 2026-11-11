@@ -155,19 +155,31 @@ def libraries(lib_dir: Path, library_names: list[str]) -> list[Path]:
     return out
 
 
+def _entries(libs: list[Path]):
+    """(symbol, bytes, relocated-bytes mask, library name, member) of every function of the XDK libraries `libs`."""
+    for lib in libs:
+        for member, obj in members(lib.read_bytes()):
+            for symbol, body, mask in code_sections(obj):
+                yield symbol, body, mask, lib.name, Path(member).name
+
+
 def match_small(functions: list[tuple[int, bytes]], libs: list[Path], known: dict[int, LibraryFunction]) -> \
         dict[int, LibraryFunction]:
+    return match_small_entries(functions, _entries(libs), known)
+
+
+def match_small_entries(functions: list[tuple[int, bytes]], entries, known: dict[int, LibraryFunction],
+                        cls=None) -> dict[int, LibraryFunction]:
     """Address -> library function for the small ones match() can't place (shorter than MIN_BYTES, or without a
     fixed run long enough to search by): each of `functions` ((address, its exact bytes)) whose bytes are a whole
     library function, relocated fields aside, and that sits next to library code already found (`known`). A few
     bytes such as `xor eax, eax; ret` fit game code just as well; the linker puts library objects together, after
     the game's, so a neighbour that is library code is what tells them apart."""
+    cls = cls or LibraryFunction
     small: dict[int, list[tuple[bytes, bytes, str, str, str]]] = {}
-    for lib in libs:
-        for member, obj in members(lib.read_bytes()):
-            for symbol, body, mask in code_sections(obj):
-                if len(body) < MIN_BYTES or len(_pattern(body, mask)[1]) < ANCHOR:
-                    small.setdefault(len(body), []).append((body, mask, symbol, lib.name, Path(member).name))
+    for symbol, body, mask, lib, member in entries:
+        if len(body) < MIN_BYTES or len(_pattern(body, mask)[1]) < ANCHOR:
+            small.setdefault(len(body), []).append((body, mask, symbol, lib, member))
     ordered = sorted(functions)
     found: dict[int, LibraryFunction] = {}
     for _ in range(16):  # a run of small helpers is reached from its library neighbour one at a time
@@ -180,7 +192,7 @@ def match_small(functions: list[tuple[int, bytes]], libs: list[Path], known: dic
                 continue
             for body, mask, symbol, lib, member in small[len(code)]:
                 if all(m or a == b for a, b, m in zip(code, body, mask)):
-                    found[addr] = LibraryFunction(addr, len(body), symbol, lib, member)
+                    found[addr] = cls(addr, len(body), symbol, lib, member)
                     break
         if len(found) == before:
             break
@@ -191,25 +203,32 @@ def match(regions: list[tuple[int, bytes]], libs: list[Path], min_bytes: int = M
     """Address -> the library function found there, in `regions` ((address, bytes) of the code to search). The
     first library to claim an address keeps it; a function that fits in several places is each of them (a game
     can link two copies)."""
+    return match_entries(regions, _entries(libs), min_bytes)
+
+
+def match_entries(regions: list[tuple[int, bytes]], entries, min_bytes: int = MIN_BYTES, cls=None,
+                  starts: set[int] | None = None) -> dict[int, LibraryFunction]:
+    """match() for any library's functions: `entries` as _entries gives them (a DS library's from its ELF objects,
+    consoles/nds/sdklib.py); `cls` the LibraryFunction kind to make; `starts`: only where one of them is (where the
+    analysis found a function), else anywhere."""
+    cls = cls or LibraryFunction
     found: dict[int, LibraryFunction] = {}
     seen: set[tuple[bytes, bytes]] = set()
-    for lib in libs:
-        for member, obj in members(lib.read_bytes()):
-            for symbol, body, mask in code_sections(obj):
-                if len(body) < min_bytes or (body, mask) in seen:
-                    continue
-                seen.add((body, mask))
-                rx, anchor, anchor_at = _pattern(body, mask)
-                if len(anchor) < ANCHOR:
-                    continue
-                for base, data in regions:
-                    p = data.find(anchor)
-                    while p >= 0:
-                        start = p - anchor_at
-                        if start >= 0 and base + start not in found and rx.fullmatch(data, start, start + len(body)):
-                            found[base + start] = LibraryFunction(base + start, len(body), symbol, lib.name,
-                                                                  Path(member).name)
-                        p = data.find(anchor, p + 1)
+    for symbol, body, mask, lib, member in entries:
+        if len(body) < min_bytes or (body, mask) in seen:
+            continue
+        seen.add((body, mask))
+        rx, anchor, anchor_at = _pattern(body, mask)
+        if len(anchor) < ANCHOR:
+            continue
+        for base, data in regions:
+            p = data.find(anchor)
+            while p >= 0:
+                start = p - anchor_at
+                if start >= 0 and base + start not in found and (starts is None or base + start in starts) and \
+                        rx.fullmatch(data, start, start + len(body)):
+                    found[base + start] = cls(base + start, len(body), symbol, lib, member)
+                p = data.find(anchor, p + 1)
     return found
 
 
@@ -246,7 +265,8 @@ def set_aside_xdk_functions(root: Path, version: str, xdk_lib_dir: Path, library
 
     hits = {fn["addr"]: found[fn["addr"]] for fn in todo if fn["addr"] in found and exact(fn, found[fn["addr"]])}
     known = {**found}  # (library code found anywhere, merged or not, is a neighbour that vouches for a small one)
-    small = match_small([(fn["addr"], code_of(fn)) for fn in todo if fn["addr"] not in hits], libs, known)
+    # (every function, the ones found too: a small one's neighbour is what vouches for it)
+    small = match_small([(fn["addr"], code_of(fn)) for fn in todo], libs, {**known, **hits})
     hits.update(small)
     marked = 0
     for fn in todo:
