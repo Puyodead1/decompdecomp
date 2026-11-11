@@ -589,3 +589,48 @@ def test_a_model_that_gave_a_function_back_three_times_isnt_handed_it_again(tmp_
     assert net.given_up(fresh, "game") == 0 and net.claimable(fresh, "game") == 1
     assert net.claim_row(fresh, "game", None, "easiest")["name"] == "stuck"
     assert net.claimable(net.local_agent("claude-sonnet-6")[0], "game") == 0  # held: nothing for a helper to start on
+
+
+def test_you_choose_close_c_for_the_plain_build(tmp_path, monkeypatch):
+    """Three functions of a Linux program stayed a few instructions off after hours of agents: the user chooses C
+    that does what each does for the export's plain build. It's compiled and scored like an attempt first (C the
+    game's compiler takes, and how close), kept in the function's meta, never a match, and can be cleared."""
+    from types import SimpleNamespace
+
+    from decompnet import scoring
+
+    net = _one_function_game(tmp_path)
+    compiled = SimpleNamespace(ok=True, obj=b"obj", log="")
+    monkeypatch.setattr(net, "_context", lambda *a: {"header": "", "version": 1})
+    monkeypatch.setattr(net, "_compile", lambda *a: compiled)
+    monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: ("cand", None, []))
+    monkeypatch.setattr(net, "_target_obj", lambda fn, proj: "target")
+    close = scoring.DiffResult(70, 6400, [], False)
+    monkeypatch.setattr(scoring, "diff", lambda target, cand: close)
+
+    assert net.set_plain("piece", "game", "void piece(void) {}", "the build's CSE") == {"score": 70, "max": 6400}
+    plain = json.loads(net.store.one("SELECT meta FROM functions WHERE name='piece'")["meta"])["plain"]
+    assert plain["source"] == "void piece(void) {}" and plain["score"] == 70 and plain["why"] == "the build's CSE"
+    assert net.store.one("SELECT status FROM functions WHERE name='piece'")["status"] == "open"  # (agents may still)
+
+    compiled.ok, compiled.log = False, "piece.c:1: parse error"
+    try:
+        net.set_plain("piece", "game", "void piece(void) {")
+        raise AssertionError("C that doesn't compile was kept")
+    except network.NetworkError as e:
+        assert "parse error" in str(e)
+    compiled.ok = True
+    close = scoring.DiffResult(0, 6400, [], True)
+    try:
+        net.set_plain("piece", "game", "void piece(void) {}")
+        raise AssertionError("a match was kept as close C")
+    except network.NetworkError as e:
+        assert "Try" in str(e)
+
+    net.set_plain("piece", "game", clear=True)
+    assert "plain" not in json.loads(net.store.one("SELECT meta FROM functions WHERE name='piece'")["meta"])
+    try:
+        net.set_plain("piece", "game")  # (no C given and no best attempt)
+        raise AssertionError("no C was kept")
+    except network.NetworkError as e:
+        assert "no C yet" in str(e)

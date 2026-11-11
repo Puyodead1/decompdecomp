@@ -312,6 +312,16 @@ def _top_level_asm(source: str) -> str:
     return f"/* {name} isn't C yet: its code as the program has it */\n__asm__(\n{body});\n"
 
 
+def plain_or_asm(name: str, assembly: str, c: str | None) -> str:
+    """A function that isn't C yet in its file: its code as the program has it, and where the user chose C close to
+    it (Network.set_plain), that C for a build with NON_MATCHING (the plain build, a port's) in its place."""
+    asm = _top_level_asm(assembly)
+    if not c:
+        return asm
+    return (f"#ifdef NON_MATCHING\n/* {name} doesn't match yet: C that does what it does, close to the game's code "
+            f"(the matching build has that, below) */\n{c.strip()}\n#else\n{asm}#endif\n")
+
+
 def _loose(key: str) -> str:
     """A declaration as far as C tells two apart: `int (*asked)(void);` is `int (*asked)();`, `char s[15];` is
     `char s[];`."""
@@ -419,7 +429,8 @@ def prototype(chunk: Chunk) -> str | None:
 def merge(functions: list[tuple[str, str]], include: str, own_header: str | None = None, context=None,
           statics_at: dict[str, dict[str, int]] | None = None, as_called: bool = False, shared: str = "",
           own_data: dict[str, str] | None = None, forward: str = "", placed: list[tuple[int, str]] = (),
-          func_lines: dict[str, int] | None = None, asm_pieces: dict[str, str] | None = None) -> Merged:
+          func_lines: dict[str, int] | None = None, asm_pieces: dict[str, str] | None = None,
+          plain: dict[str, str] | None = None) -> Merged:
     """The source file of `functions` ((name, its matched C), in the file's order) as one C file starting with
     `#include "<include>"`, then its own header `own_header` where it declares anything (else those declarations
     are the C file's). `context` (re.Pattern): an include of the shared header the agents wrote themselves
@@ -438,7 +449,9 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
     way has its own declaration of it (as for a guess); `forward` declares them (and what their values name) before
     the functions; `placed` ((line, definition)) goes before the first function whose `func_lines` entry is after it, as
     the file had them. `asm_pieces` ({name: GNU assembly}): a function that isn't C yet, at its place in the file
-    as top-level assembly (GCC writes it out where it is, between the functions)."""
+    as top-level assembly (GCC writes it out where it is, between the functions). `plain` ({name: C}): the C the
+    user chose for one of those (close, not the game's bytes: Network.set_plain), which a build with NON_MATCHING
+    compiles in its place; the matching build keeps the game's code."""
     from .compiler import NO_CONTEXT
 
     own_data = own_data or {}
@@ -623,7 +636,8 @@ def merge(functions: list[tuple[str, str]], include: str, own_header: str | None
 
     def asm_before(name: str | None) -> None:
         while asm_left and (name is None or order.index(asm_left[0]) < order.index(name)):
-            body.append("\n" + _top_level_asm(asm_pieces[asm_left.pop(0)]))
+            piece = asm_left.pop(0)
+            body.append("\n" + plain_or_asm(piece, asm_pieces[piece], (plain or {}).get(piece)))
 
     for name, cs in parsed:
         asm_before(name)

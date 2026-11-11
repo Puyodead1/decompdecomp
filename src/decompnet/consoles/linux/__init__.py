@@ -68,6 +68,7 @@ class Linux(Console):
     flag_extras = ("-march=amdfam10", "-march=k8", "-march=core2")
     # cutting a function (split.split_function, at an instruction's start); the export (export.py)
     own_features = frozenset({BOUNDARIES, EXPORT})
+    plain_build = True  # (`make` and `make asan`: NON_MATCHING)
 
     def default_compiler(self, info: dict, splat_guess: str) -> str:
         """The compiler of the GCC version the program's .comment names, whoever built that GCC: Debian's 4.3.2 says

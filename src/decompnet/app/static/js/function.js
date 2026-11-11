@@ -80,6 +80,26 @@ async function refreshFn(first) {
         await refreshMap(true);
       } catch (e) { toast(esc(e.message), "err"); }
     };
+    // C close to it for the export's plain build (Network.set_plain): the editor's C, compiled and scored first
+    $("fnPlain").hidden = !S.ov.plain_build || d.status === "matched" || S.ov.kind === "fork";
+    $("fnPlain").onclick = async () => {
+      const source = $("fnEdit").value;
+      if (!confirm(`Use the C in the editor for ${d.name} in the export's plain build? The matching build keeps the game's code, and agents can still match it.`)) return;
+      try {
+        const r = await api("/api/plain", { method: "POST", body: { slug: S.slug, name: d.name, source } });
+        toast(`The plain build uses this C for <code>${esc(d.name)}</code> (${esc(pctText(pctOf(r.score, d.insns)))} of the game's code).`);
+        await refreshFn(false);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
+    $("fnPlainNote").hidden = !d.plain;
+    $("fnPlainWhy").textContent = d.plain ? `The export's plain build uses C you chose for it (${pctText(pctOf(d.plain.score, d.insns))} of the game's code, not a match).` : "";
+    $("fnPlainClear").onclick = async () => {
+      try {
+        await api("/api/plain", { method: "POST", body: { slug: S.slug, name: d.name, clear: true } });
+        toast(`<code>${esc(d.name)}</code>: every build uses its assembly again.`);
+        await refreshFn(false);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
     $("fnAside").hidden = !d.set_aside;
     $("fnAsideWhy").textContent = d.set_aside ? `Set aside, agents aren't handed it: ${d.set_aside}.` : "";
     $("fnReopen").onclick = async () => {

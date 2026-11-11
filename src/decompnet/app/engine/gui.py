@@ -154,6 +154,7 @@ class GuiMixin:
             "folder": proj["root"],
             "export": cfg.get("export"),
             "exportable": consoles.EXPORT in console.features,
+            "plain_build": console.plain_build,  # (the function page's "Use in plain builds": Network.set_plain)
             "room": self._room_info(proj["slug"]),
         }
 
@@ -324,6 +325,9 @@ class GuiMixin:
                            "latest" if latest else "draft" if fn["seed"] else None,
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
             "notes": [dict(n) for n in notes],
+            # (the C you chose for the plain build, close to it: Network.set_plain)
+            "plain": ({k: plain[k] for k in ("score", "max", "why", "source") if k in plain}
+                      if fn["status"] != "matched" and (plain := json.loads(fn["meta"] or "{}").get("plain")) else None),
             "calls": [syms.label(a) for a in sorted(x["calls"].get(fn["vram"], ()))],
             "called_by": [syms.label(a) for a in sorted(x["called_by"].get(fn["vram"], ()))],
         }

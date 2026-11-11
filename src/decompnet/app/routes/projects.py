@@ -195,6 +195,12 @@ def register(app: App) -> None:
         net.set_aside_by_you(str(data.get("name", "")), slug, str(data.get("why", "")))
         return {"ok": True}
 
+    def p_plain(slug, request, data):
+        """You choose C close to a function no C matches yet for the export's plain build (Network.set_plain), or
+        none again (`clear`)."""
+        return net.set_plain(str(data.get("name", "")), slug, str(data.get("source") or "") or None,
+                             str(data.get("why", "")), clear=bool(data.get("clear")))
+
     def p_reopen(slug, request, data):
         """You give a set-aside function back to the agents."""
         net.reopen(str(data.get("name", "")), slug)
@@ -296,7 +302,7 @@ def register(app: App) -> None:
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
-        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
+        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/plain": (p_plain, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),

@@ -1264,6 +1264,47 @@ class Network:
                        (json.dumps({**meta, "reopened": True}), fn["id"]))
             self._event(db, fn["project_id"], None, "reopen", f"{fn['name']}: open again (you gave it back to the agents)")
 
+    def set_plain(self, function: str, project: str | None = None, source: str | None = None, why: str = "",
+                  clear: bool = False) -> dict:
+        """The user's C for a function no C matches yet, close enough to say what it does: a build of the export with
+        NON_MATCHING (the plain build, a port's) compiles it in the function's place, and the matching build keeps
+        the game's code (units.plain_or_asm). Three functions of a 513-function Linux program stayed a few
+        instructions off after hours of agents, and a port had only their assembly. `source`: the C (else the best
+        attempt's), compiled and scored like an attempt, so it's C the game's compiler takes and the score says how
+        close; it isn't a match and changes nothing the agents do (they may still match it). `clear`: none again.
+        Returns {"score", "max"} (nothing when cleared)."""
+        fn = self._function(function, project)
+        meta = json.loads(fn["meta"] or "{}")
+        if clear:
+            meta.pop("plain", None)
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+                self._event(db, fn["project_id"], None, "plain", f"{fn['name']}: plain builds use its assembly again")
+            return {}
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} is matched: its matching C is what every build uses")
+        source = source if source and source.strip() else fn["best_source"]
+        if not source:
+            raise NetworkError(f"{fn['name']} has no C yet: write it in the editor first")
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._context(proj["id"], fn["unit"])
+        result = self._compile(proj, ctx["header"], source, fn)
+        if not result.ok:
+            raise NetworkError(f"that C doesn't compile with the game's compiler: {result.log.strip()[-600:]}")
+        cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+        if cand is None:
+            raise NetworkError(f"that C compiles, but defines no function named `{fn['name']}`")
+        d = scoring.diff(self._target_obj(fn, proj), cand)
+        if d.bytes_match or verdict:
+            raise NetworkError(f"that C matches {fn['name']}: press Try, and it's saved as the match")
+        meta["plain"] = {"source": source, "score": d.score, "max": d.max_score, "why": why.strip()[:NOTE_CHARS],
+                         "t": time.time()}
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+            self._event(db, fn["project_id"], None, "plain",
+                        f"{fn['name']}: plain builds use your C for it (score {d.score}, not a match)")
+        return {"score": d.score, "max": d.max_score}
+
     def release_stopped(self, agent_ids, why: str) -> list[str]:
         """The claims of agents whose process is gone, released at once with a note (`why`), instead of holding their
         functions until CLAIM_TTL runs out: after an update or a restart of the app, every open function looked held

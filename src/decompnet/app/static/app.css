@@ -416,6 +416,7 @@ a.ghost, a.primary { text-decoration: none; }
 /* the feed's red square: the empty span alone (the "not C" badges have the class too, squeezed into it) */
 .not-c:empty { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: var(--not-c); vertical-align: baseline; }
 .set-aside { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--miss-bg); color: var(--ink-2); }
+.set-aside.plain { background: var(--match-bg); }
 .list-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; }
 
 /* ------------------------------------------------------------------ agents */

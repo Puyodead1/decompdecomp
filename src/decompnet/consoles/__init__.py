@@ -119,6 +119,9 @@ class Console:
     # create_config reads ELF programs as PS2 ones: rom/split.py)
     splat_platform = ""
     image_ext = ".bin"
+    # its export has a build with NON_MATCHING (the plain build), which compiles the C the user chose for a function
+    # no C matches yet in its place (Network.set_plain, units.plain_or_asm): the function page offers it
+    plain_build = False
     asm_preamble = '.include "macro.inc"\n.set noat\n.set noreorder\n.section .text, "ax"\n'
 
     def __init__(self, **facts):

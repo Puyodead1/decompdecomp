@@ -54,6 +54,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — |
 | Rebuildable export | ✓ | ✓ | ✓ | — | ✓ | ✓ | the project | the project (`ninja rebuild`; `ninja relink` links it again with Visual C++ 6.0's LINK.EXE, its data, imports and resources objects too, so code may grow and the rest moves; Export writes the program as source, its code MASM and its data C, which builds it without your copy, and `ninja relink` links your C with that source, edited) | the project (`ninja rebuild` writes your default.xbe back, byte for byte; `ninja relink` links it again with LINK.EXE and writes the default.xbe of that, so code may grow and the rest moves) | the project | ✓ (byte for byte where each source file lies, its functions back in one C file, its data C; and, where all of it is source, `make` builds it as plain C with the system's gcc and libraries (NON_MATCHING where only other C matches), `make match` without decompdecomp links a new program whose code and data may move, `make port` the same C built by the system's GCC) | the project |
+| Close C for the plain build (Close enough: use in plain builds) | — | — | — | — | — | — | — | — | — | — | ✓ (C you choose for a function no C matches yet: the plain build compiles it, `#ifdef NON_MATCHING` beside its assembly in its file, which the matching build keeps; checked to compile, else its assembly again) | — |
 | Progress bars for foreground jobs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public project build prerequisite hints | — | — | — | — | — | — | — | — | — | — | — | ✓ (observed missing cross tools; Make-specific checks) |
 | Verified objdiff references for public Splat projects | — | — | — | — | — | — | — | — | — | — | — | ✓ N64 and PS1 simple code splits; — overlays and nested builds |
@@ -1216,6 +1217,11 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   and `ninja reccmp`, the relink with a PDB, done; the relink names each global that differs, done). Left: the fields'
   names and types from the code's reads (structs.py), and an Xbox project's Export as source (Export writes none
   for an Xbox project yet: `Xbox.export_fork`).
+- A function no C matches yet as C in the plain build: on its page, "Close enough: use in plain builds" keeps the
+  editor's C (compiled and scored first, not a match), and a Linux export's file has it `#ifdef NON_MATCHING` beside
+  the function's assembly (done: a 513-function Linux program's last three functions). Left: a function whose file
+  isn't one C file yet (its own `.s`: the plain build would need its C beside it), and the other consoles' exports,
+  which have no plain build to take it (`Console.plain_build`).
 
 ### A modding-ready check for the export
 
