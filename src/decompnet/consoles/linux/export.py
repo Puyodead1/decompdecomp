@@ -945,6 +945,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         else:
             log("the plain build's floats weren't compared with the game's: that needs the system's gcc (32-bit) and "
                 "binutils")
+        export_clean.plain_system(out, tc)  # (last: every header and file as it stays)
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
           data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build),
