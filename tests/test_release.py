@@ -384,3 +384,24 @@ def test_a_claimed_functions_best_c_written_for_an_older_header_compiles_with_to
     assert row["best_score"] == 35
     # judged with today's header already: left as it is
     assert net._refresh_best(row)["best_source"] == row["best_source"]
+
+
+def test_a_stalled_compile_says_which_locals_differ_from_the_games(tmp_path):
+    """Three functions of a 2001 Linux program were left as "a different build of the compiler" by every agent, each
+    one's C a variable off the game's: past the move-on count, a compile names them."""
+    import json as json_
+
+    net, _ = _game(tmp_path, [("f", 10, "open")])
+    a, _ = net.local_agent("a")
+    meta = {"debug": {"locals": ["int width (the stack, frame offset -0x44, declared on line 3)",
+                                 "int (*myfread)() (the stack, frame offset -0x78, declared on line 4)"]}}
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET meta=? WHERE name='f'", (json_.dumps(meta),))
+    fn = net.store.one("SELECT * FROM functions WHERE name='f'")
+    src = "void f(void)\n{\n    int width, new_var;\n    width = 1;\n}\n"
+    net.stall_status = lambda function_id, agent_id: {"compiles": 9, "no_better": 9, "after": 4}
+    said = net.locals_note(fn, a.id, src)
+    assert "Not declared in yours: myfread" in said and "Only in yours: new_var." in said
+    assert net.locals_note(fn, a.id, src.replace("new_var", "myfread")) == ""  # (nothing differs)
+    net.stall_status = lambda function_id, agent_id: {"compiles": 2, "no_better": 1, "after": 4}
+    assert net.locals_note(fn, a.id, src) == ""  # (not stalled: not yet)

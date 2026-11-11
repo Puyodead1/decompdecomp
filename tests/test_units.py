@@ -146,3 +146,20 @@ def test_a_function_that_returned_what_was_left_in_eax_returns_it():
     for kept in ("void f(void) { g(); }\n", "int f(void) { return g(); }\n", "int f(void) { if (a) { g(); } }\n",
                  "int f(void) { out: g(); }\n", "int f(void) { int x; }\n", "int f(void) { }\n"):
         assert returned(kept, "f") is None, kept
+
+
+def test_a_functions_locals_as_its_c_declares_them_and_as_the_debug_information_lists_them():
+    """A 2001 Linux program's last open functions were each a variable off the game's (extern globals that were the
+    function's own statics, a function pointer left out, a tool's temporaries kept in) while every agent took the
+    rest for the compiler's: what a function's C declares, and what its debug information lists, side by side."""
+    src = ("int f(int a)\n{\n    int i, *p = q, (*rd)();\n    static float x;\n    unsigned char c;\n"
+           "    format = 0;\n    i = a * b;\n    g(x);\n    for (i = 0; i < 3; i++) {\n        int tmp = i;\n    }\n"
+           "    return i;\n}\n")
+    assert units.declared_locals(src, "f") == {"i", "p", "rd", "x", "c", "tmp"}
+    assert units.declared_locals(src, "g") is None
+    assert units.debug_local_names([
+        "int width (the stack, frame offset -0x44, declared on line 251)", "int (*myfread)() (the stack, frame "
+        "offset -0x78, declared on line 267)", "float xmin (static, declared on line 98)", "char ch[64] (the stack, "
+        "frame offset -0x47c, declared on line 653)", "double __result (register 11, declared on line 445)",
+        "float vi (st(1), declared on line 81)", "int k (ebx, declared on line 139)"]) == \
+        {"width", "myfread", "xmin", "ch", "vi", "k"}

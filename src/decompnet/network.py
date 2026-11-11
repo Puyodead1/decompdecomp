@@ -1510,7 +1510,8 @@ class Network:
         if not scratch:
             self.remember_compile(key, agent, fn, text, d.score)
             text += self.same_score_note(fn["id"], agent.id, d.score, source)
-        return {"text": text + self.stall_note(fn["id"], agent.id), "score": d.score, "matched": False}
+        return {"text": text + self.stall_note(fn["id"], agent.id) + self.locals_note(fn, agent.id, source),
+                "score": d.score, "matched": False}
 
     @staticmethod
     def _what_changed(d: scoring.DiffResult, last: int | None) -> str:
@@ -1594,6 +1595,40 @@ class Network:
         return (f"\n\n⏭ Move on: {stall_line(since, after)}. release_function with notes (what you tried, what's "
                 "left) goes through now; then claim the next one: functions that match mostly do in the first few "
                 "tries, and this one keeps your best attempt for whoever comes next.")
+
+    def locals_note(self, fn, agent_id: int, source: str) -> str:
+        """Once an agent is past its move-on count: the locals the game's debug information gives the function that
+        its C doesn't declare, and those it declares that the game's function doesn't have. On a 2001 Linux program
+        three functions were left as "a different build of the compiler" by every agent, each one's C a variable
+        off: extern globals that were the function's own statics, a function pointer it read through left out,
+        a tool's temporaries kept in. A name changes nothing in the code (functions match with others); a variable
+        too many or too few, or one of another kind, does."""
+        from . import units
+
+        st = self.stall_status(fn["id"], agent_id)
+        if not st["compiles"] or st["no_better"] < st["after"]:
+            return ""
+        try:
+            listed = (json.loads(fn["meta"] or "{}").get("debug") or {}).get("locals") or []
+        except (ValueError, TypeError, IndexError, KeyError):
+            return ""
+        game = units.debug_local_names(listed)
+        mine = units.declared_locals(source, fn["name"]) if game else None
+        if not game or mine is None:
+            return ""
+        missing, extra = sorted(game - mine), sorted(mine - game)
+        if not missing and not extra:
+            return ""
+        said = [f"\n\nLocals: the game's debug information gives {fn['name']} {len(game)} "
+                f"({', '.join(sorted(game)[:16])}{', ...' if len(game) > 16 else ''}); your C declares {len(mine)}."]
+        if missing:
+            said.append(f" Not declared in yours: {', '.join(missing[:12])} (its own static, a function pointer, a "
+                        "block's own variable: the brief's locals say which and where).")
+        if extra:
+            said.append(f" Only in yours: {', '.join(extra[:12])}.")
+        said.append(" Each variable is a register or a stack slot to GCC: before taking the rest for the compiler's, "
+                    "declare the game's and drop what it doesn't have (a name of your own for one of them is fine).")
+        return "".join(said)
 
     def claim_progress(self, agent: Agent, fn) -> dict | None:
         """This agent's claim on `fn` as release_function judges it: stall_status, the same count compile_and_diff
