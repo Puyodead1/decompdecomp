@@ -129,7 +129,8 @@ function renderTools() {
       ${(t.copies || []).map((c) => `<div class="row copy"><span class="grow copy-text"><span class="ok-mark">✓ ${esc(c.build || "your copy")}</span>`
         + `${c.verified ? `<span class="muted small">${esc(c.verified)}</span>` : ""}`
         // (the folder's last parts: a full path is long; it's on hover)
-        + `<span class="muted small copy-path" title="${esc(c.folder)}">…/${esc(c.folder.split(/[\\/]/).slice(-3).join("/"))}</span></span>`
+        + `<span class="muted small copy-path" title="${esc(c.folder)}">…/${esc(c.folder.split(/[\\/]/).slice(-3).join("/"))}</span>`
+        + copyContents(c.contents) + `</span>`
         + `<button class="ghost small-btn" data-remove="${esc(t.id)}" data-folder="${esc(c.folder)}" type="button">Remove</button></div>`).join("")}
       <div class="row">${!t.supported ? `<span class="muted small">not available for this computer</span>`
         : t.local ? `<span class="grow"></span><button class="ghost small-btn" data-local="${esc(t.id)}" type="button">${t.installed ? "Add a copy" : "Choose your folder"}</button>`
@@ -148,6 +149,18 @@ function renderTools() {
     };
   });
 }
+/* What a copy of a kit holds, when it's many things (a folder of every DS SDK): a section per library that folds
+   open, each package in it with its version and how many libraries it has. */
+function copyContents(sections) {
+  if (!sections || !sections.length) return "";
+  const libs = (items) => items.reduce((n, i) => n + (i.libraries || 0), 0);
+  const libraries = (n) => `${n.toLocaleString()} librar${n === 1 ? "y" : "ies"}`;
+  return `<div class="copy-sections">${sections.map((s) => `<details class="copy-section"><summary>${esc(s.name)}`
+    + ` <span class="muted small">${plural(s.items.length, "package")} · ${libraries(libs(s.items))}</span></summary>`
+    + `<ul>${s.items.map((i) => `<li><span>${esc(i.name)}</span> <span class="muted small">${i.version ? `${esc(i.library || "")} ${esc(i.version)} · ` : ""}`
+    + `${libraries(i.libraries)}</span></li>`).join("")}</ul></details>`).join("")}</div>`;
+}
+
 /* A local toolchain (a kit: the Xbox XDK, Visual C++): nothing is downloaded; decompdecomp checks the user's own
    folder and reads it where it is. Each copy is listed (its build, whether decompdecomp knows it) with Remove; "Add a
    copy" adds another. The folder and the licence are asked for in the tool's card (prompt() and confirm() are cramped for a

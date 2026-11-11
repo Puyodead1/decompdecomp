@@ -84,6 +84,11 @@ class Kit:
         """The compilers the copy has (none: a kit of libraries and headers only)."""
         return []
 
+    def contents(self, folder: Path) -> list[dict]:
+        """What a copy holds, for Setup to list in sections it can fold: [{"name": "NitroSDK", "items": [{"name":
+        "NitroSDK-4_2-20071210", "version": "4.2", "libraries": 210}]}]. None for a kit whose copy is one thing."""
+        return []
+
     def verify(self, folder: Path) -> str:
         """Whether the copy's files are ones decompdecomp knows, as a sentence for Setup."""
         found = next((f for rel in self.known_files if (f := find(folder, rel)) is not None), None)
@@ -154,6 +159,10 @@ def compilers(kids) -> list[OwnCompiler]:
     build give one compiler (the first copy's)."""
     out: dict[str, OwnCompiler] = {}
     for k in kids:
+        # (a kit without compilers isn't looked for: every compile asks this, and finding a copy of Nintendo's DS
+        # libraries walks a folder of every SDK, 4 GB, which held up the whole app)
+        if type(get(k)).compilers is Kit.compilers:
+            continue
         for at in folders(k):
             for c in get(k).compilers(at):
                 out.setdefault(c.version, c)

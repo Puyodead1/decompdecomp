@@ -1017,6 +1017,12 @@ details.more[open] > summary::before { content: "− "; }
 .tool-card .copy { align-items: start; min-width: 0; }
 .copy-text { display: grid; gap: 3px; min-width: 0; }
 .copy-path { overflow-wrap: anywhere; }
+/* (a copy holding many SDKs says them all: it wraps) */
+.copy-text .ok-mark { white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+.copy-sections { display: grid; gap: 2px; margin-top: 4px; min-width: 0; }
+.copy-section > summary { cursor: pointer; font-size: 12px; overflow-wrap: anywhere; }
+.copy-section ul { margin: 2px 0 6px; padding-left: 18px; display: grid; gap: 1px; font-size: 12px; }
+.copy-section li { overflow-wrap: anywhere; }
 .local-form { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .local-form input[type=text] { width: 100%; box-sizing: border-box; }
 

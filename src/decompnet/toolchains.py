@@ -1028,7 +1028,8 @@ def _local_status(tc: Toolchain, m: dict) -> dict:
         at = find_local(tc, c)
         try:
             copies.append({"folder": c, "build": (kit.build(at) or "") if at else "",
-                           "verified": kit.verify(at) if at else "it isn't there any more: remove it or put it back"})
+                           "verified": kit.verify(at) if at else "it isn't there any more: remove it or put it back",
+                           "contents": kit.contents(at) if at else []})
         except OSError:
             copies.append({"folder": c, "build": "", "verified": ""})
     return {"folder": copies[0]["folder"], "verified": copies[0]["verified"], "copies": copies} if copies else {}

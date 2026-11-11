@@ -56,6 +56,51 @@ def _elf_archive(path: Path) -> bool:
     return head.startswith(b"!<arch>\n") and b"\x7fELF" in head
 
 
+def _version(folder: Path) -> tuple[str, str]:
+    """(library, "4.2") from the first version header inside a package, or ("", "")."""
+    try:
+        headers = sorted(folder.glob("**/include/*/version.h"))
+    except OSError:
+        return "", ""
+    for header in headers:
+        what = VERSION_HEADERS.get(header.parent.name.lower())
+        try:
+            text = header.read_text(encoding="latin-1") if what else ""
+        except OSError:
+            continue
+        major = re.search(r"VERSION_MAJOR\s+(\d+)", text)
+        minor = re.search(r"VERSION_MINOR\s+(\d+)", text)
+        if major and minor and not (what == "NitroSDK" and int(major.group(1)) >= 5):
+            return what, f"{major.group(1)}.{minor.group(1)}"
+    return "", ""
+
+
+@functools.lru_cache(maxsize=16)
+def _contents(folder: Path, stamp: int) -> list[dict]:
+    """A copy's packages by section: in a folder of folders of packages (NitroSDK/NitroSDK-4_2-20071210/...), each
+    first folder a section and each second one a package; a folder of packages, its own name the section; an SDK
+    itself, one package."""
+    packages: dict[tuple[str, str], int] = {}
+    for a in archives(folder):
+        rel = a.relative_to(folder).parts[:-1]
+        lib_at = next((i for i, p in enumerate(rel) if p.lower() == "lib"), len(rel))
+        if lib_at >= 2:
+            key = (rel[0], rel[1])
+        elif lib_at == 1:
+            key = (folder.name, rel[0])
+        else:
+            key = (folder.name, folder.name)
+        packages[key] = packages.get(key, 0) + 1
+    sections: dict[str, list[dict]] = {}
+    for (section, package), n in sorted(packages.items()):
+        where = folder / section / package if section != folder.name or (folder / section).is_dir() else folder
+        where = where if where.is_dir() else folder / package if (folder / package).is_dir() else folder
+        what, version = _version(where)
+        sections.setdefault(section, []).append({"name": package, "version": version, "library": what,
+                                                 "libraries": n})
+    return [{"name": s, "items": items} for s, items in sections.items()]
+
+
 class Nitro(Kit):
     id = "nitro"
     name = "Nintendo DS and DSi libraries (your own copies)"
@@ -96,6 +141,15 @@ class Nitro(Kit):
             seen = [f"{a}.{b}" for a, b in sorted(v)]
             return ", ".join(seen) if len(seen) <= 3 else f"{seen[0]}–{seen[-1]} ({len(seen)} versions)"
         return "; ".join(f"{what} {versions(v)}" for what, v in sorted(found.items())) or None
+
+    def contents(self, folder: Path) -> list[dict]:
+        """The packages the copy holds, by library: a folder of several (Setup's sections, NitroSDK, TwlSDK, ...)
+        lists each package in it with its version and its libraries; a copy that is one SDK is one package."""
+        try:
+            stamp = folder.stat().st_mtime_ns
+        except OSError:
+            return []
+        return _contents(folder.resolve(), stamp)
 
     def verify(self, folder: Path) -> str:
         n = len(archives(folder))
