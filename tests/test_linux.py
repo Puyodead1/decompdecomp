@@ -1535,42 +1535,54 @@ def test_a_plain_build_has_the_c_librarys_types_and_functions_from_the_systems_h
     """A 1999 program's common.h had glibc 2.1's types from its debug information (sigset_t, struct timeval), so a
     file including <sys/select.h> itself defined them twice in a plain build ("conflicting types for `sigset_t'").
     The matching build keeps them; a plain one includes the standard headers that define them (an internal header
-    glibc has no more, bits/sigset.h, by the standard one that included it), and a file's own way past them, and its
-    own declarations of the C library's functions, are the matching build's only."""
+    glibc has no more, bits/sigset.h, by the standard one that included it; a struct tag the debug information made
+    of glibc's typedef name, `struct pthread_cond_t`, glibc's too), a header's own inline copy of a C library
+    function goes by its own name (math.h's atan2, declared through __MATHCALL), and a file's own way past the
+    shared header's copies, and its own declarations of the C library's functions, are the matching build's only.
+    The float check, which compiles with the program's compiler's glibc, keeps the copies (DECOMP_OWN_TYPES): with
+    the system's headers it compiled nothing, and an arcade game's export lost its float tuning."""
     from decompnet.consoles.linux import export_clean
 
+    own_if = "#if !defined(NON_MATCHING) || defined(DECOMP_OWN_TYPES)"
     tc = tmp_path / "tc"
     (tc / "include" / "bits").mkdir(parents=True)
     (tc / "include" / "sys").mkdir()
     (tc / "include" / "bits" / "sigset.h").write_text("typedef struct { unsigned long __val[32]; } __sigset_t;\n")
     (tc / "include" / "signal.h").write_text("#include <bits/sigset.h>\ntypedef __sigset_t sigset_t;\n"
-                                             "enum\n{\n  SIG_X,\n#define SIG_X SIG_X\n  SIG_Y\n};\n")
+                                             "enum\n{\n  SIG_X,\n#define SIG_X SIG_X\n  SIG_Y\n};\n"
+                                             "typedef struct { int __m; } pthread_cond_t;\n")
     (tc / "include" / "sys" / "select.h").write_text("struct timeval { long tv_sec; long tv_usec; };\n")
     (tc / "include" / "unistd.h").write_text("extern int write __P ((int __fd, const void *__buf, unsigned int __n));\n")
+    (tc / "include" / "bits" / "mathcalls.h").write_text("__MATHCALL (atan2,, (_Mdouble_ __y, _Mdouble_ __x));\n")
+    (tc / "include" / "math.h").write_text("#include <bits/mathcalls.h>\n")
     out = tmp_path / "tree"
     (out / "include").mkdir(parents=True)
     (out / "src").mkdir()
     (out / "include" / "common.h").write_text(
         "/* shared */\ntypedef struct __sigset_t sigset_t;\nenum anonymous_enum {\n    SIG_X = 0,\n    SIG_Y = 1,\n};\n"
         "struct timeval { /* 0x8 bytes */\n    long tv_sec; /* 0x0 */\n    long tv_usec; /* 0x4 */\n};\n"
-        "struct Game { int hp; };\n")
+        "struct pthread_cond_t { /* 0x4 bytes */\n    int __m; /* 0x0 */\n};\nstruct Game { int hp; };\n"
+        "static __inline__ double atan2(double __y, double __x)\n{\n    return __y / __x;\n}\n")
     (out / "src" / "a.c").write_text(
         '#include "common.h"\n#define timeval _g_timeval\n#define fd_set _g_fd_set\n#include <sys/select.h>\n\n'
         "struct timeval {\n    long tv_sec;\n    long tv_usec;\n};\nint write(int fd, void *buf, int n);\n"
         "int f(void) { return 0; }\n")
-    export_clean._header_system_types(out, tc)
-    export_clean._plain_system_includes(out)
-    export_clean._plain_libc_declarations(out, tc)
+    export_clean.plain_system(out, tc)
     common = (out / "include" / "common.h").read_text()
-    assert "#ifdef NON_MATCHING" in common and "#include <signal.h>" in common and "#include <sys/select.h>" in common
+    assert "#if defined(NON_MATCHING) && !defined(DECOMP_OWN_TYPES)" in common
+    assert "#include <signal.h>" in common and "#include <sys/select.h>" in common and "#include <math.h>" in common
     assert "bits/sigset.h" not in common  # (glibc's own internal header: the standard one that includes it)
-    assert "#ifndef NON_MATCHING\ntypedef struct __sigset_t sigset_t;\n#endif" in common
-    assert "#ifndef NON_MATCHING\nenum anonymous_enum {" in common  # (an unnamed enum of glibc's values)
-    assert "#ifndef NON_MATCHING\nstruct timeval {" in common and "\nstruct Game { int hp; };" in common
+    assert f"{own_if}\ntypedef struct __sigset_t sigset_t;\n#endif" in common
+    assert f"{own_if}\nenum anonymous_enum {{" in common  # (an unnamed enum of glibc's values)
+    assert f"{own_if}\nstruct timeval {{" in common and f"{own_if}\nstruct pthread_cond_t {{" in common
+    assert "\nstruct Game { int hp; };" in common
+    assert "#define atan2 decomp_atan2" in common  # (the header's own inline atan2, not math.h's)
     a = (out / "src" / "a.c").read_text()
-    assert a.index("#ifndef NON_MATCHING") < a.index("#define timeval") < a.index("#endif\n#include <sys/select.h>")
-    assert "#ifndef NON_MATCHING\nstruct timeval {" in a
-    assert "#ifdef NON_MATCHING" in a and "#include <unistd.h>\n#else\nint write(int fd, void *buf, int n);" in a
+    assert a.index(own_if) < a.index("#define timeval") < a.index("#endif\n#include <sys/select.h>")
+    assert f"{own_if}\nstruct timeval {{" in a
+    assert "#include <unistd.h>\n#else\nint write(int fd, void *buf, int n);" in a
+    export_clean.plain_system(out, tc)  # (once)
+    assert (out / "include" / "common.h").read_text() == common and (out / "src" / "a.c").read_text() == a
 
 
 def test_a_call_passing_another_calls_argument_is_written_as_what_it_passed(tmp_path):
@@ -2078,13 +2090,17 @@ def test_the_float_check_compares_what_a_function_writes_to_the_files_variables(
         "void put_static(float a, float b)\n{\n#ifdef NON_MATCHING\n    s_corner = a * b + 2.0f;\n#else\n"
         "    s_corner = a * b;\n#endif\n}\n"
         "void put_same(float a, float b)\n{\n    g_corner = a - b;\n}\n"
-        "float *corner(void)\n{\n    return &s_corner;\n}\n")  # (read: a newer GCC drops a static nothing reads)
+        "float *corner(void)\n{\n    return &s_corner;\n}\n"  # (read: a newer GCC drops a static nothing reads)
+        # (a static a global names too, as an arcade game's 3dmath.c has them: written by the global, one variable)
+        "static float s_alias;\n__asm__(\".globl alias\\n\\t.set alias, s_alias\");\nextern float alias;\n"
+        "void put_alias(float a, float b)\n{\n    alias = a * b;\n}\n"
+        "float *aliased(void)\n{\n    return &s_alias;\n}\n")
     (out / "build.json").write_text(json.dumps({"toolchain": gcc, "program": "r", "functions": [],
                                                 "units": [{"name": "r", "c": "src/r.c", "flags": ["-O2"]}]}))
     said = subprocess.run([sys.executable, "tools/floatcheck.py", "-n", "20", "src/r.c"], cwd=out,
                           capture_output=True, text=True, env={**os.environ, "TC": str(tc)})
     assert "put_global (20/20)" in said.stdout and "put_static (20/20)" in said.stdout, said.stdout + said.stderr
-    assert "put_same" not in said.stdout  # (the game's, bit for bit)
+    assert "put_same" not in said.stdout and "put_alias" not in said.stdout  # (the game's, bit for bit)
 
 
 def test_header_code_and_middleware_are_set_aside_and_the_games_own_code_stays(demo43, tmp_path):

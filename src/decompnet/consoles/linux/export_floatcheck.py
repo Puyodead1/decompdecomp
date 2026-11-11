@@ -439,10 +439,15 @@ def variables(exe: Path, link_map: str, old: Path, new: Path) -> list[tuple[int,
             dropped.add(f"{side} {base}")  # (two of one name in an object: neither, unpaired)
         found[side][base] = (value, size, bind)
     out, total = [], 0
+    # (a static a global names too, `.set yz, yz_080F25F8`: one variable, which both builds' code writes by the global)
+    shared = {value for value, _, bind in found["old"].values() if bind == 1}
     for base, (value, size, bind) in sorted(found["old"].items()):
         if f"old {base}" in dropped or total + size > VAR_BYTES:
             continue
         mine = found["new"].get(base)
+        if bind != 1 and value in shared:
+            if any(v == value and b == 1 and n != base for n, (v, _, b) in found["old"].items()):
+                continue  # (the global's entry compares it)
         if mine is not None and f"new {base}" not in dropped and mine[1] == size:
             out.append((value, mine[0], size))
         elif mine is None and bind == 1:  # (a global: both builds' code reads and writes this one)
@@ -511,7 +516,7 @@ class Check:
                 (shadow / Path(name).relative_to("include")).write_text(body, encoding="utf-8")
         try:
             said = subprocess.run([*self.cc, "-m32", "-std=gnu89", "-fno-pie", "-fcommon", "-fno-strict-aliasing",
-                                   "-DNON_MATCHING", "-fno-stack-protector", "-fcf-protection=none", *self.cflags, "-w",
+                                   "-DNON_MATCHING", "-DDECOMP_OWN_TYPES", "-fno-stack-protector", "-fcf-protection=none", *self.cflags, "-w",
                                    "-nostdinc", "-isystem", gcc_include, f"-I{self.tc / 'include'}",
                                    f"-I{shadow}" if headers else "-Iinclude", "-iquote", str(probe.parent),
                                    "-c", str(probe), "-o", str(self.work / "new.o")],

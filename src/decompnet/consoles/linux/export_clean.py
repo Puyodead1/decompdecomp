@@ -1171,6 +1171,16 @@ def _system_names(tc: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
             # (its functions as glibc 2.1 declares them: `extern ssize_t read __P ((int __fd, ...));`)
             for name in re.findall(r"^\s*extern\s+[^;{}()#]*?\b([A-Za-z_]\w*)\s*(?:__P\s*)?\(", text, re.M):
                 names.setdefault(f"extern {name}", set()).add(rel)
+            # (and math.h's through its macros: `__MATHCALL (atan2,, (_Mdouble_ __y, _Mdouble_ __x));`)
+            for name in re.findall(r"\b__MATH(?:CALL|DECL)(?:X|_VEC|_1|_2)*\s*\(\s*(?:[^,()]*,\s*)?([A-Za-z_]\w*)\s*,", text):
+                names.setdefault(f"extern {name}", set()).add(rel)
+            # (and every tag and typedef by plain patterns too: what the item reader leaves, `struct random_data`
+            # between #if lines, `typedef __sighandler_t sig_t;`)
+            for m in re.finditer(r"\b(struct|union|enum)\s+([A-Za-z_]\w*)\s*\{", text):
+                names.setdefault(f"{m.group(1)} {m.group(2)}", set()).add(rel)
+            for m in re.finditer(r"\btypedef\b[^;{}]*?(?:\(\s*\*\s*([A-Za-z_]\w*)\s*\)[^;{}]*|\b([A-Za-z_]\w*)\s*"
+                                 r"(?:\[[^\]]*\])?)\s*;", text):
+                names.setdefault(m.group(1) or m.group(2), set()).add(rel)
             # (and an unnamed struct's typedef: `typedef struct { int quot; int rem; } div_t;`)
             for m in re.finditer(r"\btypedef\s+(?:struct|union|enum)\s*\{[^{}]*\}\s*(\w+)\s*;", text):
                 names.setdefault(m.group(1), set()).add(rel)
@@ -1214,7 +1224,10 @@ def _header_system_types(out: Path, tc: Path) -> None:
             # (a typedef of glibc's names: the tag the debug information gave its unnamed struct, `struct div_t`
             # for `typedef struct { ... } div_t;`, is no name of glibc's)
             plain = {n for n in own if " " not in n}
-            return bool(own) and (all(names.get(n) for n in own) or bool(plain) and all(names.get(n) for n in plain))
+            # (`struct pthread_cond_t`: the tag the debug information gave glibc's `typedef struct {...}
+            # pthread_cond_t`, which the struct's own declaration has alone)
+            known = lambda n: bool(names.get(n)) or " " in n and bool(names.get(n.split()[-1]))  # noqa: E731
+            return bool(own) and (all(known(n) for n in own) or bool(plain) and all(known(n) for n in plain))
 
         # (and its functions' declarations: the system's own prototypes, `read` with its size_t and ssize_t)
         # (not what a block of a plain build's own has already: _header_varargs's va_list)
@@ -1222,18 +1235,29 @@ def _header_system_types(out: Path, tc: Path) -> None:
         chosen = [item for item in items if not any(a <= item.start < b for a, b in apart) and (
             item.kind == "type" and glibcs(item) or item.kind == "extern" and item.names
             and all(names.get(f"extern {n}") for n in item.names))]
-        if not chosen:
+        # (an inline copy of a C library function the header has, glibc 2.2's mathinline.h's atan2: under its own
+        # name in a plain build, the system's math.h declaring the library's; the program's calls take the copy)
+        inlines = sorted({m.group(1) for m in re.finditer(
+            r"^static\s+(?:__inline__|__inline|inline)\b[^;{(]*?\b([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{", text, re.M)
+            if names.get(f"extern {m.group(1)}")})
+        if not chosen and not inlines:
             continue
         wanted = sorted({h for item in chosen for n in (_type_names(item) if item.kind == "type" else
-                                                         {f"extern {x}" for x in item.names}) for h in names.get(n, ())},
+                                                         {f"extern {x}" for x in item.names})
+                         for h in names.get(n, ()) or names.get(n.split()[-1], ())},
                         key=lambda h: (h != "sys/types.h", h))
         for item in reversed(chosen):
-            text = text[:item.start] + "#ifndef NON_MATCHING\n" + text[item.start:item.end].rstrip("\n") + \
+            text = text[:item.start] + "#if !defined(NON_MATCHING) || defined(DECOMP_OWN_TYPES)\n" + text[item.start:item.end].rstrip("\n") + \
                 "\n#endif\n" + text[item.end:]
         first = re.search(r"^(?!\s*(?:/\*|\*|//)).", text, re.M)  # (after the header's opening comment)
         at = first.start() if first else 0
-        block = ("#ifdef NON_MATCHING  /* DECOMP_SYSTEM_TYPES: the C library's types, from the system's own headers */\n"
-                 + "".join(f"#include <{h}>\n" for h in wanted) + "#endif\n")
+        wanted = sorted(set(wanted) | {h for n in inlines for h in names[f"extern {n}"]},
+                        key=lambda h: (h != "sys/types.h", h))
+        block = ("#if defined(NON_MATCHING) && !defined(DECOMP_OWN_TYPES)  /* DECOMP_SYSTEM_TYPES: the C library's types, from the system's own headers "
+                 "(DECOMP_OWN_TYPES: these, for a compile with the program's compiler's glibc, tools/floatcheck.py) */\n"
+                 + "".join(f"#include <{h}>\n" for h in wanted)
+                 + "".join(f"#define {n} decomp_{n}  /* this header's own inline {n}, not the library's */\n"
+                           for n in inlines) + "#endif\n")
         header.write_text(text[:at] + block + text[at:], encoding="utf-8")
 
 
@@ -1255,10 +1279,19 @@ def _plain_libc_declarations(out: Path, tc: Path) -> None:
             continue
         for item in reversed(chosen):
             headers = sorted({h for n in item.names for h in names[f"extern {n}"]})
-            text = (text[:item.start] + "#ifdef NON_MATCHING  /* DECOMP_LIBC_DECLARATIONS: the system's own */\n"
+            text = (text[:item.start] + "#if defined(NON_MATCHING) && !defined(DECOMP_OWN_TYPES)  /* DECOMP_LIBC_DECLARATIONS: the system's own */\n"
                     + "".join(f"#include <{h}>\n" for h in headers) + "#else\n"
                     + text[item.start:item.end].rstrip("\n") + "\n#endif\n" + text[item.end:])
         path.write_text(text, encoding="utf-8")
+
+
+def plain_system(out: Path, tc: Path) -> None:
+    """A plain build's C library from the system's own headers (_header_system_types, _plain_system_includes,
+    _plain_libc_declarations): the tree's last step, once every header and file is as it stays (a source file's own
+    header, written after the passes, declared memcpy itself in a 2001 game's tree)."""
+    _header_system_types(out, tc)
+    _plain_system_includes(out)
+    _plain_libc_declarations(out, tc)
 
 
 _SYSTEM_RENAME = re.compile(r"^#define[ \t]+([A-Za-z_]\w*)[ \t]+_\w*?\1[ \t]*\n", re.M)
@@ -1285,9 +1318,9 @@ def _plain_system_includes(out: Path) -> None:
             if item.start >= end and item.kind == "type" and {n.split()[-1] for n in item.names} & renamed \
                     and not text[end:item.start].strip():
                 end = item.end
-        new = (text[:start] + "#ifndef NON_MATCHING  /* DECOMP_SYSTEM_RENAMES: the system's names past the shared "
-               "header's copies */\n" + text[start:includes.start()] + "#endif\n" + includes.group(0)
-               + "#ifndef NON_MATCHING\n" + text[includes.end():end].strip("\n") + "\n#endif\n" + text[end:])
+        new = (text[:start] + "#if !defined(NON_MATCHING) || defined(DECOMP_OWN_TYPES)  /* DECOMP_SYSTEM_RENAMES: the system's names past the "
+               "shared header's copies */\n" + text[start:includes.start()] + "#endif\n" + includes.group(0)
+               + "#if !defined(NON_MATCHING) || defined(DECOMP_OWN_TYPES)\n" + text[includes.end():end].strip("\n") + "\n#endif\n" + text[end:])
         path.write_text(new, encoding="utf-8")
 
 
@@ -1315,9 +1348,6 @@ def clean(out: Path, build: dict, tc: Path, log=print) -> dict[str, int]:
     how many files each pass changed."""
     _header_varargs(out)  # (not read by the matching build: NON_MATCHING)
     _header_inlines(out)
-    _header_system_types(out, tc)
-    _plain_system_includes(out)
-    _plain_libc_declarations(out, tc)
     where = addresses(build)
     files = [(u["c"], tuple(u.get("flags") or [])) for u in build.get("units") or [] if u.get("c")]
     files += [(f["c"], tuple(f.get("flags") or [])) for f in build["functions"] if f.get("c") and not f.get("file")
