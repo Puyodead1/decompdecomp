@@ -1046,3 +1046,87 @@ def test_the_build_decrypts_and_encrypts_again_with_the_bios_and_older_tools_tak
     assert scratch.needs_tools(root)
     scratch.write_tools(root)
     assert not scratch.needs_tools(root)
+
+
+def _archive(members: dict[str, bytes]) -> bytes:
+    """A GNU archive (.a) of `members`, as Nintendo's SDKs ship their libraries."""
+    out = b"!<arch>\n"
+    for name, body in members.items():
+        out += f"{name + '/':<16}{0:<12}{0:<6}{0:<6}{644:<8}{len(body):<10}`\n".encode() + body + b"\n" * (len(body) & 1)
+    return out
+
+
+LIBRARY_C = """
+extern int OS_DisableInterrupts(void);
+extern void OS_RestoreInterrupts(int);
+extern int counter;
+int OS_Tick(int add) { int e = OS_DisableInterrupts(); counter += add; OS_RestoreInterrupts(e); return counter; }
+int OS_Twice(int x) { return OS_Tick(x) + OS_Tick(x + 1); }
+int OS_GetFour(void) { return 4; }
+int OS_GetFive(void) { return 5; }
+int OS_ReturnFour(void) { return 4; }
+"""
+
+
+def test_nintendos_library_code_is_found_by_your_copy_named_and_set_aside(tmp_path, monkeypatch):
+    """Every DS game links Nintendo's libraries prebuilt (NitroSDK, NitroSystem...): their functions are found by
+    the user's own copies (the `nitro` kit), relocated fields aside, where ds-decomp found a function, and named and
+    set aside; a function too small to tell is one beside library code. The game's own functions stay as they are."""
+    import random
+    import sys
+
+    from decompnet.consoles.nds import sdklib
+    from decompnet.consoles.nds.recover import Module
+    from decompnet.kits.nitro import NITRO, archives
+
+    if not toolchains.installed("mwccarm") or (sys.platform != "win32" and not toolchains.installed("wibo")):
+        pytest.skip("CodeWarrior for DS isn't installed")
+    mw = Path(toolchains.path("mwccarm")) / "mwccarm" / "2.0" / "sp1p5" / "mwccarm.exe"
+    wibo = [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
+    (tmp_path / "os_tick.c").write_text(LIBRARY_C)
+    subprocess.run([*wibo, str(mw), "-O4,p", "-proc", "arm946e", "-c", "os_tick.c", "-o", "os_tick.o"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    sdk = tmp_path / "NitroSDK"
+    (sdk / "lib" / "ARM9-TS" / "Rom").mkdir(parents=True)
+    (sdk / "lib" / "ARM7" / "Rom").mkdir(parents=True)
+    (sdk / "include" / "nitro").mkdir(parents=True)
+    (sdk / "include" / "nitro" / "version.h").write_text("#define SDK_VERSION_MAJOR 4\n#define SDK_VERSION_MINOR 2\n"
+                                                         "#define SDK_VERSION_DATE 20090511\n")
+    obj = (tmp_path / "os_tick.o").read_bytes()
+    (sdk / "lib" / "ARM9-TS" / "Rom" / "libos.a").write_bytes(_archive({"os_tick.o": obj}))
+    (sdk / "lib" / "ARM7" / "Rom" / "libos_sp.a").write_bytes(_archive({"os_tick.o": obj}))
+    assert NITRO.locate(tmp_path) == tmp_path.resolve() and NITRO.locate(tmp_path / "NitroSDK" / "include") is None
+    assert NITRO.build(sdk) == "NitroSDK 4.2 (20090511)"
+    libs = archives(tmp_path)
+    assert [p.name for p in libs] == ["libos.a"]  # (not the ARM7's)
+    funcs = {name: (body, mask) for name, body, mask in sdklib.functions(obj)}
+    assert set(funcs) == {"OS_Tick", "OS_Twice", "OS_GetFour", "OS_GetFive", "OS_ReturnFour"} and any(funcs["OS_Twice"][1])
+
+    # a game: its own function, then the library's, each relocated field filled as its link did
+    random.seed(4)
+    own = bytes.fromhex("0040a0e1" "011080e2" "1eff2fe1" "00000000")  # mov r4, r0; add r1, r0, #1; bx lr
+    base, code, starts = 0x02004000, bytearray(own), {0x02004000: len(own)}
+    for name in ("OS_Tick", "OS_Twice", "OS_GetFive", "OS_GetFour"):
+        body, mask = funcs[name]
+        starts[base + len(code)] = len(body)
+        code += bytes(b if not m else random.randrange(256) for b, m in zip(body, mask))
+    config = tmp_path / "game" / "config" / "adqe" / "arm9"
+    config.mkdir(parents=True)
+    (config / "symbols.txt").write_text("".join(f"func_{a:08x} kind:function(arm,size={n:#x}) addr:{a:#010x}\n"
+                                                for a, n in starts.items()))
+    m = Module("main", "main", config, base, bytes(code), [(base, base + len(code))])
+    m.functions = {a: (n, False) for a, n in starts.items()}
+    m.symbol_lines = (config / "symbols.txt").read_text().splitlines()
+    found = sdklib.find([m], libs)
+    four = list(starts)[4]  # (OS_GetFour's code is OS_ReturnFour's too)
+    assert {a: f.names for (_, a), f in found.items()} == {**{a: [n] for a, n in zip(list(starts)[1:4], (
+        "OS_Tick", "OS_Twice", "OS_GetFive"))}, four: ["OS_GetFour", "OS_ReturnFour"]}
+    monkeypatch.setattr("decompnet.consoles.nds.recover.load_modules", lambda config, extract: [m])
+    assert sdklib.set_aside(tmp_path / "game", "adqe", libs, log=lambda *_: None) == 4
+    symbols = (config / "symbols.txt").read_text()
+    assert "func_02004000 kind:function" in symbols and "OS_Tick kind:function(arm" in symbols
+    assert f"func_{four:08x} kind:function" in symbols  # (which of the two it is, nothing says: no name is a guess)
+    aside = json.loads((tmp_path / "game" / "config" / "adqe" / "set_aside.json").read_text())
+    assert set(aside) == {"OS_Tick", "OS_Twice", "OS_GetFive", f"func_{four:08x}"}
+    assert aside["OS_Tick"] == "Nintendo library code: OS_Tick from libos.a (os_tick.o)"
+    assert aside[f"func_{four:08x}"].startswith("Nintendo library code: one of OS_GetFour, OS_ReturnFour")

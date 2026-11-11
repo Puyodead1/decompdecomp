@@ -104,6 +104,13 @@ def arm7_bios() -> Path | None:
     return bios()
 
 
+def nintendo_libraries() -> list[Path]:
+    """The ARM9 library archives of the user's copies of Nintendo's DS and DSi libraries (Setup's kit), or none."""
+    from ...kits.nitro import archives, folders
+
+    return [a for f in folders() for a in archives(f)]
+
+
 ENCRYPTED = ("This copy of the game keeps its secure area encrypted, as the cartridge does, and ds-decomp decrypts it "
              "with the DS's ARM7 BIOS. In Setup, under Compilers & tools, give your own dump of it (Nintendo DS ARM7 "
              "BIOS: 16 KB, usually bios7.bin; GodMode9i on a DSi or 3DS dumps it), then import the game again.")
@@ -361,6 +368,11 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     recover.recover(root, version, dsd=dsd, log=log)
     log("joining the pieces of functions dsd's analysis cut off to the functions they belong to")
     recover.merge_pieces(root, version, dsd=dsd, log=log)
+    if archives := nintendo_libraries():
+        from . import sdklib
+
+        log(f"finding Nintendo's library code with your copies of its libraries ({len(archives)} archives)")
+        sdklib.set_aside(root, version, archives, log=log)
 
     sources = []
     for prefix, module in _modules(root / "config" / version):
