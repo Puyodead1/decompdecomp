@@ -58,6 +58,30 @@ def is_nds(head: bytes) -> bool:
     return arm9_off >= 0x200 and 0x02000000 <= ram < 0x02400000 and ram <= entry < ram + size
 
 
+BANNER_SIZE = 0x840  # (version 1: the icon, its palette and the title in six languages)
+
+
+def with_banner(data: bytes) -> bytes | None:
+    """A copy of a ROM that has no banner (the header's offset to it 0: a DS Paint prototype; ds-decomp then reads
+    the title, "PA", as the banner's version and refuses it) with a blank version 1 banner at its end, its title in
+    every language, and the header pointing at it; None for a ROM with one. The code is the same: decompiling it is
+    decompiling the game."""
+    if len(data) < 0x200 or struct.unpack_from("<I", data, 0x68)[0] != 0:
+        return None
+    title = data[:12].split(b"\0", 1)[0].decode("ascii", "replace").strip() or "game"
+    banner = bytearray(BANNER_SIZE)
+    struct.pack_into("<H", banner, 0, 1)
+    name = title.encode("utf-16-le")[:0xFE]
+    for lang in range(6):
+        banner[0x240 + lang * 0x100:0x240 + lang * 0x100 + len(name)] = name
+    struct.pack_into("<H", banner, 2, crc16(bytes(banner[0x20:])))
+    at = (len(data) + 0x1FF) & ~0x1FF
+    out = bytearray(data) + bytes(at - len(data)) + banner
+    struct.pack_into("<I", out, 0x68, at)
+    struct.pack_into("<H", out, 0x15E, crc16(bytes(out[:0x15E])))
+    return bytes(out)
+
+
 def game_info(path: Path) -> dict:
     with open(path, "rb") as f:
         head = f.read(0x200)
@@ -342,10 +366,15 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     args = tool_args()
     shutil.copytree(TEMPLATE, root)
     (root / "extract").mkdir()
-    try:
-        (root / "extract" / "baserom.nds").hardlink_to(game)
-    except OSError:
-        shutil.copyfile(game, root / "extract" / "baserom.nds")
+    if (patched := with_banner(game.read_bytes())) is not None:  # (a copy of its own: never the user's file)
+        (root / "extract" / "baserom.nds").write_bytes(patched)
+        log("your copy has no banner (the menu's icon and title; early prototypes often lack it): ds-decomp reads a "
+            "copy of it with a blank one added at its end, so the rebuilt ROM is that copy, not yours byte for byte")
+    else:
+        try:
+            (root / "extract" / "baserom.nds").hardlink_to(game)
+        except OSError:
+            shutil.copyfile(game, root / "extract" / "baserom.nds")
     (root / "include").mkdir()
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     write_tools(root, version, compiler)

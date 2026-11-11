@@ -1133,3 +1133,18 @@ def test_nintendos_library_code_is_found_by_your_copy_named_and_set_aside(tmp_pa
     assert set(aside) == {"OS_Tick", "OS_Twice", "OS_GetFive", f"func_{four:08x}"}
     assert aside["OS_Tick"] == "Nintendo library code: OS_Tick from libos.a (os_tick.o)"
     assert aside[f"func_{four:08x}"].startswith("Nintendo library code: one of OS_GetFour, OS_ReturnFour")
+
+
+def test_a_rom_without_a_banner_is_read_through_a_copy_with_a_blank_one(tmp_path):
+    """A DS prototype had no banner (the header's offset to it 0): ds-decomp read its title, "PA", as the banner's
+    version and refused the ROM. The import reads a copy with a blank banner at its end; a ROM with one is left be."""
+    rom = bytearray(_header() + bytes(0x200))  # (its banner offset 0, as the prototype's)
+    out = scratch.with_banner(bytes(rom))
+    at = struct.unpack_from("<I", out, 0x68)[0]
+    assert at % 0x200 == 0 and at >= len(rom) and out[:0x68] == rom[:0x68] and out[0x200:len(rom)] == rom[0x200:]
+    assert scratch.is_nds(out[:0x200])  # (its header checksum is right again)
+    banner = out[at:at + scratch.BANNER_SIZE]
+    assert struct.unpack_from("<H", banner, 0)[0] == 1
+    assert struct.unpack_from("<H", banner, 2)[0] == scratch.crc16(banner[0x20:])
+    assert banner[0x240:0x240 + 22] == "DEMOQUESTDS".encode("utf-16-le")
+    assert scratch.with_banner(out) is None  # (one with a banner: left as it is)
