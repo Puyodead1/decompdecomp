@@ -10,6 +10,7 @@ any of them counts. The ARM7's libraries are left out: decompdecomp decompiles t
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
@@ -22,7 +23,17 @@ VERSION_HEADERS = {"nitro": "NitroSDK", "twl": "TwlSDK", "nnsys": "NitroSystem",
 
 
 def archives(folder: Path) -> list[Path]:
-    """The ARM9 library archives in a copy (`.a`, any case), not the ARM7's."""
+    """The ARM9 library archives in a copy (`.a`, any case), not the ARM7's. Remembered while the folder's own time
+    stays (Setup's list asks on every load, and a folder of every SDK is 4 GB)."""
+    try:
+        stamp = folder.stat().st_mtime_ns
+    except OSError:
+        return []
+    return list(_archives(folder.resolve(), stamp))
+
+
+@functools.lru_cache(maxsize=16)
+def _archives(folder: Path, stamp: int) -> tuple[Path, ...]:
     out = []
     try:
         for p in sorted(folder.rglob("*")):
@@ -33,7 +44,7 @@ def archives(folder: Path) -> list[Path]:
                 out.append(p)
     except OSError:
         pass
-    return out
+    return tuple(out)
 
 
 def _elf_archive(path: Path) -> bool:
@@ -57,7 +68,7 @@ class Nitro(Kit):
     def locate(self, folder: Path) -> Path | None:
         """The folder itself, when it holds an ARM ELF library archive anywhere inside (MAX_DEPTH)."""
         try:
-            if folder.is_dir() and any(_elf_archive(a) for a in archives(folder)):
+            if folder.is_dir() and any(_elf_archive(a) for a in archives(folder)[:50]):
                 return folder.resolve()
         except OSError:
             pass
@@ -81,7 +92,10 @@ class Nitro(Kit):
             minor = re.search(r"VERSION_MINOR\s+(\d+)", text)
             if major and minor and not (what == "NitroSDK" and int(major.group(1)) >= 5):  # (TwlSDK's own copy)
                 found.setdefault(what, set()).add((int(major.group(1)), int(minor.group(1))))
-        return "; ".join(f"{what} " + ", ".join(f"{a}.{b}" for a, b in sorted(v)) for what, v in found.items()) or None
+        def versions(v: set[tuple[int, int]]) -> str:
+            seen = [f"{a}.{b}" for a, b in sorted(v)]
+            return ", ".join(seen) if len(seen) <= 3 else f"{seen[0]}–{seen[-1]} ({len(seen)} versions)"
+        return "; ".join(f"{what} {versions(v)}" for what, v in sorted(found.items())) or None
 
     def verify(self, folder: Path) -> str:
         n = len(archives(folder))
