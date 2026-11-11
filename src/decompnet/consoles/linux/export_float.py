@@ -169,18 +169,32 @@ def float_assignments(body: str, floats: set[str]) -> list[tuple[int, int, str]]
     return out
 
 
-def exact_copy(body: str, at: tuple[int, int, str], temp: str, only: int | None = None) -> str | None:
-    """`v = E;` as `v = temp = E;` (temp a long double: E exact) and v's reads after it, up to its next assignment
-    (or only the `only`th of them), temp: what the game's code read from the register it computed E in."""
-    lo, hi, var = at
+def _until_next(body: str, var: str, hi: int) -> int:
+    """Where v's reads after `hi` end: its next assignment's end, that assignment's own value read before it's
+    written (QuatNorm's `invMag = 1.0f / __fast_sqrt(invMag)`, the game's code took the exact dot product), else the
+    body's end."""
     nxt = _assigned_after(body, var, hi)
-    region = body[hi:nxt] if nxt is not None else body[hi:]
+    if nxt is None:
+        return len(body)
+    end = body.find(";", nxt)
+    return end if end > 0 else len(body)
+
+
+_READ = r"(?<![\w.>])\b{}\b(?!\s*(?:=(?!=)|\+=|-=|\*=|/=))"
+
+
+def exact_copy(body: str, at: tuple[int, int, str], temp: str, only: int | None = None) -> str | None:
+    """`v = E;` as `v = temp = E;` (temp a long double: E exact) and v's reads after it, up to and in its next
+    assignment (or only the `only`th of them), temp: what the game's code read from the register it computed E in."""
+    lo, hi, var = at
+    stop = _until_next(body, var, hi)
+    region = body[hi:stop]
     count = iter(range(1 << 30))
-    used = re.sub(rf"(?<![\w.>])\b{re.escape(var)}\b",
+    used = re.sub(_READ.format(re.escape(var)),
                   lambda m: temp if only is None or next(count) == only else m.group(), region)
     if used == region:
         return None
-    new = body[:lo] + f"{temp} = " + body[lo:hi] + used + (body[nxt:] if nxt is not None else "")
+    new = body[:lo] + f"{temp} = " + body[lo:hi] + used + body[stop:]
     brace = new.index("{")
     return new[:brace + 1] + f"\n    long double {temp};  /* the game's code kept {var} exact here */" + new[brace + 1:]
 
@@ -245,8 +259,22 @@ def exact_value(body: str, at: tuple[int, int, str], temp: str) -> str:
 
 def _reads(body: str, at: tuple[int, int, str]) -> int:
     lo, hi, var = at
-    nxt = _assigned_after(body, var, hi)
-    return len(re.findall(rf"(?<![\w.>])\b{re.escape(var)}\b", body[hi:nxt] if nxt is not None else body[hi:]))
+    return len(re.findall(_READ.format(re.escape(var)), body[hi:_until_next(body, var, hi)]))
+
+
+def rounded_reads(body: str) -> list[str]:
+    """Each way to read one more of a variable's values exact where the search kept an exact copy of it (`v = v_exact
+    = E;`) and a read after it still reads the float: what a search cut short by its tries left (an arcade game's
+    QuatFromEulerXYZ, `ss * sz` the one read of four)."""
+    out = []
+    for m in re.finditer(r"(?<![\w.>])([A-Za-z_]\w*)\s*=\s*(\1_exact\d*)\s*=", body):
+        var, temp = m.group(1), m.group(2)
+        hi = body.find(";", m.end())
+        stop = _until_next(body, var, hi)
+        reads = list(re.finditer(_READ.format(re.escape(var)), body[hi:stop]))
+        for r in reads:
+            out.append(body[:hi + r.start()] + temp + body[hi + r.end():])
+    return out
 
 
 def _float_names(text: str, headers: dict[str, str]) -> set[str]:
@@ -307,23 +335,28 @@ class _File:
             a, b, body = body_of(text)
             head = body[:body.find("{")]  # (its parameters: `float t` assigned in it, slerp's `sin(t = t * omega)`)
             floats |= set(re.findall(r"\bfloat\s+([A-Za-z_]\w*)\s*[,)]", head))
+            # (the likeliest first: a function with many floats has more C to try than TRIES, and what's cut is the
+            # rest: one read of a value kept exact, a product spilled)
             options = [(text[:a] + long_double_local(body, var) + text[b:]) for var in float_locals(body)]
-            if self.active is self.check:  # (standard precision rounds a cast: a spill said in C)
-                options += [(text[:a] + spilled(body, at) + text[b:]) for at in products(body)]
-            if self.active is self.default:  # (GCC's default keeps a float exact where it likes: volatile rounds it)
-                options += [(text[:a] + volatile_local(body, var) + text[b:]) for var in float_locals(body)
-                            if f"volatile float {var}" not in body]
-            for at in inner_assignments(body, floats | set(float_locals(body))):
-                temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
-                            if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
-                options.append(text[:a] + exact_value(body, at, temp) + text[b:])
+            options += [text[:a] + new + text[b:] for new in rounded_reads(body)]
+            single = []
             for at in float_assignments(body, floats | set(float_locals(body))):
                 temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
                             if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
                 reads = _reads(body, at)
                 for only in [None] + (list(range(reads)) if reads > 1 else []):
                     if (new := exact_copy(body, at, temp, only)) is not None:
-                        options.append(text[:a] + new + text[b:])
+                        (options if only is None else single).append(text[:a] + new + text[b:])
+            for at in inner_assignments(body, floats | set(float_locals(body))):
+                temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
+                            if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
+                options.append(text[:a] + exact_value(body, at, temp) + text[b:])
+            if self.active is self.default:  # (GCC's default keeps a float exact where it likes: volatile rounds it)
+                options += [(text[:a] + volatile_local(body, var) + text[b:]) for var in float_locals(body)
+                            if f"volatile float {var}" not in body]
+            options += single
+            if self.active is self.check:  # (standard precision rounds a cast: a spill said in C)
+                options += [(text[:a] + spilled(body, at) + text[b:]) for at in products(body)]
             scored = []
             for option in options[:TRIES - tried]:
                 tried += 1

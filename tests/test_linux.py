@@ -2047,6 +2047,23 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
          "    return 2;\n}\n#else\nint f(void)\n{\n    return 1;\n}\n#endif\n")
 
 
+def test_a_value_kept_exact_reaches_its_next_assignment_and_reads_a_search_left(tmp_path):
+    """An arcade game's QuatNorm took its dot product exact into the sqrt that replaced it (`invMag = 1.0f /
+    __fast_sqrt(invMag)`): the exact copy stopped before that statement. Its QuatFromEulerXYZ kept four products exact
+    but the search ran out of tries before the last read (`ss * sz`): a read of a value kept exact that's still the
+    float is a candidate of its own, tried first."""
+    from decompnet.consoles.linux import export_float
+
+    body = ("void QuatNorm(Quat *q)\n{\n  float invMag;\n  invMag = QuatDot(q, q);\n  if (invMag < 1e-05)\n"
+            "    return;\n  invMag = 1.0f / __fast_sqrt(invMag);\n  q->x *= invMag;\n}\n")
+    (at,) = export_float.float_assignments(body, {"invMag"})[:1]
+    new = export_float.exact_copy(body, at, "invMag_exact")
+    assert "if (invMag_exact < 1e-05)" in new and "invMag = 1.0f / __fast_sqrt(invMag_exact);" in new
+    assert "q->x *= invMag;" in new  # (after it: the float the C rounded)
+    body = "void f(void)\n{\n  ss = ss_exact = sx * sy;\n  a = ss_exact * cz;\n  w = c - (ss * sz);\n  ss = 2;\n  k = ss;\n}\n"
+    assert export_float.rounded_reads(body) == [body.replace("(ss * sz)", "(ss_exact * sz)")]
+
+
 def test_x87_helpers_are_long_double_and_a_float_return_is_one_where_the_games_code_rounds(tmp_path):
     """An arcade game's `fs_sqrt(double)` inline asm rounded its 80-bit operand to a double in the plain build, where
     GCC 2.95 inlined it on the register (a quaternion normalised a hair off, frames some pixels off): such a helper
