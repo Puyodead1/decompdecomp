@@ -39,7 +39,9 @@ WORKERS = 4
 NUMBER = r"(?:(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)"
 LITERAL = re.compile(rf"(?<![\w.)\]])(\(\s*(?:float|double)\s*\)\s*)?({NUMBER})([fFlL]?)(?![\w.])")
 CONSTANT = re.compile(rf"(?<![\w)\]])\(\s*({NUMBER}|\d+)([fF]?)\s*([-+*/])\s*({NUMBER}|\d+)([fF]?)\s*\)")
-FLOAT_DECLARATION = re.compile(r"^(\s*)float\s+((?:[^;(){}]|\([^;{}]*?\))*);", re.M)
+# (at a line's start, or after another statement on its line: `int nxt[3]; float trace; float scale;`, an arcade
+# game's Mat33ToQuat, whose trace the search never saw)
+FLOAT_DECLARATION = re.compile(r"(?:^|(?<=[;{]))(\s*)float\s+((?:[^;(){}]|\([^;{}]*?\))*);", re.M)
 
 
 def _tool(out: Path):
@@ -97,6 +99,22 @@ def float_locals(body: str) -> list[str]:
     return out
 
 
+def float_arrays(text: str) -> set[str]:
+    """The float arrays a text declares (`float basis[4];`, `float m[3][3], v;`): their names."""
+    out = set()
+    for m in FLOAT_DECLARATION.finditer(text):
+        for part in _split(m.group(2)):
+            if (name := re.match(r"\s*([A-Za-z_]\w*)\s*\[", part)):
+                out.add(name.group(1))
+    return out
+
+
+def temp_name(var: str, text: str) -> str:
+    """A long double's name for an exact copy of `var` (`basis[0]`: basis0_exact) that `text` doesn't use yet."""
+    base = re.sub(r"\W+", "", var)
+    return next(f"{base}_exact{k or ''}" for k in range(1 << 16) if not re.search(rf"\b{base}_exact{k or ''}\b", text))
+
+
 def _split(declarators: str) -> list[str]:
     """A declaration's declarators, at its commas outside parentheses."""
     parts, depth, start = [], 0, 0
@@ -152,20 +170,30 @@ def volatile_local(body: str, var: str) -> str:
 
 
 def _assigned_after(body: str, var: str, at: int) -> int | None:
-    """Where `var` is assigned again after `at`."""
-    m = re.compile(rf"(?<![\w.>])\b{re.escape(var)}\s*(=(?!=)|\+=|-=|\*=|/=)").search(body, at)
+    """Where `var` (a variable, or an element of an array, `basis[0]`) is assigned again after `at`."""
+    m = re.compile(rf"(?<![\w.>]){_lvalue(var)}\s*(=(?!=)|\+=|-=|\*=|/=)").search(body, at)
     return m.start() if m else None
 
 
-def float_assignments(body: str, floats: set[str]) -> list[tuple[int, int, str]]:
-    """Each statement `v = E;` of a float variable: (where E starts, where it ends, v)."""
+def _lvalue(var: str) -> str:
+    """A regex of `var` as code names it: a variable, or an array's element by its constant index (`basis[0]`,
+    `basis[ 0 ]`)."""
+    name, _, index = var.partition("[")
+    return rf"\b{re.escape(name)}" + (rf"\s*\[\s*{re.escape(index.rstrip(']').strip())}\s*\]" if index else r"\b")
+
+
+def float_assignments(body: str, floats: set[str], arrays: set[str] = frozenset()) -> list[tuple[int, int, str]]:
+    """Each statement `v = E;` of a float variable, or of an element of a float array at a constant index
+    (`basis[0] = E;`: a spline's basis weights, which the game's code kept exact for the curve's x and stored for
+    its y and z): (where E starts, where it ends, v)."""
     out = []
-    for m in re.finditer(r"(?<![\w.>\]])([A-Za-z_]\w*)\s*=(?!=)\s*", body):
+    for m in re.finditer(r"(?<![\w.>\]])([A-Za-z_]\w*)(\s*\[\s*(\d+)\s*\])?\s*=(?!=)\s*", body):
         before = body[:m.start()].rstrip()
         end = body.find(";", m.end())
-        if m.group(1) in floats and (not before or before[-1] in ";{}") and end > 0 and \
+        known = m.group(1) in (arrays if m.group(2) else floats)
+        if known and (not before or before[-1] in ";{}") and end > 0 and \
                 "=" not in re.sub(r"[=!<>]=", "", body[m.end():end]):
-            out.append((m.end(), end, m.group(1)))
+            out.append((m.end(), end, f"{m.group(1)}[{m.group(3)}]" if m.group(2) else m.group(1)))
     return out
 
 
@@ -180,7 +208,7 @@ def _until_next(body: str, var: str, hi: int) -> int:
     return end if end > 0 else len(body)
 
 
-_READ = r"(?<![\w.>])\b{}\b(?!\s*(?:=(?!=)|\+=|-=|\*=|/=))"
+_READ = r"(?<![\w.>]){}(?!\s*(?:=(?!=)|\+=|-=|\*=|/=))"
 
 
 def exact_copy(body: str, at: tuple[int, int, str], temp: str, only: int | None = None) -> str | None:
@@ -190,7 +218,7 @@ def exact_copy(body: str, at: tuple[int, int, str], temp: str, only: int | None 
     stop = _until_next(body, var, hi)
     region = body[hi:stop]
     count = iter(range(1 << 30))
-    used = re.sub(_READ.format(re.escape(var)),
+    used = re.sub(_READ.format(_lvalue(var)),
                   lambda m: temp if only is None or next(count) == only else m.group(), region)
     if used == region:
         return None
@@ -259,7 +287,7 @@ def exact_value(body: str, at: tuple[int, int, str], temp: str) -> str:
 
 def _reads(body: str, at: tuple[int, int, str]) -> int:
     lo, hi, var = at
-    return len(re.findall(_READ.format(re.escape(var)), body[hi:_until_next(body, var, hi)]))
+    return len(re.findall(_READ.format(_lvalue(var)), body[hi:_until_next(body, var, hi)]))
 
 
 def rounded_reads(body: str) -> list[str]:
@@ -267,11 +295,13 @@ def rounded_reads(body: str) -> list[str]:
     = E;`) and a read after it still reads the float: what a search cut short by its tries left (an arcade game's
     QuatFromEulerXYZ, `ss * sz` the one read of four)."""
     out = []
-    for m in re.finditer(r"(?<![\w.>])([A-Za-z_]\w*)\s*=\s*(\1_exact\d*)\s*=", body):
-        var, temp = m.group(1), m.group(2)
+    for m in re.finditer(r"(?<![\w.>])([A-Za-z_]\w*(?:\s*\[\s*\d+\s*\])?)\s*=\s*([A-Za-z_]\w*_exact\d*)\s*=", body):
+        var, temp = re.sub(r"\s+", "", m.group(1)), m.group(2)
+        if not temp.startswith(re.sub(r"\W+", "", var) + "_exact"):
+            continue
         hi = body.find(";", m.end())
         stop = _until_next(body, var, hi)
-        reads = list(re.finditer(_READ.format(re.escape(var)), body[hi:stop]))
+        reads = list(re.finditer(_READ.format(_lvalue(var)), body[hi:stop]))
         for r in reads:
             out.append(body[:hi + r.start()] + temp + body[hi + r.end():])
     return out
@@ -340,16 +370,16 @@ class _File:
             options = [(text[:a] + long_double_local(body, var) + text[b:]) for var in float_locals(body)]
             options += [text[:a] + new + text[b:] for new in rounded_reads(body)]
             single = []
-            for at in float_assignments(body, floats | set(float_locals(body))):
-                temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
-                            if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
+            arrays = float_arrays(body) | float_arrays(text[:a]) | {
+                n for h in {**self.tree_headers, **headers}.values() for n in float_arrays(h)}
+            for at in float_assignments(body, floats | set(float_locals(body)), arrays):
+                temp = temp_name(at[2], text)
                 reads = _reads(body, at)
                 for only in [None] + (list(range(reads)) if reads > 1 else []):
                     if (new := exact_copy(body, at, temp, only)) is not None:
                         (options if only is None else single).append(text[:a] + new + text[b:])
             for at in inner_assignments(body, floats | set(float_locals(body))):
-                temp = next(f"{at[2]}_exact{k or ''}" for k in range(1 << 16)
-                            if not re.search(rf"\b{at[2]}_exact{k or ''}\b", text))
+                temp = temp_name(at[2], text)
                 options.append(text[:a] + exact_value(body, at, temp) + text[b:])
             if self.active is self.default:  # (GCC's default keeps a float exact where it likes: volatile rounds it)
                 options += [(text[:a] + volatile_local(body, var) + text[b:]) for var in float_locals(body)

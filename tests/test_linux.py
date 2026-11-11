@@ -2064,6 +2064,32 @@ def test_a_value_kept_exact_reaches_its_next_assignment_and_reads_a_search_left(
     assert export_float.rounded_reads(body) == [body.replace("(ss * sz)", "(ss_exact * sz)")]
 
 
+def test_an_array_element_kept_exact_is_read_exact_where_the_games_code_did(tmp_path):
+    """An arcade game's bezEvaluate stored each basis weight in `basis[i]` and went on with the register for the
+    curve's x; y and z read the stored floats (10 frames of its gameplay off by a few pixels). An element of a float
+    array at a constant index is a value the search keeps an exact copy of, for all its reads or one of them."""
+    from decompnet.consoles.linux import export_float
+
+    body = ("void bez(V *pv, V *g, float t)\n{\n  float basis[4];\n  basis[0] = 1.0f - t;\n  basis[ 1 ] = t;\n"
+            "  pv->x = basis[0] * g[0].x + basis[1] * g[1].x;\n  pv->y = g[0].y * basis[0] + g[1].y * basis[1];\n}\n")
+    assert export_float.float_arrays(body) == {"basis"}
+    found = export_float.float_assignments(body, set(), {"basis"})
+    assert [v for _, _, v in found] == ["basis[0]", "basis[1]"]
+    temp = export_float.temp_name("basis[0]", body)
+    first = export_float.exact_copy(body, found[0], temp, only=0)
+    assert temp == "basis0_exact" and "basis[0] = basis0_exact = 1.0f - t;" in first
+    assert "pv->x = basis0_exact * g[0].x" in first and "pv->y = g[0].y * basis[0]" in first
+    assert "long double basis0_exact;" in first
+    (at,) = export_float.float_assignments(first, set(), {"basis"})  # (basis[0]'s has its copy now)
+    second = export_float.exact_copy(first, at, "basis1_exact", only=0)
+    assert "basis[ 1 ] = basis1_exact = t;" in second and "basis1_exact * g[1].x" in second
+    assert second in export_float.rounded_reads(second.replace("basis0_exact * g[0].x", "basis[0] * g[0].x"))
+    # and a float declared after another statement on its line is a local the search tries long double
+    body = "void Mat33ToQuat(float *mat)\n{\n  int nxt[3]; float trace; float scale; int i;\n  trace = mat[0];\n}\n"
+    assert export_float.float_locals(body) == ["trace", "scale"]
+    assert "int nxt[3]; long double trace; float scale; int i;" in export_float.long_double_local(body, "trace")
+
+
 def test_x87_helpers_are_long_double_and_a_float_return_is_one_where_the_games_code_rounds(tmp_path):
     """An arcade game's `fs_sqrt(double)` inline asm rounded its 80-bit operand to a double in the plain build, where
     GCC 2.95 inlined it on the register (a quaternion normalised a hair off, frames some pixels off): such a helper
