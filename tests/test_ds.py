@@ -1088,3 +1088,19 @@ def test_autopilot_with_assembly_still_returns_the_open_functions(tmp_path, monk
     ids = net.forks.autopilot_prepare("p")
     assert ids == [net.store.one("SELECT id FROM functions WHERE project_id=1")["id"]]
     assert "M2C_DEFINES" in (root / "include" / "common.h").read_text() and len(commits) == 1
+
+
+def test_a_source_file_never_ends_inside_a_function_the_analysis_made_too_long(tmp_path, monkeypatch):
+    """A DS game's import stopped at its first build: a 4-byte Thumb function at 0x02000822 ran into an ARM one at
+    0x02000824, the files were cut between them, and dsd's delink refused the file whose last symbol left it."""
+    from decompnet.consoles.nds import scratch
+
+    monkeypatch.setattr(scratch, "UNIT_BYTES", 0x20)
+    (tmp_path / "delinks.txt").write_text(f"    .text start:{BASE:#010x} end:{BASE + 0x40:#010x} kind:code\n\n")
+    funcs = [(0x0, 0x10, "arm"), (0x10, 0x12, "arm"), (0x22, 4, "thumb"), (0x24, 0x8, "arm"), (0x2C, 0x14, "arm")]
+    (tmp_path / "symbols.txt").write_text("".join(
+        f"func_{BASE + a:08x} kind:function({mode},size={size:#x}) addr:{BASE + a:#010x}\n" for a, size, mode in funcs))
+    units = scratch._units(tmp_path)
+    assert [(a - BASE, b - BASE) for a, b, _ in units] == [(0x0, 0x10), (0x10, 0x2C), (0x2C, 0x40)]
+    for a, size, _ in funcs:
+        assert any(start <= BASE + a and BASE + a + size <= end for start, end, _ in units)
