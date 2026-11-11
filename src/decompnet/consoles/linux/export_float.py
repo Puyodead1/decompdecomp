@@ -288,7 +288,9 @@ class _File:
         def body_of(t):
             where = self.tool.span(t, fn)
             return (where[0], where[1], t[where[0]:where[1]]) if where else (0, 0, "")
-        if self.check.defs[fn][0] == "f":  # (all 80 bits, as the game's code returned it in st(0))
+        # (all 80 bits, as the game's code returned it in st(0); not where it rounded first, Vector3fMag's
+        # `fstps`/`flds` before its `ret`: a float, as the C says)
+        if self.check.defs[fn][0] == "f" and fn not in getattr(self.check, "rounds", ()):
             changed = {name: re.sub(rf"\bfloat(\s+{fn}\s*\()", r"long double\1", self.header_text(name))
                        for name in self.tree_headers}
             changed = {k: v for k, v in changed.items() if v != self.header_text(k)}
@@ -473,11 +475,42 @@ def available() -> bool:
         return said.returncode == 0
 
 
+_HELPER = re.compile(r"^static\s+(?:__inline__|__inline|inline)\s+(?:float|double)\b[^;{]*?\([^)]*\)\s*\{", re.M)
+
+
+def x87_helpers(out: Path) -> int:
+    """The headers' inline helpers that are the x87's own instruction (`fsqrt` in an asm, "=t" its result) long
+    double in and out in a plain build: GCC 2.95 inlined them on the 80-bit register, and a `double` one rounded its
+    operand first (an arcade game's quaternion normalised a hair off, frames some pixels off). Returns how many."""
+    count = 0
+    for header in sorted((out / "include").glob("*.h")):
+        text, at, done = header.read_text(encoding="utf-8"), 0, []
+        for m in _HELPER.finditer(text):
+            end = text.find("\n}", m.end())
+            if end < 0:
+                continue
+            end += 2
+            helper = text[m.start():end]
+            if not re.search(r"__asm__|\basm\b", helper) or not re.search(r'"=[tu]"', helper) \
+                    or text[:m.start()].endswith("#else\n"):  # (done before: the matching build's, after #else)
+                continue
+            exact = re.sub(r"\b(?<!long )(float|double)\b", "long double", helper)
+            done.append(text[at:m.start()] + "#ifdef NON_MATCHING  /* the x87's own: all 80 bits, as GCC 2.95 inlined "
+                        "it */\n" + exact + "\n#else\n" + helper + "\n#endif")
+            at = end
+            count += 1
+        if done:
+            header.write_text("".join(done) + text[at:], encoding="utf-8")
+    return count
+
+
 def precision(out: Path, build: dict, tc: Path | None = None, log=print) -> dict:
     """Each source file's float functions made the game's in the plain build where the search finds how (the module
     docstring): its C beside the matching C, NON_MATCHING, and build.json's plain_flags where standard mode is closer.
     Returns what it did, by file."""
     tool = _tool(out)
+    if (helpers := x87_helpers(out)):
+        log(f"the headers' x87 helpers long double in a plain build: {helpers}")
     rels = list(dict.fromkeys(u["c"] for u in build.get("units") or [] if u.get("c")))
     headers = {f"include/{h.name}": h.read_text(encoding="utf-8") for h in sorted((out / "include").glob("*.h"))}
     done: dict[str, dict] = {}
