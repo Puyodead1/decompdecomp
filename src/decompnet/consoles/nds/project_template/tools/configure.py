@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write build.ninja for this Nintendo DS decompilation, then run `ninja`.
 
-    python tools/configure.py VERSION --dsd PATH --compilers DIR [--wibo PATH]
+    python tools/configure.py VERSION --dsd PATH --compilers DIR [--wibo PATH] [--arm7-bios FILE]
 
 `ninja` builds everything and checks the ROM; `ninja prepare` only what decompiling needs; `ninja rom` the ROM check.
 The build extracts your copy of the game (extract/baserom.nds), delinks its code into objects with ds-decomp (dsd),
@@ -36,6 +36,8 @@ parser.add_argument("version", help="game version (a directory in config/)")
 parser.add_argument("--dsd", required=True, help="path to ds-decomp's dsd")
 parser.add_argument("--compilers", required=True, help="CodeWarrior for DS directory (holds 2.0/sp1p5/mwccarm.exe, ...)")
 parser.add_argument("--wibo", default="", help="runs the Windows compilers on Linux and macOS")
+parser.add_argument("--arm7-bios", default="", help="your dump of the DS's ARM7 BIOS: decrypts and encrypts again "
+                    "a copy whose secure area is encrypted")
 args = parser.parse_args()
 
 VERSION = args.version
@@ -59,6 +61,7 @@ PYTHON = str(_W.with_name("python.exe")) if _W.name.lower() == "pythonw.exe" and
     else sys.executable
 DSD_COMMAND = [PYTHON, args.dsd] if Path(args.dsd).suffix.lower() == ".py" else [args.dsd]
 DSD = subprocess.list2cmdline(DSD_COMMAND)
+BIOS = f" --arm7-bios {subprocess.list2cmdline([args.arm7_bios])}" if args.arm7_bios else ""
 PY = f'"{PYTHON}"'
 
 
@@ -89,7 +92,7 @@ def main() -> None:
     rom = BUILD / f"{GAME}.nds"
     with open("build.ninja", "w", encoding="utf-8") as f:
         n = ninja_syntax.Writer(f)
-        n.rule("extract", f"{DSD} rom extract --rom $in --output-path {EXTRACT}")
+        n.rule("extract", f"{DSD} rom extract --rom $in --output-path {EXTRACT}{BIOS}")
         n.rule("delink", f"{DSD} delink --config-path {CONFIG}")
         n.rule("mwcc", f"{WRAP}\"$cc\" {q(CC_FLAGS)} -i include $cflags -MD -c $in -o $basedir"
                + ("" if sys.platform == "win32" else f" && {PY} tools/transform_dep.py $basefile.d $basefile.d"),
@@ -97,7 +100,7 @@ def main() -> None:
         n.rule("lcf", f"{DSD} lcf -c {CONFIG}")
         n.rule("mwld", f"{WRAP}\"{LD}\" {q(LD_FLAGS)} -m Entry @$objects $lcf -o $out")
         n.rule("rom_config", f"{DSD} rom config --elf $in --config {CONFIG}")
-        n.rule("rom_build", f"{SH}{DSD} rom build --config $in --rom $out && {PY} tools/same.py --header $out {BASEROM}")
+        n.rule("rom_build", f"{SH}{DSD} rom build --config $in --rom $out{BIOS} && {PY} tools/same.py --header $out {BASEROM}")
         n.rule("same", f"{PY} tools/same.py $in {BASEROM} $out")
         n.rule("objdiff", f"{DSD} objdiff --config-path {CONFIG} --custom-make ninja")
         n.rule("check", f"{SH}{DSD} check modules --config-path {CONFIG} --fail && {PY} tools/same.py --touch $out")

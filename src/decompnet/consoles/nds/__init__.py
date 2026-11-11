@@ -37,6 +37,7 @@ class NintendoDS(Console):
     layout = "ds-decomp"
     compilers = tuple(Compiler(f"DS/{v}", f"CodeWarrior for DS {v}") for v in DS_VERSIONS)
     packs = (("mwccarm", "CodeWarrior for DS, the compilers of DS games (proprietary)"),)
+    kits = ("nds-bios",)  # the user's own ARM7 BIOS: opens a copy whose secure area is encrypted (kits/dsbios.py)
     guides = ("arm", "mwcc", "ds")
     compiler_guide = "ds"
     compiler_family = "mwcc"
@@ -93,12 +94,17 @@ class NintendoDS(Console):
             return
         fp = net.forks.get(slug)[1]
         manifest = fp.manifest or {}
-        if manifest.get("created") != "from scratch" or manifest.get("analysis", 1) >= self.ANALYSIS:
+        if manifest.get("created") != "from scratch":
             return
 
         def tools(fp):
             return ("its build has the fixes decompdecomp's has had since the project was made"
                     if scratch.write_tools(fp.root) else None)
+
+        if scratch.needs_tools(fp.root):  # (its configure.py would refuse the arguments the app now gives it)
+            net.forks.reanalyse(slug, tools, paths=("tools",), fix=True, log=log)
+        if manifest.get("analysis", 1) >= self.ANALYSIS:
+            return
 
         def functions(fp):  # again on a project that has them: what it adds is the code past .text's old end
             found = recover.recover(fp.root, manifest["version"], dsd=scratch.dsd_path(), log=log)
