@@ -23,7 +23,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Feature | N64 | PS1 | PS2 | PS3 | PSP | GBA | GameCube · Wii | Windows PC | Xbox | DS | Linux (x86) | Public decomps |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
-| Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | ✓ an i386 ELF program with its symbol table | fork by address |
+| Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ .nds; an encrypted secure area with your own ARM7 BIOS dump | ✓ an i386 ELF program with its symbol table | fork by address |
 | Judge | link · compare | link · compare | link · compare | link · compare | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | link · compare | objdiff |
 | Machine drafts (m2c, Ghidra for x86) | ✓ | ✓ | ✓ | — | ✓ | ✓ (m2c `gba-gcc-c`) | ✓ | ✓ Ghidra | ✓ Ghidra | — | ✓ Ghidra (the whole program at once) | by architecture |
 | Autopilot: free matches from drafts | ✓ | ✓ | ✓ | twins only | ✓ | ✓ (demo: 34 matches) | ✓ | ✓ exact drafts of tiny shapes; Ghidra's made compilable | ✓ as PC | — | ✓ Ghidra's made compilable (demo: 25 of 96) | — |

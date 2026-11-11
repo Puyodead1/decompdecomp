@@ -92,7 +92,21 @@ def tool_args() -> list[str]:
     if toolchains.get("wibo").supported and sys.platform != "win32":
         toolchains.ensure("wibo", log=lambda *_: None)
         args += ["--wibo", str(toolchains.binary("wibo"))]
+    if (bios := arm7_bios()) is not None:
+        args += ["--arm7-bios", str(bios)]
     return args
+
+
+def arm7_bios() -> Path | None:
+    """The user's dump of the DS's ARM7 BIOS (Setup's kit), which a copy with an encrypted secure area needs."""
+    from ...kits.dsbios import bios
+
+    return bios()
+
+
+ENCRYPTED = ("This copy of the game keeps its secure area encrypted, as the cartridge does, and ds-decomp decrypts it "
+             "with the DS's ARM7 BIOS. In Setup, under Compilers & tools, give your own dump of it (Nintendo DS ARM7 "
+             "BIOS: 16 KB, usually bios7.bin; GodMode9i on a DSi or 3DS dumps it), then import the game again.")
 
 
 TYPES_H = """/* Basic types for this decompilation (CodeWarrior for DS conventions). Agents add structs and prototypes here or
@@ -277,6 +291,18 @@ def _init(dsd: str, root: Path, version: str, log) -> None:
         _run([*init, "--allow-unknown-function-calls"], root, "analysing the game")
 
 
+def needs_tools(root: Path) -> bool:
+    """Whether a project's configure.py predates an argument tool_args gives (--arm7-bios, once the user set up the
+    BIOS): argparse would refuse it and the build wouldn't start, so the app writes its tools again first."""
+    cfg = root / "tools" / "configure.py"
+    try:
+        text = cfg.read_text(encoding="utf-8")
+        args = tool_args()
+    except (OSError, ForkError):  # (no CodeWarrior here: the build couldn't start anyway, and Setup says why)
+        return False
+    return any(a.startswith("--") and f'"{a}"' not in text for a in args)
+
+
 def write_tools(root: Path, game: str | None = None, compiler: str | None = None) -> list[str]:
     """The template's build tools in a project, for `game` built with `compiler` ("2.0/sp1p5"; None: what its
     configure.py has now). A project made by an older decompdecomp gets the fixes its build has had since (agents
@@ -319,8 +345,14 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
 
     dsd = args[args.index("--dsd") + 1]
     log(f"extracting {info['title']} ({info['id']}) with ds-decomp")
-    _run([dsd, "rom", "extract", "--rom", "extract/baserom.nds", "--output-path", f"extract/{version}"], root,
-         "extracting the ROM")
+    bios = args[args.index("--arm7-bios"):][:2] if "--arm7-bios" in args else []
+    try:
+        _run([dsd, "rom", "extract", "--rom", "extract/baserom.nds", "--output-path", f"extract/{version}", *bios],
+             root, "extracting the ROM")
+    except ForkError as e:
+        if "encrypted" in str(e) and not bios:
+            raise ForkError(ENCRYPTED) from None
+        raise
     log("analysing the ARM9 program, its autoloads and overlays (dsd init)")
     _init(dsd, root, version, log)
     from . import recover
@@ -362,7 +394,8 @@ Started from scratch with [decompdecomp](https://github.com/n-delic/decompdecomp
 the toolkit DS decomps use. Every build rebuilds the ROM and checks it against your copy, byte for byte.
 
 1. Put your own copy of the game here as `extract/baserom.nds` (never commit it).
-2. `python tools/configure.py {version} --dsd <dsd> --compilers <CodeWarrior for DS> [--wibo <wibo>]`, then `ninja`.
+2. `python tools/configure.py {version} --dsd <dsd> --compilers <CodeWarrior for DS> [--wibo <wibo>] [--arm7-bios <your dump of the DS's ARM7 BIOS>]`,
+   then `ninja` (a copy whose secure area is encrypted needs the BIOS).
 3. Decompiled code goes in `src/`; `objdiff.json` shows each function's progress in [objdiff](https://github.com/encounter/objdiff).
 
 Compiler: CodeWarrior for DS {compiler} (`MWCC_VERSION` in tools/configure.py). Files the game built with another

@@ -981,3 +981,68 @@ def test_a_source_file_never_ends_inside_a_function_the_analysis_made_too_long(t
     assert [(a - BASE, b - BASE) for a, b, _ in units] == [(0x0, 0x10), (0x10, 0x2C), (0x2C, 0x40)]
     for a, size, _ in funcs:
         assert any(start <= BASE + a and BASE + a + size <= end for start, end, _ in units)
+
+
+def test_your_dump_of_the_arm7_bios_is_a_kit_given_as_its_file_or_its_folder(tmp_path, monkeypatch):
+    """A copy whose secure area is encrypted opens only with the DS's ARM7 BIOS, which nobody may publish: the user
+    gives their own dump in Setup, as the file or the folder holding it, and decompdecomp reads it where it is."""
+    from decompnet import kits
+
+    monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "bios7.bin").write_bytes(bytes(0x4000))
+    (dumps / "dsi_bios7.bin").write_bytes(bytes(0x10000))  # a DSi's: not it
+    assert scratch.arm7_bios() is None
+    with pytest.raises(toolchains.ToolchainError, match="doesn't look like"):
+        toolchains.install("nds-bios", folder=dumps / "dsi_bios7.bin", accept_license=True, log=lambda *_: None)
+    assert toolchains.install("nds-bios", folder=dumps, accept_license=True, log=lambda *_: None) == dumps / "bios7.bin"
+    assert scratch.arm7_bios() == dumps / "bios7.bin" == kits.folder("nds-bios")
+    assert not any(p.stat().st_size == 0x4000 for p in (tmp_path / "toolchains").rglob("*") if p.is_file())
+    row = next(r for r in toolchains.status() if r["id"] == "nds-bios")
+    assert row["installed"] and "not the DS ARM7 BIOS decompdecomp knows" in row["verified"]  # (zeros aren't it)
+
+
+def test_an_encrypted_copy_without_the_bios_says_how_to_give_it(tmp_path, monkeypatch):
+    rom = tmp_path / "game.nds"
+    rom.write_bytes(_header() + bytes(0x200))
+    monkeypatch.setattr(scratch, "game_info", lambda game: {"id": "ADQE", "title": "DEMOQUESTDS", "sha1": ""})
+    monkeypatch.setattr(scratch, "versions", lambda: [scratch.DS_DEFAULT])
+    monkeypatch.setattr(scratch, "tool_args", lambda: ["--dsd", "dsd", "--compilers", "mwccarm"])
+    ran = []
+
+    def run(cmd, cwd, what):
+        ran.append(cmd)
+        raise ForkError(f"{what} failed:\n[ERROR] The ROM is encrypted, please provide ARM7 BIOS")
+    monkeypatch.setattr(scratch, "_run", run)
+    with pytest.raises(ForkError, match="In Setup, under Compilers & tools, give your own dump"):
+        scratch.create(tmp_path / "game", rom, log=lambda *_: None)
+    monkeypatch.setattr(scratch, "tool_args", lambda: ["--dsd", "dsd", "--compilers", "mwccarm", "--arm7-bios", "b7"])
+    with pytest.raises(ForkError, match="please provide ARM7 BIOS"):  # (given, and refused: dsd's own words)
+        scratch.create(tmp_path / "again", rom, log=lambda *_: None)
+    assert ran[-1][-2:] == ["--arm7-bios", "b7"] and "--arm7-bios" not in ran[0]
+
+
+def test_the_build_decrypts_and_encrypts_again_with_the_bios_and_older_tools_take_it(tmp_path, monkeypatch):
+    import sys
+
+    root = tmp_path / "game"
+    shutil.copytree(scratch.TEMPLATE, root)
+    (root / "config" / "adqe" / "arm9").mkdir(parents=True)
+    dsd = tmp_path / "dsd.py"
+    dsd.write_text(f"#!{sys.executable}\nimport json\nprint(json.dumps({{'files': [], 'arm9_lcf_file': 'build/arm9.lcf', "
+                   "'arm9_objects_file': 'build/objects.txt'}))\n")
+    bios = tmp_path / "my dumps" / "bios7.bin"
+    subprocess.run([sys.executable, "tools/configure.py", "adqe", "--dsd", str(dsd), "--compilers", str(tmp_path),
+                    "--arm7-bios", str(bios)], cwd=root, check=True, capture_output=True)
+    ninja = re.sub(r"\$\n\s*", "", (root / "build.ninja").read_text())
+    for rule in ("extract", "rom_build"):
+        command = ninja.split(f"rule {rule}\n", 1)[1].split("\n", 1)[0]
+        assert f'--arm7-bios "{bios}"' in command
+    monkeypatch.setattr(scratch, "tool_args", lambda: ["--dsd", "d", "--compilers", "c", "--arm7-bios", str(bios)])
+    assert not scratch.needs_tools(root)
+    cfg = root / "tools" / "configure.py"
+    cfg.write_text(cfg.read_text().replace('"--arm7-bios"', '"--bios-was-not-here"'))  # a project made before
+    assert scratch.needs_tools(root)
+    scratch.write_tools(root)
+    assert not scratch.needs_tools(root)

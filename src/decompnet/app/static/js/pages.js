@@ -158,7 +158,7 @@ function useLocalToolchain(id) {
   if (!card || card.querySelector(".local-form")) return;
   const form = document.createElement("form");
   form.className = "local-form";
-  form.innerHTML = `<label class="field"><span>The folder of your own copy (the one holding the files it needs, or the folder above it)</span>
+  form.innerHTML = `<label class="field"><span>The folder of your own copy (the one holding the files it needs, or the folder above it; a copy that is one file, like a BIOS: that file)</span>
       <input name="folder" type="text" spellcheck="false" placeholder="C:\\Program Files\\Microsoft Visual Studio"></label>
     ${t.license === "proprietary" ? `<label class="check"><input type="checkbox" name="accept"><span>This is proprietary software. decompdecomp reads your copy where it is and never copies or uploads it. I accept that.</span></label>` : ""}
     <div class="row"><button class="small-btn" type="submit">Use this folder</button><button class="ghost small-btn" type="button" data-cancel>Cancel</button></div>
