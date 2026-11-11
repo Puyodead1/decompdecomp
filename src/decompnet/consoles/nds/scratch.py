@@ -201,7 +201,9 @@ def _modules(config: Path) -> list[tuple[str, Path]]:
 def _units(module: Path, since: int | None = None) -> list[tuple[int, int, int]]:
     """(start, end, functions) of the source files for a module's .text (from `since`): runs of functions of about
     UNIT_BYTES that together cover the whole section (bytes between functions go with the file before them; a stray
-    piece on its own could be dead-stripped by the linker)."""
+    piece on its own could be dead-stripped by the linker). A file never ends inside a function: one the analysis gave
+    a size running into the next (a 4-byte Thumb function at 0x02000822 before an ARM one at 0x02000824) keeps that
+    next one in its file, or dsd's delink refuses the whole project (its last symbol outside the file's range)."""
     delinks = (module / "delinks.txt").read_text(encoding="utf-8")
     text = next(((int(s, 16), int(e, 16)) for name, s, e in _SECTION.findall(delinks.split("\n\n")[0]) if name == ".text"),
                 None)
@@ -215,13 +217,13 @@ def _units(module: Path, since: int | None = None) -> list[tuple[int, int, int]]
     units, cur = [], None
     for addr, size in funcs:
         end = min(addr + size, text[1])
-        if cur and (end - cur[0] > UNIT_BYTES or addr < cur[1]):
+        if cur and end - cur[0] > UNIT_BYTES and addr >= cur[1]:
             units.append(tuple(cur))
             cur = None
         if cur is None:
             cur = [addr, end, 1]
         else:
-            cur[1], cur[2] = end, cur[2] + 1
+            cur[1], cur[2] = max(cur[1], end), cur[2] + 1
     if cur:
         units.append(tuple(cur))
     if not units:
