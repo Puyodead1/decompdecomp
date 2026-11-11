@@ -1260,6 +1260,11 @@ tree with the system's gcc and libraries (`make asan`: AddressSanitizer). Left, 
   and `ninja reccmp`, the relink with a PDB, done; the relink names each global that differs, done). Left: the fields'
   names and types from the code's reads (structs.py), and an Xbox project's Export as source (Export writes none
   for an Xbox project yet: `Xbox.export_fork`).
+- A function no C matches yet as C in the plain build: on its page, "Close enough: use in plain builds" keeps the
+  editor's C (compiled and scored first, not a match), and a Linux export's file has it `#ifdef NON_MATCHING` beside
+  the function's assembly (done: a 513-function Linux program's last three functions). Left: a function whose file
+  isn't one C file yet (its own `.s`: the plain build would need its C beside it), and the other consoles' exports,
+  which have no plain build to take it (`Console.plain_build`).
 
 ### A modding-ready check for the export
 

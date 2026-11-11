@@ -163,3 +163,33 @@ def test_a_functions_locals_as_its_c_declares_them_and_as_the_debug_information_
         "frame offset -0x47c, declared on line 653)", "double __result (register 11, declared on line 445)",
         "float vi (st(1), declared on line 81)", "int k (ebx, declared on line 139)"]) == \
         {"width", "myfread", "xmin", "ch", "vi", "k"}
+
+
+def test_a_function_not_matched_yet_is_the_c_you_chose_in_the_plain_build(tmp_path):
+    """A function no C matches yet is its assembly in its file; the C the user chose for it (Network.set_plain) is
+    beside it, `#ifdef NON_MATCHING`, so the plain build compiles C and the matching build the game's code. The
+    export takes that C out again (without_plain) where the plain build can't compile it, even with #ifs its passes
+    put inside it."""
+    import shutil
+    import subprocess
+
+    from decompnet.consoles.linux.export import without_plain
+
+    asm = ".globl near\n.type near,@function\nnear:\n\tmovl $2, %eax\n\tret\n"
+    funcs = [("first", "int first(void) { return 1; }\n"), ("near", ""), ("last", "int last(void) { return 3; }\n")]
+    plain_c = "#ifdef NON_MATCHING\nint near(void) { return 2; }\n#else\nint near(void) { return 0; }\n#endif\n"
+    alone = units.merge(funcs, "common.h", asm_pieces={"near": asm}).c
+    both = units.merge(funcs, "common.h", asm_pieces={"near": asm}, plain={"near": plain_c}).c
+    assert "#ifdef NON_MATCHING\n/* near doesn't match yet" in both and "int near(void) { return 2; }" in both
+    assert (both.index("int first(void) {") < both.index("#ifdef NON_MATCHING") < both.index('"near:\\n"')
+            < both.index("int last(void) {"))
+    assert without_plain(both) == alone and without_plain(both, {"other"}) == both
+    if shutil.which("gcc") is None:
+        pytest.skip("no gcc")
+    (tmp_path / "common.h").write_text("")
+    for defines, want in ((["-DNON_MATCHING"], 2), ([], 2)):
+        (tmp_path / "f.c").write_text(both + "int main(void) { return near(); }\n")
+        built = subprocess.run(["gcc", *defines, "-o", "f", "f.c"], cwd=tmp_path, capture_output=True, text=True)
+        if built.returncode:
+            pytest.skip(f"this gcc doesn't build it: {built.stderr[:200]}")
+        assert subprocess.run([str(tmp_path / "f")]).returncode == want

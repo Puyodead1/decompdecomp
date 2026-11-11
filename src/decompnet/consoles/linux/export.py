@@ -495,13 +495,14 @@ def _local_tables(net, proj, hdr: str, rows: list, sources: list, program) -> li
 
 def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: str, hdr: str, syms, read,
                statics_at: dict[str, dict[str, int]] | None = None, program=None, asm_pieces=None,
-               elsewhere: set[str] = frozenset(), sources=None):
+               elsewhere: set[str] = frozenset(), sources=None, plain=None):
     """A source file of the program as one C file, compiled whole and judged against the game's span of it: (the
     merged C, its compiler, its statics, its data) or (None, why, None, None). Tried with each compiler its
     functions are matched with (a file the compiler ranges cut in two is one compile in the game), each call as
     its function is defined first and then as each function declared it (units.merge's `as_called`). Then with its
     data as C (export_data.py, `program`): its data is {"sections": where each data section is, "defines": the
-    names its object defines}, or {"problem": why its data stays the program's bytes}."""
+    names its object defines}, or {"problem": why its data stays the program's bytes}. `plain`: the C the user chose
+    for a function in `asm_pieces` (plain_sources), the build with NON_MATCHING's in its place."""
     from ... import units
     from ...compiler import compile_source
     from ...project import compiler_config
@@ -521,7 +522,7 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
         if tabled != sources:
             for variant in (tabled, [(name, units.returned(c, name) or c) for name, c in tabled]):
                 found = _unit_file(net, proj, cfg, console, rows, include, own_header, hdr, syms, read, statics_at,
-                                   program, asm_pieces, elsewhere, variant)
+                                   program, asm_pieces, elsewhere, variant, plain)
                 if found[0] is not None:
                     return found
         # first with each function that returns what GCC 2.95 left in %eax returning it (units.returned): the same
@@ -529,7 +530,7 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
         fixed = [(name, units.returned(c, name) or c) for name, c in sources]
         if fixed != sources:
             found = _unit_file(net, proj, cfg, console, rows, include, own_header, hdr, syms, read, statics_at,
-                               program, asm_pieces, elsewhere, fixed)
+                               program, asm_pieces, elsewhere, fixed, plain)
             if found[0] is not None:
                 return found
 
@@ -568,7 +569,7 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
             return units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
                                own_data={d.name: d.key for d in data.definitions}, forward=forward,
                                placed=[(d.line, d.text) for d in data.definitions], func_lines=lines,
-                               asm_pieces=asm_pieces)
+                               asm_pieces=asm_pieces, plain=plain)
         done = merge_with_data()
         # (a static a function declares as another type, under another name for the same symbol, is used as far
         # as a newer GCC knows: else it drops or folds it, not seeing that name is the static)
@@ -602,7 +603,7 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
     problems: dict[bool, str] = {}
     for as_called in (False, True):
         merged = units.merge(sources, include, own_header, CONTEXT_INCLUDE, statics_at, as_called, hdr,
-                             asm_pieces=asm_pieces)
+                             asm_pieces=asm_pieces, plain=plain)
         if merged.c is None:
             return None, merged.problem, None, None
         for toolchain, flags in compilers:
@@ -626,6 +627,102 @@ def _unit_file(net, proj, cfg, console, rows: list, include: str, own_header: st
     if problems.get(True) and problems[True] != problems.get(False):
         return None, f"{problems[False]}; with each call as its function declared it, {problems[True]}", None, None
     return None, problems[False], None, None
+
+
+_PLAIN_BLOCK = re.compile(r"^#ifdef NON_MATCHING\n/\* (\w+) doesn't match yet: C that does what it does", re.M)
+
+
+def without_plain(text: str, names=None) -> str:
+    """`text` with the plain C of `names` (else every function's) gone: its assembly alone, as before the user chose
+    it (units.plain_or_asm's block, whatever #if the export's passes put inside it since)."""
+    lines, out, i = text.splitlines(keepends=True), [], 0
+    while i < len(lines):
+        m = _PLAIN_BLOCK.match("".join(lines[i:i + 2]))
+        if not m or (names is not None and m.group(1) not in names):
+            out.append(lines[i])
+            i += 1
+            continue
+        depth, j, other = 0, i, None
+        while j < len(lines):
+            d = re.match(r"\s*#\s*(if|ifdef|ifndef|else|endif)\b", lines[j])
+            if d and d.group(1).startswith("if"):
+                depth += 1
+            elif d and d.group(1) == "else" and depth == 1:
+                other = j
+            elif d and d.group(1) == "endif":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.extend(lines[other + 1:j] if other is not None else [])
+        i = j + 1
+    return "".join(out)
+
+
+def _plain_checked(out: Path, build: dict, log=print, tc: Path | None = None) -> list[tuple[str, str]]:
+    """Each source file with C the user chose for a function (units.plain_or_asm), compiled as `make` compiles it
+    (the system's gcc, NON_MATCHING), else (no 32-bit C library headers on this computer) as tools/floatcheck.py does,
+    with the toolchain's (`tc`, DECOMP_OWN_TYPES): where that C is what doesn't compile, the function is its assembly
+    in every build again, and why is in the README. Unchecked where the file doesn't compile without it either: the
+    export doesn't decide that for the build."""
+    import shutil as _shutil
+
+    files = sorted({u["c"] for u in build.get("units") or [] if u.get("c")})
+    files = [c for c in files if _PLAIN_BLOCK.search((out / c).read_text(encoding="utf-8"))]
+    if not files or not _shutil.which("gcc"):
+        return []
+
+    own = []
+    if tc is not None:
+        gcc_include = subprocess.run(["gcc", "-print-file-name=include"], capture_output=True, text=True).stdout.strip()
+        own = [["-DDECOMP_OWN_TYPES", "-nostdinc", "-isystem", gcc_include, f"-I{tc / 'include'}"]]
+
+    def compiles(path: Path) -> tuple[bool, str]:
+        said = ""
+        for extra in [[], *own]:
+            ran = subprocess.run(["gcc", "-m32", "-std=gnu89", "-fno-pie", "-fcommon", "-fno-strict-aliasing",
+                                  "-DNON_MATCHING", "-w", "-fsyntax-only", *extra, "-Iinclude", "-iquote",
+                                  str(path.parent), str(path)], cwd=out, capture_output=True, text=True, timeout=300)
+            if ran.returncode == 0:
+                return True, ""
+            said = said or ran.stderr
+        return False, said
+
+    gone = []
+    for c in files:
+        path = out / c
+        text = path.read_text(encoding="utf-8")
+        ok, said = compiles(path)
+        if ok:
+            continue
+        path.write_text(without_plain(text), encoding="utf-8")
+        if not compiles(path)[0]:
+            path.write_text(text, encoding="utf-8")  # (not the chosen C's doing)
+            log(f"{c} doesn't build with this computer's gcc -m32 either way: the C you chose in it wasn't checked")
+            continue
+        error = next((line for line in said.splitlines() if "error" in line), said.strip()[:200])
+        names = _PLAIN_BLOCK.findall(text)
+        for f in build["functions"]:
+            if f["name"] in names:
+                f.pop("plain", None)
+        gone += [(n, f"the C you chose for the plain build doesn't compile there ({error[:160]}): its assembly "
+                     "in every build") for n in names]
+    return gone
+
+
+def plain_sources(rows) -> dict[str, str]:
+    """The C the user chose for functions no C matches yet ({name: C}, Network.set_plain), as a file has it: without
+    the shared header's include (the file includes it first) or the judge's pragmas."""
+    from ...compiler import NO_CONTEXT
+    from ...rom.export import CONTEXT_INCLUDE
+
+    found = {}
+    for r in rows:
+        plain = json.loads(r["meta"] or "{}").get("plain") if r["status"] != "matched" else None
+        if plain and plain.get("source"):
+            text = NO_CONTEXT.sub("", CONTEXT_INCLUDE.sub("", plain["source"]))
+            found[r["name"]] = re.sub(r"^[ \t]*#[ \t]*pragma[ \t]+decompdecomp\b.*\n?", "", text, flags=re.M)
+    return found
 
 
 def _static_headers(out: Path) -> int:
@@ -756,6 +853,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     library = _runtime_names(cfg["compiler"]["toolchain"])
     names_at = {s.name: s.address for s in syms.by_name.values() if s.address}
     names_at.update({f["name"]: f["vram"] for f in functions})
+    plain = plain_sources(rows)  # (C you chose for one that doesn't match yet: the plain build's, Network.set_plain)
     for unit, members in groups.items():
         if unit is None:
             continue
@@ -783,7 +881,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
         merged, why, statics, data = _unit_file(
             net, proj, cfg, console, members, headers[net._effective_unit(first_c, units)], f"{name}.h", hdr, syms,
             read, {r["name"]: by_name[r["name"]].get("statics") or {} for r in members}, program, asm_pieces,
-            elsewhere)
+            elsewhere, plain=plain)
         if merged is None:
             unit_fallback.append((unit, why))
             # its data as C all the same, a file of its own its functions reach by name (src/<file>/data.c)
@@ -809,6 +907,8 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
                 (out / f["c"]).unlink()
             else:
                 f["asm"] = True  # (in its file as assembly: not C yet)
+                if r["name"] in plain:
+                    f["plain"] = True  # (and the C you chose, for the plain build)
             f.update({"c": c_path.relative_to(out).as_posix(), "in": name})
             for gone in ("prelude", "statics"):
                 f.pop(gone, None)
@@ -930,6 +1030,7 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom")
     # the C made plain where it still builds the same code: what only the matching build's linker script supplied,
     # written as C (export_clean.py), so `make` builds it with any GCC
+    tc = None
     if (out / "tools" / "cc.sh").exists():
         from ... import toolchains
         from . import export_clean
@@ -946,11 +1047,21 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
             log("the plain build's floats weren't compared with the game's: that needs the system's gcc (32-bit) and "
                 "binutils")
         export_clean.plain_system(out, tc)  # (last: every header and file as it stays)
+    plain_fallback = _plain_checked(out, build, log, tc)
+    if plain_fallback:
+        (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
+    fallback = fallback + plain_fallback
+    chosen = [f["name"] for f in functions if f.get("plain")]
+    if chosen:
+        log(f"the plain build has the C you chose for {len(chosen)} that don't match yet: {', '.join(chosen[:5])}")
+    missed = [n for n in plain if n not in chosen and not by_name.get(n, {}).get("c")]
+    fallback += [(n, "the C you chose for the plain build isn't used: its source file isn't one C file yet")
+                 for n in missed if n not in {name for name, _ in plain_fallback}]
     matched = sum(1 for f in functions if f.get("c") and not f.get("asm"))
     _docs(out, proj["name"], matched, len(functions), fallback, build["program"], len(unit_list), unit_fallback,
           data_fallback, sum(1 for u in unit_list if "data" in u), build["standalone"], export_make.packages(build),
           # (the compiler the program was built with: "GCC 2.95.3" said of an egcs 1.1.2 program)
-          re.sub(r" for Linux\b.*", "", toolchain_registry()[build["toolchain"]].name))
+          re.sub(r" for Linux\b.*", "", toolchain_registry()[build["toolchain"]].name), chosen)
     # (asm/ and data/ are your copy's code and data, written from it: never in git)
     # (and the compiler `make toolchain` downloads into tools/: only the tree's scripts are its own)
     (out / ".gitignore").write_text("/build/\n/baserom*\n/asm/\n/data/\n/tools/*/\n/tools/.downloads/\n", encoding="utf-8")
@@ -970,8 +1081,10 @@ def export_linux(net, slug: str, out: Path, console, log=print) -> dict:
 
 def _docs(out: Path, title: str, matched: int, total: int, fallback, program: str = "program", whole: int = 0,
           unit_fallback=(), data_fallback=(), with_data: int = 0, standalone: bool = False,
-          packages: str = "gcc-multilib", compiler: str = "GCC 2.95.3") -> None:
+          packages: str = "gcc-multilib", compiler: str = "GCC 2.95.3", plain=()) -> None:
     notes = "".join(f"\n- `{n}`: kept as the program's bytes, {why}" for n, why in fallback)
+    notes += "".join(f"\n- `{n}`: not C that matches yet, so the program's code in the matching build; the plain build "
+                     "compiles C chosen for it that does what it does (`#ifdef NON_MATCHING` in its file)" for n in plain)
     notes += "".join(f"\n- `{u}`: one file per function in `src/{_unit_name(u)}/` for now: {why}"
                      for u, why in unit_fallback)
     notes += "".join(f"\n- `{u}`: its data stays the program's (data/program.s) for now: {why}" for u, why in data_fallback)

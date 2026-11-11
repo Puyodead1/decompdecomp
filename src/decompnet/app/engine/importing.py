@@ -297,6 +297,8 @@ class ImportMixin:
                         meta_data["debug"] = known
                     if fn.name in demangled:
                         meta_data["demangled"] = demangled[fn.name]
+                    if old is not None and same_target and "plain" in (kept := json.loads(old["meta"] or "{}")):
+                        meta_data["plain"] = kept["plain"]  # (the user's C for the plain build: Network.set_plain)
                     meta = json.dumps(meta_data) if meta_data else None
                     n_insns = console.function_insns(fn)
                     status = console.function_status(fn)
