@@ -1553,6 +1553,8 @@ def test_a_plain_build_has_the_c_librarys_types_and_functions_from_the_systems_h
                                              "typedef struct { int __m; } pthread_cond_t;\n")
     (tc / "include" / "sys" / "select.h").write_text("struct timeval { long tv_sec; long tv_usec; };\n")
     (tc / "include" / "unistd.h").write_text("extern int write __P ((int __fd, const void *__buf, unsigned int __n));\n")
+    (tc / "include" / "string.h").write_text("extern void *memcpy __P ((void *__d, const void *__s, unsigned int __n));\n"
+                                             "extern char suffix[32];\n")
     (tc / "include" / "bits" / "mathcalls.h").write_text("__MATHCALL (atan2,, (_Mdouble_ __y, _Mdouble_ __x));\n")
     (tc / "include" / "math.h").write_text("#include <bits/mathcalls.h>\n")
     out = tmp_path / "tree"
@@ -1567,7 +1569,17 @@ def test_a_plain_build_has_the_c_librarys_types_and_functions_from_the_systems_h
         '#include "common.h"\n#define timeval _g_timeval\n#define fd_set _g_fd_set\n#include <sys/select.h>\n\n'
         "struct timeval {\n    long tv_sec;\n    long tv_usec;\n};\nint write(int fd, void *buf, int n);\n"
         "int f(void) { return 0; }\n")
+    # (both forms of an argument closed one call twice, and the game's memcpy calls after it read as declarations:
+    # the plain build lost them, and a 2001 game's player started without ammo; its own `suffix` isn't glibc's)
+    (out / "src" / "b.c").write_text(
+        '#include "common.h"\nextern char suffix[32];\nextern void *memcpy(void *, const void *, unsigned int);\n'
+        "void hit(short *max, int d)\n{\n    memcpy(max,\n#ifdef NON_MATCHING\n           table[d], 18);\n#else\n"
+        "           (short *)(0x80 + d * 18), 18);\n#endif\n}\n\nvoid join(short *ammo)\n{\n#ifdef NON_MATCHING\n"
+        "  memcpy(ammo, table[0], 18);\n#else\nmemcpy(ammo, (short *)0x80, 18);\n#endif\n}\nchar suffix[32];\n")
     export_clean.plain_system(out, tc)
+    b = (out / "src" / "b.c").read_text()
+    assert b.count("DECOMP_LIBC_DECLARATIONS") == 1 and "#include <string.h>\n#else\nextern void *memcpy(" in b
+    assert "\nextern char suffix[32];\n" in b and "#else\nmemcpy(ammo, (short *)0x80, 18);\n#endif\n}" in b
     common = (out / "include" / "common.h").read_text()
     assert "#if defined(NON_MATCHING) && !defined(DECOMP_OWN_TYPES)" in common
     assert "#include <signal.h>" in common and "#include <sys/select.h>" in common and "#include <math.h>" in common
@@ -1582,7 +1594,8 @@ def test_a_plain_build_has_the_c_librarys_types_and_functions_from_the_systems_h
     assert f"{own_if}\nstruct timeval {{" in a
     assert "#include <unistd.h>\n#else\nint write(int fd, void *buf, int n);" in a
     export_clean.plain_system(out, tc)  # (once)
-    assert (out / "include" / "common.h").read_text() == common and (out / "src" / "a.c").read_text() == a
+    assert (out / "include" / "common.h").read_text() == common and (out / "src" / "a.c").read_text() == a \
+        and (out / "src" / "b.c").read_text() == b
 
 
 def test_a_call_passing_another_calls_argument_is_written_as_what_it_passed(tmp_path):

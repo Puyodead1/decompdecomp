@@ -97,9 +97,36 @@ def items(source: str) -> list[Item]:
                 j += 2 if text[j] == "\\" else 1
             i = j + 1
             continue
-        depth, k = 0, j
+        depth, k, ifs = 0, j, 0
         while k < n:
             c = text[k]
+            if c == "#" and text[text.rfind("\n", 0, k) + 1:k].strip() == "":  # a preprocessor line inside it
+                # (only an #if's first branch counts: both forms of an argument, `#ifdef NON_MATCHING` ... `#else`
+                # ..., closed one call twice, and every function after it read as declarations: a 2001 game's
+                # memcpy calls, wrapped as the C library's, were gone from the plain build)
+                word = re.match(r"#\s*(\w*)", text[k:])
+                word = word.group(1) if word else ""
+                if word.startswith("if"):
+                    ifs += 1
+                elif word == "endif" and ifs:
+                    ifs -= 1
+                elif word in ("else", "elif") and ifs:
+                    level = 1
+                    while level and k < n:  # (to this #if's #endif)
+                        k = text.find("\n", k)
+                        if k < 0:
+                            k = n
+                            break
+                        k += 1
+                        d = re.match(r"[ \t]*#\s*(\w*)", text[k:])
+                        if d and d.group(1).startswith("if"):
+                            level += 1
+                        elif d and d.group(1) == "endif":
+                            level -= 1
+                    ifs -= 1
+                while k < n and text[k] != "\n":
+                    k += 2 if text[k] == "\\" else 1
+                continue
             if c in "\"'":  # a literal
                 q, k = c, k + 1
                 while k < n and text[k] != q:

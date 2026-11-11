@@ -1269,12 +1269,13 @@ def _plain_libc_declarations(out: Path, tc: Path) -> None:
     if not (tc / "include").is_dir():
         return
     names, _ = _system_names(tc)
+    ours = _tree_defines(out)  # (a variable of the game's own a C library header names too: ps_tex.c's `suffix`)
     for path in sorted((out / "src").rglob("*.c")):
         text = path.read_text(encoding="utf-8")
         if "DECOMP_LIBC_DECLARATIONS" in text:
             continue
         chosen = [item for item in tidy.items(text) if item.kind == "extern" and item.names
-                  and all(names.get(f"extern {n}") for n in item.names)]
+                  and all(names.get(f"extern {n}") and n not in ours and not _defines(text, n) for n in item.names)]
         if not chosen:
             continue
         for item in reversed(chosen):
@@ -1283,6 +1284,25 @@ def _plain_libc_declarations(out: Path, tc: Path) -> None:
                     + "".join(f"#include <{h}>\n" for h in headers) + "#else\n"
                     + text[item.start:item.end].rstrip("\n") + "\n#endif\n" + text[item.end:])
         path.write_text(text, encoding="utf-8")
+
+
+def _tree_defines(out: Path) -> set[str]:
+    """What the tree defines itself (build.json: its functions, and the variables its files' data defines)."""
+    try:
+        build = json.loads((out / "build.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    found = {f["name"] for f in build.get("functions") or [] if f.get("c") or f.get("s")}
+    for part in [*(build.get("units") or []), *(build.get("data_files") or [])]:
+        data = part.get("data") if "data" in part else part
+        found |= {v[0] for v in (data or {}).get("variables") or [] if v}
+    return found
+
+
+def _defines(text: str, name: str) -> bool:
+    """Whether a file defines `name` at file scope: a variable (`char suffix[32];`) or a function."""
+    return bool(re.search(rf"^(?!extern\b)(?!\s)[^\n;(){{}}#=]*?\b{re.escape(name)}\s*(?:\[[^\]\n]*\]\s*)*(?:=|;)", text, re.M)
+                or re.search(rf"^(?!extern\b)(?!\s)[^\n;=#]*?\b{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{", text, re.M))
 
 
 def plain_system(out: Path, tc: Path) -> None:
