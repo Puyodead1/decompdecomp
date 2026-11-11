@@ -57,6 +57,8 @@ int memcmp(const void *, const void *, unsigned); int fork(void); int pipe(int *
 int write(int, const void *, unsigned); int close(int); int waitpid(int, int *, int); unsigned alarm(unsigned);
 void _exit(int); void *mmap(void *, unsigned, int, int, int, long); int kill(int, int); int time(int *);
 struct pollfd { int fd; short events, revents; }; int poll(struct pollfd *, unsigned long, int);
+typedef struct _IO_FILE FILE; char *getenv(const char *); FILE *fopen(const char *, const char *);
+int fscanf(FILE *, const char *, ...); int fclose(FILE *);
 #define BUF 4096
 #define NP 6
 #define POOL 0x3F800000u
@@ -91,6 +93,16 @@ static void fill(int mode, int it) {
   }
   stub_fill(word);
 }
+/* the file's variables after each call, the game's and the plain build's copy of each (FC_VARS: a list of
+   "game-address plain-address size", what the link put where), compared as the pointer arguments' memory is: a
+   function that writes only globals (a renderer's corner list) compares too */
+static unsigned fc_o[512], fc_p[512], fc_n[512]; static int fc_count, fc_bytes;
+static void fc_load(void) {
+  char *path = getenv("FC_VARS"); FILE *f; unsigned o, p, n;
+  if (!path || !(f = fopen(path, "r"))) return;
+  while (fc_count < 512 && fscanf(f, "%%x %%x %%u", &o, &p, &n) == 3) { fc_o[fc_count] = o; fc_p[fc_count] = p; fc_n[fc_count++] = n; fc_bytes += n; }
+  fclose(f);
+}
 static void put(int fd, const void *p, int n) { while (n > 0) { int w = write(fd, p, n); if (w <= 0) _exit(3); p = (const char *)p + w; n -= w; } }
 %(decls)s
 static void side(int fn, int alt, int n, int fd, int mode)
@@ -105,6 +117,7 @@ static void side(int fn, int alt, int n, int fd, int mode)
 %(cases)s
     }
     put(fd, &r, 10); put(fd, &ri, 4); put(fd, bufs, NP * BUF);
+    { int i; for (i = 0; i < fc_count; i++) put(fd, (void *)(alt ? fc_p[i] : fc_o[i]), fc_n[i]); }
   }
   _exit(0);
 }
@@ -134,8 +147,11 @@ static int run(int fn, int alt, int n, char *out, int size, int mode)
 }
 int main(int argc, char **argv)
 {
-  int n = argc > 1 ? atoi(argv[1]) : 200, fn, rec = 14 + NP * BUF;
-  char *a = malloc(n * rec), *b = malloc(n * rec);
+  int n = argc > 1 ? atoi(argv[1]) : 200, fn, rec;
+  char *a, *b;
+  fc_load();
+  rec = 14 + NP * BUF + fc_bytes;
+  a = malloc(n * rec); b = malloc(n * rec);
   if (mmap((void *)POOL, POOL_SIZE, 3, 0x32, -1, 0) != (void *)POOL) { printf("no memory at 0x3F800000\n"); return 2; }
   bufs = (char (*)[BUF])(POOL + POOL_SIZE / 2);
   for (fn = 0; fn < %(count)d; fn++) {
@@ -278,6 +294,30 @@ def x87_functions(obj: Path, tc: Path) -> set[str]:
     return out
 
 
+def rounding_returns(obj: Path, tc: Path) -> set[str]:
+    """The functions of an object (the game's code) that round what they return to a float: each `ret` after the
+    value stored to a float and loaded back (`fstps -4(%ebp)`, `flds -4(%ebp)`), as a function returning a float
+    variable did. The others leave all 80 bits in st(0): the plain C returns a long double there."""
+    said = subprocess.run([tool("objdump", tc), "-d", "--no-show-raw-insn", str(obj)], capture_output=True, text=True,
+                          env=_binutils_env(tc)).stdout
+    rounds: dict[str, bool] = {}
+    current, last = None, []
+    for line in said.splitlines():
+        if m := re.match(r"[0-9a-f]+ <([^>]+)>:", line):
+            current, last = m.group(1), []
+            continue
+        m = re.match(r"\s+[0-9a-f]+:\s+(\S+)\s*(.*)$", line)
+        if not current or not m:
+            continue
+        op, arg = m.group(1), m.group(2).strip()
+        if op.startswith("f") and op != "fwait":
+            last = (last + [(op, arg)])[-2:]
+        elif op == "ret":
+            stored = len(last) == 2 and last[0] == ("fstps", last[1][1]) and last[1][0] == "flds"
+            rounds[current] = rounds.get(current, True) and stored
+    return {name for name, yes in rounds.items() if yes}
+
+
 def undefined(objects: list[Path], tc: Path) -> dict[str, str]:
     """Each name the objects use and none defines: "f" where only calls reach it, else "d"."""
     defined, kinds = set(), {}
@@ -353,6 +393,66 @@ def game_archive(work: Path, tc: Path, workers: int = 8) -> Path | None:
     return archive if said.returncode == 0 else None
 
 
+def _symbols(path: Path) -> list[tuple[str, int, int, int, int]]:
+    """A 32-bit ELF's symbol table: (name, value, size, type, bind) each."""
+    import struct
+
+    data = path.read_bytes()
+    shoff, = struct.unpack_from("<I", data, 32)
+    shentsize, shnum = struct.unpack_from("<HH", data, 46)
+    sections = [struct.unpack_from("<IIIIIIIIII", data, shoff + i * shentsize) for i in range(shnum)]
+    out = []
+    for _, typ, _, _, off, size, link, _, _, entsize in sections:
+        if typ != 2:  # (SHT_SYMTAB)
+            continue
+        strings = sections[link][4]
+        for at in range(off, off + size, entsize or 16):
+            name, value, sz, info, _, _ = struct.unpack_from("<IIIBBH", data, at)
+            text = data[strings + name:data.index(b"\0", strings + name)].decode("latin-1")
+            out.append((text, value, sz, info & 0xF, info >> 4))
+    return out
+
+
+_MAP_SECTION = re.compile(r"^\s*(\.data\S*|\.bss\S*|COMMON)\s*\n?\s*0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$", re.M)
+VAR_BYTES = 32768  # (the most of a file's variables compared after each call)
+
+
+def variables(exe: Path, link_map: str, old: Path, new: Path) -> list[tuple[int, int, int]]:
+    """The file's variables in the harness, (the game's copy's address, the plain build's, size): a static by its
+    name in each object (`count.12` and `count.0`: one), a global the two objects share once (the link keeps the
+    game's)."""
+    ranges: dict[str, list[tuple[int, int]]] = {"old": [], "new": []}
+    for m in _MAP_SECTION.finditer(link_map):
+        side = "old" if m.group(4).endswith(old.name) else "new" if m.group(4).endswith(new.name) else None
+        if side and int(m.group(3), 16):
+            ranges[side].append((int(m.group(2), 16), int(m.group(2), 16) + int(m.group(3), 16)))
+    found: dict[str, dict[str, tuple[int, int, int]]] = {"old": {}, "new": {}}
+    dropped: set[str] = set()
+    for name, value, size, typ, bind in _symbols(exe):
+        if typ != 1 or not size:  # (STT_OBJECT)
+            continue
+        side = next((s for s, spans in ranges.items() if any(lo <= value < hi for lo, hi in spans)), None)
+        base = re.sub(r"\.\d+$", "", name)
+        if side is None:
+            continue
+        if base in found[side]:
+            dropped.add(f"{side} {base}")  # (two of one name in an object: neither, unpaired)
+        found[side][base] = (value, size, bind)
+    out, total = [], 0
+    for base, (value, size, bind) in sorted(found["old"].items()):
+        if f"old {base}" in dropped or total + size > VAR_BYTES:
+            continue
+        mine = found["new"].get(base)
+        if mine is not None and f"new {base}" not in dropped and mine[1] == size:
+            out.append((value, mine[0], size))
+        elif mine is None and bind == 1:  # (a global: both builds' code reads and writes this one)
+            out.append((value, value, size))
+        else:
+            continue
+        total += size
+    return out
+
+
 class HarnessError(Exception):
     """The check's own program didn't run: not the plain build's fault, and no verdict on its floats."""
 
@@ -386,6 +486,7 @@ class Check:
             return f"the matching build doesn't compile it: {said.stderr[-500:]}"
         text = text if text is not None else (ROOT / self.rel).read_text(encoding="utf-8")
         x87 = x87_functions(old, self.tc) - {"main"}  # (the program itself: it starts the game)
+        self.rounds = rounding_returns(old, self.tc)
         self.defs = {n: d for n, d in definitions(text).items() if n in x87}
         self.untyped = sorted(x87 - set(self.defs))  # (a struct by value, `...`: the harness can't call them)
         source, self.order = harness(self.defs)
@@ -439,7 +540,8 @@ class Check:
             self._cc(str(w / "stubs.c"), w / "stubs.o", ["-O0", "-w", "-fno-builtin"])
             g = next((tc / "gcc").rglob("crtbegin.o"), None)
             crt = tc / "crt"
-            said = subprocess.run([tool("ld", tc), "-m", "elf_i386", "-static", "-o", str(w / name),
+            said = subprocess.run([tool("ld", tc), "-m", "elf_i386", "-static", "-Map", str(w / f"{name}.map"),
+                                   "-o", str(w / name),
                                    str(crt / "crt1.o"), str(crt / "crti.o"), *([str(g)] if g else []), str(w / "h.o"),
                                    str(w / "old.o"), str(w / "p.o"), *([str(rest)] if rest else []),
                                    str(w / "stubs.o"), "--allow-multiple-definition", "--no-warnings",
@@ -452,7 +554,10 @@ class Check:
                     continue
                 raise HarnessError(f"the check doesn't link: {said.stderr[-500:]}")
             argv = [str(w / name), str(inputs)] + ([str(self.order.index(only))] if only else [])
+            listed = variables(w / name, (w / f"{name}.map").read_text(errors="replace"), w / "old.o", w / "p.o")
+            (w / "vars.txt").write_text("".join(f"{o:x} {p:x} {n}\n" for o, p, n in listed), encoding="utf-8")
             said = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                                  env={**os.environ, "FC_VARS": str(w / "vars.txt")},
                                   timeout=SECONDS * 4 * (1 if only else max(1, len(self.order))) + 60)
             if said.returncode != 0:
                 if rest:

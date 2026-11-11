@@ -2022,6 +2022,71 @@ def test_the_export_makes_the_plain_builds_floats_the_games_where_the_c_can_say_
          "    return 2;\n}\n#else\nint f(void)\n{\n    return 1;\n}\n#endif\n")
 
 
+def test_x87_helpers_are_long_double_and_a_float_return_is_one_where_the_games_code_rounds(tmp_path):
+    """An arcade game's `fs_sqrt(double)` inline asm rounded its 80-bit operand to a double in the plain build, where
+    GCC 2.95 inlined it on the register (a quaternion normalised a hair off, frames some pixels off): such a helper
+    is long double in a plain build. And a float function whose code stores and loads its result before `ret`
+    (Vector3fMag) returns a float; the others leave all 80 bits in st(0)."""
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_clean, export_float, export_floatcheck
+
+    (tmp_path / "include").mkdir()
+    helper = ('static __inline__ double fs_sqrt(double __x)\n{\n    double __r;\n'
+              '    __asm__("fsqrt" : "=t" (__r) : "0" (__x));\n    return __r;\n}\n')
+    (tmp_path / "include" / "common.h").write_text(helper + "static __inline__ float half(float x)\n{\n"
+                                                    "    return x * 0.5f;\n}\n")
+    assert export_float.x87_helpers(tmp_path) == 1 and export_float.x87_helpers(tmp_path) == 0  # (once)
+    made = (tmp_path / "include" / "common.h").read_text()
+    assert "#ifdef NON_MATCHING" in made and "static __inline__ long double fs_sqrt(long double __x)" in made
+    assert "#else\n" + helper.rstrip("\n") + "\n#endif" in made and "float half(float x)" in made
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None:
+        pytest.skip(f"needs {gcc}")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    # (a double result a float: GCC 2.95 truncates it through memory before the ret)
+    code = ("float mag(float *v)\n{\n    return v[0] * v[0] * 0.5 + v[1] * v[1];\n}\n"
+            "float dot(float *a, float *b)\n{\n    return a[0] * b[0] + a[1] * b[1];\n}\n")
+    obj = export_clean._compile(tmp_path, tc, tmp_path / "src" / "v.c", ["-O2"], code)
+    (tmp_path / "v.o").write_bytes(obj)
+    assert export_floatcheck.rounding_returns(tmp_path / "v.o", tc) == {"mag"}
+
+
+def test_the_float_check_compares_what_a_function_writes_to_the_files_variables(tmp_path):
+    """An arcade game's renderer wrote its corners to globals and returned nothing: the check compared only what a
+    call returned and its pointer arguments' memory, so the plain C that put its pixels some off the game's counted
+    as the game's, and the search had nothing to judge its C by. The file's variables after each call compare too,
+    its globals (one copy, the two builds' code sharing it) and its statics (each build's own)."""
+    from decompnet import toolchains
+    from decompnet.consoles.linux import export_float
+
+    gcc = "gcc-2.95.3-linux"
+    if toolchains.installed(gcc) is None or not export_float.available():
+        pytest.skip(f"needs {gcc}, and the system's gcc (32-bit) and binutils")
+    tc = Path(toolchains.ensure(gcc, log=lambda *_: None))
+    out = tmp_path / "tree"
+    for folder in ("src", "include", "tools"):
+        (out / folder).mkdir(parents=True)
+    (out / "tools" / "cc.sh").write_text("#!/bin/sh\n" + toolchains.registry()[gcc].cmd[2] + "\n")
+    shutil.copyfile(Path(export_float.__file__).with_name("export_floatcheck.py"), out / "tools" / "floatcheck.py")
+    (out / "src" / "r.c").write_text(
+        "float g_corner;\nstatic float s_corner;\n"
+        "void put_global(float a, float b)\n{\n#ifdef NON_MATCHING\n    g_corner = a / b + 1.0f;\n#else\n"
+        "    g_corner = a / b;\n#endif\n}\n"
+        "void put_static(float a, float b)\n{\n#ifdef NON_MATCHING\n    s_corner = a * b + 2.0f;\n#else\n"
+        "    s_corner = a * b;\n#endif\n}\n"
+        "void put_same(float a, float b)\n{\n    g_corner = a - b;\n}\n"
+        "float *corner(void)\n{\n    return &s_corner;\n}\n")  # (read: a newer GCC drops a static nothing reads)
+    (out / "build.json").write_text(json.dumps({"toolchain": gcc, "program": "r", "functions": [],
+                                                "units": [{"name": "r", "c": "src/r.c", "flags": ["-O2"]}]}))
+    said = subprocess.run([sys.executable, "tools/floatcheck.py", "-n", "20", "src/r.c"], cwd=out,
+                          capture_output=True, text=True, env={**os.environ, "TC": str(tc)})
+    assert "put_global (20/20)" in said.stdout and "put_static (20/20)" in said.stdout, said.stdout + said.stderr
+    assert "put_same" not in said.stdout  # (the game's, bit for bit)
+
+
 def test_header_code_and_middleware_are_set_aside_and_the_games_own_code_stays(demo43, tmp_path):
     """A 2008 C++ program had 54,000 functions, half of them no one's to write: template code of the C++ library's and
     boost's the compiler wrote out in the game's own files (13,286 and 5,925), luabind's and Ogre's, and Scaleform
