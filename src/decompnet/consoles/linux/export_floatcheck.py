@@ -533,7 +533,12 @@ class Check:
             return {}
         w, tc = self.work, self.tc
         renames = [a for name in self.defs for a in ("--redefine-sym", f"{name}=P_{name}")]
-        subprocess.run([tool("objcopy", tc), "--weaken", *renames, str(w / "new.o"), str(w / "p.o")], check=True,
+        # (what it defines made weak, not what it calls: a weak undefined sincos took no member of the game's libm,
+        # and the call went to 0; an arcade game's QuatFromEuler* were "untestable")
+        own = subprocess.run([tool("nm", tc), "-g", "--defined-only", str(w / "new.o")], capture_output=True,
+                             text=True, env=_binutils_env(tc)).stdout
+        weak = [a for line in own.splitlines() if line.strip() for a in ("--weaken-symbol", line.split()[-1])]
+        subprocess.run([tool("objcopy", tc), *weak, *renames, str(w / "new.o"), str(w / "p.o")], check=True,
                        env=_binutils_env(tc))
         outs = []
         # the game's own functions where it has them (the archive), else stubs; a function that won't run with the

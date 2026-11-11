@@ -2107,11 +2107,16 @@ def test_the_float_check_compares_what_a_function_writes_to_the_files_variables(
         # (a static a global names too, as an arcade game's 3dmath.c has them: written by the global, one variable)
         "static float s_alias;\n__asm__(\".globl alias\\n\\t.set alias, s_alias\");\nextern float alias;\n"
         "void put_alias(float a, float b)\n{\n    alias = a * b;\n}\n"
-        "float *aliased(void)\n{\n    return &s_alias;\n}\n")
+        "float *aliased(void)\n{\n    return &s_alias;\n}\n"
+        # (a sin and a cos of one angle: gcc 13 calls the C library's sincos, which only the plain object calls; it
+        # was weak there, took nothing from the game's libm, and called 0: an arcade game's QuatFromEuler*)
+        "double sin(double);\ndouble cos(double);\n"
+        "void turn(float *q, float a)\n{\n    q[0] = sin(a * 0.5);\n    q[1] = cos(a * 0.5);\n}\n")
     (out / "build.json").write_text(json.dumps({"toolchain": gcc, "program": "r", "functions": [],
                                                 "units": [{"name": "r", "c": "src/r.c", "flags": ["-O2"]}]}))
-    said = subprocess.run([sys.executable, "tools/floatcheck.py", "-n", "20", "src/r.c"], cwd=out,
+    said = subprocess.run([sys.executable, "tools/floatcheck.py", "-n", "20", "--cflags=-O2", "src/r.c"], cwd=out,
                           capture_output=True, text=True, env={**os.environ, "TC": str(tc)})
+    assert "untestable" not in said.stdout, said.stdout + said.stderr
     assert "put_global (20/20)" in said.stdout and "put_static (20/20)" in said.stdout, said.stdout + said.stderr
     assert "put_same" not in said.stdout and "put_alias" not in said.stdout  # (the game's, bit for bit)
 
