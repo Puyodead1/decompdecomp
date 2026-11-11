@@ -231,6 +231,65 @@ def _without_copies(cs: list[Chunk], own: set[str]) -> list[Chunk]:
     return out
 
 
+_NOT_A_TYPE = {"return", "if", "else", "for", "while", "do", "switch", "case", "goto", "break", "continue", "default",
+               "sizeof", "typedef"}
+_DECLARATION = re.compile(r"(?:(?:register|static|const|volatile|unsigned|signed|struct|union|enum|extern)\s+)*"
+                          r"([A-Za-z_]\w*)(?:\s+|\s*\*[\s*]*)(\(\s*\*\s*[A-Za-z_]\w*\s*\)|[A-Za-z_]\w*)\s*(\[[^\]]*\]\s*)*")
+
+
+def declared_locals(source: str, name: str) -> set[str] | None:
+    """The variables `name`'s definition in `source` declares in its body (each block's too), or None where it
+    doesn't define it. `int i, *p = q;` declares i and p; `int (*read)();` read; a prototype nothing."""
+    func = next((c for c in chunks(source) if c.kind == "func" and c.names == (name,)), None)
+    if func is None or func.body < 0:
+        return None
+    body = _mask(func.text[func.body + 1:])
+    body = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', body)
+    out: set[str] = set()
+    for piece in body.split(";"):
+        statement = re.split(r"[{}:]", piece)[-1].strip()  # (after a block's brace, or a label's colon)
+        m = _DECLARATION.match(statement)
+        if not m or m.group(1) in _NOT_A_TYPE or m.group(2) in _NOT_A_TYPE:
+            continue
+        rest = statement[m.end():].lstrip()
+        if rest and rest[0] not in "=,":
+            continue  # (an expression, or a prototype: `int f(void)`)
+        first = re.search(r"\w+", m.group(2).replace("*", " ")).group(0)
+        names = [first]
+        # the other declarators, after each comma not inside an initializer's parentheses or braces
+        depth, part = 0, ""
+        for ch in rest + ",":
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                if (d := re.match(r"\s*\**\s*(?:\(\s*\*\s*(\w+)\s*\)|(\w+))", part)) and part.strip()[:1] != "=":
+                    names.append(d.group(1) or d.group(2))
+                part = ""
+            else:
+                part += ch
+        out.update(n for n in names if n and n not in _NOT_A_TYPE)
+    return out
+
+
+def debug_local_names(locals_: list[str]) -> set[str]:
+    """The names of a function's locals as its brief lists them from the debug information (`int width (the stack,
+    frame offset -0x44, declared on line 251)`, `int (*myfread)() (...)`), not an inlined system header's own
+    (`__result`)."""
+    out = set()
+    for entry in locals_:
+        if m := re.search(r"\(\*\s*(\w+)\)", entry.split(" (the ")[0].split(" (register")[0]):
+            name = m.group(1)
+        else:
+            decl = re.sub(r"\[.*?\]", "", re.split(r" \((?:the |register |st\(|e[a-ds][xip]|static|[a-z]+,)", entry)[0])
+            words = re.findall(r"[A-Za-z_]\w*", decl)
+            name = words[-1] if words else ""
+        if name and not name.startswith("__"):
+            out.add(name)
+    return out
+
+
 def only_own(source: str, name: str, others: set[str]) -> str:
     """A function's matched C as its own file: without the definitions it carried of `others` (the program's
     functions with files of their own), each its prototype instead (_without_copies). The judge compares only the
