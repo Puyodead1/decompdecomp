@@ -96,6 +96,22 @@ static void fill(int mode, int it) {
   }
   stub_fill(word);
 }
+/* mode 0: a pointer argument's memory as the struct it points to is laid out (one kind per word, repeated: an
+   array of them), its ints small, its pointers that memory's: a texture's width read as a float's bits was a
+   billion, and a renderer's float overflowed where the game's 80 bits didn't, all its differences that and none
+   of the ones its frames had. Its floats stay as fill made them */
+static void lay(char *at, const char *kinds, int mode) {
+  int w, n = 0;
+  if (mode) return;
+  while (kinds[n]) n++;
+  for (w = 0; w < (BUF - 64) / 4; w++) {
+    unsigned *p = (unsigned *)(at + 4 * w); char k = kinds[w %% n];
+    if (k == 'i') *p = 1 + rnd() %% 512;
+    else if (k == 'h') *p = (1 + rnd() %% 256) | (1 + rnd() %% 256) << 16;
+    else if (k == 'c') *p = rnd() & 0x3F3F3F3F;
+    else if (k == 'p') *p = word();
+  }
+}
 /* the file's variables after each call, the game's and the plain build's copy of each (FC_VARS: a list of
    "game-address plain-address size", what the link put where), compared as the pointer arguments' memory is: a
    function that writes only globals (a renderer's corner list) compares too */
@@ -120,6 +136,10 @@ static void sp_load(void) {
   fclose(f);
 }
 static void sp_restore(void) { int i; for (i = 0; i < sp_count; i++) memcpy((void *)sp_lo[i], sp_copy[i], sp_hi[i] - sp_lo[i]); }
+/* the stack below the call cleared before it: a local a stub never wrote (an out-argument of a function stubbed
+   alone, a renderer's projected vertex) reads 0 in both builds, not what each build's last call left there (a NaN in
+   one, a billion in the other: every difference a renderer showed was that) */
+static void scrub(void) { volatile char s[32768]; int i; for (i = 0; i < (int)sizeof s; i++) s[i] = 0; }
 static void put(int fd, const void *p, int n) { while (n > 0) { int w = write(fd, p, n); if (w <= 0) _exit(3); p = (const char *)p + w; n -= w; } }
 %(decls)s
 static void side(int fn, int alt, int n, int fd, int mode)
@@ -131,6 +151,7 @@ static void side(int fn, int alt, int n, int fd, int mode)
     long double r = 0; int ri = 0;
     sp_restore();
     fill(mode, it);
+    scrub();
     switch (fn * 2 + alt) {
 %(cases)s
     }
@@ -251,6 +272,185 @@ def definitions(text: str) -> dict[str, tuple[str, list[str]]]:
     return out
 
 
+# a scalar's bytes and alignment on i386 (a double, a long double: 4 in a struct, as GCC lays them out there)
+_SIZES = {"c": (1, 1), "h": (2, 2), "i": (4, 4), "f": (4, 4), "p": (4, 4), "d": (8, 4), "x": (12, 4)}
+_LAYOUTS: dict[str, str | None] | None = None
+
+
+def _bodies(text: str, what: str = "struct"):
+    """(name, body) of each struct (or union: `what`) a text defines: `typedef struct T { ... } Name;` under both
+    names, and `struct T { ... };`."""
+    for m in re.finditer(rf"\b(typedef\s+)?{what}\s+([A-Za-z_]\w*)?\s*\{{", text):
+        depth, at = 0, m.end() - 1
+        for i in range(at, len(text)):
+            depth += {"{": 1, "}": -1}.get(text[i], 0)
+            if depth == 0:
+                body, rest = text[at + 1:i], text[i + 1:]
+                break
+        else:
+            continue
+        names = [m.group(2)] if m.group(2) else []
+        if m.group(1) and (t := re.match(r"\s*([A-Za-z_]\w*)\s*;", rest)):
+            names.append(t.group(1))
+        for n in names:
+            yield n, body
+
+
+def layouts() -> dict[str, str | None]:
+    """The headers' structs as one kind per byte (C_TYPE kinds: "ffff" a float, "cccc" four chars, "pppp" a
+    pointer), by their names; None for one this can't lay out (a bit-field, a union, a type it doesn't know)."""
+    global _LAYOUTS
+    if _LAYOUTS is not None:
+        return _LAYOUTS
+    bodies: dict[str, str] = {}
+    unions: dict[str, str] = {}
+    aliases: dict[str, str] = {}  # (`typedef struct STexInfo TTexInfo;`: the name, the struct's)
+    arrays: dict[str, tuple[str, int]] = {}  # (`typedef float Mat33[9];`)
+    functions: set[str] = set()  # (`typedef void (*TPFNRender)();`: a pointer)
+    for header in sorted((ROOT / "include").glob("*.h")):
+        text = strip_comments(header.read_text(encoding="utf-8", errors="replace"))
+        for name, body in _bodies(text):
+            bodies.setdefault(name, body)
+        for name, body in _bodies(text, "union"):
+            unions.setdefault(name, body)
+        for m in re.finditer(r"\btypedef\s+(?:struct|union)\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*;", text):
+            aliases.setdefault(m.group(2), m.group(1))
+        for m in re.finditer(r"\btypedef\s+([A-Za-z_][\w ]*?)\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*;", text):
+            arrays.setdefault(m.group(2), (m.group(1).strip(), int(m.group(3))))
+        functions |= set(re.findall(r"\btypedef\s+[^;{}]*?\(\s*\*\s*([A-Za-z_]\w*)\s*\)\s*\(", text))
+    done: dict[str, tuple[str, int] | None] = {}
+
+    def lay(name: str, seen: frozenset = frozenset()) -> tuple[str, int] | None:
+        if name in done:
+            return done[name]
+        if name in functions:
+            return "pppp", 4
+        if name in arrays and name not in seen:
+            kind, count = arrays[name]
+            one = _SIZES.get(_kind(kind) or "") or None
+            got = (_kind(kind) * one[0], one[1]) if one else lay(kind, seen | {name})
+            done[name] = (got[0] * count, got[1]) if got else None
+            return done[name]
+        if name in unions and name not in bodies and name not in seen:  # (which member holds what, nothing
+            #                                                              says: chars, the largest member's size)
+            sizes = []
+            for decl in (d.strip() for d in unions[name].split(";") if d.strip()):
+                m = re.match(r"\s*(.*?[\w\s])\s*(\**)\s*([A-Za-z_]\w*)\s*((?:\[\s*\d+\s*\])*)\s*$", decl)
+                if not m:
+                    done[name] = None
+                    return None
+                k = "p" if m.group(2) else _kind(m.group(1).strip())
+                size = _SIZES[k][0] if k in _SIZES else (len(s[0]) if (s := lay(m.group(1).strip(), seen | {name}))
+                                                         else None)
+                if size is None:
+                    done[name] = None
+                    return None
+                for x in re.findall(r"\[\s*(\d+)\s*\]", m.group(4)):
+                    size *= int(x)
+                sizes.append(size)
+            done[name] = ("c" * max(sizes), 4 if max(sizes) >= 4 else max(sizes)) if sizes else None
+            return done[name]
+        if name not in bodies and name in aliases and aliases[name] != name:
+            done[name] = lay(aliases[name], seen | {name})
+            return done[name]
+        if name not in bodies or name in seen:
+            return None
+        out, align = "", 1
+        bits = None  # (bit-fields run on in a unit of their type: [kind, bits used])
+        for decl in (d.strip() for d in bodies[name].split(";")):
+            if not decl:
+                continue
+            if "{" in decl or re.match(r"(union)\b", decl):  # (a nested definition)
+                done[name] = None
+                return None
+            if (bf := re.match(r"\s*(.*?[\w\s])\s*[A-Za-z_]?\w*\s*:\s*(\d+)\s*$", decl)):
+                k = _kind(re.sub(r"\b(const|volatile)\b", "", bf.group(1)).strip())
+                if k not in ("i", "h", "c"):
+                    done[name] = None
+                    return None
+                size = _SIZES[k][0] * 8
+                if bits is None or bits[0] != k or bits[1] + int(bf.group(2)) > size:
+                    out += "c" * (-len(out) % _SIZES[k][1]) + k * _SIZES[k][0]
+                    align = max(align, _SIZES[k][1])
+                    bits = [k, 0]
+                bits[1] += int(bf.group(2))
+                continue
+            bits = None
+            decl = re.sub(r"\b(const|volatile|struct)\b", "", decl)
+            if re.search(r"\(\s*\*", decl):  # (a function pointer)
+                parts = [("p", decl, [])]
+            else:
+                # (the type, then each declarator: `float x, y;`, `char *name;`, `V2TMUVertex tmuvtx[2];`)
+                first, *more = decl.split(",")
+                m = re.match(r"\s*(.*?[\w\s])\s*(\**)\s*([A-Za-z_]\w*)\s*((?:\[[^\]]*\])*)\s*$", first)
+                if not m or not m.group(1).strip():
+                    done[name] = None
+                    return None
+                base = re.sub(r"\s+", " ", m.group(1)).strip()
+                parts = [("p" if m.group(2) else base, first, re.findall(r"\[([^\]]*)\]", m.group(4)))]
+                for d in more:
+                    dm = re.match(r"\s*(\**)\s*([A-Za-z_]\w*)\s*((?:\[[^\]]*\])*)\s*$", d)
+                    if not dm:
+                        done[name] = None
+                        return None
+                    parts.append(("p" if dm.group(1) else base, d, re.findall(r"\[([^\]]*)\]", dm.group(3))))
+            for kind, _, dims in parts:
+                count = 1
+                for x in dims:
+                    try:
+                        count *= int(x, 0)
+                    except ValueError:
+                        done[name] = None
+                        return None
+                if kind in _SIZES:
+                    one, a = kind * _SIZES[kind][0], _SIZES[kind][1]
+                elif (k := _kind(kind)) in _SIZES:
+                    one, a = k * _SIZES[k][0], _SIZES[k][1]
+                elif (sub_ := lay(kind, seen | {name})) is not None:
+                    one, a = sub_
+                else:
+                    done[name] = None
+                    return None
+                out += "c" * (-len(out) % a) + one * count  # (padding: chars, whatever's in it)
+                align = max(align, a)
+        out += "c" * (-len(out) % align)
+        done[name] = (out, align) if out else None
+        return done[name]
+    _LAYOUTS = {n: (v[0] if (v := lay(n)) else None) for n in [*bodies, *aliases, *arrays, *unions]}
+    return _LAYOUTS
+
+
+def words(layout: str) -> str:
+    """A byte layout as one kind per 4-byte word, as the harness fills memory: "f" a float or a double's half,
+    "p" a pointer, "i" an int, "h" shorts, "c" chars (or a word of mixed kinds)."""
+    out = ""
+    for at in range(0, len(layout) - len(layout) % 4, 4):
+        w = set(layout[at:at + 4])
+        out += "f" if w <= set("fdx") else "p" if w == {"p"} else "i" if w == {"i"} else "h" if w == {"h"} else "c"
+    return out
+
+
+def pointees(text: str) -> dict[str, list[str | None]]:
+    """name -> for each argument of each function `text` defines, the word kinds of the struct a pointer argument
+    points to (words), else None: the harness fills that memory as the struct is laid out."""
+    out = {}
+    plain = strip_comments(text)
+    known = layouts()
+    for m in DEFINITION.finditer(plain):
+        params = [p.strip() for p in m.group(3).split(",")] if m.group(3).strip() not in ("", "void") else []
+        kinds = []
+        for p in params:
+            t = re.match(r"\s*(?:const\s+)?(?:struct\s+)?([A-Za-z_]\w*)\s*\*\s*(?:const\s+)?[A-Za-z_]\w*$", p)
+            base = t.group(1) if t else None
+            lay = known.get(base) if base else None
+            if base and lay is None and base in SCALAR | (_TYPEDEFS or {}):  # (a pointer to ints: small ones)
+                k = _kind(base)
+                lay = k * _SIZES[k][0] if k in _SIZES else None
+            kinds.append(words(lay) if lay and set(words(lay)) - {"f"} else None)
+        out[m.group(2)] = kinds
+    return out
+
+
 def span(text: str, name: str) -> tuple[int, int] | None:
     """Where `name`'s definition is in `text`: from its line's start to after its closing brace."""
     plain = strip_comments(text)
@@ -265,16 +465,21 @@ def span(text: str, name: str) -> tuple[int, int] | None:
     return None
 
 
-def harness(defs: dict) -> tuple[str, list[str]]:
-    """The harness's C (for GCC 2.95), and the functions it calls in the order it numbers them."""
+def harness(defs: dict, shapes: dict[str, list[str | None]] | None = None) -> tuple[str, list[str]]:
+    """The harness's C (for GCC 2.95), and the functions it calls in the order it numbers them. `shapes`: each
+    function's pointer arguments' struct layouts (pointees), their memory filled so."""
     decls, cases, order = [], [], sorted(defs)
+    shapes = shapes or {}
     for k, name in enumerate(order):
         ret, params = defs[name]
         proto = ", ".join(C_TYPE[p] for p in params) or "void"
         decls.append(f"{RETURNED[ret]} {name}({proto}); {RETURNED[ret]} P_{name}({proto});")
         made, args, pointer = [], [], 0
+        mine = shapes.get(name) or []
         for j, p in enumerate(params):
             if p == "p":
+                if j < len(mine) and mine[j]:
+                    made.append(f'lay(bufs[{pointer % 6}] + 64, "{mine[j]}", mode);')
                 args.append(f"bufs[{pointer % 6}] + 64")
                 pointer += 1
             else:
@@ -387,13 +592,62 @@ def pointer_functions(texts: list[str]) -> set[str]:
     return out
 
 
-def stubs(names: dict[str, str], pointers: set[str] = frozenset()) -> str:
+def float_functions(texts: list[str]) -> set[str]:
+    """The functions `texts` declare to return a float, a double or a long double (or a typedef of one): a stub of
+    one returns 0 in st(0), as they do. An int stub left the x87 stack as it was, and the caller popped a value
+    never pushed: a NaN in one build, what the last call left in the other (a renderer's fmin2 and fmax2)."""
+    out = set()
+    for text in texts:
+        for m in re.finditer(r"(?:^|[;}\n])\s*(?:extern\s+|static\s+)?([A-Za-z_][\w ]*?)\s+([A-Za-z_]\w*)\s*\([^()]*\)\s*;",
+                             strip_comments(text)):
+            if _kind(m.group(1)) in ("f", "d", "x"):
+                out.add(m.group(2))
+    return out
+
+
+def global_layouts(texts: list[str]) -> dict[str, tuple[bool, str]]:
+    """The program's variables `texts` declare as a struct or a pointer to one (`extern TCamera g_Camera;`, `extern
+    TObject *pPlayer;`): name -> (whether it's a pointer, the struct's word kinds), where it has ints or pointers to
+    fill as such (words)."""
+    known, out = layouts(), {}
+    for text in texts:
+        for m in re.finditer(r"\bextern\s+(?:const\s+)?(?:struct\s+)?([A-Za-z_]\w*)\s*(\*?)\s*([A-Za-z_]\w*)\s*;",
+                             strip_comments(text)):
+            if (lay := known.get(m.group(1))) and set(w := words(lay)) - {"f"}:
+                out.setdefault(m.group(3), (bool(m.group(2)), w))
+    return out
+
+
+def _fill_words(var: str, kinds: str, count: int) -> str:
+    """C that fills `count` words of `var` as `kinds` repeat: a float the memory's own (1 to 1.25), an int small,
+    a pointer that memory's."""
+    return (f"  for (j = 0; j < {count}; j++) {{ static const char k[] = \"{kinds}\"; unsigned w = word(); char c = "
+            f"k[j % {len(kinds)}];\n    {var}[j] = c == 'i' ? 1 + w / 4 % 512 : c == 'h' ? (1 + w / 4 % 256) | "
+            f"(1 + w / 1024 % 256) << 16 : c == 'c' ? w & 0x3F3F3F3F : w; }}\n")
+
+
+def stubs(names: dict[str, str], pointers: set[str] = frozenset(), floats: set[str] = frozenset(),
+          shapes: dict[str, tuple[bool, str]] | None = None) -> str:
     """The rest of the program, for the harness: functions that return 0, or a pointer to that memory where the
     program's C says they return one (a renderer read the texture a stub get_tex gave it: 0, and the check fell
     back to memory of addresses alone, where its branch never ran); variables of that memory's words."""
-    lines = [(f"void *{n}() {{ return (void *){POOL_STUB:#x}; }}" if n in pointers else f"int {n}() {{ return 0; }}")
-             if k == "f" else f"unsigned {n}[1024];" for n, k in sorted(names.items())]
-    fill = "".join(f"  for (j = 0; j < 1024; j++) {n}[j] = word();\n" for n, k in sorted(names.items()) if k == "d")
+    shapes = shapes or {}
+    lines = [(f"void *{n}() {{ return (void *){POOL_STUB:#x}; }}" if n in pointers else
+              f"long double {n}() {{ return 0; }}" if n in floats else f"int {n}() {{ return 0; }}")
+             if k == "f" else f"unsigned {n}[1024];" + (f" unsigned {n}_mem[1024];" if shapes.get(n, (0,))[0] else "")
+             for n, k in sorted(names.items())]
+    fill = ""
+    for n, k in sorted(names.items()):
+        if k != "d":
+            continue
+        pointer, kinds = shapes.get(n, (False, ""))
+        if not kinds:
+            fill += f"  for (j = 0; j < 1024; j++) {n}[j] = word();\n"
+        elif pointer:  # (its own memory, laid out as what it points to: a camera's ints small)
+            fill += f"  for (j = 0; j < 1024; j++) {n}[j] = word();\n" + _fill_words(f"{n}_mem", kinds, 1024) + \
+                f"  {n}[0] = (unsigned){n}_mem;\n"
+        else:
+            fill += _fill_words(n, kinds, 1024)
     return "\n".join(lines) + f"\nvoid stub_fill(unsigned (*word)(void))\n{{\n  int j;\n{fill}}}\n"
 
 
@@ -523,6 +777,8 @@ class Check:
         build = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
         self.rel, self.work, self.cc, self.cflags = rel, work, cc, cflags
         self.pointers: set[str] = set()  # (prepare reads them: what the program's C says returns a pointer)
+        self.floats: set[str] = set()  # (and a float)
+        self.globals: dict[str, tuple[bool, str]] = {}  # (and its variables' structs)
         self.tc = tc or Path(os.environ.get("TC") or ROOT / "tools" / (build.get("toolchain") or "gcc-2.95.3-linux"))
         unit = next((u for u in build.get("units") or [] if u.get("c") == rel), None) or \
             next((f for f in build["functions"] if f.get("c") == rel), None) or {}
@@ -543,13 +799,14 @@ class Check:
         if said.returncode or not old.exists():
             return f"the matching build doesn't compile it: {said.stderr[-500:]}"
         text = text if text is not None else (ROOT / self.rel).read_text(encoding="utf-8")
-        self.pointers = pointer_functions([text, *(h.read_text(encoding="utf-8", errors="replace")
-                                                   for h in sorted((ROOT / "include").glob("*.h")))])
+        texts = [text, *(h.read_text(encoding="utf-8", errors="replace") for h in sorted((ROOT / "include").glob("*.h")))]
+        self.pointers, self.floats = pointer_functions(texts), float_functions(texts)
+        self.globals = global_layouts(texts)
         x87 = x87_functions(old, self.tc) - {"main"}  # (the program itself: it starts the game)
         self.rounds = rounding_returns(old, self.tc)
         self.defs = {n: d for n, d in definitions(text).items() if n in x87}
         self.untyped = sorted(x87 - set(self.defs))  # (a struct by value, `...`: the harness can't call them)
-        source, self.order = harness(self.defs)
+        source, self.order = harness(self.defs, pointees(text))
         (self.work / "h.c").write_text(source, encoding="utf-8")
         said = self._cc(str(self.work / "h.c"), self.work / "h.o", ["-O0", "-w"])
         if said.returncode:
@@ -601,7 +858,7 @@ class Check:
         for rest in ([self.archive] if self.archive else []) + [None]:
             name = "h-game" if rest else "h"
             (w / "stubs.c").write_text(stubs(undefined([w / "old.o", w / "p.o", *([rest] if rest else [])], tc),
-                                             self.pointers), encoding="utf-8")
+                                             self.pointers, self.floats, self.globals), encoding="utf-8")
             self._cc(str(w / "stubs.c"), w / "stubs.o", ["-O0", "-w", "-fno-builtin"])
             g = next((tc / "gcc").rglob("crtbegin.o"), None)
             crt = tc / "crt"
