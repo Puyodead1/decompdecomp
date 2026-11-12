@@ -33,6 +33,7 @@ from .rangecheck import MAX_TASKS, REACH, Step, evaluate
 
 log = logging.getLogger("decompdecomp")
 SURVEY_FILES = 60  # files a survey run builds (each once per compiler it tries)
+PROBE_FILES = 8  # files a survey trying every compiler builds (the ones whose C comes closest)
 ADOPT_FILES = 3  # files a function's match moved to one other compiler before the project takes it as its own
 STRETCHES_SHOWN = 30
 OPEN = ("checking", "waiting")
@@ -69,16 +70,29 @@ class FileCompilers:
     def _rows_by_file(self, proj) -> dict[str, list]:
         """The project's functions by their source file."""
         out: dict[str, list] = {}
-        for r in self.net.store.all("SELECT id, name, status, meta, best_source FROM functions WHERE project_id=?",
+        for r in self.net.store.all("SELECT id, name, status, meta, best_source, best_score, n_insns FROM functions WHERE "
+                                    "project_id=?",
                                     proj["id"]):
             if (source := self.net.forks._meta(r).get("source")):
                 out.setdefault(source, []).append(r)
         return out
 
+    def probing(self, slug: str) -> bool:
+        """Whether the survey tries every compiler of the project (on PROBE_FILES files): its program says nothing
+        of what built it (a DS ROM, unlike a PC program's Rich header), so the files' own compilers are all it would
+        try, on a project just made one: the import's default, and nothing to find (a DS prototype whose agents
+        matched file after file with dsi/1.1 while every file started from 2.0sp1p5)."""
+        _, fp, cfg = self.net.forks.get(slug)
+        return not consoles.get(cfg.get("platform")).program_compilers(fp)
+
     def candidates(self, slug: str) -> list[str]:
-        """The compilers the survey tries: what the program says built it (installed), and the files' own."""
+        """The compilers the survey tries: what the program says built it (installed), and the files' own; every one
+        of the project's where the program says nothing (probing)."""
         _, fp, cfg = self.net.forks.get(slug)
         console = consoles.get(cfg.get("platform"))
+        if self.probing(slug):
+            own = [own for *_, own in self._files(slug)]
+            return list(dict.fromkeys([*own, *(c.id for c in console.project_compilers(fp))]))
         said = [c for c, _, _, installed in console.program_compilers(fp) if installed]
         # (a file an agent once moved to a compiler the program rules out isn't evidence for trying it on the rest:
         # on a 7.0 game, one such file had the survey try 7.1 everywhere, and its one "match" became a suggestion)
@@ -210,7 +224,15 @@ class FileCompilers:
         rows = self._rows_by_file(proj)
         state = state if state is not None else {}
         n = found = 0
-        for _, _, source, own in self._files(slug):
+        files = self._files(slug)
+        if self.probing(slug):  # (every compiler: on the files whose open functions' C comes closest)
+            def closest(f):  # (best_score: the difference left, for its size: smaller is closer)
+                return min(((r["best_score"] or 0) / max(r["n_insns"] or 1, 1) for r in rows.get(f[2], ())
+                            if r["status"] == "open" and r["best_source"] and r["best_score"] is not None),
+                           default=float("inf"))
+            limit = min(limit, PROBE_FILES)
+            files = sorted(files, key=closest)
+        for _, _, source, own in files:
             if n >= limit:
                 break
             if not any(f["status"] == "open" and f["best_source"] for f in rows.get(source, ())):

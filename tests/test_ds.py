@@ -1172,3 +1172,24 @@ def test_the_project_takes_the_compiler_its_files_matches_moved_them_to(per_file
     assert filecompilers.ADOPT_FILES == 3 and fc.adopt(slug, BAD) and switched == [BAD]
     assert not fc.adopt(slug, BAD) and switched == [BAD]  # (once)
     assert any("the project's compiler is" in e["detail"] for e in net.store.all("SELECT detail FROM events"))
+
+
+def test_a_survey_where_the_program_says_nothing_tries_every_compiler_on_the_closest_files(per_file, monkeypatch):
+    """A DS ROM doesn't say what built it, so a project just made had one compiler for its survey to try, the
+    import's default, and nothing to find: it tries every compiler of the project, on the PROBE_FILES files whose
+    open functions' C comes closest."""
+    from decompnet.app import filecompilers
+
+    net, slug, agent, root, state, lerp = per_file
+    fc = net.filecompilers
+    assert fc.probing(slug) and set(fc.candidates(slug)) == {GOOD, BAD}
+    files = {f"f{i}.c": GOOD for i in range(12)}
+    monkeypatch.setattr(fc, "_files", lambda s: [(i, i + 1, f, c) for i, (f, c) in enumerate(files.items())])
+    monkeypatch.setattr(fc, "_rows_by_file", lambda proj: {f: [{"name": f"fn{i}", "status": "open", "best_source": "x",
+                                                               "best_score": 100 - i, "n_insns": 10}]
+                                                           for i, f in enumerate(files)})
+    built = []
+    monkeypatch.setattr(net.forks, "file_scores", lambda s, source, c: built.append(source) or ({}, {}))
+    monkeypatch.setattr("pathlib.Path.read_text", lambda self, *a, **k: "int x;")
+    fc.survey(slug)
+    assert len(built) == filecompilers.PROBE_FILES and built[0] == "f11.c"  # (the closest first)
