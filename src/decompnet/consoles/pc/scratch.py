@@ -546,6 +546,15 @@ def program_versions(data: bytes) -> dict[str, int]:
     return out
 
 
+def before_rich(version: str) -> bool:
+    """Whether a Visual C++ version ("5.0") predates the Rich header's stamps (6.0's toolset first wrote them): what
+    it compiled is among the header's "unmarked objects"."""
+    try:
+        return float(version) < 6.0
+    except ValueError:
+        return False
+
+
 def compiler_version(compiler: str) -> str | None:
     """The Visual C++ version (the Rich header's) a compiler id builds as: "MSVC/8.0SP1" is 8.0, "MSVC/14.16" 14.1, a
     copy of the user's its build's; None when that isn't known (a copy whose build couldn't be read)."""
@@ -1748,8 +1757,11 @@ def cut_function(root: Path, version: str, name: str, at: int, keep: set[str] = 
         raise ForkError(f"0x{at:08X} isn't inside {name} (0x{f.addr:08X}, {f.size} bytes)")
     if name in keep:
         raise ForkError(f"{name} is matched: its end is proven")
-    if any(r[2] == name for g in functions if g.name in keep for r in g.relocs):
-        raise ForkError(f"a matched function refers to {name} as it is, so it can't be cut")
+    # (a call to its start stays one after the cut, its start keeping the name: only a reference into what's cut
+    # off would move. A 6.0 game's 5-byte jmp thunk, matched byte for byte, kept 11 nops and an empty function's ret
+    # its file's C can't make, because a matched function called it)
+    if any(r[2] == name and r[3] >= at - f.addr for g in functions if g.name in keep for r in g.relocs):
+        raise ForkError(f"a matched function refers to {name} past 0x{at:08X}, so it can't be cut there")
     # (where a matched function refers to as data, the new function takes the name its relocation has: it holds)
     held = f"_D_{at:08X}" if any(r[2] == f"_D_{at:08X}" for g in functions if g.name in keep for r in g.relocs) else None
     rest = pe.read(at, f.addr + f.size - at)

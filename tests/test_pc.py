@@ -3143,6 +3143,14 @@ def test_agents_keep_to_the_visual_cpp_the_rich_header_names(tmp_path, monkeypat
     assert consoles.get("pc").program_rules_out(fp, "MSVC/8.0") is None
     assert consoles.get("pc").program_rules_out(fp, "MSVC/8.0SP1") is None
     assert "none by 9.0" in consoles.get("pc").program_rules_out(fp, "MSVC/9.0")
+    # a Visual C++ before 6.0 stamped nothing: its objects are the header's "unmarked" ones, and a 6.0 game with 2
+    # of them (RSA's MD5, built /Od by an older one) may have files of it; one with none may not
+    monkeypatch.setattr(scratch_pe, "program_versions", lambda data: {"6.0": 212})
+    monkeypatch.setattr(scratch_pe, "rich_builds", lambda data: [(0x0A, 9782, 208), (0x00, 0, 2), (0x01, 0, 222)])
+    assert consoles.get("pc").program_rules_out(fp, "MSVC/5.0") is None
+    assert "none by 7.1" in consoles.get("pc").program_rules_out(fp, "MSVC/7.1")
+    monkeypatch.setattr(scratch_pe, "rich_builds", lambda data: [(0x0A, 9782, 208), (0x01, 0, 222)])
+    assert "none by 5.0" in consoles.get("pc").program_rules_out(fp, "MSVC/5.0")
 
 
 def test_a_suggested_file_compiler_both_neighbours_refute_is_a_quirk(tmp_path, monkeypatch):
@@ -4251,3 +4259,27 @@ def test_the_export_annotates_the_c_for_reccmp(tmp_path):
     reccmp.project_files(tmp_path, info, "game")
     assert "  HW:\n    filename: hw.dll\n    source-root: .\n" in (tmp_path / "reccmp-project.yml").read_text()
 
+
+
+def test_a_function_a_matched_one_calls_can_still_lose_what_follows_its_end(monkeypatch):
+    """A 6.0 game's 5-byte jmp thunk matched byte for byte but its extent held 11 nops and an empty function's ret
+    no C of its file makes; report_boundary was refused because a matched function called it. A call to its start
+    holds after the cut (its start keeps the name): only a reference past the cut refuses it."""
+    thunk = b"\xe9" + struct.pack("<i", 0x100) + b"\x90" * 11 + b"\xc3"
+    caller = scratch_pe.Function(0x401000, 5, "_caller", relocs=[(1, 20, "_thunk", 0)])
+    target = scratch_pe.Function(0x401010, len(thunk), "_thunk", unit="text_00401010")
+
+    class PE:
+        def read(self, at, n):
+            return thunk[at - 0x401010:at - 0x401010 + n]
+    cut = []
+    monkeypatch.setattr(scratch_pe, "_project_functions", lambda root, version: (None, {}, {"": PE()}, [caller, target]))
+    monkeypatch.setattr(scratch_pe, "unit_module", lambda unit: "")
+    monkeypatch.setattr(scratch_pe, "_cut_functions", lambda path, info, pes, functions, plan, symbols: cut.append(plan)
+                        or [caller, scratch_pe.Function(0x401010, 16, "_thunk"), scratch_pe.Function(0x401020, 1,
+                                                                                                      "_func_00401020")])
+    said = scratch_pe.cut_function(Path("."), "game", "_thunk", 0x401020, keep={"_caller"})
+    assert cut == [{1: [0x401010, 0x401020]}] and "_func_00401020, a function of its own" in said
+    caller.relocs[0] = (1, 20, "_thunk", 0x11)  # (a reference past the cut: refused)
+    with pytest.raises(ForkError, match="refers to _thunk past 0x00401020"):
+        scratch_pe.cut_function(Path("."), "game", "_thunk", 0x401020, keep={"_caller"})

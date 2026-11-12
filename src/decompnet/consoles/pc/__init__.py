@@ -555,12 +555,19 @@ class WindowsPC(Console):
         path = fp.root / manifest.get("game", {}).get("path", f"orig/{manifest.get('version')}.exe")
         paths = [path, *(fp.root / m["exe"] for m in _functions_json(fp, manifest.get("version", "")).get("modules", []))]
         named: dict[str, int] = {}
+        unmarked = 0
         for p in paths:
             if p.is_file():
-                for version, n in scratch.program_versions(p.read_bytes()).items():
+                data = p.read_bytes()
+                for version, n in scratch.program_versions(data).items():
                     named[version] = named.get(version, 0) + n
+                unmarked += sum(n for product, _, n in scratch.rich_builds(data) if product == 0)
         version = scratch.compiler_version(compiler)
         if not named or version is None or version in named:
+            return None
+        # (a Visual C++ before 6.0 stamped no object: the header counts what it compiled as "unmarked objects", and
+        # names none of it. A 6.0 game had 2, RSA's MD5 built /Od by an older one, and its agents were refused 5.0)
+        if unmarked and scratch.before_rich(version):
             return None
         said = ", ".join(f"{n} by Visual C++ {v}" for v, n in sorted(named.items(), key=lambda vn: -vn[1]))
         return (f"the program's Rich header counts the files each Visual C++ compiled ({said}): none by {version}, so "
