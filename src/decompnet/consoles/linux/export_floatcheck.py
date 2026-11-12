@@ -51,6 +51,9 @@ LIBRARY = re.compile(r"^(sin|cos|tan|atan2?|acos|asin|sqrt|sqrtl|pow|exp|log|log
                      r"strncpy|strncmp|strcat|rand|srand|abs|labs|__divdi3|__udivdi3|__moddi3|__umoddi3|stderr|"
                      r"stdout|_IO_\w+)$")
 
+# what a stub that returns a pointer returns: memory the harness fills each call (its POOL, a quarter in)
+POOL_STUB = 0x3F800000 + 0x40000
+
 HARNESS = r"""
 int printf(const char *, ...); void *malloc(unsigned); int atoi(const char *); void *memcpy(void *, const void *, unsigned);
 int memcmp(const void *, const void *, unsigned); int fork(void); int pipe(int *); int read(int, void *, unsigned);
@@ -103,6 +106,20 @@ static void fc_load(void) {
   while (fc_count < 512 && fscanf(f, "%%x %%x %%u", &o, &p, &n) == 3) { fc_o[fc_count] = o; fc_p[fc_count] = p; fc_n[fc_count++] = n; fc_bytes += n; }
   fclose(f);
 }
+/* the file's data and bss, both builds' (FC_SPANS: "start end" lines), as the program starts: put back before each
+   call, so each starts where the first did (a renderer that stored a float where its file kept a pointer crashed
+   on the next call, and the check fell back to memory of addresses, where its branch never ran) */
+static unsigned sp_lo[64], sp_hi[64]; static char *sp_copy[64]; static int sp_count;
+static void sp_load(void) {
+  char *path = getenv("FC_SPANS"); FILE *f; unsigned lo, hi;
+  if (!path || !(f = fopen(path, "r"))) return;
+  while (sp_count < 64 && fscanf(f, "%%x %%x", &lo, &hi) == 2) {
+    sp_lo[sp_count] = lo; sp_hi[sp_count] = hi; sp_copy[sp_count] = malloc(hi - lo);
+    memcpy(sp_copy[sp_count], (void *)lo, hi - lo); sp_count++;
+  }
+  fclose(f);
+}
+static void sp_restore(void) { int i; for (i = 0; i < sp_count; i++) memcpy((void *)sp_lo[i], sp_copy[i], sp_hi[i] - sp_lo[i]); }
 static void put(int fd, const void *p, int n) { while (n > 0) { int w = write(fd, p, n); if (w <= 0) _exit(3); p = (const char *)p + w; n -= w; } }
 %(decls)s
 static void side(int fn, int alt, int n, int fd, int mode)
@@ -112,6 +129,7 @@ static void side(int fn, int alt, int n, int fd, int mode)
   close(1); close(2);  /* (what the function prints: not the report) */
   for (it = 0; it < n; it++) {
     long double r = 0; int ri = 0;
+    sp_restore();
     fill(mode, it);
     switch (fn * 2 + alt) {
 %(cases)s
@@ -150,18 +168,21 @@ int main(int argc, char **argv)
   int n = argc > 1 ? atoi(argv[1]) : 200, fn, rec;
   char *a, *b;
   fc_load();
+  sp_load();
   rec = 14 + NP * BUF + fc_bytes;
   a = malloc(n * rec); b = malloc(n * rec);
   if (mmap((void *)POOL, POOL_SIZE, 3, 0x32, -1, 0) != (void *)POOL) { printf("no memory at 0x3F800000\n"); return 2; }
   bufs = (char (*)[BUF])(POOL + POOL_SIZE / 2);
   for (fn = 0; fn < %(count)d; fn++) {
-    int ok, it, bad = 0;
+    int ok, it, bad = 0, pointers = 0;
     if (argc > 2 && atoi(argv[2]) != fn) continue;
     ok = run(fn, 0, n, a, n * rec, 0) && run(fn, 1, n, b, n * rec, 0);
-    if (!ok) ok = run(fn, 0, n, a, n * rec, 1) && run(fn, 1, n, b, n * rec, 1);
+    if (!ok) ok = pointers = run(fn, 0, n, a, n * rec, 1) && run(fn, 1, n, b, n * rec, 1);
     if (!ok) { printf("%%s untestable\n", names[fn]); continue; }
     for (it = 0; it < n; it++) if (memcmp(a + it * rec, b + it * rec, rec)) bad++;
-    printf("%%s %%d/%%d\n", names[fn], bad, n);
+    /* (" pointers": it ran only on memory of addresses, whose floats are all 1 to 1.25: a renderer's branch on a
+       negative depth never ran, and it "matched") */
+    printf("%%s %%d/%%d%%s\n", names[fn], bad, n, pointers ? " pointers" : "");
   }
   return 0;
 }
@@ -357,9 +378,21 @@ def library(tc: Path) -> set[str]:
     return _LIBRARY
 
 
-def stubs(names: dict[str, str]) -> str:
-    """The rest of the program, for the harness: functions that return 0, variables of that memory's words."""
-    lines = [f"int {n}() {{ return 0; }}" if k == "f" else f"unsigned {n}[1024];" for n, k in sorted(names.items())]
+def pointer_functions(texts: list[str]) -> set[str]:
+    """The functions `texts` (a source file and the headers) declare to return a pointer: `void *get_tex(int);`."""
+    out = set()
+    for text in texts:
+        for m in re.finditer(r"\*\s*([A-Za-z_]\w*)\s*\([^()]*\)\s*;", strip_comments(text)):
+            out.add(m.group(1))
+    return out
+
+
+def stubs(names: dict[str, str], pointers: set[str] = frozenset()) -> str:
+    """The rest of the program, for the harness: functions that return 0, or a pointer to that memory where the
+    program's C says they return one (a renderer read the texture a stub get_tex gave it: 0, and the check fell
+    back to memory of addresses alone, where its branch never ran); variables of that memory's words."""
+    lines = [(f"void *{n}() {{ return (void *){POOL_STUB:#x}; }}" if n in pointers else f"int {n}() {{ return 0; }}")
+             if k == "f" else f"unsigned {n}[1024];" for n, k in sorted(names.items())]
     fill = "".join(f"  for (j = 0; j < 1024; j++) {n}[j] = word();\n" for n, k in sorted(names.items()) if k == "d")
     return "\n".join(lines) + f"\nvoid stub_fill(unsigned (*word)(void))\n{{\n  int j;\n{fill}}}\n"
 
@@ -417,6 +450,15 @@ _MAP_SECTION = re.compile(r"^\s*(\.data\S*|\.bss\S*|COMMON)\s*\n?\s*0x([0-9a-f]+
 VAR_BYTES = 32768  # (the most of a file's variables compared after each call)
 
 
+def spans(link_map: str, old: Path, new: Path) -> list[tuple[int, int]]:
+    """Where the two builds' data and bss are in the harness (the link map's sections of each object)."""
+    out = []
+    for m in _MAP_SECTION.finditer(link_map):
+        if (m.group(4).endswith(old.name) or m.group(4).endswith(new.name)) and int(m.group(3), 16):
+            out.append((int(m.group(2), 16), int(m.group(2), 16) + int(m.group(3), 16)))
+    return sorted(out)
+
+
 def variables(exe: Path, link_map: str, old: Path, new: Path) -> list[tuple[int, int, int]]:
     """The file's variables in the harness, (the game's copy's address, the plain build's, size): a static by its
     name in each object (`count.12` and `count.0`: one), a global the two objects share once (the link keeps the
@@ -428,6 +470,7 @@ def variables(exe: Path, link_map: str, old: Path, new: Path) -> list[tuple[int,
             ranges[side].append((int(m.group(2), 16), int(m.group(2), 16) + int(m.group(3), 16)))
     found: dict[str, dict[str, tuple[int, int, int]]] = {"old": {}, "new": {}}
     dropped: set[str] = set()
+    statics: dict[str, dict[str, list[tuple[int, int, int, int]]]] = {"old": {}, "new": {}}
     for name, value, size, typ, bind in _symbols(exe):
         if typ != 1 or not size:  # (STT_OBJECT)
             continue
@@ -435,9 +478,18 @@ def variables(exe: Path, link_map: str, old: Path, new: Path) -> list[tuple[int,
         base = re.sub(r"\.\d+$", "", name)
         if side is None:
             continue
+        if (n := re.search(r"\.(\d+)$", name)) and bind != 1:
+            statics[side].setdefault(base, []).append((int(n.group(1)), value, size, bind))
         if base in found[side]:
             dropped.add(f"{side} {base}")  # (two of one name in an object: neither, unpaired)
         found[side][base] = (value, size, bind)
+    # functions' statics of one name (a file's renderers each with its `static V2Vertex grvtx[4]`): the compilers
+    # number them in the order the file declares them, so the nth of the game's is the nth of the plain build's
+    for base in sorted({b for b in statics["old"] if f"old {b}" in dropped} & set(statics["new"])):
+        olds, news = sorted(statics["old"][base]), sorted(statics["new"][base])
+        if len(olds) == len(news) and all(o[2] == n[2] for o, n in zip(olds, news)):
+            for k, (o, n) in enumerate(zip(olds, news)):
+                found["old"][f"{base}#{k}"], found["new"][f"{base}#{k}"] = o[1:], n[1:]
     out, total = [], 0
     # (a static a global names too, `.set yz, yz_080F25F8`: one variable, which both builds' code writes by the global)
     shared = {value for value, _, bind in found["old"].values() if bind == 1}
@@ -470,6 +522,7 @@ class Check:
                  archive: Path | None = None):
         build = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
         self.rel, self.work, self.cc, self.cflags = rel, work, cc, cflags
+        self.pointers: set[str] = set()  # (prepare reads them: what the program's C says returns a pointer)
         self.tc = tc or Path(os.environ.get("TC") or ROOT / "tools" / (build.get("toolchain") or "gcc-2.95.3-linux"))
         unit = next((u for u in build.get("units") or [] if u.get("c") == rel), None) or \
             next((f for f in build["functions"] if f.get("c") == rel), None) or {}
@@ -490,6 +543,8 @@ class Check:
         if said.returncode or not old.exists():
             return f"the matching build doesn't compile it: {said.stderr[-500:]}"
         text = text if text is not None else (ROOT / self.rel).read_text(encoding="utf-8")
+        self.pointers = pointer_functions([text, *(h.read_text(encoding="utf-8", errors="replace")
+                                                   for h in sorted((ROOT / "include").glob("*.h")))])
         x87 = x87_functions(old, self.tc) - {"main"}  # (the program itself: it starts the game)
         self.rounds = rounding_returns(old, self.tc)
         self.defs = {n: d for n, d in definitions(text).items() if n in x87}
@@ -545,8 +600,8 @@ class Check:
         # game's (a null the game's state would have filled) is checked with stubs alone
         for rest in ([self.archive] if self.archive else []) + [None]:
             name = "h-game" if rest else "h"
-            (w / "stubs.c").write_text(stubs(undefined([w / "old.o", w / "p.o", *([rest] if rest else [])], tc)),
-                                       encoding="utf-8")
+            (w / "stubs.c").write_text(stubs(undefined([w / "old.o", w / "p.o", *([rest] if rest else [])], tc),
+                                             self.pointers), encoding="utf-8")
             self._cc(str(w / "stubs.c"), w / "stubs.o", ["-O0", "-w", "-fno-builtin"])
             g = next((tc / "gcc").rglob("crtbegin.o"), None)
             crt = tc / "crt"
@@ -564,10 +619,13 @@ class Check:
                     continue
                 raise HarnessError(f"the check doesn't link: {said.stderr[-500:]}")
             argv = [str(w / name), str(inputs)] + ([str(self.order.index(only))] if only else [])
-            listed = variables(w / name, (w / f"{name}.map").read_text(errors="replace"), w / "old.o", w / "p.o")
+            link_map = (w / f"{name}.map").read_text(errors="replace")
+            listed = variables(w / name, link_map, w / "old.o", w / "p.o")
             (w / "vars.txt").write_text("".join(f"{o:x} {p:x} {n}\n" for o, p, n in listed), encoding="utf-8")
+            (w / "spans.txt").write_text("".join(f"{lo:x} {hi:x}\n" for lo, hi in spans(link_map, w / "old.o",
+                                                                                         w / "p.o")), encoding="utf-8")
             said = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                                  env={**os.environ, "FC_VARS": str(w / "vars.txt")},
+                                  env={**os.environ, "FC_VARS": str(w / "vars.txt"), "FC_SPANS": str(w / "spans.txt")},
                                   timeout=SECONDS * 4 * (1 if only else max(1, len(self.order))) + 60)
             if said.returncode != 0:
                 if rest:
@@ -576,11 +634,15 @@ class Check:
                                    f"{(said.stdout + said.stderr)[-300:]}")
             outs.append(said.stdout)
         merged: dict[str, int | None] = {}
-        for text in outs:  # (the first that ran a function says how it went)
+        floats: set[str] = set()
+        for text in outs:  # (the first that ran a function on floats says how it went: the game's functions, else
+            #                stubs; else the first that ran it on addresses alone)
             for line in text.splitlines():
-                if m := re.match(r"(\S+) (\d+)/\d+$", line):
-                    if merged.get(m.group(1)) is None:
+                if m := re.match(r"(\S+) (\d+)/\d+( pointers)?$", line):
+                    if m.group(1) not in floats and (merged.get(m.group(1)) is None or not m.group(3)):
                         merged[m.group(1)] = int(m.group(2))
+                        if not m.group(3):
+                            floats.add(m.group(1))
                 elif m := re.match(r"(\S+) untestable$", line):
                     merged.setdefault(m.group(1), None)
         return merged
