@@ -2232,3 +2232,46 @@ def test_a_stub_for_a_function_returning_a_pointer_returns_memory_and_statics_of
     text = fc.stubs({"get_tex": "f", "count": "f", "table": "d"}, {"get_tex"})
     assert f"void *get_tex() {{ return (void *){fc.POOL_STUB:#x}; }}" in text and "int count() { return 0; }" in text
     assert "if (!ok) ok = pointers = run(" in fc.HARNESS and "sp_restore();" in fc.HARNESS
+
+
+def test_floatcheck_lays_out_the_headers_structs_and_fills_memory_by_them(tmp_path, monkeypatch):
+    """A renderer's arguments and globals filled with random floats' bits had ints of a billion (a camera's half
+    width) and floats overflowed where the game's 80 bits didn't: every difference it showed was that. The headers'
+    structs are laid out (bit-fields, unions, array and function-pointer typedefs too), and a pointer argument's or
+    a global's memory filled by its fields: ints small, pointers the harness's, floats as before."""
+    from decompnet.consoles.linux import export_floatcheck as fc
+
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "common.h").write_text("""
+typedef unsigned int TTexID;
+typedef float Mat33[9];
+typedef void (*TPFNRender)();
+typedef union UColor { unsigned int argb; unsigned char c[4]; } TColor;
+struct SFlags { unsigned int eq : 1; unsigned int hit : 1; };
+struct STexInfo { /* 0x38 bytes */
+    int type; char *filename; float ss1, tt1, ss2, tt2, width, height, ax, ay; TTexID texid;
+    void *hitmap; char *name; void *texmem;
+};
+typedef struct STexInfo TTexInfo;
+typedef struct { float x, y, z; } Vector3f;
+struct SCam { short a, b; Vector3f pos; Mat33 m; TColor col; struct SFlags f; TPFNRender Render; double d; };
+typedef struct SCam TCamera;
+extern TCamera g_Camera;
+extern TTexInfo *pTex;
+extern Vector3f gUp;
+""")
+    monkeypatch.setattr(fc, "ROOT", tmp_path)
+    monkeypatch.setattr(fc, "_LAYOUTS", None)
+    monkeypatch.setattr(fc, "_TYPEDEFS", None)
+    known = fc.layouts()
+    assert len(known["TTexInfo"]) == 0x38 and fc.words(known["TTexInfo"]) == "ipffffffffippp"
+    assert fc.words(known["Vector3f"]) == "fff" and len(known["TCamera"]) == 4 + 12 + 36 + 4 + 4 + 4 + 8
+    assert fc.words(known["TCamera"]) == "h" + "fff" + "f" * 9 + "c" + "i" + "p" + "ff"
+    texts = [(tmp_path / "include" / "common.h").read_text()]
+    assert fc.global_layouts(texts) == {"g_Camera": (False, fc.words(known["TCamera"])),
+                                        "pTex": (True, "ipffffffffippp")}  # (gUp: floats alone, as before)
+    assert fc.pointees("void f(TTexInfo *pti, Vector3f *v, float s)\n{\n}\n") == {"f": ["ipffffffffippp", None, None]}
+    stubs = fc.stubs({"g_Camera": "d", "pTex": "d", "fmin2": "f"}, floats={"fmin2"},
+                     shapes=fc.global_layouts(texts))
+    assert "long double fmin2() { return 0; }" in stubs and "unsigned pTex_mem[1024];" in stubs
+    assert "pTex[0] = (unsigned)pTex_mem;" in stubs and "scrub();" in fc.HARNESS
