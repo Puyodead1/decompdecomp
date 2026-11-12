@@ -33,6 +33,7 @@ from .rangecheck import MAX_TASKS, REACH, Step, evaluate
 
 log = logging.getLogger("decompdecomp")
 SURVEY_FILES = 60  # files a survey run builds (each once per compiler it tries)
+ADOPT_FILES = 3  # files a function's match moved to one other compiler before the project takes it as its own
 STRETCHES_SHOWN = 30
 OPEN = ("checking", "waiting")
 
@@ -502,9 +503,44 @@ class FileCompilers:
                         s["status"] = resolve
         self.net._update_cfg(slug, change)
 
+    def adopt(self, slug: str, compiler: str) -> bool:
+        """The project's own compiler becomes `compiler` once agents' matches moved ADOPT_FILES files to it and more
+        files than have matches with the project's own (a DS prototype imported with 2.0sp1p5, the default, whose
+        agents matched file after file with dsi/1.1: every other file still started from the wrong one). Every file
+        switches where its matches hold, in the background (ForkEngine.set_compiler_everywhere); once per compiler."""
+        proj, fp, cfg = self.net.forks.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        own = console.file_compiler(fp, "")
+        if own is None or compiler == own or compiler in (cfg.get("adopted") or []):
+            return False
+        files = self._files(slug)
+        moved = [s for *_, s, c in files if c == compiler]
+        rows = self._rows_by_file(proj)
+        stays = [s for *_, s, c in files if c == own and any(r["status"] == "matched" for r in rows.get(s, ()))]
+        if len(moved) < ADOPT_FILES or len(moved) <= len(stays):
+            return False
+        self.net._update_cfg(slug, lambda c: c.update(adopted=[*(c.get("adopted") or []), compiler]))
+        said = (f"{len(moved)} source files match with {consoles.compiler_name(compiler)} and {len(stays)} with "
+                f"{consoles.compiler_name(own)}: the project's compiler is {consoles.compiler_name(compiler)} now, every "
+                "file switching where its matches hold")
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], None, "compiler", said)
+
+        def run():
+            try:
+                self.net.forks.set_compiler_everywhere(slug, compiler, log=lambda line: None)
+            except Exception:  # noqa: BLE001  (the files moved so far keep their compiler)
+                log.exception("switching the project's compiler failed")
+        if self.background:
+            threading.Thread(target=run, daemon=True, name=f"adopt-{slug}").start()
+        else:
+            run()
+        return True
+
     def tried(self, slug: str, source: str, compiler: str) -> None:
         """try_compiler switched a file (a function of it matches only with `compiler`): evidence for the checks
-        around it."""
+        around it, and for the project's own compiler (adopt)."""
+        self.adopt(slug, compiler)
         cfg = self.net.cfg(self.net.project_row(slug))
         for c in cfg.get("file_checks") or []:
             if c["status"] in OPEN and c["toolchain"] == compiler:

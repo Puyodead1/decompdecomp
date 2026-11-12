@@ -1148,3 +1148,27 @@ def test_a_rom_without_a_banner_is_read_through_a_copy_with_a_blank_one(tmp_path
     assert struct.unpack_from("<H", banner, 2)[0] == scratch.crc16(banner[0x20:])
     assert banner[0x240:0x240 + 22] == "DEMOQUESTDS".encode("utf-16-le")
     assert scratch.with_banner(out) is None  # (one with a banner: left as it is)
+
+
+def test_the_project_takes_the_compiler_its_files_matches_moved_them_to(per_file, monkeypatch):
+    """A DS prototype imported with the default CodeWarrior while its agents matched file after file with dsi/1.1:
+    once ADOPT_FILES files moved to one other compiler, and more of them than have matches with the project's own,
+    that one is the project's (every file switching where its matches hold), once."""
+    from decompnet.app import filecompilers
+
+    net, slug, agent, root, state, lerp = per_file
+    fc = net.filecompilers
+    fc.background = False
+    compilers = {"a.c": BAD, "b.c": BAD, "c.c": GOOD, "d.c": GOOD}
+    monkeypatch.setattr(fc, "_files", lambda s: [(i, i + 1, f, c) for i, (f, c) in enumerate(compilers.items())])
+    matched = {"c.c"}
+    monkeypatch.setattr(fc, "_rows_by_file", lambda proj: {f: [{"status": "matched" if f in matched else "open"}]
+                                                           for f in compilers})
+    switched = []
+    monkeypatch.setattr(net.forks, "set_compiler_everywhere", lambda s, c, log: switched.append(c))
+    assert not fc.adopt(slug, BAD) and switched == []  # (two files: not yet)
+    compilers["d.c"] = BAD
+    matched |= {"d.c"}
+    assert filecompilers.ADOPT_FILES == 3 and fc.adopt(slug, BAD) and switched == [BAD]
+    assert not fc.adopt(slug, BAD) and switched == [BAD]  # (once)
+    assert any("the project's compiler is" in e["detail"] for e in net.store.all("SELECT detail FROM events"))
