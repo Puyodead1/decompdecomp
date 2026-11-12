@@ -675,7 +675,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
             function: the function to judge it against
             compiler: a toolchain id (project_info lists this project's); where each source file has its own
                 compiler (DS), "all" tries every one, and the one that matches becomes the file's
-            flags: its flags (default: that compiler's defaults for this game)
+            flags: its flags (default: that compiler's defaults for this game). Where each source file has flags of
+                its own (PC), they're the file's with this compiler, both kept if it matches: code an older Visual
+                C++ built without optimisation is compiler "MSVC/4.2" with flags "/Od"
             source: the C (default: the function's best attempt)
         """
         return await run(ctx, "try_compiler", function=function, compiler=compiler, flags=flags, source=source)

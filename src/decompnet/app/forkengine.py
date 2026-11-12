@@ -3610,8 +3610,14 @@ class ForkEngine:
             raise NetworkError("a fork builds with its project's own compilers")
         if self.net.links.get(slug) is not None:  # a guest's tree follows the host's: its build is the host's to change
             raise NetworkError("in a room, the host's project decides each file's compiler: try_compiler works there")
-        if flags.strip():
+        # flags with the compiler, where each file has flags of its own too (PC): a 6.0 game's RSA MD5 was built /Od by
+        # Visual C++ 4.2, and neither half matched alone (try_compiler refused flags, search_flags kept the compiler)
+        own_flags = console.file_flags(fp, unit.source) if unit.source else None
+        new_flags = flags.split()
+        if new_flags and own_flags is None:
             raise NetworkError("this project's flags are its build's own: try_compiler changes only the file's compiler")
+        if bad := [f for f in new_flags if not re.fullmatch(r"[/-][A-Za-z][\w+:-]*", f)]:
+            raise NetworkError(f"{bad[0]!r} isn't a compiler switch (flags: switches such as /Od /Oy-, nothing else)")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} already matches with {own}")
         known = [c.id for c in console.project_compilers(fp)]  # (a 32-bit game's: never a 64-bit compiler)
@@ -3625,13 +3631,14 @@ class ForkEngine:
             raise NetworkError(f"{wanted[0]!r} isn't one of this project's compilers: {', '.join(known)}")
         if wanted[0] != own and (why := console.program_rules_out(fp, wanted[0])):
             raise NetworkError(f"{unit.source} stays with {own}: {why}")
-        if wanted == [own]:
+        if wanted == [own] and not new_flags:
             raise NetworkError(f"{unit.source} is built with {own} already")
         source = source.strip() or self.net._source_of(fn) or ""
         if not source:
             raise NetworkError(f"{fn['name']} has no attempt yet: pass the C as source")
         linked = unit.complete and fp.linkable()
         tried, kept, changed = [], None, False
+        flags_set = new_flags and new_flags != own_flags
         until = time.monotonic() + TRY_ALL_SECONDS
         held = self._hold_for_try(slug, function, agent)  # a function nobody holds is held only while it's tried
         try:
@@ -3639,6 +3646,9 @@ class ForkEngine:
                 try:
                     # what matches with the file's own compiler, measured before it changes: what every try must keep
                     self._baseline(proj, fp, unit, (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
+                    if flags_set:
+                        with self._build_lock(proj):
+                            flags_rel = console.set_file_flags(fp, unit.source, new_flags)
                     for c in wanted:
                         if tried and time.monotonic() > until:
                             break
@@ -3647,24 +3657,35 @@ class ForkEngine:
                                 rel = console.set_file_compiler(fp, unit.source, c)
                             changed = True
                         res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
-                        if res["matched"] and c == own:
+                        if res["matched"] and c == own and not flags_set:
                             return f"{c}: {res['text']}\nThat's {unit.source}'s own compiler: nothing to switch."
                         if res["matched"]:
                             kept = c
                             self.net.bump_generation(proj["id"])  # (earlier compiles of the file aren't repeats)
-                            self._commit_entry(proj, fp, rel, lambda c=c: console.set_file_compiler(fp, unit.source, c),
-                                               f"Build {unit.source} with {c}\n\n{fn['name']} matches with "
-                                                        f"it (found by {agent.name} with decompdecomp).")
+                            if c != own:
+                                self._commit_entry(proj, fp, rel, lambda c=c: console.set_file_compiler(fp, unit.source, c),
+                                                   f"Build {unit.source} with {c}\n\n{fn['name']} matches with "
+                                                   f"it (found by {agent.name} with decompdecomp).")
+                            if flags_set:
+                                self._commit_entry(proj, fp, flags_rel,
+                                                   lambda: console.set_file_flags(fp, unit.source, new_flags),
+                                                   f"Build {unit.source} with {' '.join(new_flags)}\n\n{fn['name']} "
+                                                   f"matches with {c} and them (found by {agent.name} with "
+                                                   "decompdecomp).")
                             self.net.filecompilers.tried(slug, unit.source, c)  # (the range checks around it)
-                            return f"{c}: {res['text']}\n{unit.source} is built with {c} from now on."
+                            shown = f"{c} {' '.join(new_flags)}" if flags_set else c
+                            return f"{shown}: {res['text']}\n{unit.source} is built with {shown} from now on."
                         if res.get("broken"):  # the file's other functions need its own compiler
                             res["text"] = (f"the file's matched {', '.join(res['broken'][:8])} no longer match with it. "
                                            f"If {fn['name']} needs it, give it a file of its own first (split_file)")
                         tried.append(f"{c}: {res['text']}" if len(wanted) == 1 else f"{c}: {res['text'].split(chr(10))[0]}")
                 finally:
-                    if changed and kept is None:
+                    if (changed or flags_set) and kept is None:
                         with self._build_lock(proj):
-                            console.set_file_compiler(fp, unit.source, own)
+                            if changed:
+                                console.set_file_compiler(fp, unit.source, own)
+                            if flags_set:
+                                console.set_file_flags(fp, unit.source, own_flags or [])
                         self._build_unit(proj, fp, unit)  # the file's object is its own compiler's again
         finally:
             if held is not None:

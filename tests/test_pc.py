@@ -599,6 +599,14 @@ def _by_address(path: Path = MAP):
     return lambda text: pattern.sub(lambda m: rename[m.group(1)], text)
 
 
+def _after_matches(net, slug) -> None:
+    """A step of the demo's story that needs test_agents_match_functions' matches (the module's project is one, its
+    tests its steps in order): run alone, it says so instead of failing on what it isn't given."""
+    if not net.store.one("SELECT 1 AS x FROM functions WHERE project_id=? AND status='matched'",
+                         net.project_row(slug)["id"]):
+        pytest.skip("a later step of the demo's story: run with test_agents_match_functions before it")
+
+
 @pytest.fixture(scope="module")
 def pc(tmp_path_factory):
     from decompnet.app.engine import RomNetwork
@@ -962,6 +970,7 @@ def test_agents_divide_a_file_and_give_it_its_own_compiler(pc):
     7.1 compiles otherwise stays with 6.0), switched by try_compiler when a function matches with another one. The
     judge, real names and Check again work on the files it made (AGENTS.md: every feature on the console)."""
     net, slug = pc
+    _after_matches(net, slug)
     agent, _ = net.local_agent("pc-agent")
     root = Path(net.project_row(slug)["root"])
     syms = _map()
@@ -1303,8 +1312,8 @@ def test_every_visual_cpp_the_import_picks_is_in_a_compiler_pack():
     assert {scratch_pe.compiler_pack(v) for v in [*picked, *by_file]} == set(scratch_pe.MSVC_PACKS)
     for version in by_file:  # each in its own folder of its pack
         assert any(part.get("into") == version for part in toolchains.get(scratch_pe.compiler_pack(version)).parts)
-    with pytest.raises(ForkError, match="no Visual C\\+\\+ 4.2"):
-        scratch_pe.compiler_pack("4.2")
+    with pytest.raises(ForkError, match="no Visual C\\+\\+ 2.0"):
+        scratch_pe.compiler_pack("2.0")
 
 
 def test_a_game_whose_visual_cpp_is_not_installed_says_which_pack_to_install(tmp_path, monkeypatch):
@@ -3732,16 +3741,16 @@ def test_a_copys_compiler_build_is_read_as_the_rich_header_reads_it(build, versi
                                             ((5, 0), "5.0")])
 def test_a_game_without_a_rich_header_names_old_visual_cpp_by_its_linker_and_takes_the_users_copy(
         tmp_path, monkeypatch, linker, version):
-    """#137: a game built with Visual C++ 2.x to 5.0 has no Rich header; its linker's version says which. 5.0's is the
-    packs' own (its newest service pack: the linker names no build); without the user's copy an older one's stand-in
-    is 5.0 and the message names the copy to set up; with it, that copy builds the game."""
+    """#137: a game built with Visual C++ 2.x to 5.0 has no Rich header; its linker's version says which. 4.0 to 5.0
+    are the packs' own (5.0's newest service pack: the linker names no build); without the user's copy 2.x's stand-in
+    is 4.0, the nearest, and the message names the copy to set up; with it, that copy builds the game."""
     game = _windows_program(linker=linker)
     plain = scratch_pe.describe(game)
-    assert (plain.version, plain.build, plain.own) == (version, None, None) and plain.pack_version.startswith("5.0")
-    if version == "5.0":
-        assert plain.pack_version == "5.0SP3" and plain.cannot_match() == []
+    assert (plain.version, plain.build, plain.own) == (version, None, None)
+    if version == "2.0":
+        assert plain.pack_version == "4.0" and version in plain.cannot_match()[0]
     else:
-        assert version in plain.cannot_match()[0]
+        assert plain.pack_version == {"5.0": "5.0SP3"}.get(version, version) and plain.cannot_match() == []
     assert plain.blockers() == []
     cl = {"2.0": "9.0.2196.0", "4.0": "10.0.5270.0", "4.1": "10.10.6038.0", "4.2": "10.20.6166.0", "5.0": "11.0.7022.0"}
     _own_copies(tmp_path, monkeypatch, "15.0.30729.1", cl[version], "12.0.8168.0")
@@ -4283,3 +4292,34 @@ def test_a_function_a_matched_one_calls_can_still_lose_what_follows_its_end(monk
     caller.relocs[0] = (1, 20, "_thunk", 0x11)  # (a reference past the cut: refused)
     with pytest.raises(ForkError, match="refers to _thunk past 0x00401020"):
         scratch_pe.cut_function(Path("."), "game", "_thunk", 0x401020, keep={"_caller"})
+
+
+def test_try_compiler_takes_flags_with_the_compiler_where_files_have_their_own(tmp_path, monkeypatch):
+    """A 6.0 game's RSA MD5 was built /Od by Visual C++ 4.2: with 4.2 alone (the file's /O2) it doesn't match, nor
+    /Od alone with 6.0, and try_compiler refused flags. Both together match: the file keeps both, committed; a try
+    that doesn't match leaves it as it was, and flags that aren't switches are refused."""
+    from decompnet.app.forkengine import ForkEngine
+    from decompnet.consoles.pc import WindowsPC
+
+    net, root = _registered(tmp_path, monkeypatch, FIVE, FIVE_ROWS)
+    state = {"compiler": "MSVC/6.0", "flags": []}
+    monkeypatch.setattr(WindowsPC, "file_compiler", lambda self, fp, source: state["compiler"])
+    monkeypatch.setattr(WindowsPC, "file_flags", lambda self, fp, source: state["flags"])
+    monkeypatch.setattr(WindowsPC, "set_file_compiler", lambda self, fp, source, c: state.update(compiler=c) or "c.json")
+    monkeypatch.setattr(WindowsPC, "set_file_flags", lambda self, fp, source, f: state.update(flags=list(f)) or "f.json")
+    monkeypatch.setattr(WindowsPC, "program_rules_out", lambda self, fp, c: None)
+    monkeypatch.setattr(ForkEngine, "_baseline", lambda self, *a, **k: ({}, None))
+    monkeypatch.setattr(ForkEngine, "_build_unit", lambda self, *a, **k: (True, ""))
+    committed = []
+    monkeypatch.setattr(ForkEngine, "_commit_entry", lambda self, proj, fp, rel, redo, msg: committed.append(rel))
+    monkeypatch.setattr(ForkEngine, "_attempt", lambda self, *a, **k: {
+        "matched": state == {"compiler": "MSVC/4.2", "flags": ["/Od"]}, "text": "MATCH" if state == {
+            "compiler": "MSVC/4.2", "flags": ["/Od"]} else "98%"})
+    agent = net.local_agent("claude-opus-5-5-1")[0]
+    said = net.forks.try_compiler(agent, "p", "_func_00401010", "MSVC/4.2", source="int f(void);")
+    assert "stays with MSVC/6.0" in said and state == {"compiler": "MSVC/6.0", "flags": []}
+    with pytest.raises(NetworkError, match="isn't a compiler switch"):
+        net.forks.try_compiler(agent, "p", "_func_00401010", "MSVC/4.2", flags="/Od ../evil", source="int f(void);")
+    said = net.forks.try_compiler(agent, "p", "_func_00401010", "MSVC/4.2", flags="/Od", source="int f(void);")
+    assert "MATCH" in said and "is built with MSVC/4.2 /Od from now on" in said, said
+    assert state == {"compiler": "MSVC/4.2", "flags": ["/Od"]} and committed == ["c.json", "f.json"]

@@ -288,6 +288,10 @@ def demo(tmp_path_factory):
         pytest.skip("the LTCG demo needs Visual C++ (msvc), wibo, wine, Ghidra and objdiff")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("DECOMPNET_WINE_PREFIX", str(tmp_path_factory.mktemp("wine")))
+        try:
+            wine.prepare(log=lambda *_: None)
+        except RuntimeError as e:  # (wine without its 32-bit part: Visual C++'s linker can't start)
+            pytest.skip(f"wine can't run Visual C++'s linker here: {e}")
         key = DEMO / "build" / "ltcg" / "demo.json"
         if not key.exists():
             subprocess.run([sys.executable, str(DEMO / "build.py"), "ltcg"], check=True)
@@ -443,3 +447,15 @@ def test_the_user_can_say_the_game_did_not_use_ltcg(demo, tmp_path):
     assert not fp.manifest.get("ltcg") and "LTCG = False" in (fp.root / "tools" / "configure.py").read_text()
     assert not any(line.startswith("link-time code generation? ") for line in said)  # (nothing to detect)
     assert not list((fp.root / "harness").glob("*.drv.cpp"))
+
+
+def test_a_wine_without_its_32_bit_part_says_what_to_install(tmp_path):
+    """Ubuntu's wine without wine32:i386 prepares a prefix whose syswow64 is empty: every 32-bit program, Visual
+    C++'s linker among them, failed with "failed to load ...syswow64\\ntdll.dll", and the LTCG demo with it."""
+    windows = tmp_path / "drive_c" / "windows"
+    (windows / "system32").mkdir(parents=True)
+    (windows / "system32" / "ntdll.dll").write_bytes(b"")
+    (windows / "syswow64").mkdir()
+    assert not wine.runs_32bit(tmp_path) and "wine32:i386" in wine.WINE32
+    (windows / "syswow64" / "ntdll.dll").write_bytes(b"")
+    assert wine.runs_32bit(tmp_path)

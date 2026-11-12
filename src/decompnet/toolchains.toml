@@ -1260,6 +1260,32 @@ platforms = ["macos-x86_64"]
 # game's 208 files were built by c2 12.00.9782, not 6.0's 8168). Archives that hold a whole install keep the
 # compiler (Bin), its headers (Include, the Windows SDK's with them) and libraries (Lib), so the project's build
 # finds every version the same way (tools/configure.py looks for each version's folder in every pack).
+[msvc4]
+name = "Microsoft Visual C++ 4.0, 4.1 and 4.2 (PC)"
+kind = "compiler-pack"
+platform = "PC"
+license = "proprietary"
+source = "archaic-msvc (msvc400, msvc410, msvc420)"
+description = "Visual C++ 4.0, 4.1 and 4.2: Windows games of 1995-1997, and the libraries later games linked prebuilt (a 6.0 game's RSA MD5, built /Od with one of them). Windows programs, run through wibo on Linux and macOS."
+[[msvc4.parts]]
+url = "https://github.com/archaic-msvc/msvc400/archive/97b4a530238f38b9320a21ca0cb98e4044df7916.tar.gz"  # cl 10.00.5270
+sha256 = "62096ffd1e8fa020293aaa06acf8979397e7aa4f49e92c50038913a43e4a1834"
+subdir = "msvc400-97b4a530238f38b9320a21ca0cb98e4044df7916"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "4.0"
+[[msvc4.parts]]
+url = "https://github.com/archaic-msvc/msvc410/archive/373f5e621ac8fb7b219873b37334ef1d0a2149e6.tar.gz"  # cl 10.10.6038
+sha256 = "72904772611a8cb23ea51fc2e670e58cf35d4e5d26c80d7a9c740ac73ef3636a"
+subdir = "msvc410-373f5e621ac8fb7b219873b37334ef1d0a2149e6"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "4.1"
+[[msvc4.parts]]
+url = "https://github.com/archaic-msvc/msvc420/archive/b42c244f0a83ba15ba2ffb62b0dc240d7b2dea50.tar.gz"  # cl 10.20.6166
+sha256 = "35f595a1c212486635d71e280bf17524b26f4e4af29ce70ca496d08b478754a1"
+subdir = "msvc420-b42c244f0a83ba15ba2ffb62b0dc240d7b2dea50"
+keep = { "bin" = "Bin", "include" = "Include", "lib" = "Lib" }
+into = "4.2"
+
 [msvc5]
 name = "Microsoft Visual C++ 5.0 (PC)"
 kind = "compiler-pack"

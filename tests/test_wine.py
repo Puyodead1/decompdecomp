@@ -142,7 +142,13 @@ def test_the_prefix_is_made_once_and_leaves_no_server(tc_root):
     """wineboot once (its registry written: its own server stopped first); a second prepare finds it made. No pipe of
     ours is held (prepare returned at all), and no server is left: one no wine program has used never starts its idle
     countdown (wineserver -p600), so it would stay for good. The first compile starts one."""
-    where = wine.prepare(log=lambda *_: None)
+    try:
+        where = wine.prepare(log=lambda *_: None)
+    except RuntimeError as e:
+        if str(e) != wine.WINE32:
+            raise
+        subprocess.run([wine.server(wine.find()), "-k"], env=wine.environment(wine.prefix()))
+        pytest.skip("this wine has no 32-bit part (wine32:i386)")
     ws = wine.server(wine.find())
     try:
         assert (where / "system.reg").is_file() and (where / "drive_c").is_dir()

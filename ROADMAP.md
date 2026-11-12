@@ -263,6 +263,20 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
 
 ## Recently done
 
+- **Visual C++ 4.0, 4.1 and 4.2, and a file's compiler and flags in one try.** A 6.0 game's RSA MD5 was built
+  `/Od` by Visual C++ 4.x, which no pack had: agents got it to 45-70% for days. The `msvc4` pack (archaic-msvc's
+  msvc400, msvc410, msvc420, cl 10.00.5270, 10.10.6038, 10.20.6166) builds it; with 4.2 and `/Od` the agents' C
+  went to 98%, 82% and 81% as it was. A game its linker's version names 4.x builds with its own now, 2.x's stand-in
+  is 4.0. `try_compiler` takes flags with the compiler where each file has flags of its own (PC: neither the
+  compiler alone nor `/Od` alone matched), and `search_flags` tries `/Od`. The Rich header doesn't rule out a
+  Visual C++ before 6.0 where it counts "unmarked objects" (what those compilers built: they stamped nothing).
+  Left: Visual C++ 2.0-2.2 (archaic-msvc has them too).
+- **A function a matched one calls can lose what follows its end.** report_boundary refused any cut of such a
+  function; a call to its start holds after the cut, so only a reference past it refuses one now (a 5-byte jmp
+  thunk kept 11 nops and an empty function's `ret`).
+- **wine without its 32-bit part says so.** Ubuntu's wine without `wine32:i386` makes a prefix whose syswow64 is
+  empty: every 32-bit program, Visual C++'s linker among them, failed to load its ntdll. Preparing wine now says
+  what to install, and the LTCG tests skip there.
 - **Nintendo's libraries in a DS game, found by your own copies.** Every DS and DSi game links Nintendo's libraries
   prebuilt (NitroSDK and TwlSDK, NitroSystem and TwlSystem, NitroWiFi, DWC, CodeWarrior's runtime), and an import
   put all of them in the queue as `func_02xxxxxx`. Setup takes the user's own copies (the `nitro` kit: any folder

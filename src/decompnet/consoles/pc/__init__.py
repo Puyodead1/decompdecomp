@@ -50,9 +50,9 @@ from pathlib import Path
 from ...network import NetworkError
 from .. import BETA, PROJECT, REBUILD_CHECK, Compiler, Console
 
-# a pack per Visual C++ version, each with its service packs (toolchains.toml): 5.0's msvc5, 6.0's msvc, 7.0's
+# a pack per Visual C++ version, each with its service packs (toolchains.toml): 4.x's msvc4, 5.0's msvc5, 6.0's msvc, 7.0's
 # msvc7, 7.1's msvc71, 2005's msvc8, 2008's msvc9, 2010's msvc10, and 2017's msvc2015 (its 32- and 64-bit compilers)
-MSVC_VERSIONS = ["MSVC/5.0", "MSVC/5.0SP1", "MSVC/5.0SP3",
+MSVC_VERSIONS = ["MSVC/4.0", "MSVC/4.1", "MSVC/4.2", "MSVC/5.0", "MSVC/5.0SP1", "MSVC/5.0SP3",
                  "MSVC/6.0", "MSVC/6.0SP3", "MSVC/6.0SP4", "MSVC/6.0SP5", "MSVC/6.0SP5PP", "MSVC/6.0SP6",
                  "MSVC/7.0", "MSVC/7.0SP1", "MSVC/7.1", "MSVC/7.1SP1",
                  "MSVC/8.0", "MSVC/8.0SP1", "MSVC/9.0", "MSVC/9.0SP1", "MSVC/10.0", "MSVC/10.0SP1",
@@ -79,7 +79,9 @@ class WindowsPC(Console):
                                                  f"Visual C++ {v.removeprefix('MSVC/').replace('SP', ' SP')}"),
                                target="x64" if v.endswith(X64_SUFFIX) else "x86")
                       for v in MSVC_VERSIONS)
-    packs = (("msvc5", "Visual C++ 5.0 and its service packs, for PC games of 1997-1998 (proprietary)"),
+    packs = (("msvc4", "Visual C++ 4.0, 4.1 and 4.2, for PC games of 1995-1997 and libraries later games linked "
+                       "prebuilt (proprietary)"),
+             ("msvc5", "Visual C++ 5.0 and its service packs, for PC games of 1997-1998 (proprietary)"),
              ("msvc", "Visual C++ 6.0 and its service packs 3 to 6, for PC games of 1998-2003 (proprietary)"),
              ("msvc7", "Visual C++ .NET 2002 (7.0) and its SP1 (proprietary)"),
              ("msvc71", "Visual C++ .NET 2003 (7.1) and its SP1 (proprietary)"),
@@ -513,8 +515,9 @@ class WindowsPC(Console):
 
     # What search_flags tries on a file: the frame pointer kept or not (/Oy-: about half of a 2010 game's code keeps
     # it), optimised for size (/O1: some of a game's libraries were), inlining only what's marked inline (/Ob1), and
-    # the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it unasked)
-    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",))
+    # the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it unasked), and no optimisation
+    # at all (/Od: libraries linked prebuilt, a 6.0 game's RSA MD5)
+    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",), ("/Od",))
 
     def flag_variants(self, flags: list[str]) -> list[list[str]]:
         out = [list(flags)]
