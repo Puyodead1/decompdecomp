@@ -2209,3 +2209,11 @@ def test_header_code_and_middleware_are_set_aside_and_the_games_own_code_stays(d
                                                             proj["id"])}
     assert status["_ZN8graphics4ChangeEv"] == status["_ZN5debug3LogEi"] == status["_ZN2GT8IteratorEv"] == "open"
     assert status["_ZN9GRenderer4DrawEv"] == status["_ZNSt6vectorIiE4push"] == "asm"
+
+
+def test_the_float_search_judges_c_on_as_many_calls_as_the_trees_check():
+    """An arcade game's Mat33ToQuat passed the search's 100 random calls and differed in 4 of `make floatcheck`'s
+    200: C the search keeps must pass the check the export ships."""
+    from decompnet.consoles.linux import export_float, export_floatcheck
+
+    assert export_float.INPUTS == export_floatcheck.INPUTS
