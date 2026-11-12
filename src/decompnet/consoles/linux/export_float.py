@@ -30,10 +30,13 @@ from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 
+# (as many random calls as the tree's own `make floatcheck` makes: with half of them, an arcade game's Mat33ToQuat
+# passed the search and differed in 4 of the check's 200)
+from .export_floatcheck import INPUTS
+
 DEFAULT = ["-O2", "-fno-builtin-sin", "-fno-builtin-cos"]  # (the Makefile's CFLAGS: sin and cos of one value made
 # one sincos call returns them through doubles, rounded, where the game's code kept them)
 STANDARD = "-fexcess-precision=standard"
-INPUTS = 100
 TRIES = 160  # the most C one function is tried in
 WORKERS = 4
 NUMBER = r"(?:(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)"
@@ -329,15 +332,35 @@ class _File:
         self.default = tool.Check(rel, work.with_name(work.name + "-default"), ["gcc"], DEFAULT, tc, archive)
         self.active = self.check  # (the precision the search judges C in: standard, then GCC's default)
         self.tries = 0
+        self.inputs = INPUTS  # (the calls C is judged on: fix searches on half first)
 
     def score(self, text: str, headers: dict[str, str], fn: str | None = None) -> dict:
         self.tries += 1
-        return self.active.run(text, {**headers} or None, only=fn, inputs=INPUTS)
+        return self.active.run(text, {**headers} or None, only=fn, inputs=self.inputs)
 
     def header_text(self, name: str) -> str:
         return self.headers.get(name) or self.tree_headers[name]
 
     def fix(self, fn: str, best: int) -> int:
+        """fn's search (_fix), judged on half the check's calls first, then, where what it found still differs in
+        any of them, on all from there: an arcade game's QuatFromVtoV found C right in all 200 on the first 100 and got
+        stuck at 5 searching on all 200 from the start, and its Mat33ToQuat needed the second 100 to find the change
+        it needed. How many of the check's calls still differ."""
+        start = (self.text, dict(self.headers))
+        try:
+            self.inputs = INPUTS // 2
+            if (half := self.score(self.text, self.headers, fn).get(fn)):
+                self._fix(fn, half)
+            self.inputs = INPUTS
+            now = self.score(self.text, self.headers, fn).get(fn)
+            if now is None or now > best:  # (what it kept on half the calls does worse on all: from the start)
+                self.text, self.headers = start[0], dict(start[1])
+                now = best
+            return self._fix(fn, now) if now else now
+        finally:
+            self.inputs = INPUTS
+
+    def _fix(self, fn: str, best: int) -> int:
         """Changes kept for `fn`, the closest first, while they bring it closer; how many of its calls still differ."""
         text, headers = self.text, dict(self.headers)
         floats = _float_names(text, {**self.tree_headers, **headers})
