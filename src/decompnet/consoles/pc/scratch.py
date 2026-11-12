@@ -101,7 +101,8 @@ RELEASES = {("5.0", 7153): "SP1", ("5.0", 7303): "SP3", ("7.0", 9955): "SP1", ("
 # generates other code, so a game builds with its own build's. 2005's RTM and SP1 are both build 50727 (the Rich
 # header keeps no more of the version), so an import takes SP1; RTM ("8.0") is chosen by file, with try_compiler.
 # From each compiler's own banner (cl.exe). These are 32-bit x86 compilers: a 64-bit game's are RICH_BUILDS_X64
-RICH_BUILDS = {("5.0", 7022): "5.0", ("5.0", 7153): "5.0SP1", ("5.0", 7303): "5.0SP3",
+# (4.x stamped no Rich header: its entries say which pack builds a game its linker's version names, cl 10.x's banner)
+RICH_BUILDS = {("4.0", 5270): "4.0", ("4.1", 6038): "4.1", ("4.2", 6166): "4.2", ("5.0", 7022): "5.0", ("5.0", 7153): "5.0SP1", ("5.0", 7303): "5.0SP3",
                ("6.0", 8168): "6.0", ("6.0", 8447): "6.0SP3", ("6.0", 8799): "6.0SP4", ("6.0", 8966): "6.0SP5",
                ("6.0", 9044): "6.0SP5PP", ("6.0", 9782): "6.0SP6",
                ("7.0", 9466): "7.0", ("7.0", 9955): "7.0SP1", ("7.1", 3077): "7.1", ("7.1", 6030): "7.1SP1",
@@ -114,9 +115,9 @@ RICH_BUILDS_X64 = {("14.1", 27027): "14.16-x64"}
 X64_DEFAULT = "14.16-x64"  # a 64-bit program that doesn't say which Visual C++ built it
 # toolchains.toml's packs, one per version (6.0's is msvc), and 2017 (msvc2015: 2015 is to join it); each version
 # in a folder of its pack
-MSVC_PACKS = ("msvc5", "msvc", "msvc7", "msvc71", "msvc8", "msvc9", "msvc10", "msvc2015")  # (a pack per version: 6.0's is msvc)
+MSVC_PACKS = ("msvc4", "msvc5", "msvc", "msvc7", "msvc71", "msvc8", "msvc9", "msvc10", "msvc2015")  # (a pack per version: 6.0's is msvc)
 # the packs whose compilers say /GX for exceptions (/EHsc from 2005 on: saying /GX warns on every file)
-GX_PACKS = ("msvc5", "msvc", "msvc7", "msvc71")
+GX_PACKS = ("msvc4", "msvc5", "msvc", "msvc7", "msvc71")
 FIRST_YEAR = 1998  # Visual C++ 6.0's, whose name (VISUAL_STUDIO) has no year
 KIT = "visualcpp"  # the kit PC games take: the user's own Visual C++ copies
 LINKER_VERSION_AT = 2  # in the optional header: the linker's major and minor version, a byte each
@@ -454,7 +455,7 @@ class Build:
     def cannot_match(self) -> list[str]:
         """Why a program decompdecomp does start can't match (all of it, or some): none, it can."""
         out = []
-        # before 5.0 only the user's own copy builds it (no pack has one: its own word); 2015 builds with 2017's
+        # before 4.0 only the user's own copy builds it (no pack has one: its own word); 2015 builds with 2017's
         # without a word here: the same toolset's next version, much of its code the same (the import's log names
         # the compiler it builds with all the same); the user's own copy builds its own build exactly, so none of
         # this is news then

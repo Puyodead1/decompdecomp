@@ -158,6 +158,19 @@ def stop(where: Path | None = None) -> None:
         pass
 
 
+WINE32 = ("wine here runs only 64-bit Windows programs, and Visual C++'s compilers and linker are 32-bit: its 32-bit "
+          "part isn't installed (Ubuntu and Debian: `sudo dpkg --add-architecture i386 && sudo apt update && sudo apt "
+          "install wine32:i386`). Then try again.")
+
+
+def runs_32bit(where: Path) -> bool:
+    """Whether a prepared 64-bit prefix can run 32-bit programs: wine put its 32-bit system in syswow64 (Ubuntu's
+    wine without wine32:i386 leaves it empty, and every 32-bit program fails to load its ntdll.dll). A prefix with no
+    syswow64 is a 32-bit one: it can."""
+    wow = where / "drive_c" / "windows" / "syswow64"
+    return not (where / "drive_c" / "windows" / "system32" / "ntdll.dll").is_file() or (wow / "ntdll.dll").is_file()
+
+
 def prepare(log=print, where: Path | None = None) -> Path:
     """The prefix, made if it isn't yet (wineboot), with its server running. Raises RuntimeError if wine can't."""
     if why := problem():
@@ -185,6 +198,8 @@ def prepare(log=print, where: Path | None = None) -> Path:
         if done.returncode or not (where / "system.reg").is_file():
             raise RuntimeError(f"wine couldn't prepare its prefix in {where} (wineboot exited with {done.returncode}): "
                                f"{tail}")
+    if not runs_32bit(where):
+        raise RuntimeError(WINE32)
     # no server is started here: wine's idle countdown (-p600) only begins once a wine program has run and ended, so
     # a server nothing used would stay for good (measured: wine 9.0). The first compile starts it (tools/compile.py)
     return where
