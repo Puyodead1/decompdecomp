@@ -2217,3 +2217,18 @@ def test_the_float_search_judges_c_on_as_many_calls_as_the_trees_check():
     from decompnet.consoles.linux import export_float, export_floatcheck
 
     assert export_float.INPUTS == export_floatcheck.INPUTS
+
+
+def test_a_stub_for_a_function_returning_a_pointer_returns_memory_and_statics_of_one_name_pair_in_order(tmp_path):
+    """An arcade game's renderer read the texture a stub get_tex returned: 0, a crash on its second call, and the
+    check fell back to memory of addresses alone, whose floats are 1 to 1.25: the branch on a negative depth never
+    ran and the renderer "matched". A stub of a function the program's C says returns a pointer returns the
+    harness's memory, a result on floats counts before one on addresses, and the file's statics of one name (each
+    renderer's grvtx) pair in the order both compilers number them."""
+    from decompnet.consoles.linux import export_floatcheck as fc
+
+    assert fc.pointer_functions(["void *get_tex(int);\nint count(void);\nchar * name_of (int id);"]) == {
+        "get_tex", "name_of"}
+    text = fc.stubs({"get_tex": "f", "count": "f", "table": "d"}, {"get_tex"})
+    assert f"void *get_tex() {{ return (void *){fc.POOL_STUB:#x}; }}" in text and "int count() { return 0; }" in text
+    assert "if (!ok) ok = pointers = run(" in fc.HARNESS and "sp_restore();" in fc.HARNESS
