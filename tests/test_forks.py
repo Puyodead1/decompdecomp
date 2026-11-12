@@ -1076,3 +1076,24 @@ def test_a_path_folder_that_refuses_a_look_is_left_out_of_a_builds_path(tmp_path
     ok, out = ForkProject(tmp_path / "proj").run(["python", "-c", "import os; print(os.environ['PATH'])"],
                                                  log=lambda *_: None)
     assert ok and refused not in out and str(tmp_path) in out
+
+
+def test_the_archive_waits_for_the_export_writing_its_tree(tmp_path, monkeypatch):
+    """A tester's script, its polling cut short, downloaded the archive while the export still wrote the tree: half a
+    tree, the user's copy of the game and the build's caches in it. The archive is refused (409) until it's done."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.app.engine.gui import EXPORT_RUNNING
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    monkeypatch.setattr(net, "_project", lambda slug: {"slug": slug, "root": str(tmp_path), "config": "{}"})
+    seen = []
+
+    def export(slug, log):
+        seen.append(slug in net.exporting())
+        with pytest.raises(NetworkError, match="still running"):
+            net.export_archive(slug)
+        raise NetworkError("the build failed")
+    monkeypatch.setattr(net, "_export_rom", export)
+    with pytest.raises(NetworkError, match="the build failed"):
+        net.export_rom("p")
+    assert seen == [True] and "p" not in net.exporting() and "still running" in EXPORT_RUNNING

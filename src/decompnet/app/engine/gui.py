@@ -36,9 +36,25 @@ EVENT_ROWS = ("SELECT e.id, e.kind, e.detail, e.created_at, a.name AS agent, p.s
 BROKEN = ("doesn't compile any more", "no longer matches")  # an export's reasons that mean its C must be redone
 
 
+EXPORT_RUNNING = "an export of this project is still running: download the archive once it's done"
+
+
 class GuiMixin:
+    def exporting(self) -> set[str]:
+        """The projects an export is writing the tree of now (export_archive refuses those)."""
+        if not hasattr(self, "_exporting"):
+            self._exporting = set()
+        return self._exporting
+
     def export_rom(self, slug: str, log=print) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
+        self.exporting().add(slug)
+        try:
+            return self._export_rom(slug, log)
+        finally:
+            self.exporting().discard(slug)
+
+    def _export_rom(self, slug: str, log=print) -> dict:
         if self.fork_slug(slug):  # a fork's work is already in its source tree, committed (and what its console adds)
             proj = self._project(slug)
             res = self.console(proj).export_fork(self, slug, Path(proj["root"]), log=log)
@@ -76,6 +92,9 @@ class GuiMixin:
         fork's tree is the project itself, uncommitted work too; a ROM project's is its export (Export writes it).
         Returns the zip, for the caller to delete once it's sent, and the name to save it as."""
         proj = self._project(slug)
+        if slug in self.exporting():  # (a tester's script, its polling cut short, zipped a half-written tree: the
+            #                           user's copy of the game in it, and the build's caches)
+            raise NetworkError(EXPORT_RUNNING)
         if self.fork_slug(slug):
             tree = Path(proj["root"])
         else:

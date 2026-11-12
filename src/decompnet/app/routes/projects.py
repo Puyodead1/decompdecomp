@@ -18,6 +18,7 @@ from ...forks.project import SCOPES
 from ...network import NetworkError
 from .. import deep, saves
 from ..engine import parse_ranges
+from ..engine.gui import EXPORT_RUNNING
 from . import App
 
 
@@ -322,7 +323,7 @@ def register(app: App) -> None:
         try:
             path, name = await call(lambda: net.export_archive(request.query_params.get("slug", "")))
         except (NetworkError, OSError) as e:
-            return fail(e)
+            return fail(e, 409 if str(e) == EXPORT_RUNNING else 400)  # (409: try again once the export is done)
         return FileResponse(path, media_type="application/zip", filename=name,
                             background=BackgroundTask(path.unlink, missing_ok=True))
 
