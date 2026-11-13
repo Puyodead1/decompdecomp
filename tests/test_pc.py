@@ -4364,3 +4364,34 @@ def test_a_file_is_built_as_c_or_cpp_and_its_matches_hold(pc):
     assert log.startswith(f"Build {Path(source).name} as")
     back = net.forks.set_file_language(agent, slug, target, "c++" if target.endswith(".c") else "c")
     assert back.startswith(f"✅ {target} is {source}") and (root / source).exists()
+
+
+def test_you_set_a_files_compiler_and_flags_together_kept_only_where_its_matches_hold(tmp_path, monkeypatch):
+    """The project's settings, by hand: a file's compiler and its flags together (RSA's MD5: Visual C++ 4.2 with
+    /Od), both committed when the file's matches hold, both taken back when one breaks."""
+    from decompnet.app.forkengine import ForkEngine
+    from decompnet.consoles.pc import WindowsPC
+    from decompnet.forks.project import ForkProject
+
+    net, root = _registered(tmp_path, monkeypatch, FIVE, FIVE_ROWS)
+    state = {"compiler": "MSVC/6.0", "flags": []}
+    monkeypatch.setattr(WindowsPC, "file_compiler", lambda self, fp, source: state["compiler"])
+    monkeypatch.setattr(WindowsPC, "file_flags", lambda self, fp, source: state["flags"])
+    monkeypatch.setattr(WindowsPC, "set_file_compiler", lambda self, fp, source, c: state.update(compiler=c) or "c.json")
+    monkeypatch.setattr(WindowsPC, "set_file_flags", lambda self, fp, source, f: state.update(flags=list(f)) or "f.json")
+    monkeypatch.setattr(ForkEngine, "_baseline", lambda self, *a, **k: ({"_func_00401010": 100.0}, None))
+    monkeypatch.setattr(ForkEngine, "_build_unit", lambda self, *a, **k: (True, ""))
+    breaks = {"yes": True}
+    monkeypatch.setattr(ForkProject, "diff", lambda self, u, s: type("D", (), {"unit_scores": {
+        "_func_00401010": 50.0 if breaks["yes"] else 100.0}})())
+    committed = []
+    monkeypatch.setattr(ForkEngine, "_commit_entry", lambda self, proj, fp, rel, redo, msg: committed.append(rel))
+    source = "src/auto/text_00401010.cpp"
+    with pytest.raises(NetworkError, match="stays with MSVC/6.0"):
+        net.forks.set_file_compiler_by_hand("p", source, "MSVC/4.2", flags=["/Od"])
+    assert state == {"compiler": "MSVC/6.0", "flags": []} and committed == []
+    with pytest.raises(NetworkError, match="isn't a compiler switch"):
+        net.forks.set_file_compiler_by_hand("p", source, "MSVC/4.2", flags=["/Fo../x"])
+    breaks["yes"] = False
+    net.forks.set_file_compiler_by_hand("p", source, "MSVC/4.2", flags=["/Od"])
+    assert state == {"compiler": "MSVC/4.2", "flags": ["/Od"]} and committed == ["c.json", "f.json"]

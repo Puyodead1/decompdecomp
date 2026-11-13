@@ -4933,7 +4933,8 @@ class ForkEngine:
                     self._build_unit(proj, fp, u)  # the file's objects are its own compiler's again
         return before, after
 
-    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str, force: bool = False) -> None:
+    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str, force: bool = False,
+                                  flags: list[str] | None = None) -> None:
         """The user's choice of a source file's compiler (the project's Settings), kept only when every function of
         the file that matched still matches with it: the rule try_compiler's switches follow. What matches with it
         now is a match like any other. `force`: kept anyway, the user having been told which matches it costs (an
@@ -4947,7 +4948,14 @@ class ForkEngine:
             raise NetworkError(f"{source} isn't a source file whose compiler this project lets you choose")
         if compiler not in {c.id for c in console.project_compilers(fp)}:
             raise NetworkError(f"{compiler!r} isn't one of this project's compilers")
-        if compiler == own:
+        # flags with it, where each file has its own (PC: RSA's MD5 in a 6.0 game, Visual C++ 4.2 with /Od)
+        own_flags = console.file_flags(fp, source)
+        if flags is not None and own_flags is None:
+            raise NetworkError("this project's flags are its build's own")
+        if bad := [f for f in flags or [] if not re.fullmatch(r"[/-][A-Za-z][\w+:-]*", f)]:
+            raise NetworkError(f"{bad[0]!r} isn't a compiler switch")
+        flags_set = flags is not None and list(flags) != list(own_flags or [])
+        if compiler == own and not flags_set:
             return
         text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
         with self._tree(proj).exclusive(), self._units_locked(proj, [u.name for u in units]):
@@ -4961,6 +4969,8 @@ class ForkEngine:
                     before[u.name][self._meta(r).get("symbol") or r["name"]] = 100.0
             with self._build_lock(proj):
                 rel = console.set_file_compiler(fp, source, compiler)
+                if flags_set:
+                    flags_rel = console.set_file_flags(fp, source, list(flags))
             after, broken = {}, []
             for u in units:
                 ok, log = self._build_unit(proj, fp, u)
@@ -4973,6 +4983,8 @@ class ForkEngine:
             if (broken or not all(after.values())) and not force:
                 with self._build_lock(proj):
                     console.set_file_compiler(fp, source, own)
+                    if flags_set:
+                        console.set_file_flags(fp, source, own_flags or [])
                 for u in units:
                     self._build_unit(proj, fp, u)
                 why = (f"{', '.join(sorted(broken)[:8])} no longer match with it" if broken
@@ -4980,6 +4992,10 @@ class ForkEngine:
                 raise NetworkError(f"{source} stays with {own}: {why}")
             self._commit_entry(proj, fp, rel, lambda: console.set_file_compiler(fp, source, compiler),
                                f"Build {source} with {compiler}\n\nChosen in decompdecomp's project settings.")
+            if flags_set:
+                self._commit_entry(proj, fp, flags_rel, lambda: console.set_file_flags(fp, source, list(flags)),
+                                   f"Build {source} with {' '.join(flags) or 'the project flags alone'}\n\nChosen in "
+                                   "decompdecomp's project settings.")
             self.net.bump_generation(proj["id"])  # (the file's compiler: earlier compiles aren't repeats any more)
             for u in units:  # (a file that doesn't build matches nothing: its functions are open again)
                 scores = after[u.name] or {n: None for n in before[u.name]}

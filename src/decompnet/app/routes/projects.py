@@ -186,6 +186,25 @@ def register(app: App) -> None:
         return detail | {"deep_job": searches.job_for(slug, detail.get("name", name)), "deep": last,
                          "deep_limits": {"minutes": deep.DEFAULT_MINUTES, "variants": deep.DEFAULT_VARIANTS}}
 
+    def p_file(slug, request, data):
+        """You, on one of a project's source files (as agents' tools do, the same checks): {op: "language", file,
+        language: "c"/"c++"}, {op: "join", file, with}, {op: "compiler", file, compiler, flags: [...]} (kept only
+        when the file's matches hold)."""
+        if not net.fork_slug(slug):
+            raise ValueError("a project whose source files decompdecomp made")
+        agent, _ = net.local_agent("you")
+        op, file = str(data.get("op", "")), str(data.get("file", ""))
+        if op == "language":
+            return {"said": net.forks.set_file_language(agent, slug, file, str(data.get("language", "")))}
+        if op == "join":
+            return {"said": net.forks.join_files(agent, slug, file, str(data.get("with", "")))}
+        if op == "compiler":
+            flags = data.get("flags")
+            net.forks.set_file_compiler_by_hand(slug, file, str(data.get("compiler", "")),
+                                                flags=[str(f) for f in flags] if isinstance(flags, list) else None)
+            return {"said": f"{file} is built with {data.get('compiler')} {' '.join(flags or [])}".strip()}
+        raise ValueError('op: "language", "join" or "compiler"')
+
     def p_compare(slug, request, data):
         """One function's best C with each compiler and flag variant, ranked (compare_compilers), in the background."""
         name = str(data.get("name", ""))
@@ -304,7 +323,7 @@ def register(app: App) -> None:
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/plain": (p_plain, ["POST"]),
-        "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]),
+        "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]), "/api/file": (p_file, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
         "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/libraries": (p_libraries, ["GET", "POST"]), "/api/parts": (p_parts, ["POST"]),
