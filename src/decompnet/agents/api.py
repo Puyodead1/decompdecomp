@@ -667,6 +667,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                        "whose callers are in the next file can then be written static (its register convention). "
                        "Kept only if the game still builds byte for byte.",
                        s(path=st("a file or one of its functions", True), with_path=st("the neighbouring file", True))),
+        "set_file_language": ("PC: build a source file (or a function's file) as C (\"c\": its name .c) or C++ "
+                              "(\"c++\": .cpp): a library the game linked was often C, which a .cpp file's C++ front "
+                              "end can't make. Kept only if every match still matches.",
+                              s(path=st("a file or one of its functions", True), language=st("c or c++", True))),
         "join_functions": ("Forks: two functions are one the game's analysis cut (a piece with no prologue using registers "
                            "the code before set, an epilogue alone, a switch's cases in the next symbol); joined once "
                            "agents of two models agree and the game still builds byte for byte.",

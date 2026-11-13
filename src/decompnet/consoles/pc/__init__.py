@@ -473,6 +473,13 @@ class WindowsPC(Console):
 
         return scratch.split_unit(fp.root, version, source, at, new)
 
+    def rename_source(self, fp, version: str, source: str, new: str) -> dict:
+        """A file's compiler and flags follow its new name (functions.json names units without one: configure.py
+        builds a unit's .c where it has one, else its .cpp)."""
+        from . import scratch
+
+        return scratch.rename_unit(fp.root, version, source, new)
+
     def join_sources(self, fp, version: str, first: str, second: str, flags: list[str] | None = None) -> dict:
         from . import scratch
 

@@ -1881,6 +1881,18 @@ def split_unit(root: Path, version: str, source: str, at: str, new: str) -> dict
     return saved
 
 
+def rename_unit(root: Path, version: str, source: str, new: str) -> dict:
+    """`source`'s entries in file_compilers.json and file_flags.json under `new` (its .c, once it's built as C).
+    Returns each config file changed, with what it held before."""
+    saved = {}
+    for path, read in ((compilers_file(root, version), file_compilers), (flags_file(root, version), file_flags)):
+        own = read(root, version)
+        if source in own:
+            saved[path] = path.read_text(encoding="utf-8")
+            _write_compilers(path, {(new if k == source else k): v for k, v in own.items()})
+    return saved
+
+
 def join_units(root: Path, version: str, first: str, second: str, flags: list[str] | None = None) -> dict:
     """Make `second`'s unit in functions.json part of `first`'s, the unit right before it in the same program: its
     functions after `first`'s, its own compiler and flags gone (they must be the same). The inverse of split_unit.

@@ -1815,6 +1815,84 @@ class ForkEngine:
                 "definitions moved with them), with the file's compiler (try_compiler switches the new file's); the "
                 "game still builds as it did and every match still matches.")
 
+    def set_file_language(self, agent: Agent | None, slug: str, path: str, language: str) -> str:
+        """A source file built as C (its name .c) or as C++ (.cpp), where decompdecomp made the project's files
+        (Console.rename_source): RSA's MD5 in a 6.0 game was C built by Visual C++ 4.2, and its .cpp file's C++ front
+        end ordered operands otherwise; a function's conversion stayed C++'s whatever its C said. Kept only if the
+        game still builds as it did and every match holds."""
+        if self.net.links.get(slug) is not None:
+            raise NetworkError("in a room, the host's project decides its files: set_file_language works there")
+        proj, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        if not console.splits_sources:
+            raise NetworkError("this project's files are its build's own: set_file_language works where decompdecomp "
+                               "made it")
+        suffix = {"c": ".c", "c++": ".cpp", "cpp": ".cpp"}.get(language.strip().lower())
+        if suffix is None:
+            raise NetworkError("language: \"c\" or \"c++\"")
+        version = (fp.manifest or {}).get("version") or cfg.get("version")
+        rel = path.strip().lstrip("./")
+        if not fp.units_for(rel):
+            try:  # a function: its file
+                rel = fp.unit(self._fn(slug, path)["unit"]).source or ""
+            except (NetworkError, ForkError):
+                raise NetworkError(f"{path} isn't a source file (or a function) of this project") from None
+        units = fp.units_for(rel)
+        if not units:
+            raise NetworkError(f"{path} isn't a source file of this project")
+        new = Path(rel).with_suffix(suffix).as_posix()
+        if new == rel:
+            raise NetworkError(f"{rel} is built as {'C' if suffix == '.c' else 'C++'} already")
+        old_path, new_path = fp.root / rel, fp.root / new
+        if new_path.exists():
+            raise NetworkError(f"{new} exists already")
+        text = old_path.read_text(errors="replace", encoding="utf-8")
+        protected = {n for n, pct in (self._baseline(proj, fp, units[0], text)[0] or {}).items()
+                     if pct is not None and pct >= 100}
+        checks = consoles.REBUILD_CHECK in console.features
+        with self._tree(proj).exclusive(), self._build_lock(proj):
+            before = (fp.manifest or {}).get("rebuild") or {}
+            saved: dict = {}
+            try:
+                old_path.rename(new_path)
+                saved.update(console.rename_source(fp, version, rel, new))
+                for cmd in fp.setup_commands(version):
+                    ok, out = fp.run(cmd, log=lambda *_: None)
+                    if not ok:  # (the compiler's own lines say why: ninja's last line only names the object)
+                        said = [ln for ln in out.splitlines() if re.search(r"\berror\b|: error|fatal", ln, re.I)]
+                        raise ForkError(f"the project didn't build with {new} (a header with what only C++ has, "
+                                        "`class`, a `static` method, a reference: put it in `#ifdef __cplusplus`):\n"
+                                        + ("\n".join(said[:8]) if said else _tail(out)))
+                if checks and before.get("identical") and not console.check_rebuild(fp, version).get("identical"):
+                    raise ForkError(f"the game no longer rebuilt byte for byte with {new}")
+                now: dict[str, float | None] = {}
+                for u in fp.units_for(new):
+                    built, log_ = fp.build_unit(u)
+                    if not built:
+                        raise ForkError(f"{new} doesn't compile as {'C' if suffix == '.c' else 'C++'} (what C++ "
+                                        f"alone has: references, classes, overloads, `extern \"C\"`):\n{_tail(log_)}")
+                    now.update(fp.diff(u, None).unit_scores)
+                if lost := sorted(n for n in protected if (now.get(n) or 0) < 100):
+                    raise ForkError(f"these functions would stop matching: {', '.join(lost[:8])}")
+            except (ForkError, RomError, ObjdiffError, OSError, ValueError) as e:
+                if new_path.exists() and not old_path.exists():
+                    new_path.rename(old_path)
+                for p_, old in saved.items():
+                    p_.write_text(old, encoding="utf-8")
+                for cmd in fp.setup_commands(version):
+                    fp.run(cmd, log=lambda *_: None)
+                raise NetworkError(f"not changed: {e}") from None
+            self._commit_paths(proj, fp, [rel, new, *(str(p_.relative_to(fp.root)) for p_ in saved)],
+                               f"Build {Path(rel).name} as {'C' if suffix == '.c' else 'C++'}: {Path(new).name}\n\n"
+                               f"Changed by {agent.name if agent else 'decompdecomp'} with decompdecomp; the game "
+                               "still builds as it did and every match still matches.")
+        self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+        self.sync(slug, log=lambda *_: None)
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], agent.id if agent else None, "split", f"{rel} → {new}")
+        return (f"✅ {rel} is {new}: built as {'C' if suffix == '.c' else 'C++'} from now on, with its compiler and "
+                "flags; the game still builds as it did and every match still matches.")
+
     def join_files(self, agent: Agent | None, slug: str, path: str, with_path: str) -> str:
         """Make two neighbouring source files one (Console.join_sources): the later one's C after the earlier one's,
         its functions the earlier file's. Kept only if the game still builds as it did (byte for byte, where the

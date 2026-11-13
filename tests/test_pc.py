@@ -4323,3 +4323,44 @@ def test_try_compiler_takes_flags_with_the_compiler_where_files_have_their_own(t
     said = net.forks.try_compiler(agent, "p", "_func_00401010", "MSVC/4.2", flags="/Od", source="int f(void);")
     assert "MATCH" in said and "is built with MSVC/4.2 /Od from now on" in said, said
     assert state == {"compiler": "MSVC/4.2", "flags": ["/Od"]} and committed == ["c.json", "f.json"]
+
+
+@needs_tools
+def test_a_file_is_built_as_c_or_cpp_and_its_matches_hold(pc):
+    """RSA's MD5 in a 6.0 game was C built by Visual C++ 4.2; its .cpp file's C++ front end ordered operands its own
+    way, and no C there made what the C compiler had. set_file_language builds a file as C (its name .c) or C++,
+    its compiler and flags following it; kept only when every match holds, committed."""
+    net, slug = pc
+    _after_matches(net, slug)
+    agent, _ = net.local_agent("pc-agent")
+    root = Path(net.project_row(slug)["root"])
+    # (the demo's one file holds a C++ method: its last function, split off, is a file of plain C)
+    last = sorted(r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=? AND status != "
+                                                   "'nosource'", net.project_row(slug)["id"]))[-1]
+    first = json.loads(net._function(last, slug)["meta"])["source"]
+    if "::" in (root / first).read_text():
+        assert net.forks.split_file(agent, slug, first, last).startswith("✅")
+    fn = net._function(last, slug)
+    source = json.loads(fn["meta"])["source"]
+    matched = {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")}
+    with pytest.raises(NetworkError, match="language"):
+        net.forks.set_file_language(agent, slug, source, "pascal")
+    target = source[:-4] + ".c" if source.endswith(".cpp") else source[:-2] + ".cpp"
+    # the header an earlier step gave a class with a static method: C can't read it, and nothing changes
+    header = (root / "include" / "common.h").read_text()
+    with pytest.raises(NetworkError, match=r"not changed: .*__cplusplus"):
+        net.forks.set_file_language(agent, slug, source, "c" if target.endswith(".c") else "c++")
+    assert (root / source).exists() and not (root / target).exists()
+    assert {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")} == matched
+    cpp = re.search(r"struct Num \{[^}]*\};\n", header).group()
+    assert net.forks.edit_file(agent, slug, "include/common.h", cpp, f"#ifdef __cplusplus\n{cpp}#endif\n",
+                               "C++ alone").startswith("✅")
+    said = net.forks.set_file_language(agent, slug, fn["name"], "c" if target.endswith(".c") else "c++")
+    assert said.startswith(f"✅ {source} is {target}"), said
+    assert (root / target).exists() and not (root / source).exists()
+    assert {r["name"] for r in net.store.all("SELECT name FROM functions WHERE status='matched'")} == matched
+    assert json.loads(net._function(fn["name"], slug)["meta"])["source"] == target
+    log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=root, capture_output=True, text=True).stdout
+    assert log.startswith(f"Build {Path(source).name} as")
+    back = net.forks.set_file_language(agent, slug, target, "c++" if target.endswith(".c") else "c")
+    assert back.startswith(f"✅ {target} is {source}") and (root / source).exists()

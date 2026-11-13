@@ -545,6 +545,12 @@ class Console:
         """A regex for how source files spell `old`, which rename_symbol replaces with the new name."""
         return rf"\b{re.escape(old)}\b"
 
+    def rename_source(self, fp, version: str, source: str, new: str) -> dict:
+        """`source` (relative to the project) is `new` from now on, in the project's config (its compiler and flags
+        follow it): what set_file_language changes besides the file's name, a .cpp file built as C with its name .c.
+        Returns each config file changed, with what it held before (to take it back)."""
+        raise RomError(f"{self.name} projects name their source files in their own way")
+
     def split_source(self, fp, version: str, source: str, at: str, new: str) -> dict:
         """Divide `source` (relative to the project) at function `at` (its symbol) in the project's config: its code
         from there on becomes `new`'s, which builds with the compiler `source` has. Returns each config file changed,
