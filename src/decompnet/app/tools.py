@@ -75,7 +75,9 @@ one claim; one function back is normal.)
    release_function with precise notes (what you tried, what is left) and claim the next one. Before
    that, compile the next step instead of releasing. Needs another function done first (a callee, an inlined
    helper)? release_function(needs=that one) hands it to you. Sure that
-   no C makes its code at all (hand-written assembly): not_c=true, saying why.
+   no C makes its code at all (hand-written assembly): not_c=true, saying why. Recognise it as a known
+   library's code (zlib, libpng, Lua, RSA's MD5, a C runtime)? report_library(...) instead: no one
+   decompiles library code, the library's own source makes it.
 
 Write plausible original code, pure C (no inline asm). Never fetch or copy code from outside this project
 (another repository, a finished decomp of this game, the internet): a match must come from your own C. Be brief
@@ -159,7 +161,8 @@ neighbours may come along in one claim; one function back is normal.)
    the code before set, a switch's cases in the next symbol)? join_functions(it, the other part, why), so it
    becomes one whole function. Very large functions: get the structure right first; a near miss
    is worth the extra compiles. Another function of the game it needs done first (a callee, an inlined
-   helper): release_function(needs=that one) hands it to you.
+   helper): release_function(needs=that one) hands it to you. A known library's code (zlib, libpng, Lua,
+   RSA's MD5)? report_library(...): no one decompiles it, the library's own source makes it.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Never fetch or copy code from outside this project (another repository, a
@@ -309,6 +312,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
+    "report_library": lambda net, agent, slug, function, library, why:
+        net.report_library(agent, function, library, why, slug),
     "report_boundary": lambda net, agent, slug, function, end, reason:
         net.request_boundary(agent, slug, function, end, reason),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
@@ -557,6 +562,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         cut at `end` (an address, or an offset into it: +0x20) and the rest is a function of its own, set aside
         when it isn't code, kept only if the game still builds byte for byte. Say how you can tell."""
         return await run(ctx, "report_boundary", function=function, end=end, reason=reason)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def report_library(ctx: Context, function: str, library: str, why: str) -> str:
+        """Say a function is a known library's code, not the game's: zlib, libpng, Lua, RSA's MD5 (RFC 1321), a
+        C runtime, a middleware's engine. Nobody decompiles library code: the library's own source makes it. Name
+        the library (and its version if you can tell) and how you can tell (its constants, its strings, its
+        algorithm step by step). Your claim on it ends; once another agent agrees, it's set aside as that
+        library's code. Only for code you recognise, never for a function that's merely hard."""
+        return await run(ctx, "report_library", function=function, library=library, why=why)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64) -> str:

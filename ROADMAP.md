@@ -37,6 +37,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | ✓ import stubs (NIDs) and `sc` calls | set aside, named by library and NID | set aside (BIOS calls) | — | ✓ import thunks | ✓ import thunks, named from the kernel export list | — | library calls by their PLT stubs' names | — |
 | SDK library code found by your copy, named and set aside | — | — | — | — | — | — | — | the C runtime (Visual C++'s libraries) | ✓ your XDK's libraries | ✓ your NitroSDK, TwlSDK, NitroSystem, WiFi, DWC and CodeWarrior runtime libraries | — | — |
+| Libraries found and set aside (`libid/`: the game's text, the catalog's constants, your signature files: ours, FLIRT `.pat`/`.sig`, Ghidra `.fidb`; agents' `report_library`); their source fetched into `libs/` | ✓ (same code as Linux; not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (RSA's MD5 set aside on three games; zlib, libpng, libjpeg, FMOD, Bink named) | ✓ (not run on a game yet) | ✓ (ran; the SDK's own code is the import's) | ✓ (a 2008 program: zlib, libpng, Lua, Theora, Vorbis, TinyXML, SDL_mixer, Scaleform named) | listed only: the project says what's its game's |
 | Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (2-byte boundaries) | — | ✓ (agents agree, the rebuild checks) | ✓ | — | ✓ (approved on the project page; a cut on an instruction's start) | — |
 | Your own compiler (Setup: another build of one it has) | ✓ | ✓ | ✓ | ✓ your SDK | ✓ | ✓ | — | ✓ your Visual C++ | ✓ your XDK | — | — | the project's own build |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | per source file (`try_compiler`, Settings) | ✓ (`try_compiler`, suggestions) | the project's build |
@@ -262,6 +263,22 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   classes and methods).
 
 ## Recently done
+
+- **Libraries a game has built in, found and set aside.** A 1999 PC game's last open functions were RSA's MD5, which
+  agents worked on for days: the PC import only knew Visual C++'s runtime. `libid/` finds what a game has built in,
+  on every console and in both kinds of project: the program's text says which library and version (zlib's
+  "inflate 1.1.3 Copyright"), an algorithm's constants say which functions (MD5's 0xd76aa478..., on MIPS and
+  PowerPC as their two halves), and the functions between and beside those are the same library's. The user's own
+  signature files are read too, in their signatures folder (`~/Decomp/.decomp/extra_data/signatures`): our format
+  (`.json`, a function's bytes with its relocations left out), IDA's FLIRT (`.pat`, `.sig`, read as rizin does) and
+  catalog entries (`.toml`); Ghidra's Function ID databases (`.fidb`) are handed to Ghidra's own analysis.
+  Agents say what they recognise with `report_library` (two agents: set aside). The project page's "Libraries in
+  this game" lists each library with what said so, its functions, where its source is (Get its source fetches
+  zlib's, Lua's, libjpeg's, bzip2's into `libs/`), and the copyright notices and source folders the game's text
+  names that the catalog doesn't know, to look up. It runs on Check again, so every project gets it after the
+  update. On the user's games: RSA's MD5 set aside on three PC games (4, 4 and 2 functions); zlib 1.1.3, libpng,
+  libjpeg 6b and FMOD named on two; zlib 1.2.3, libpng 1.2.40, Lua 5.1.4, libtheora 1.1, libvorbis 1.3.1, TinyXML,
+  SDL_mixer and Scaleform on a 2008 Linux program.
 
 - **Visual C++ 4.0, 4.1 and 4.2, and a file's compiler and flags in one try.** A 6.0 game's RSA MD5 was built
   `/Od` by Visual C++ 4.x, which no pack had: agents got it to 45-70% for days. The `msvc4` pack (archaic-msvc's
@@ -1190,6 +1207,15 @@ only under 3,000 characters.
 Measure each step on that DS game's 25: how many get tried and how far, against the week before. Step 2 is what
 matters most for free models: step 3 adds speed, and contention on one file, so it waits until 2 shows parts can be
 worked on alone.
+
+### Libraries: from their text to their functions
+
+`libid/` names a library its text gives away (zlib, libpng) but only finds the functions of one with constants or
+signatures. Next: the functions that refer to a library's strings, and the ones beside them in its object's run,
+as its; signatures made from a library's own build (its `.a`/`.lib`, or its source in `libs/` built with the game's
+compiler: `match_libraries` does that in ROM projects, and project mode doesn't yet); a shared signature collection
+users can add to. The algorithms' constants miss code whose tables were computed beforehand (an RC5 with its key
+already expanded holds none of RC5's constants): agents' `report_library` covers those.
 
 ### Library decomps built locally
 

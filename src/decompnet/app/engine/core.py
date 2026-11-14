@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 import threading
@@ -159,6 +160,15 @@ class Core(Network):
                 done.append(f"{len(broken)} matched function{'' if len(broken) == 1 else 's'} no longer matched: "
                             f"open again for the agents ({', '.join(name for name, _ in broken[:5])})")
         n = self.not_c_from_notes(slug) + self.twins.set_aside_asm(self.project_row(slug))
+        try:  # the libraries it has built in (libid/): theirs isn't the agents' work (Ghidra's Function ID: the panel's)
+            found = self.find_libraries(slug, log=log, fid=False)
+        except Exception:  # (a project whose objects can't be read keeps the rest of the check)
+            logging.getLogger("decompdecomp").exception("finding libraries failed")
+            found = {}
+        if found.get("set_aside"):
+            done.append(f"{found['set_aside']} function{'' if found['set_aside'] == 1 else 's'} set aside as library "
+                        "code (" + ", ".join(lib["name"] for lib in found["libraries"] if lib["aside"]
+                                             and lib["functions"]) + ")")
         self._update_cfg(slug, lambda cfg: cfg.update(checked=__version__))
         if n:
             done.append(f"{n} more function{'' if n == 1 else 's'} set aside, as no C makes them")

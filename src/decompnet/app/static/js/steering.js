@@ -391,6 +391,7 @@ async function renderProjectSettings() {
   const fork = ov.kind === "fork";
   $("reimportGame").hidden = fork && !ov.reimports;  // (a PC project analyses its program again)
   renderLibraries();
+  renderFound();
   // a fork's build sets its compilers, except where each source file has one (DS): then the same panel, with the
   // project's flags its build's and nothing for the ROM engine's survey to check
   $("compilerPanel").hidden = !(ov.compilers || []).length;
@@ -611,6 +612,80 @@ $("librariesBtn").onclick = async () => {
     button.disabled = false;
     work.hidden = true;
   }
+};
+
+/* Libraries in this game (app/engine/libraryid.py, libid/): what the game has built in, found by its text,
+   constants, the user's signature files and agents; set aside as library code, with its source to fetch. */
+async function renderFound() {
+  const box = $("foundPanel");
+  if (!S.ov) { box.hidden = true; return; }
+  let r;
+  try { r = await api(`/api/libraries/found?slug=${S.slug}`); } catch { box.hidden = true; return; }
+  box.hidden = false;
+  const libs = r.libraries || [];
+  $("foundState").textContent = r.t ? `checked ${new Date(r.t * 1000).toLocaleString()}` : "not looked for yet";
+  const kind = { source: "source", middleware: "middleware, no source", algorithm: "reference code", runtime: "the compiler's own library" };
+  $("foundList").innerHTML = libs.length ? `<ul class="found-list">${libs.map((l) => {
+    const fns = l.functions || [];
+    const aside = fns.filter((f) => f.status === "asm").length;
+    const where = l.download && !l.have_source
+      ? `<button class="ghost small-btn" type="button" data-get="${esc(l.id)}">Get its source</button>`
+      : l.have_source ? `<span class="muted small">source in libs/</span>` : "";
+    const setAside = l.open ? `<button class="ghost small-btn" type="button" data-aside="${esc(l.id)}">Set aside ${plural(l.open, "function")}</button>` : "";
+    const home = l.home ? `<a class="link small" href="${esc(l.home)}" target="_blank" rel="noopener">home page</a>` : "";
+    return `<li><details><summary><b>${esc(l.name)}</b>${l.version ? ` ${esc(l.version)}` : ""} <span class="muted small">${esc(kind[l.kind] || l.kind)}${fns.length ? ` · ${plural(fns.length, "function")}, ${aside} set aside` : " · its text"}</span></summary>
+      <div class="found-detail small"><p class="muted">${(l.evidence || []).map(esc).join("<br>")}</p>
+      ${fns.length ? `<ul class="found-fns">${fns.slice(0, 50).map((f) => `<li><code>${esc(f.name)}</code> <span class="muted">${esc(f.status)}: ${esc(f.why)}</span></li>`).join("")}</ul>` : ""}
+      <div class="row">${setAside}${where}${home}</div></div></details></li>`;
+  }).join("")}</ul>` : `<p class="muted small">${r.t ? "None of the libraries decompdecomp knows, nor any in your signature files." : "Find libraries looks now; Check again does too."}</p>`;
+  const notices = r.notices || [], paths = r.paths || [];
+  $("foundUnknown").hidden = !notices.length && !paths.length;
+  $("foundUnknownBody").innerHTML = `<p class="muted">Not in the catalog: look these up, then add the library's signatures or a catalog entry to your signatures folder.</p>`
+    + (notices.length ? `<ul class="found-fns">${notices.map((n) => `<li><code>${esc(n.text)}</code></li>`).join("")}</ul>` : "")
+    + (paths.length ? `<p class="muted">Source folders its messages name:</p><ul class="found-fns">${paths.map((p) => `<li><code>${esc(p.folder)}</code> <span class="muted">${p.files.map(esc).join(", ")}</span></li>`).join("")}</ul>` : "");
+  const files = r.files || [];
+  $("foundSigs").innerHTML = `Your signatures folder, <code>${esc(r.folder || "")}</code>: ${files.length
+    ? files.map((f) => esc(f.file) + (f.error ? ` (not read: ${esc(f.error)})` : f.count != null ? ` (${f.count.toLocaleString()})` : "")).join(", ")
+    : "empty"}. It reads our signature files (.json), IDA's FLIRT (.pat, .sig), Ghidra's Function ID (.fidb, with Ghidra installed) and catalog entries (.toml).`;
+  $("foundList").querySelectorAll("[data-aside]").forEach((b) => { b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const { set_aside } = await api("/api/libraries/found", { method: "POST", body: { slug: S.slug, op: "aside", library: b.dataset.aside } });
+      toast(`${plural(set_aside, "function")} set aside as library code.`, set_aside ? "match" : undefined);
+      S.ov = await api(`/api/project?slug=${S.slug}`);
+      renderStats(S.ov);
+      renderFound();
+    } catch (e) { toast(esc(e.message), "error"); b.disabled = false; }
+  }; });
+  $("foundList").querySelectorAll("[data-get]").forEach((b) => { b.onclick = () => foundJob({ op: "get", library: b.dataset.get }, b); });
+}
+async function foundJob(body, button) {
+  const log = $("foundLog"), work = $("foundWork");
+  button.disabled = true;
+  work.hidden = false;
+  showJobError(log, "");
+  try {
+    const { job } = await api("/api/libraries/found", { method: "POST", body: { slug: S.slug, ...body } });
+    const res = await followJob(job, log);
+    const n = (res.libraries || []).length;
+    if (body.op === "get") toast(res.already ? "Its source is already in libs/." : "Its source is in the project's libs/ folder.", "match");
+    else toast(`${n.toLocaleString()} ${n === 1 ? "library" : "libraries"} found${res.set_aside ? `, ${plural(res.set_aside, "function")} set aside` : ""}.`, res.set_aside ? "match" : undefined);
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    renderStats(S.ov);
+  } catch (e) {
+    showJobError(log, e.message);
+  } finally {
+    button.disabled = false;
+    work.hidden = true;
+    renderFound();
+  }
+}
+$("foundBtn").onclick = () => foundJob({}, $("foundBtn"));
+$("foundFolderBtn").onclick = async () => {
+  try {
+    const r = await api("/api/libraries/found", { method: "POST", body: { slug: S.slug, op: "folder" } });
+    if (!r.ok && r.message) toast(esc(r.message));
+  } catch (e) { toast(esc(e.message), "error"); }
 };
 
 /* Save your progress (app/saves.py): progress/ stays authoritative and follows local work and git contributions;

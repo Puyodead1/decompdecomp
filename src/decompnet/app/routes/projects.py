@@ -117,6 +117,29 @@ def register(app: App) -> None:
             return net.scan_libraries(slug)
         return {"job": jobs.start("libraries", lambda log: net.match_libraries(slug, log=log))}
 
+    def p_libraries_found(slug, request, data):
+        """Which libraries the game has built in (engine/libraryid.py). GET: the last report, with the user's
+        signatures folder; POST: find them again (a job); `op` "aside": set a found library's functions aside as its
+        code; "get": download its source into libs/ (a job); "folder": open the signatures folder."""
+        if request.method != "POST":
+            return net.libraries_found(slug)
+        op = (data or {}).get("op") or "find"
+        library = str((data or {}).get("library") or "")
+        if op == "aside":
+            return {"set_aside": net.set_aside_library(slug, library)}
+        if op == "get":
+            return {"job": jobs.start("library-source", lambda log: net.get_library_source(slug, library, log=log))}
+        if op == "folder":
+            from ... import libid
+
+            folder = libid.signature_folder()
+            folder.mkdir(parents=True, exist_ok=True)
+            if request.state.viewer == "browser":
+                return {"ok": False, "message": f"The folder is on the computer decompdecomp runs on: {folder}"}
+            why = hostenv.open_folder(folder)
+            return {"ok": why is None, "message": why}
+        return {"job": jobs.start("find-libraries", lambda log: net.find_libraries(slug, log=log))}
+
     def p_compilermap(slug, request, data):
         """The compiler answer (GET): which compiler built the game, and its parts; the app checks by itself when the
         answer is old. POST: check again now (the survey and the applied ranges)."""
@@ -326,7 +349,8 @@ def register(app: App) -> None:
         "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]), "/api/file": (p_file, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
-        "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/libraries": (p_libraries, ["GET", "POST"]), "/api/parts": (p_parts, ["POST"]),
+        "/api/unanalysed": (p_unanalysed, ["POST"]), "/api/libraries": (p_libraries, ["GET", "POST"]),
+        "/api/libraries/found": (p_libraries_found, ["GET", "POST"]), "/api/parts": (p_parts, ["POST"]),
         "/api/suggestion": (p_suggestion, ["POST"]), "/api/boundary": (p_boundary, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/compilermap": (p_compilermap, ["GET", "POST"]),

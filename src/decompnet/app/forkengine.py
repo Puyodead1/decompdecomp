@@ -304,7 +304,7 @@ _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written a
 # next check would set it aside again), and agents' proposals to join it or end it elsewhere (each sync, after every
 # match, dropped them: on a small PC game three agents of three models proposed the same join over twenty minutes, a
 # match between each, and it never added up)
-_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries")
+_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries", "library_said", "library")
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 _MSVC_C = re.compile(r"[_@]([A-Za-z_]\w*?)(?:@\d+)?")  # how MSVC decorates a C function's name (PC, Xbox)
 # a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,

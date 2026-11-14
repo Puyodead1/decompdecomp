@@ -403,6 +403,18 @@
             <pre class="joblog" id="scopeLog" hidden></pre>
           </div>
         </section>
+        <section class="panel" id="foundPanel" hidden>
+          <header class="panel-head"><h2>Libraries in this game</h2><span class="muted small" id="foundState"></span></header>
+          <div class="pad">
+            <p class="muted small">Code the game didn't write itself: zlib, libpng, Lua, RSA's MD5, a middleware's engine. Found by its text and constants, your signature files and what agents recognise; it's set aside as library code, so no agent works on it, and a decomp uses the library's own source.</p>
+            <div id="foundList"></div>
+            <details class="small" id="foundUnknown" hidden><summary>Other code the game's text names</summary><div id="foundUnknownBody"></div></details>
+            <p class="muted small" id="foundSigs"></p>
+            <div class="row"><button class="ghost small-btn" id="foundBtn" type="button">Find libraries</button><button class="ghost small-btn" id="foundFolderBtn" type="button">Open signatures folder</button></div>
+            <div class="workbar" id="foundWork" role="progressbar" aria-label="Finding libraries" hidden><i></i></div>
+            <pre class="joblog" id="foundLog" hidden></pre>
+          </div>
+        </section>
         <section class="panel">
           <header class="panel-head"><h2>About this project</h2></header>
           <div class="pad">

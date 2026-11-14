@@ -55,16 +55,21 @@ def _headless() -> Path:
     return base / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
 
 
-def _run_script(binary: Path | list[Path], script: str, timeout: float, *, analyse: bool = True) -> list[dict]:
+def _run_script(binary: Path | list[Path], script: str, timeout: float, *, analyse: bool = True,
+                pre: tuple[str, list[str]] | None = None) -> list[dict]:
     """Import `binary` (or several, analysed one after the other in the same Ghidra) into a throwaway Ghidra project,
     run one of our post-scripts on it and return the JSON objects it wrote, one per line ([] when it took longer than
     `timeout`). A Ghidra that didn't get to run the script says why (ForkError): that was "found no functions"
-    before, which sent the user after packers and DRM."""
+    before, which sent the user after packers and DRM. `pre`: a script of ours run before the analysis, with its
+    arguments."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-ghidra-") as tmp:
         scripts = Path(tmp) / "scripts"
         scripts.mkdir()
         src = resources.files("decompnet.forks").joinpath("ghidra_scripts", script)
         (scripts / script).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        if pre is not None:
+            first = resources.files("decompnet.forks").joinpath("ghidra_scripts", pre[0])
+            (scripts / pre[0]).write_text(first.read_text(encoding="utf-8"), encoding="utf-8")
         out = Path(tmp) / "out.jsonl"
         imports = Path(tmp) / "programs"
         imports.mkdir()
@@ -72,6 +77,7 @@ def _run_script(binary: Path | list[Path], script: str, timeout: float, *, analy
             shutil.copyfile(b, imports / b.name)
         target = imports / binary.name if isinstance(binary, Path) else imports
         argv = [str(_headless()), tmp, "decompwtf", "-import", str(target), "-scriptPath", str(scripts),
+                *(["-preScript", pre[0], *pre[1]] if pre is not None else []),
                 "-postScript", script, str(out), "-deleteProject", *([] if analyse else ["-noanalysis"])]
         if os.name != "nt" and shutil.which("nice"):  # its analysis takes every core for minutes: after everything else
             argv = ["nice", "-n", "15", *argv]
@@ -161,6 +167,23 @@ def functions(program: Path, timeout: float = 3600) -> list[dict]:
     """Every function Ghidra's analysis finds in a whole program (a Windows .exe: Ghidra reads its imports, exports and
     the C runtime's functions too): {"entry", "end", "name", "source", "purge", "convention", "params", "thunk"}."""
     return _run_script(program, "DecompWtfFunctions.java", timeout)
+
+
+def function_ids(program: Path, databases: list[Path], timeout: float = 3600) -> dict[int, tuple[str, str]]:
+    """What Ghidra's Function ID recognises in a program with the user's own databases (.fidb, libid): address ->
+    (the function's name, its library as the database says it: "zlib 1.2.3")."""
+    out: dict[int, tuple[str, str]] = {}
+    for r in _run_script(program, "DecompWtfFunctions.java", timeout,
+                         pre=("DecompWtfFid.java", [str(p.resolve()) for p in databases])):
+        lines = [ln.strip() for ln in str(r.get("library") or "").splitlines() if ln.strip()]
+        if not lines or not lines[0].startswith("Library Function"):
+            continue
+        library = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Library:")), "")
+        name = str(r.get("name") or "")
+        if name.startswith("FID_conflict") and len(lines) > 1:
+            name = lines[1]
+        out[int(r["entry"])] = (name, library)
+    return out
 
 
 def functions_of(programs: list[Path], timeout: float = 4 * 3600) -> dict[str, list[dict]]:
