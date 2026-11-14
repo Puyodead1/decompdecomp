@@ -275,7 +275,8 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   Agents say what they recognise with `report_library` (two agents: set aside). The project page's "Libraries in
   this game" lists each library with what said so (the libraries it loads from their own files too: a PC game's
   DLLs, a Linux game's .so, `Console.linked_libraries`, with the header inline code compiled into the game, glut.h's
-  exit wrappers, taken as theirs), its functions, where its source is (Get its source fetches
+  exit wrappers, taken as theirs), its functions, the header folders of those in `libs/` for every compile (a
+  PC project's build too: `config/<version>/library_includes.txt`, `Console.set_library_includes`), where its source is (Get its source fetches
   zlib's, Lua's, libjpeg's, bzip2's into `libs/`), and the copyright notices and source folders the game's text
   names and the library files it loads that the catalog doesn't know, to look up. It runs on Check again, so every project gets it after the
   update. On the user's games: RSA's MD5 set aside on three PC games (4, 4 and 2 functions); zlib 1.1.3, libpng,

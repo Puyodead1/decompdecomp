@@ -291,6 +291,42 @@ def test_a_headers_folder_that_isnt_there_is_named_at_configure(tmp_path):
     assert done.returncode and "Visual C++ 14.16's headers aren't where" in done.stderr, done.stderr
 
 
+def test_the_libraries_in_libs_give_their_headers_to_every_compile(tmp_path, monkeypatch):
+    """A 2005 PC game calls GLUT and OpenAL from their DLLs: the user puts their source in libs/ (GLUT's
+    include/GL/glut.h, OpenAL's SDK include/al.h), and every file builds with those folders after Visual C++'s own,
+    so agents' C includes <GL/glut.h> as the game's did; build.ninja is made again when the list changes."""
+    from decompnet.app.engine import libraries
+
+    root = tmp_path / "project"
+    shutil.copytree(Path(scratch_pe.__file__).with_name("project_template") / "tools", root / "tools")
+    (root / "src/auto").mkdir(parents=True)
+    (root / "src/auto/new.cpp").write_text("int f(void) { return 1; }\n")
+    (root / "config/TEST").mkdir(parents=True)
+    (root / "config/TEST/functions.json").write_text(json.dumps({"exe": "orig/test.exe", "units": {"new": {}}}))
+    (root / "include").mkdir()
+    for header in ("libs/glut-3.7.6/include/GL/glut.h", "libs/openal-1.1/include/al.h"):
+        (root / header).parent.mkdir(parents=True)
+        (root / header).write_text("\n")
+    packs = tmp_path / "packs"
+    (packs / "6.0" / "Bin").mkdir(parents=True)
+    (packs / "6.0" / "Include").mkdir()
+    (packs / "6.0" / "Bin" / "cl.exe").write_text("")
+    folders = libraries.library_includes(root)
+    assert folders == ["libs/glut-3.7.6/include", "libs/openal-1.1/include"]
+
+    class Fork:
+        pass
+    fp = Fork()
+    fp.root = root
+    assert consoles.get("pc").set_library_includes(fp, "TEST", folders)
+    subprocess.run([sys.executable, "tools/configure.py", "TEST", "--msvc", str(packs)], cwd=root, check=True,
+                   capture_output=True, timeout=30)
+    text = (root / "build.ninja").read_text()
+    cl = text.split("build build/TEST/src/auto/new.obj", 1)[1].split("\nbuild ", 1)[0]
+    assert cl.index("6.0/Include") < cl.index("libs/glut-3.7.6/include") < cl.index("libs/openal-1.1/include")
+    assert "config/TEST/library_includes.txt" in text.split("build build.ninja", 1)[1]
+
+
 def test_a_windows_path_is_what_wine_reads():
     compile_py = _template_tool("compile")
     assert compile_py.windows_path("/home/me/Visual C++/Include") == "Z:\\home\\me\\Visual C++\\Include"

@@ -178,6 +178,15 @@ class WindowsPC(Console):
 
         return scratch.create(root, game, compiler=compiler, log=log, args=self.tool_args())
 
+    def set_library_includes(self, fp, version: str, folders: list[str]) -> bool:
+        # (configure.py reads it, and build.ninja is made again when it changes)
+        path = fp.root / "config" / version / "library_includes.txt"
+        text = "".join(f"{f}\n" for f in folders)
+        if (path.read_text(encoding="utf-8") if path.is_file() else "") != text:
+            if text or path.is_file():
+                path.write_text(text, encoding="utf-8")
+        return True
+
     def linked_libraries(self, program: bytes) -> list[str]:
         from . import scratch
 

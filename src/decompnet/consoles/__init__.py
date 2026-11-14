@@ -344,6 +344,12 @@ class Console:
         """$gp as the game sets it, when splat didn't say (0: the game keeps no data $gp-relative)."""
         return 0
 
+    def set_library_includes(self, fp, version: str, folders: list[str]) -> bool:
+        """PROJECT mode: the header folders of the libraries in the project's libs/ (relative to its root) into its
+        build, searched after the compiler's own. True when its build takes them; False where it can't yet (ROM
+        projects take them from the project's config, project.compiler_config)."""
+        return False
+
     def linked_libraries(self, program: bytes) -> list[str]:
         """The library files the game's program loads by name (a PC game's DLLs, a Linux game's .so): the libraries
         it calls without having their code (libid's `links`). [] where a console's programs load none."""
