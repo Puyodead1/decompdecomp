@@ -240,3 +240,12 @@ def test_a_pc_programs_dlls_are_read_from_its_imports():
     names = [n.lower() for n in consoles.get("pc").linked_libraries(exe.read_bytes())]
     assert "kernel32.dll" in names
     assert consoles.get("pc").linked_libraries(b"MZ junk") == []
+
+
+def test_a_libs_folder_is_a_librarys_by_its_name_as_released():
+    from decompnet.app.engine.libraryid import _holds
+
+    assert _holds("freealut-1.0.1", "alut") and _holds("openal-1.1-core-sdk-3.05", "openal")
+    assert _holds("glut-3.7.6", "glut") and _holds("freeglut", "glut") and _holds("jpeg-6b", "libjpeg")
+    assert _holds("zlib-1.1.3", "zlib") and _holds("lua5.1", "lua")
+    assert not _holds("glut-3.7.6", "glu") and not _holds("openal-1.1", "alut")
