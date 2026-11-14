@@ -191,3 +191,52 @@ def test_find_libraries_sets_aside_a_hash_in_a_rom_project_and_agents_report_lib
     said = net.report_library(b, "rc5_decrypt", "RC5 (RFC 2040)", "RC5 decryption rounds", "demo")
     fn = net._function("rc5_decrypt", "demo")
     assert fn["status"] == "asm" and json.loads(fn["meta"])["library"] == "RC5 (RFC 2040)" and "set aside" in said
+
+
+def test_relocation_names_read_as_their_source_names_them():
+    assert libid.called("__imp____glutInitWithExit@12") == "__glutInitWithExit"
+    assert libid.called("___glutCreateWindowWithExit") == "__glutCreateWindowWithExit"
+    assert libid.called("_func_0049B730") == "func_0049B730"
+
+
+def test_libraries_loaded_from_their_own_files_are_named_and_their_headers_wrappers_taken(tmp_path):
+    """A 2005 PC game loads OpenGL, GLUT and OpenAL from their DLLs: nothing of them to write, but each is named, the
+    decomp includes its headers. glut.h's own inline code (glutInit's exit wrapper, which calls __glutInitWithExit)
+    is compiled into the game: that function is GLUT's. The import's thunk for __glutInitWithExit, named for it, is
+    the linker's, and a DLL neither the catalog nor the system has is listed for the user to look up."""
+    codes = [
+        libid.Code(1, "_func_004604D0@8", 0x4604D0, x86(1), calls=frozenset({"__glutInitWithExit", "func_0049B730"})),
+        libid.Code(2, "___glutInitWithExit", 0x4AF400, b"\xff\x25\0\0\0\0", calls=frozenset({"__glutInitWithExit"})),
+        libid.Code(3, "_game", 0x401000, x86(2), calls=frozenset({"glutMainLoop"})),
+    ]
+    links = ["OPENGL32.dll", "glut32.dll", "OpenAL32.dll", "KERNEL32.dll", "WINMM.dll", "acmesound.dll"]
+    report = libid.identify(None, codes, empty_catalog(tmp_path), arch="x86", links=links)
+    by = {lib["id"]: lib for lib in report["libraries"]}
+    assert {"opengl", "glut", "openal"} <= set(by) and all(by[k]["linked"] for k in ("opengl", "glut", "openal"))
+    assert by["glut"]["keys"] == [1] and by["glut"]["aside"] and "it loads glut32.dll" in by["glut"]["evidence"]
+    assert by["opengl"]["kind"] == "sdk" and not by["opengl"]["keys"]
+    assert report["links"] == ["acmesound.dll"]
+
+
+def test_a_linux_programs_libraries_are_read_from_its_dynamic_section():
+    from decompnet import consoles
+
+    sh = Path("/bin/sh")
+    if not sh.is_file() or sh.read_bytes()[:4] != b"\x7fELF":
+        pytest.skip("no ELF /bin/sh here")
+    names = consoles.get("linux").linked_libraries(sh.read_bytes())
+    assert any(n.startswith("libc.so") for n in names)
+    assert consoles.get("linux").linked_libraries(b"not a program") == []
+
+
+def test_a_pc_programs_dlls_are_read_from_its_imports():
+    """A Windows program's import table names the DLLs it loads (Visual C++ 6.0's own cl.exe: Windows' kernel)."""
+    from decompnet import consoles, toolchains
+
+    where = toolchains.path("msvc") if toolchains.installed("msvc") else None
+    exe = next(iter(sorted(where.glob("*/Bin/[Cc][Ll].[Ee][Xx][Ee]"))), None) if where else None
+    if exe is None:
+        pytest.skip("no Visual C++ installed (Setup)")
+    names = [n.lower() for n in consoles.get("pc").linked_libraries(exe.read_bytes())]
+    assert "kernel32.dll" in names
+    assert consoles.get("pc").linked_libraries(b"MZ junk") == []

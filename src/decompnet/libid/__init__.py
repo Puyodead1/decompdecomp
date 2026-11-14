@@ -53,6 +53,14 @@ NOTICE_DATED = re.compile(r"(?:19|20)\d\d|\$Id: |@\(#\)")  # a real notice names
 STAMP = re.compile(r"\$Id: |@\(#\)")
 MAX_STAMPS = 20  # version control stamps ($Id: ...) beyond this many are the game's own files'
 # the system's headers, as a Linux program's assertions keep them: not something it has built in
+# the system's own library files, which every program loads: Windows' DLLs, the C and C++ runtimes, Linux's libc
+SYSTEM_LIBRARY = re.compile(
+    r"(?i)(?:api-ms-win-.*|kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|comctl32|comdlg32|winmm|ws2_32|"
+    r"wsock32|version|imm32|ntdll|rpcrt4|shlwapi|setupapi|winspool|mpr|netapi32|iphlpapi|crypt32|wininet|uxtheme|"
+    r"dwmapi|psapi|dbghelp|msacm32|msvfw32|avifil32|vfw32|msimg32|hid|xinput.*|msvc[rp]\d*d?|msvcirt\d*|"
+    r"vcruntime\d+|ucrtbase|mfc\d+u?d?|libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|ld-linux.*|"
+    r"linux-gate|libx11|libxext|libxt|libxaw|libxmu|libxfont|libxpm|libice|libsm|libxrandr|libxxf86vm|libxi|libxcursor|libxrender|libxinerama|libasound)"
+    r"(?:\.dll|\.so(?:\.[\d.]+)?)?")
 SYSTEM_FOLDER = re.compile(r"^(?:usr/|sysdeps/|(?:include|bits|sys|linux|asm)$|include/(?:bits|sys|linux|asm)$)")
 
 
@@ -64,6 +72,7 @@ class Code:
     addr: int | None  # where it is, when known (functions beside a library's own are found by it)
     raw: bytes
     wild: frozenset[int] = frozenset()  # byte offsets a relocation fills in
+    calls: frozenset[str] = frozenset()  # what its relocations name, undecorated (`called`): a header's wrappers
 
 
 @dataclass
@@ -80,6 +89,8 @@ class Library:
     needs: int = 2
     companions: list[int] = field(default_factory=list)
     tables: list[bytes] = field(default_factory=list)
+    links: list[re.Pattern] = field(default_factory=list)  # the library files a program loads it by (DLLs, .so)
+    wrappers: list[str] = field(default_factory=list)  # what only its header's own inline code calls
     aside: bool = False
     origin: str = "built in"
 
@@ -122,7 +133,9 @@ def _library(d: dict, origin: str) -> Library:
                    home=str(d.get("home") or ""), download=str(d.get("download") or ""), strings=rx(d.get("strings")),
                    versions=rx(d.get("versions")), constants=[int(c) for c in d.get("constants") or []],
                    needs=int(d.get("needs") or 2), companions=[int(c) for c in d.get("companions") or []],
-                   tables=[bytes.fromhex(b) for b in d.get("bytes") or []], aside=bool(d.get("aside")), origin=origin)
+                   tables=[bytes.fromhex(b) for b in d.get("bytes") or []],
+                   links=[re.compile(s, re.IGNORECASE) for s in d.get("links") or []],
+                   wrappers=[str(w) for w in d.get("wrappers") or []], aside=bool(d.get("aside")), origin=origin)
 
 
 def builtin() -> list[Library]:
@@ -295,11 +308,12 @@ class Finding:
     evidence: list[str] = field(default_factory=list)
     functions: dict = field(default_factory=dict)  # Code.key -> why it's the library's
     aside: bool = False  # its functions are set aside without asking
+    linked: bool = False  # the game loads it from its own file (a DLL, a .so)
 
     def as_dict(self, names: dict) -> dict:
         return {"id": self.library, "name": self.name, "kind": self.kind, "version": self.version, "home": self.home,
                 "download": self.download.format(version=self.version) if self.download and self.version else "",
-                "evidence": self.evidence[:8], "aside": self.aside,
+                "evidence": self.evidence[:8], "aside": self.aside, "linked": self.linked,
                 "functions": [{"name": names.get(k, str(k)), "why": w} for k, w in self.functions.items()]}
 
 
@@ -316,11 +330,33 @@ def _finding(found: dict[str, Finding], lib: Library | None, lid: str, name: str
     return found[key]
 
 
+def called(symbol: str) -> str:
+    """A relocation's symbol as its source names it: `__imp____glutInitWithExit@12` -> `__glutInitWithExit` (the
+    import's prefix, C's leading underscore, stdcall's argument bytes off)."""
+    name = re.sub(r"@\d+$", "", symbol.removeprefix("__imp_"))
+    return name[1:] if name.startswith("_") else name
+
+
+def linked(names: list[str], catalog: Catalog) -> tuple[dict[str, list[str]], list[str]]:
+    """The library files a program loads by name: {library id: its files} for those the catalog knows, and the
+    others that aren't the system's own (Windows', the C library's), for the user to look up."""
+    known: dict[str, list[str]] = {}
+    other = []
+    for n in names:
+        lib = next((lb for lb in catalog.libraries if any(rx.fullmatch(n) for rx in lb.links)), None)
+        if lib is not None:
+            known.setdefault(lib.id, []).append(n)
+        elif not SYSTEM_LIBRARY.fullmatch(n):
+            other.append(n)
+    return known, other
+
+
 def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: str = "", big_endian: bool = False,
-             extra: dict | None = None) -> dict:
+             extra: dict | None = None, links: list[str] | None = None) -> dict:
     """What libraries the program has built in. `program`: its file (its text says what's there); `codes`: its
-    functions; `extra`: findings someone else made, {(library, version, name): {key: why}} (Ghidra's Function ID).
-    Returns {"libraries": [Finding.as_dict...], "notices": [...], "paths": [...]}, with each function key taken by
+    functions; `extra`: findings someone else made, {(library, version, name): {key: why}} (Ghidra's Function ID);
+    `links`: the library files it loads (a PC game's DLLs, a Linux game's .so), whose headers its source includes.
+    Returns {"libraries": [Finding.as_dict...], "links": [...], "notices": [...], "paths": [...]}, with each function key taken by
     the first finding that has it."""
     found: dict[str, Finding] = {}
     text = strings(program or b"")
@@ -342,6 +378,20 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
         for table in lib.tables:
             if program and table in program:
                 f.evidence.append(f"its table {table[:8].hex()}…")
+
+    known_links, other_links = linked(links or [], catalog)
+    for lib in catalog.libraries:  # loaded from its own file: nothing of it to write, but its header to include
+        # (not the import's own thunk, `jmp [__imp___glutInitWithExit]`, named for what it calls: the linker's)
+        wrappers = [c for c in codes if c.calls.intersection(lib.wrappers) and called(c.name) not in lib.wrappers]
+        if lib.id not in known_links and not wrappers:
+            continue
+        f = _finding(found, lib, lib.id)
+        f.evidence.extend(f"it loads {n}" for n in known_links.get(lib.id, []))
+        f.linked = f.linked or lib.id in known_links
+        for code in wrappers:  # its header's inline code, compiled into the game (glut.h's exit wrappers)
+            hit = sorted(code.calls.intersection(lib.wrappers))[0]
+            f.functions.setdefault(code.key, f"{lib.name}'s header's own inline code (it calls {hit}, which only "
+                                             "that code does): the decomp includes the header")
 
     # signatures: the user's and converted ones, by size first
     by_size: dict[int | None, list[Signature]] = defaultdict(list)
@@ -436,6 +486,7 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
     names = {c.key: c.name for c in codes}
     libraries = sorted((f for f in found.values()), key=lambda f: (-len(f.functions), f.name))
     return {"libraries": [f.as_dict(names) | {"keys": list(f.functions)} for f in libraries],
+            "links": other_links,
             "notices": [{"text": t, "count": n} for t, n in sorted(notices.items(), key=lambda x: -x[1])][:MAX_UNKNOWN],
             "paths": [{"folder": d, "files": sorted(fs)[:12], "count": len(fs)}
                       for d, fs in sorted(folders.items(), key=lambda x: -len(x[1]))][:MAX_UNKNOWN]}

@@ -262,6 +262,19 @@ class Linux(Console):
 
         return split.split(workdir / picked.filename, log=log)
 
+    def linked_libraries(self, program: bytes) -> list[str]:
+        from io import BytesIO
+
+        from elftools.common.exceptions import ELFError
+        from elftools.elf.dynamic import DynamicSection
+        from elftools.elf.elffile import ELFFile
+
+        try:
+            return [t.needed for s in ELFFile(BytesIO(program)).iter_sections() if isinstance(s, DynamicSection)
+                    for t in s.iter_tags() if t.entry.d_tag == "DT_NEEDED"]
+        except (ELFError, ValueError):
+            return []
+
     def debug_info(self, program: bytes, known: set[str]):
         from . import debuginfo
 

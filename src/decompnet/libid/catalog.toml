@@ -1,6 +1,7 @@
 # Libraries decompdecomp recognises in a game (libid/__init__.py reads this). One [[library]] per library:
 #   id, name           what it's called (id: libs/<id>-<version> is where its source goes)
-#   kind               "source": released as source, a decomp uses it; "middleware": no source anywhere;
+#   kind               "source": released as source, a decomp uses it; "sdk": a system's own library (OpenGL,
+#                      DirectX), only its headers in a decomp; "middleware": no source anywhere;
 #                      "algorithm": code everyone copies from one reference (MD5 from RFC 1321); "runtime": the
 #                      compiler's own library (the console's import sets it aside by the compiler's own copy)
 #   home               where it's from, for the user to read
@@ -13,6 +14,10 @@
 #   companions         words that alone say little (MD5's start values are SHA-1's too): a function holding
 #                      `needs` of them counts only beside one of the library's own functions
 #   bytes              byte strings its tables hold (AES's S-box), hex
+#   links              regular expressions over the names of the library files a program loads (a PC game's DLLs,
+#                      a Linux game's .so): the library is there, called from its own file
+#   wrappers           what only the library's header's own inline code calls (glut.h's __glutInitWithExit): a
+#                      function calling one is that code, compiled into the game, and is the library's
 #   aside              true: functions found by its constants are set aside as its code without asking
 
 [[library]]
@@ -111,6 +116,7 @@ download = "https://zlib.net/fossils/zlib-{version}.tar.gz"
 strings = ['(?:in|de)flate (?P<version>\d+\.\d+(?:\.\d+)*) Copyright 1995-\d{4} (?:Jean-loup Gailly|Mark Adler)',
            'incorrect header check', 'invalid distance too far back']
 aside = true
+links = ['zlib1?\.dll', 'libz\.so[.\d]*']
 
 [[library]]
 id = "libpng"
@@ -120,6 +126,7 @@ home = "http://www.libpng.org/pub/png/libpng.html"
 strings = ['libpng version (?P<version>\d+\.\d+\.\d+)', 'Incompatible libpng version in application and library',
            'Glenn Randers-Pehrson', 'Andreas Dilger', 'Guy Eric Schalnat']
 aside = true
+links = ['libpng\d*\.dll', 'libpng[\d.]*\.so[.\d]*']
 
 [[library]]
 id = "libjpeg"
@@ -130,6 +137,7 @@ download = "https://www.ijg.org/files/jpegsrc.v{version}.tar.gz"
 strings = ['Copyright \(C\) \d{4}, Thomas G\. Lane', 'Bogus JPEG colorspace']
 versions = ['(?P<version>[6-9][a-z]?)  \d{1,2}-[A-Z][a-z]{2}-\d{4}']
 aside = true
+links = ['(?:lib)?jpeg\d*\.dll', 'libjpeg\.so[.\d]*']
 
 [[library]]
 id = "lua"
@@ -140,6 +148,7 @@ download = "https://www.lua.org/ftp/lua-{version}.tar.gz"
 strings = ['\$Lua(?:Version)?: Lua (?P<version>\d+\.\d+(?:\.\d+)?)', 'Lua (?P<version>\d+\.\d+(?:\.\d+)?)  Copyright \(C\)',
            "attempt to call a nil value"]
 aside = true
+links = ['lua[\d.]*\.dll', 'liblua[\d.]*\.so[.\d]*']
 
 [[library]]
 id = "bzip2"
@@ -150,6 +159,7 @@ download = "https://sourceware.org/pub/bzip2/bzip2-{version}.tar.gz"
 strings = ['bzip2/libbzip2: internal error number']
 versions = ['(?P<version>1\.0\.\d+), \d+-[A-Z][a-z]{2}-\d{4}']
 aside = true
+links = ['(?:lib)?bz2\.dll', 'libbz2\.so[.\d]*']
 
 [[library]]
 id = "libvorbis"
@@ -158,6 +168,7 @@ kind = "source"
 home = "https://xiph.org/vorbis/"
 strings = ['Xiph\.Org libVorbis I \d{8}', 'Xiph\.Org libVorbis (?P<version>\d+\.\d+\.\d+)']
 aside = true
+links = ['(?:lib)?vorbis(?:file|enc)?\.dll', '(?:lib)?ogg\.dll', 'libvorbis(?:file|enc)?\.so[.\d]*', 'libogg\.so[.\d]*']
 
 [[library]]
 id = "libtheora"
@@ -166,6 +177,7 @@ kind = "source"
 home = "https://theora.org/"
 strings = ['Xiph\.Org libtheora (?P<version>\d+\.\d+(?:\.\d+)?)', 'Xiph\.Org libTheora I \d{8}']
 aside = true
+links = ['(?:lib)?theora\w*\.dll', 'libtheora\w*\.so[.\d]*']
 
 [[library]]
 id = "freetype"
@@ -174,6 +186,7 @@ kind = "source"
 home = "https://freetype.org/"
 strings = ['FreeType (?P<version>\d+\.\d+\.\d+)', 'FT_Init_FreeType']
 aside = true
+links = ['(?:lib)?freetype\d*\.dll', 'libfreetype\.so[.\d]*']
 
 [[library]]
 id = "expat"
@@ -182,6 +195,7 @@ kind = "source"
 home = "https://libexpat.github.io/"
 strings = ['expat_(?P<version>\d+\.\d+\.\d+)']
 aside = true
+links = ['(?:lib)?expat\w*\.dll', 'libexpat\.so[.\d]*']
 
 [[library]]
 id = "sqlite"
@@ -191,6 +205,7 @@ home = "https://www.sqlite.org/"
 strings = ['SQLite format 3']
 versions = ['(?P<version>3\.\d+\.\d+)\s+\d{4}-\d\d-\d\d \d\d:\d\d:\d\d']
 aside = true
+links = ['sqlite3?\.dll', 'libsqlite3\.so[.\d]*']
 
 [[library]]
 id = "openssl"
@@ -199,6 +214,7 @@ kind = "source"
 home = "https://www.openssl.org/source/"
 strings = ['OpenSSL (?P<version>\d+\.\d+\.\d+[a-z]*)', 'SSLeay (?P<version>\d+\.\d+\.\d+[a-z]*)']
 aside = true
+links = ['libeay32\.dll', 'ssleay32\.dll', 'libcrypto[-\w]*\.(?:dll|so[.\d]*)', 'libssl[-\w]*\.(?:dll|so[.\d]*)']
 
 [[library]]
 id = "sdl"
@@ -207,6 +223,7 @@ kind = "source"
 home = "https://www.libsdl.org/"
 strings = ['SDL_VIDEODRIVER', 'Simple DirectMedia Layer', 'SDL_mixer']
 aside = true
+links = ['SDL2?(?:_\w+)?\.dll', 'libSDL[-\w.]*\.so[.\d]*']
 
 [[library]]
 id = "tinyxml"
@@ -231,6 +248,7 @@ kind = "source"
 home = "https://www.underbit.com/products/mad/"
 strings = ['MPEG Audio Decoder (?P<version>\d+\.\d+\.\d+\w*)']
 aside = true
+links = ['(?:lib)?mad\.dll', 'libmad\.so[.\d]*']
 
 [[library]]
 id = "speex"
@@ -246,6 +264,7 @@ name = "Bink Video (RAD Game Tools)"
 kind = "middleware"
 home = "https://www.radgametools.com/"
 strings = ['Bink(?:W32)?(?:Open|Close|DoFrame)', 'RAD Game Tools', 'binkw32\.dll']
+links = ['binkw(?:32|64)\.dll', 'libBink\w*\.so[.\d]*']
 
 [[library]]
 id = "miles"
@@ -253,6 +272,7 @@ name = "Miles Sound System (RAD Game Tools)"
 kind = "middleware"
 home = "https://www.radgametools.com/"
 strings = ['Miles Sound System', '_AIL_\w+@\d+', 'mss32\.dll']
+links = ['mss(?:32|64)\.dll', 'libmss\w*\.so[.\d]*']
 
 [[library]]
 id = "fmod"
@@ -260,6 +280,7 @@ name = "FMOD"
 kind = "middleware"
 home = "https://www.fmod.com/"
 strings = ['FMOD (?:Ex )?(?:Version|version) ?(?P<version>\d+\.\d+)', 'fmod(?:ex)?\.dll', 'FSOUND_\w+']
+links = ['fmod\w*\.dll', 'libfmod\w*\.so[.\d]*']
 
 [[library]]
 id = "havok"
@@ -274,6 +295,7 @@ name = "PhysX/NovodeX"
 kind = "middleware"
 home = "https://developer.nvidia.com/physx-sdk"
 strings = ['PhysXLoader', 'NovodeX', 'NxPhysics']
+links = ['PhysX\w*\.dll', 'libPhysX\w*\.so[.\d]*']
 
 [[library]]
 id = "renderware"
@@ -302,6 +324,7 @@ name = "GameSpy SDK"
 kind = "middleware"
 home = "https://en.wikipedia.org/wiki/GameSpy"
 strings = ['gamespy\.(?:com|net)']
+links = ['gamespy\w*\.dll']
 
 [[library]]
 id = "scaleform"
@@ -316,6 +339,7 @@ name = "Granny 3D (RAD Game Tools)"
 kind = "middleware"
 home = "https://www.radgametools.com/"
 strings = ['granny2\.dll', 'GrannyReadEntireFile']
+links = ['granny2\.dll']
 
 [[library]]
 id = "wwise"
@@ -337,3 +361,79 @@ name = "Dinkumware's C++ library (the one Visual C++ ships)"
 kind = "runtime"
 home = "https://www.dinkumware.com/"
 strings = ['P\.J\. Plauger, licensed by Dinkumware']
+
+# loaded from their own files: a decomp includes their headers, nothing of them to write
+
+[[library]]
+id = "opengl"
+name = "OpenGL"
+kind = "sdk"
+home = "https://www.khronos.org/opengl/"
+links = ['opengl32\.dll', 'libGL\.so[.\d]*', 'libOpenGL\.so[.\d]*']
+
+[[library]]
+id = "glu"
+name = "GLU (OpenGL's utility library)"
+kind = "sdk"
+home = "https://www.khronos.org/opengl/"
+links = ['glu32\.dll', 'libGLU\.so[.\d]*']
+
+[[library]]
+id = "glut"
+name = "GLUT (the OpenGL Utility Toolkit; freeglut)"
+kind = "source"
+home = "https://freeglut.sourceforge.net/"
+links = ['glut32\.dll', 'glut64\.dll', 'freeglut\.dll', 'libglut\.so[.\d]*']
+wrappers = ['__glutInitWithExit', '__glutCreateWindowWithExit', '__glutCreateMenuWithExit']
+aside = true
+
+[[library]]
+id = "glew"
+name = "GLEW"
+kind = "source"
+home = "https://glew.sourceforge.net/"
+links = ['glew32\w*\.dll', 'libGLEW\.so[.\d]*']
+
+[[library]]
+id = "openal"
+name = "OpenAL"
+kind = "sdk"
+home = "https://www.openal.org/"
+links = ['OpenAL32\.dll', 'soft_oal\.dll', 'wrap_oal\.dll', 'libopenal\.so[.\d]*']
+
+[[library]]
+id = "alut"
+name = "ALUT (OpenAL's utility toolkit)"
+kind = "source"
+home = "https://github.com/vancegroup/freealut"
+links = ['alut\.dll', 'libalut\.so[.\d]*']
+
+[[library]]
+id = "directx"
+name = "DirectX"
+kind = "sdk"
+home = "https://learn.microsoft.com/en-us/windows/win32/directx"
+links = ['d3d\d*\.dll', 'd3dx\d*(?:_\d+)?d?\.dll', 'ddraw\.dll', 'dsound\.dll', 'dinput8?\.dll', 'dplayx?\.dll',
+         'dxgi\.dll', 'd3dim\d*\.dll', 'dmusic\w*\.dll', 'xaudio2_\d+\.dll', 'x3daudio\w*\.dll']
+
+[[library]]
+id = "eax"
+name = "EAX (Creative's environmental audio)"
+kind = "sdk"
+home = "https://en.wikipedia.org/wiki/Environmental_Audio_Extensions"
+links = ['eax\.dll']
+
+[[library]]
+id = "ogre"
+name = "OGRE (Object-Oriented Graphics Rendering Engine)"
+kind = "source"
+home = "https://www.ogre3d.org/"
+strings = ['OGRE EXCEPTION', 'OgreMain']
+links = ['OgreMain(?:_d)?\.dll', 'libOgreMain[-\d.]*\.so[.\d]*']
+
+[[library]]
+id = "cg"
+name = "NVIDIA Cg"
+kind = "sdk"
+home = "https://developer.nvidia.com/cg-toolkit"
+links = ['cg(?:gl|d3d\d*)?\.dll', 'libCg(?:GL)?\.so[.\d]*']

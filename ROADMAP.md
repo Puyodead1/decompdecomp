@@ -247,9 +247,11 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   (`.json`, a function's bytes with its relocations left out), IDA's FLIRT (`.pat`, `.sig`, read as rizin does) and
   catalog entries (`.toml`); Ghidra's Function ID databases (`.fidb`) are handed to Ghidra's own analysis.
   Agents say what they recognise with `report_library` (two agents: set aside). The project page's "Libraries in
-  this game" lists each library with what said so, its functions, where its source is (Get its source fetches
+  this game" lists each library with what said so (the libraries it loads from their own files too: a PC game's
+  DLLs, a Linux game's .so, `Console.linked_libraries`, with the header inline code compiled into the game, glut.h's
+  exit wrappers, taken as theirs), its functions, where its source is (Get its source fetches
   zlib's, Lua's, libjpeg's, bzip2's into `libs/`), and the copyright notices and source folders the game's text
-  names that the catalog doesn't know, to look up. It runs on Check again, so every project gets it after the
+  names and the library files it loads that the catalog doesn't know, to look up. It runs on Check again, so every project gets it after the
   update. On the user's games: RSA's MD5 set aside on three PC games (4, 4 and 2 functions); zlib 1.1.3, libpng,
   libjpeg 6b and FMOD named on two; zlib 1.2.3, libpng 1.2.40, Lua 5.1.4, libtheora 1.1, libvorbis 1.3.1, TinyXML,
   SDL_mixer and Scaleform on a 2008 Linux program.
