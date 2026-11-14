@@ -604,9 +604,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                           s(old=st("current name", True), new=st("new name", True), message=st("why"))),
         "split_function": ("Split a merged function at an address.",
                            s(function=st("function", True), at=st("address like 0x80001234", True), new_name=st("name"))),
-        "report_library": ("Say a function is a known library's code (zlib, libpng, Lua, RSA's MD5, a C runtime), not "
-                           "the game's: no one decompiles it. Your claim ends; once another agent agrees it's set aside. "
-                           "Only for code you recognise, never for one that's merely hard.",
+        "report_library": ("Say a function is a known library's or algorithm's code (zlib, libpng, Lua, a C runtime; "
+                           "RSA's MD5, RC5, SHA-1, AES, CRC-32), not the game's: no one decompiles it. Report it as "
+                           "soon as you recognise it, even when you could match it. Your claim ends; once another "
+                           "agent agrees it's set aside. Only for code you recognise, never for one that's merely hard.",
                            s(function=st("function", True), library=st("the library, and its version if you can tell",
                                                                          True),
                              why=st("how you can tell: its constants, strings, algorithm", True))),

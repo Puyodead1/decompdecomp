@@ -76,8 +76,9 @@ one claim; one function back is normal.)
    that, compile the next step instead of releasing. Needs another function done first (a callee, an inlined
    helper)? release_function(needs=that one) hands it to you. Sure that
    no C makes its code at all (hand-written assembly): not_c=true, saying why. Recognise it as a known
-   library's code (zlib, libpng, Lua, RSA's MD5, a C runtime)? report_library(...) instead: no one
-   decompiles library code, the library's own source makes it.
+   library's or algorithm's code (zlib, libpng, Lua, a C runtime; RSA's MD5, RC5, SHA-1, AES, CRC-32)?
+   report_library(...) at once, even when you could match it: no one decompiles library code, the library's
+   own source makes it, and matching it is wasted work.
 
 Write plausible original code, pure C (no inline asm). Never fetch or copy code from outside this project
 (another repository, a finished decomp of this game, the internet): a match must come from your own C. Be brief
@@ -161,8 +162,9 @@ neighbours may come along in one claim; one function back is normal.)
    the code before set, a switch's cases in the next symbol)? join_functions(it, the other part, why), so it
    becomes one whole function. Very large functions: get the structure right first; a near miss
    is worth the extra compiles. Another function of the game it needs done first (a callee, an inlined
-   helper): release_function(needs=that one) hands it to you. A known library's code (zlib, libpng, Lua,
-   RSA's MD5)? report_library(...): no one decompiles it, the library's own source makes it.
+   helper): release_function(needs=that one) hands it to you. A known library's or algorithm's code (zlib,
+   libpng, Lua; RSA's MD5, RC5, SHA-1, AES, CRC-32)? report_library(...) at once, even when you could match
+   it: no one decompiles it, the library's own source makes it, and matching it is wasted work.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Never fetch or copy code from outside this project (another repository, a
@@ -565,11 +567,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def report_library(ctx: Context, function: str, library: str, why: str) -> str:
-        """Say a function is a known library's code, not the game's: zlib, libpng, Lua, RSA's MD5 (RFC 1321), a
-        C runtime, a middleware's engine. Nobody decompiles library code: the library's own source makes it. Name
-        the library (and its version if you can tell) and how you can tell (its constants, its strings, its
-        algorithm step by step). Your claim on it ends; once another agent agrees, it's set aside as that
-        library's code. Only for code you recognise, never for a function that's merely hard."""
+        """Say a function is a known library's or algorithm's code, not the game's: zlib, libpng, Lua, a C runtime,
+        a middleware's engine; RSA's MD5 (RFC 1321), RC5 and its CBC modes (RFC 2040), SHA-1, AES, CRC-32. Report
+        it as soon as you recognise it, even when you could match it: nobody decompiles library code, the
+        library's own source makes it. Name the library (and its version if you can tell) and how you can tell
+        (its constants, its strings, its algorithm step by step). Your claim on it ends; once another agent
+        agrees, it's set aside as that library's code. Only for code you recognise, never for a function that's
+        merely hard."""
         return await run(ctx, "report_library", function=function, library=library, why=why)
 
     @mcp.tool(meta=ALWAYS_LOAD)
