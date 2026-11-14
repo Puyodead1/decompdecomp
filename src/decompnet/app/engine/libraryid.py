@@ -89,6 +89,15 @@ def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int], frozenset
     return out
 
 
+def _holds(folder: str, library: str) -> bool:
+    """Whether a libs/ folder, by its name, is a library's: zlib-1.2.3, and a fork's or a pack's names too
+    (freealut-1.0.1 for ALUT, openal-1.1-core-sdk for OpenAL, freeglut for GLUT; not glut-3.7.6 for GLU)."""
+    head = re.match(r"[a-z0-9]*?(?=[-_ .]?\d|[-_ .]|$)", folder.lower())
+    word = head.group(0) if head else folder.lower()
+    return word == library or word.endswith(library) and word[:-len(library)] in ("free", "lib", "open") \
+        or library.startswith("lib") and word == library[3:]  # (jpeg-6b: libjpeg's own release)
+
+
 def _safe_extract(archive: Path, into: Path) -> None:
     """A source archive's files into `into`, none outside it (a tar's or zip's `..` and absolute names refused)."""
     if zipfile.is_zipfile(archive):
@@ -298,7 +307,7 @@ class LibraryIdMixin:
         status = {r["name"]: r["status"] for r in self.store.all(
             "SELECT name, status FROM functions WHERE project_id=?", proj["id"])}
         for lib in report.get("libraries", []):
-            lib["have_source"] = any(n == lib["id"] or n.startswith(lib["id"] + "-") for n in have)
+            lib["have_source"] = any(_holds(n, lib["id"]) for n in have)
             for f in lib["functions"]:
                 f["status"] = status.get(f["name"], "gone")
             lib["open"] = sum(1 for f in lib["functions"] if f["status"] == "open")
