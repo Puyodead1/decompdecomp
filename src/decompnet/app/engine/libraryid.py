@@ -48,18 +48,20 @@ def _wild(relocs, arch: str) -> frozenset[int]:
     return frozenset(out)
 
 
-def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int]]]:
-    """symbol -> (its code, the offsets relocations fill in), for each function an object file defines (COFF: a
-    section per function, as decompdecomp delinks; ELF: STT_FUNC symbols)."""
+def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int], frozenset[str]]]:
+    """symbol -> (its code, the offsets relocations fill in, what they name), for each function an object file
+    defines (COFF: a section per function, as decompdecomp delinks; ELF: STT_FUNC symbols, the names not read: the
+    header wrappers they're for, glut.h's, are Windows' alone)."""
     from io import BytesIO
 
     from ... import coffobj
 
-    out: dict[str, tuple[bytes, frozenset[int]]] = {}
+    out: dict[str, tuple[bytes, frozenset[int], frozenset[str]]] = {}
     if coffobj.is_coff(data):
         for owner, raw, relocs in coffobj.sections(data):
             if owner:
-                out[owner] = (raw, frozenset(i for off, *_ in relocs for i in range(off, off + 4)))
+                out[owner] = (raw, frozenset(i for off, *_ in relocs for i in range(off, off + 4)),
+                              frozenset(libid.called(name) for _, _, name, *_ in relocs if name))
         return out
     from elftools.elf.elffile import ELFFile
     from elftools.elf.relocation import RelocationSection
@@ -83,7 +85,7 @@ def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int]]]:
             raw_of[shndx] = b"" if sec["sh_type"] == "SHT_NOBITS" else sec.data()
         lo = s["st_value"] & ~1 if arch == "arm" else s["st_value"]
         mine = [(o - lo, t) for o, t in relocs.get(shndx, []) if lo <= o < lo + s["st_size"]]
-        out[s.name] = (raw_of[shndx][lo:lo + s["st_size"]], _wild(mine, arch))
+        out[s.name] = (raw_of[shndx][lo:lo + s["st_size"]], _wild(mine, arch), frozenset())
     return out
 
 
@@ -138,10 +140,10 @@ class LibraryIdMixin:
                 sym = json.loads(r["meta"] or "{}").get("symbol") or r["name"].split("@")[0]
                 if sym not in found:
                     continue
-                raw, wild = found[sym]
+                raw, wild, calls = found[sym]
                 m = FUNCTION_NAME.search(sym)
                 addr = addrs.get(sym, int(m.group(1), 16) if m else None)
-                codes.append(libid.Code(r["id"], r["name"], addr, raw, wild))
+                codes.append(libid.Code(r["id"], r["name"], addr, raw, wild, calls))
         return codes, rows
 
     @staticmethod
@@ -191,7 +193,7 @@ class LibraryIdMixin:
         console = self.console(proj)
         big = self.cfg(proj).get("big_endian", console.big_endian) if self.is_rom(proj) else console.big_endian
         report = libid.identify(data, codes, catalog, arch=proj["arch"] or console.arch, big_endian=bool(big),
-                                extra=extra)
+                                extra=extra, links=console.linked_libraries(data) if data else [])
         set_aside = 0
         for lib in report["libraries"]:
             keys = lib.pop("keys")

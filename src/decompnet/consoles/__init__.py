@@ -344,6 +344,11 @@ class Console:
         """$gp as the game sets it, when splat didn't say (0: the game keeps no data $gp-relative)."""
         return 0
 
+    def linked_libraries(self, program: bytes) -> list[str]:
+        """The library files the game's program loads by name (a PC game's DLLs, a Linux game's .so): the libraries
+        it calls without having their code (libid's `links`). [] where a console's programs load none."""
+        return []
+
     def debug_info(self, program: bytes, known: set[str]):
         """The game's own names, types and source files, when it shipped with them; None when it didn't."""
         return None

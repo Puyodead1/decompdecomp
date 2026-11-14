@@ -178,6 +178,14 @@ class WindowsPC(Console):
 
         return scratch.create(root, game, compiler=compiler, log=log, args=self.tool_args())
 
+    def linked_libraries(self, program: bytes) -> list[str]:
+        from . import scratch
+
+        try:
+            return list(scratch.read_pe(program).dlls)
+        except Exception:  # (not a program read_pe takes: it loads nothing it can say)
+            return []
+
     def game_info(self, game: Path) -> dict:
         from . import scratch
 

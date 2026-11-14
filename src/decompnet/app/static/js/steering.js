@@ -624,7 +624,7 @@ async function renderFound() {
   box.hidden = false;
   const libs = r.libraries || [];
   $("foundState").textContent = r.t ? `checked ${new Date(r.t * 1000).toLocaleString()}` : "not looked for yet";
-  const kind = { source: "source", middleware: "middleware, no source", algorithm: "reference code", runtime: "the compiler's own library" };
+  const kind = { source: "source", middleware: "middleware, no source", algorithm: "reference code", runtime: "the compiler's own library", sdk: "the system's, headers only" };
   $("foundList").innerHTML = libs.length ? `<ul class="found-list">${libs.map((l) => {
     const fns = l.functions || [];
     const aside = fns.filter((f) => f.status === "asm").length;
@@ -633,14 +633,15 @@ async function renderFound() {
       : l.have_source ? `<span class="muted small">source in libs/</span>` : "";
     const setAside = l.open ? `<button class="ghost small-btn" type="button" data-aside="${esc(l.id)}">Set aside ${plural(l.open, "function")}</button>` : "";
     const home = l.home ? `<a class="link small" href="${esc(l.home)}" target="_blank" rel="noopener">home page</a>` : "";
-    return `<li><details><summary><b>${esc(l.name)}</b>${l.version ? ` ${esc(l.version)}` : ""} <span class="muted small">${esc(kind[l.kind] || l.kind)}${fns.length ? ` · ${plural(fns.length, "function")}, ${aside} set aside` : " · its text"}</span></summary>
+    return `<li><details><summary><b>${esc(l.name)}</b>${l.version ? ` ${esc(l.version)}` : ""} <span class="muted small">${esc(kind[l.kind] || l.kind)}${l.linked ? " · loaded from its own file: the decomp includes its header" : ""}${fns.length ? ` · ${plural(fns.length, "function")}, ${aside} set aside` : l.linked ? "" : " · its text"}</span></summary>
       <div class="found-detail small"><p class="muted">${(l.evidence || []).map(esc).join("<br>")}</p>
       ${fns.length ? `<ul class="found-fns">${fns.slice(0, 50).map((f) => `<li><code>${esc(f.name)}</code> <span class="muted">${esc(f.status)}: ${esc(f.why)}</span></li>`).join("")}</ul>` : ""}
       <div class="row">${setAside}${where}${home}</div></div></details></li>`;
   }).join("")}</ul>` : `<p class="muted small">${r.t ? "None of the libraries decompdecomp knows, nor any in your signature files." : "Find libraries looks now; Check again does too."}</p>`;
-  const notices = r.notices || [], paths = r.paths || [];
-  $("foundUnknown").hidden = !notices.length && !paths.length;
+  const notices = r.notices || [], paths = r.paths || [], links = r.links || [];
+  $("foundUnknown").hidden = !notices.length && !paths.length && !links.length;
   $("foundUnknownBody").innerHTML = `<p class="muted">Not in the catalog: look these up, then add the library's signatures or a catalog entry to your signatures folder.</p>`
+    + (links.length ? `<p class="muted">Library files it loads:</p><ul class="found-fns">${links.map((n) => `<li><code>${esc(n)}</code></li>`).join("")}</ul>` : "")
     + (notices.length ? `<ul class="found-fns">${notices.map((n) => `<li><code>${esc(n.text)}</code></li>`).join("")}</ul>` : "")
     + (paths.length ? `<p class="muted">Source folders its messages name:</p><ul class="found-fns">${paths.map((p) => `<li><code>${esc(p.folder)}</code> <span class="muted">${p.files.map(esc).join(", ")}</span></li>`).join("")}</ul>` : "");
   const files = r.files || [];
