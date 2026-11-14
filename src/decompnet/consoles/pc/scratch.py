@@ -257,6 +257,15 @@ EH_HANDLER_BYTES = 48  # a 2017 handler's: a cookie check (17 bytes) or two befo
 IMPORT_JUMP, THUNK_BYTES = b"\xff\x25", 6
 THUNK_WHY = "an import thunk the linker adds for calls to {name}, a DLL's function: no C of its own makes it"
 PADDING = b"\x90\xcc"  # what pads code: Visual C++ 6's nops, the linker's int3
+# incremental linking (/INCREMENTAL, a debug build's default): the linker puts a table of jumps (jmp <function>, 5
+# bytes each) at the start of the code, and every call to a function, and every address of one taken, goes to its
+# jump instead. Delinked as they were, a debug-built Visual C++ 6.0 game's calls all named a jump (D_00401564), and
+# 863 of the 1,029 its C called kept those names though polishing had named the functions they go to: the C called
+# the jumps, not the functions. The C calls the function, as the game's did (route_incremental), and the build's
+# tools send each call to its jump, as the linker did (functions.json's "incremental": [jump, function] pairs)
+INCREMENTAL_JUMP, INCREMENTAL_BYTES, INCREMENTAL_LEAST = 0xE9, 5, 8
+INCREMENTAL_WHY = ("the incremental linker's table of jumps (/INCREMENTAL), one to each function, which every call "
+                   "goes through: the linker makes it, no C does")
 MAX_PURGE = 0x400  # what a __stdcall function's arguments can take off the stack; Ghidra says 2147483647 when unsure
 UNKNOWN_PURGE = 2147483647
 TOOL_SECONDS = 3600  # Ghidra on a big game, the project's build
@@ -1721,6 +1730,175 @@ def _relocations_x64(md, pe: PE, start: int, code_end: int, end: int, entries: l
     return sorted(relocs)
 
 
+def incremental_jumps(pe: PE) -> dict[int, int]:
+    """An incrementally linked program's table of jumps: each jump's address -> the address it jumps to. The table
+    starts its code section (after int3s or nops, if any) and runs while each 5 bytes are a jump into the program's
+    code; fewer than INCREMENTAL_LEAST is no table (a program's first function may start with a jump)."""
+    out: dict[int, int] = {}
+    for sec in pe.sections:
+        if not sec.code:
+            continue
+        body = pe.read(sec.va, sec.size)
+        found, k = {}, 0
+        while k < len(body):
+            if body[k] == INCREMENTAL_JUMP and k + INCREMENTAL_BYTES <= len(body):
+                target = (sec.va + k + INCREMENTAL_BYTES + struct.unpack_from("<i", body, k + 1)[0]) & 0xFFFFFFFF
+                if not ((there := pe.section_at(target)) is not None and there.code):
+                    break
+                found[sec.va + k] = target
+                k += INCREMENTAL_BYTES
+            elif body[k] in PADDING:
+                k += 1
+            else:
+                break
+        if len(found) >= INCREMENTAL_LEAST:
+            out.update(found)
+    return out
+
+
+def route_incremental(root: Path, version: str, keep_units: set[str] = frozenset(), keep_jumps: set[int] = frozenset(),
+                      dry: bool = False) -> dict[str, dict[int, int]]:
+    """An incrementally linked program's calls to its table's jumps (incremental_jumps) named as calls to the
+    functions they go to, as the game's C called them: every relocation to a jump (`_D_00401564`, or the symbol of a
+    function that starts at one) names the function instead, and functions.json's "incremental" lists each [jump,
+    function] for the build's tools (tools/rebuild.py, tools/relink.py), which send the calls to the jump again. The
+    functions that are only the table are set aside (INCREMENTAL_WHY). Not a function some code calls or takes the
+    address of directly too (a call there and one through its jump would name it alike), nor in `keep_units`' units
+    nor to `keep_jumps` (C that names the jumps in a way a rename can't follow). Returns, for each unit whose
+    relocations changed, {jump: function} of what changed; `dry`: what would, changing nothing."""
+    if missing(root, version):
+        return {}
+    path = root / "config" / version / "functions.json"
+    info = json.loads(path.read_text(encoding="utf-8"))
+    pes = programs(root, info)
+    jumps: dict[int, int] = {}
+    for pe in pes.values():
+        jumps.update(incremental_jumps(pe))
+    if not jumps:
+        return {}
+    entries = [(unit, fn) for unit, fns in info["units"].items() for fn in fns]
+    symbol_at = {fn["addr"]: fn["name"] for _, fn in entries}
+    table = {fn["name"] for unit, fn in entries if fn["addr"] in jumps and _only_jumps(pes[unit_module(unit)], fn, jumps)}
+    jump_of = {}  # a relocation's symbol that is a jump -> the jump's address
+    for j in jumps:
+        jump_of[f"_D_{j:08X}"] = j
+        if symbol_at.get(j) in table:
+            jump_of[symbol_at[j]] = j
+    # functions code reaches directly as well (not through their jumps): left as they are (once routed, a call names
+    # its function: the pairs found before stay)
+    done = {t for _, t in info.get("incremental", [])}
+    direct = {name for _, fn in entries if fn["name"] not in table for _, _, name, _ in fn["relocs"]
+              if name and name not in jump_of}
+    routed = {j: t for j, t in jumps.items() if t in symbol_at and symbol_at[t] not in table
+              and (t in done or symbol_at[t] not in direct) and j not in keep_jumps}
+    changed: dict[str, dict[int, int]] = {}
+    for unit, fn in entries:
+        if fn["name"] in table or unit in keep_units:
+            continue
+        new = []
+        for r in fn["relocs"]:
+            if r[2] in jump_of and r[3] == 0 and (j := jump_of[r[2]]) in routed:
+                r = [r[0], r[1], symbol_at[routed[j]], 0]
+                changed.setdefault(unit, {})[j] = routed[j]
+            new.append(list(r))
+        fn["relocs"] = new
+    if dry:
+        return changed
+    marked = 0
+    for _, fn in entries:
+        if fn["name"] in table and not fn.get("generated"):
+            fn["generated"] = INCREMENTAL_WHY
+            marked += 1
+    pairs = sorted({(j, t) for j, t in routed.items()} | {tuple(p) for p in info.get("incremental", [])})
+    if changed or marked or [list(p) for p in pairs] != info.get("incremental", []):
+        info["incremental"] = [list(p) for p in pairs]
+        path.write_text(json.dumps(info, indent=1), encoding="utf-8")
+    return changed
+
+
+def rename_incremental(root: Path, version: str) -> tuple[int, int]:
+    """route_incremental for a project with C already: the C that called a jump (`D_00401564`, or the name polishing
+    gave it) calls the function it goes to, by that function's name (its real name; the jump's, moved to it, where
+    the function had none; else func_<address>), so its calls pair with the routed relocations. A source file that
+    names the function already as well (its own file, which defines it) keeps its jumps, and so do jumps a header
+    names (every file that includes it would have to change at once). Returns (jumps routed, source files changed)."""
+    plan = route_incremental(root, version, dry=True)
+    if not plan:
+        return 0, 0
+    path = root / "config" / version / "functions.json"
+    info = json.loads(path.read_text(encoding="utf-8"))
+    names = dict(info.get("names") or {})
+    every = {j: t for pairs in plan.values() for j, t in pairs.items()}
+
+    def spelt(old: str) -> str:  # (as rename_symbol finds it: WindowsPC.rename_pattern)
+        return rf"\b_*{old}\b" if re.fullmatch(r"(?:D|func)_[0-9A-F]{8}", old) else rf"\b{re.escape(old)}\b"
+    # (a jump the table's function starts at goes by that function's name: func_<its address>)
+    olds = {j: [f"D_{j:08X}", f"func_{j:08X}", *(names[k] for k in (f"D_{j:08X}", f"func_{j:08X}") if k in names)]
+            for j in every}
+    new = {j: names.get(f"func_{t:08X}") or names.get(f"D_{j:08X}") or f"func_{t:08X}" for j, t in every.items()}
+    headers = [p.read_text(errors="replace", encoding="utf-8") for p in sorted((root / "include").rglob("*"))
+               if p.is_file() and p.suffix.lower() in (".h", ".hpp", ".inc")]
+    keep_jumps = {j for j in every if any(re.search(spelt(o), h) for o in olds[j] if o != new[j] for h in headers)}
+    texts = {}
+    for unit in plan:
+        src = root / _source(root, unit)
+        texts[unit] = (src, src.read_text(errors="replace", encoding="utf-8") if src.exists() else "")
+
+    def rewrite() -> tuple[set[str], dict[Path, str]]:
+        keep_units, edits = set(), {}
+        for unit, pairs in plan.items():
+            src, text = texts[unit]
+            out = text
+            for j in pairs:
+                if j in keep_jumps:
+                    continue
+                for old in olds[j]:
+                    if old != new[j] and re.search(spelt(old), out):
+                        if re.search(rf"\b{re.escape(new[j])}\b", out):
+                            keep_units.add(unit)
+                            break
+                        out = re.sub(spelt(old), new[j], out)
+                if unit in keep_units:
+                    break
+            if unit not in keep_units and out != text:
+                edits[src] = out
+        return keep_units, edits
+    while True:  # (a jump some file keeps keeps its name, so the files that call its function call it by address)
+        keep_units, edits = rewrite()
+        left = {j for unit in keep_units for j in plan[unit]} | keep_jumps
+        lent = {j for j in left if new[j] == names.get(f"D_{j:08X}") and f"func_{every[j]:08X}" not in names}
+        if not lent:
+            break
+        for j in lent:
+            new[j] = f"func_{every[j]:08X}"
+    changed = route_incremental(root, version, keep_units, keep_jumps)
+    for src, text in edits.items():
+        src.write_text(text, encoding="utf-8")
+    # the jump's name is its function's now, where every call to it was routed
+    info = json.loads(path.read_text(encoding="utf-8"))
+    for j, t in every.items():
+        if j in left or f"D_{j:08X}" not in names:
+            continue
+        name = names.pop(f"D_{j:08X}")
+        names.setdefault(f"func_{t:08X}", name)
+    if names != (info.get("names") or {}):
+        path.write_text(json.dumps({**info, "names": dict(sorted(names.items()))}, indent=1), encoding="utf-8")
+    return len({j for pairs in changed.values() for j in pairs}), len(edits)
+
+
+def _only_jumps(pe: PE, fn: dict, jumps: dict[int, int]) -> bool:
+    """Whether a function's bytes are only jumps of the table and padding."""
+    k, end = fn["addr"], fn["addr"] + fn["size"]
+    while k < end:
+        if k in jumps:
+            k += INCREMENTAL_BYTES
+        elif pe.read(k, 1) and pe.read(k, 1)[0] in PADDING:
+            k += 1
+        else:
+            return False
+    return True
+
+
 def import_thunk(pe: PE, addr: int) -> str | None:
     """The import an import thunk at `addr` jumps to (`jmp dword ptr [__imp__Name]`, or on x64 `jmp qword ptr [rip +
     __imp_Name]`: "RtlUnwind"), or None."""
@@ -2519,6 +2697,7 @@ def reanalyse_program(root: Path, version: str, found: dict[str, list[dict]], ke
     _save_functions(path, info, pes, new)
     mark_exception_stubs(root, version)
     name_import_thunks(root, version, keep)
+    rename_incremental(root, version)  # (the calls to the incremental linker's jumps named by their functions again)
     before = {(f.addr, f.size) for f in old}
     changed = sum((f.addr, f.size) not in before for f in new)
     return (f"{len(new):,} functions (it had {len(old):,}), {changed:,} of them new or with another extent"
@@ -3711,6 +3890,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
     if thunks := name_import_thunks(root, version):
         log(f"{thunks} of them are import thunks the linker adds for calls to DLLs' functions: named after the "
             "function each calls, and set aside")
+    if routed := len({j for pairs in route_incremental(root, version).values() for j in pairs}):
+        log(f"it was linked incrementally: the calls to the {routed:,} jumps of the linker's table name the functions "
+            "they go to")
     if merged := split_merged_functions(root, version):
         log(f"{merged} functions the analysis took for part of the one before them are functions of their own")
     if library := set_library_aside(root, version, known, compiler)[0]:

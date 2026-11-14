@@ -742,6 +742,9 @@ class Compiled:
                     # (the C names a number as an address, D_0098967F for 9999999: the game has the number)
                     struct.pack_into("<I", body, off - p["lo"], relink.image.word(fn["addr"] + off - p["lo"]))
                     continue
+                if s["cls"] == EXTERNAL and s["name"] in relink.through and kind in (DIR32, REL32):
+                    obj.reloc(made, off - p["lo"], obj.extern(relink.through[s["name"]], True), kind)
+                    continue  # (through its jump, as the linker sent it)
                 if constant(p, reloc):
                     place = fn["addr"] + off - p["lo"]
                     word = relink.image.word(place)
@@ -807,6 +810,15 @@ class Relink:
         self.functions = sorted([*self.functions, *self.leads.values()], key=lambda fn: fn["addr"])
         self.by_name = {fn["name"]: fn for fn in self.functions}
         self.starts = {fn["addr"]: fn["name"] for fn in self.functions}
+        # an incrementally linked program ("incremental": [jump, function], tools/rebuild.py): the code's calls to a
+        # function, and its address, go to its jump in the linker's table (named as the data names it), the
+        # table's own jumps to the function
+        pairs = [(j, t) for j, t in info.get("incremental", []) if t in self.starts]
+        self.through = {self.starts[t]: self.starts.get(j, f"_D_{j:08X}") for j, t in pairs}
+        self.through_at = {self.starts[t]: j for j, t in pairs}
+        self.table = {self.starts[j] for j, _ in pairs if j in self.starts}
+        self.table |= {lead["name"] for lead in self.leads.values()
+                       if any(lead["addr"] <= j < lead["addr"] + lead["size"] for j, _ in pairs)}
         self.lows = [fn["addr"] for fn in self.functions]
         # each function up to where the next starts, or its section ends: what aligns the next (int3s, nops) too
         self.extent = {}
@@ -989,6 +1001,8 @@ class Relink:
                     local[addend] = obj.symbol(f"$L{fn['addr'] + addend:08X}", addend, number, cls=LABEL)
                 symbol, inline = local[addend], 0
             else:
+                if fn["name"] not in self.table:
+                    name = self.through.get(name, name)
                 if kind == REL32 and (m := DATA_SYMBOL.fullmatch(name)) and \
                         self.image.section_of(int(m.group(1), 16)) is None:
                     name += RVA  # (a jump outside the program: LINK.EXE takes a number it jumps to as an RVA)
@@ -1060,6 +1074,8 @@ class Relink:
                 struct.pack_into("<i", code, off - lo, inline)
             elif s["section"] == -1:  # (a number)
                 symbol = obj.symbol(s["name"], s["value"], -1) if s["name"] not in obj.index else obj.index[s["name"]]
+            elif fn["name"] not in self.table and s["name"] in self.through:
+                symbol = obj.extern(self.through[s["name"]], True)  # (through its jump, as the linker sent it)
             else:
                 symbol = obj.extern(s["name"], kind == REL32 or s["type"] == FUNCTION)
             obj.reloc(number, off - lo, symbol, kind)
@@ -1397,6 +1413,8 @@ class Relink:
                          and DATA_SYMBOL.fullmatch(s["name"]) and s["value"] <= at), key=lambda s: s["value"],
                         default=None)
             return None if owner is None else int(owner["name"][3:], 16) + at - owner["value"]
+        if name in self.through_at:
+            return self.through_at[name] + inline
         if name in self.by_name:
             return self.by_name[name]["addr"] + inline
         slot = self.slot_named.get(name) or self.slot_named.get(re.sub(r"@\d+$", "", name))

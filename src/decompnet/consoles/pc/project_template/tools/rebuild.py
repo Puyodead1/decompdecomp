@@ -79,6 +79,11 @@ class Program:
             _, va, size, offset = struct.unpack_from("<IIII", exe, at + 24 + opt + 40 * i + 8)
             self.sections.append((base + va, size, offset))
         self.where = {fn["name"]: fn["addr"] for fns in info["units"].values() for fn in fns}
+        # an incrementally linked program: a call to a function, or its address, goes to its jump in the linker's
+        # table ("incremental": [jump, function]), but the table's own jumps go to the functions
+        named = {fn["addr"]: fn["name"] for fns in info["units"].values() for fn in fns}
+        self.through = {named[t]: j for j, t in info.get("incremental", []) if t in named}
+        self.table = {named[j] for j, _ in info.get("incremental", []) if j in named}
         self.where.update(self._imports(exe, at, base))
         self.where.setdefault("__ImageBase", base)
 
@@ -110,9 +115,11 @@ class Program:
             desc += 20
         return out
 
-    def address(self, name: str) -> int | None:
-        """The address a symbol names: a function, data by its address, an import (as C declares it too:
-        __imp__Sleep@4 is the slot of Sleep)."""
+    def address(self, name: str, through: bool = True) -> int | None:
+        """The address a symbol names: a function (its jump, `through` the linker's table where it has one), data by
+        its address, an import (as C declares it too: __imp__Sleep@4 is the slot of Sleep)."""
+        if through and name in self.through:
+            return self.through[name]
         if name in self.where:
             return self.where[name]
         if name in ABSOLUTE:
@@ -167,7 +174,7 @@ def delinked(program: Program, obj: bytes) -> list[tuple[str, int, bytes]]:
         for off, index, kind in sec["relocs"] if start is not None else ():
             symbol, value, section, _ = symbols[index]
             target = (None if starts[section - 1] is None else starts[section - 1] + value) if section > 0 \
-                else program.address(symbol)
+                else program.address(symbol, through=name not in program.table)
             if target is None:
                 code = None
                 break

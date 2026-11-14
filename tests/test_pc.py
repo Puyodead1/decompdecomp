@@ -5115,3 +5115,60 @@ def test_you_set_a_files_compiler_and_flags_together_kept_only_where_its_matches
     breaks["yes"] = False
     net.forks.set_file_compiler_by_hand("p", source, "MSVC/4.2", flags=["/Od"])
     assert state == {"compiler": "MSVC/4.2", "flags": ["/Od"]} and committed == ["c.json", "f.json"]
+
+
+def _incremental_program() -> tuple[bytes, list[dict]]:
+    """An incrementally linked program: the linker's table of 8 jumps at 0x401000 (one to each function, 0x401030 on,
+    0x10 apart), the first function calling the second and the third through their jumps, the third calling itself
+    through its own."""
+    def jump(at: int, to: int) -> bytes:
+        return b"\xe9" + struct.pack("<i", to - (at + 5))
+
+    def call(at: int, to: int) -> bytes:
+        return b"\xe8" + struct.pack("<i", to - (at + 5))
+    fns = [0x401030 + 0x10 * k for k in range(8)]
+    table = b"".join(jump(0x401000 + 5 * k, f) for k, f in enumerate(fns)).ljust(0x30, b"\xcc")
+    bodies = [call(fns[0], 0x401005) + call(fns[0] + 5, 0x40100A) + b"\xc3",
+              b"\xc3", call(fns[2], 0x40100A) + b"\xc3", *[b"\xc3"] * 5]
+    program = table + b"".join(body.ljust(0x10, b"\xcc") for body in bodies)
+    return program, [_row(0x401000, 0x401028), *[_row(f, f + 0x10) for f in fns]]
+
+
+def test_an_incrementally_linked_games_calls_name_the_functions_its_jumps_go_to(tmp_path):
+    """A debug-built Visual C++ 6.0 game's calls all went to the incremental linker's jumps (D_00401564), so its C
+    called the jumps, and polishing named a jump and its function apart (normalize3D, vec3_normalizeInPlace): 863
+    of the 1,029 jumps its C called had their function named, not themselves. A call names the function now, the C
+    by the function's name (the jump's, where only the jump had one), the table is set aside, and the program
+    still rebuilds byte for byte (rebuild.py sends each call to its jump, as the linker did). A file that defines
+    the function it calls through a jump keeps its jumps."""
+    program, rows = _incremental_program()
+    root = _project(tmp_path, program, rows)
+    assert scratch_pe.incremental_jumps(scratch_pe.read_pe((root / "orig" / "game.exe").read_bytes())) == {
+        0x401000 + 5 * k: 0x401030 + 0x10 * k for k in range(8)}
+    config = root / "config" / "game" / "functions.json"
+    info = json.loads(config.read_text())
+    assert info["units"]["text_00401030"][0]["relocs"] == [[1, scratch_pe.REL32, "_D_00401005", 0],
+                                                            [6, scratch_pe.REL32, "_D_0040100A", 0]]
+    info["names"] = {"D_00401005": "helper", "func_00401050": "third"}
+    config.write_text(json.dumps(info))
+    first, third = root / "src" / "auto" / "text_00401030.cpp", root / "src" / "auto" / "text_00401050.cpp"
+    first.write_text('extern "C" void helper(void);\nextern "C" void D_0040100A(void);\n'
+                     'extern "C" void func_00401030(void) { helper(); D_0040100A(); }\n')
+    third.write_text('extern "C" void D_0040100A(void);\nextern "C" void third(void) { D_0040100A(); }\n')
+    assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
+    assert scratch_pe.rename_incremental(root, "game") == (2, 1)
+    info = json.loads(config.read_text())
+    assert info["units"]["text_00401030"][0]["relocs"] == [[1, scratch_pe.REL32, "_func_00401040", 0],
+                                                            [6, scratch_pe.REL32, "_func_00401050", 0]]
+    assert info["units"]["text_00401050"][0]["relocs"] == [[1, scratch_pe.REL32, "_D_0040100A", 0]]  # (its own)
+    assert first.read_text() == ('extern "C" void helper(void);\nextern "C" void third(void);\n'
+                                 'extern "C" void func_00401030(void) { helper(); third(); }\n')
+    assert "D_0040100A" in third.read_text()
+    assert info["names"] == {"func_00401040": "helper", "func_00401050": "third"}  # (the jump's name, its function's)
+    assert [0x401005, 0x401040] in info["incremental"]
+    assert info["units"]["text_00401000"][0]["generated"] == scratch_pe.INCREMENTAL_WHY
+    names = _template_tool("names")
+    assert names.address_of(b"_helper", names.real_names(info)) == b"func_00401040"
+    _delink(root)
+    assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
+    assert scratch_pe.rename_incremental(root, "game") == (0, 0)  # (done)
