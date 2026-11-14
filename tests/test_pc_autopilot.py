@@ -175,8 +175,9 @@ def test_files_whose_functions_keep_a_frame_build_with_oy_minus():
 
 
 def test_pc_search_flags_tries_the_frame_pointer_size_and_inlining():
+    """And /Od: a 6.0 game's RSA MD5 was built unoptimised by Visual C++ 4.x."""
     pc = consoles.get("pc")
-    assert pc.flag_variants([]) == [[], ["/Oy-"], ["/O1"], ["/Ob1"], ["/O1", "/Oy-"], ["/GS"]]
+    assert pc.flag_variants([]) == [[], ["/Oy-"], ["/O1"], ["/Ob1"], ["/O1", "/Oy-"], ["/GS"], ["/Od"]]
     assert pc.flag_variants(["/Oy-"])[:2] == [["/Oy-"], []]  # the file's own first, then without it
     assert consoles.get("gc").flag_variants(["-O4"]) == [["-O4"]] and consoles.get("gc").file_flags(None, "x") is None
 

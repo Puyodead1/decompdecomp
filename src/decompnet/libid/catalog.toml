@@ -1,0 +1,339 @@
+# Libraries decompdecomp recognises in a game (libid/__init__.py reads this). One [[library]] per library:
+#   id, name           what it's called (id: libs/<id>-<version> is where its source goes)
+#   kind               "source": released as source, a decomp uses it; "middleware": no source anywhere;
+#                      "algorithm": code everyone copies from one reference (MD5 from RFC 1321); "runtime": the
+#                      compiler's own library (the console's import sets it aside by the compiler's own copy)
+#   home               where it's from, for the user to read
+#   download           its source for a version, {version} filled in (only where that address is reliable)
+#   strings            regular expressions over the program's text, any one of which says it's there; a group
+#                      named "version" gives its version
+#   versions           regular expressions only read for its version once a `strings` one said it's there
+#   constants          32-bit words its code holds (immediates or tables), each a fingerprint
+#   needs              how many different `constants` one function must hold to be the library's
+#   companions         words that alone say little (MD5's start values are SHA-1's too): a function holding
+#                      `needs` of them counts only beside one of the library's own functions
+#   bytes              byte strings its tables hold (AES's S-box), hex
+#   aside              true: functions found by its constants are set aside as its code without asking
+
+[[library]]
+id = "md5"
+name = "MD5 (RSA Data Security's reference code, RFC 1321)"
+kind = "algorithm"
+home = "https://www.rfc-editor.org/rfc/rfc1321"
+strings = ['RSA Data Security, Inc\. MD5']
+constants = [0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+             0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821]
+needs = 4
+companions = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]
+aside = true
+
+[[library]]
+id = "sha1"
+name = "SHA-1 (RFC 3174's reference code, or a copy of it)"
+kind = "algorithm"
+home = "https://www.rfc-editor.org/rfc/rfc3174"
+constants = [0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6]
+needs = 3
+companions = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0]
+aside = true
+
+[[library]]
+id = "sha256"
+name = "SHA-256"
+kind = "algorithm"
+home = "https://csrc.nist.gov/pubs/fips/180-4/upd1/final"
+constants = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1]
+needs = 3
+companions = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a]
+aside = true
+
+[[library]]
+id = "rc5"
+name = "RC5 (RSA's reference code, RFC 2040)"
+kind = "algorithm"
+home = "https://www.rfc-editor.org/rfc/rfc2040"
+constants = [0xb7e15163, 0x9e3779b9, 0x61c88647]
+needs = 2
+aside = true
+
+[[library]]
+id = "tea"
+name = "TEA/XTEA"
+kind = "algorithm"
+home = "https://en.wikipedia.org/wiki/XTEA"
+constants = [0x9e3779b9, 0xc6ef3720, 0x61c88647]
+needs = 2
+aside = false
+
+[[library]]
+id = "blowfish"
+name = "Blowfish (Bruce Schneier's reference code)"
+kind = "algorithm"
+home = "https://www.schneier.com/academic/blowfish/download/"
+constants = [0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344, 0xa4093822, 0x299f31d0]
+needs = 3
+aside = true
+
+[[library]]
+id = "aes"
+name = "AES/Rijndael (the reference rijndael-alg-fst.c, or a copy of it)"
+kind = "algorithm"
+home = "https://csrc.nist.gov/projects/cryptographic-standards-and-guidelines/archived-crypto-projects/aes-development"
+constants = [0xc66363a5, 0xf87c7c84, 0xee777799, 0xf67b7b8d, 0xa56363c6, 0x847c7cf8]
+needs = 2
+bytes = ["637c777bf26b6fc53001672bfed7ab76"]
+aside = true
+
+[[library]]
+id = "mt19937"
+name = "Mersenne Twister (Matsumoto and Nishimura's mt19937ar.c)"
+kind = "algorithm"
+home = "http://www.math.sci.hiroshima-u.ac.jp/m-mat/MT/emt.html"
+constants = [0x9908b0df, 0x9d2c5680, 0xefc60000, 0x6c078965]
+needs = 2
+aside = true
+
+[[library]]
+id = "crc32"
+name = "CRC-32 table (zlib's, or a copy of it)"
+kind = "algorithm"
+home = "https://zlib.net/"
+constants = [0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419]
+needs = 3
+aside = false
+
+[[library]]
+id = "zlib"
+name = "zlib"
+kind = "source"
+home = "https://zlib.net/"
+download = "https://zlib.net/fossils/zlib-{version}.tar.gz"
+strings = ['(?:in|de)flate (?P<version>\d+\.\d+(?:\.\d+)*) Copyright 1995-\d{4} (?:Jean-loup Gailly|Mark Adler)',
+           'incorrect header check', 'invalid distance too far back']
+aside = true
+
+[[library]]
+id = "libpng"
+name = "libpng"
+kind = "source"
+home = "http://www.libpng.org/pub/png/libpng.html"
+strings = ['libpng version (?P<version>\d+\.\d+\.\d+)', 'Incompatible libpng version in application and library',
+           'Glenn Randers-Pehrson', 'Andreas Dilger', 'Guy Eric Schalnat']
+aside = true
+
+[[library]]
+id = "libjpeg"
+name = "libjpeg (the Independent JPEG Group's)"
+kind = "source"
+home = "https://www.ijg.org/"
+download = "https://www.ijg.org/files/jpegsrc.v{version}.tar.gz"
+strings = ['Copyright \(C\) \d{4}, Thomas G\. Lane', 'Bogus JPEG colorspace']
+versions = ['(?P<version>[6-9][a-z]?)  \d{1,2}-[A-Z][a-z]{2}-\d{4}']
+aside = true
+
+[[library]]
+id = "lua"
+name = "Lua"
+kind = "source"
+home = "https://www.lua.org/"
+download = "https://www.lua.org/ftp/lua-{version}.tar.gz"
+strings = ['\$Lua(?:Version)?: Lua (?P<version>\d+\.\d+(?:\.\d+)?)', 'Lua (?P<version>\d+\.\d+(?:\.\d+)?)  Copyright \(C\)',
+           "attempt to call a nil value"]
+aside = true
+
+[[library]]
+id = "bzip2"
+name = "bzip2"
+kind = "source"
+home = "https://sourceware.org/bzip2/"
+download = "https://sourceware.org/pub/bzip2/bzip2-{version}.tar.gz"
+strings = ['bzip2/libbzip2: internal error number']
+versions = ['(?P<version>1\.0\.\d+), \d+-[A-Z][a-z]{2}-\d{4}']
+aside = true
+
+[[library]]
+id = "libvorbis"
+name = "libvorbis"
+kind = "source"
+home = "https://xiph.org/vorbis/"
+strings = ['Xiph\.Org libVorbis I \d{8}', 'Xiph\.Org libVorbis (?P<version>\d+\.\d+\.\d+)']
+aside = true
+
+[[library]]
+id = "libtheora"
+name = "libtheora"
+kind = "source"
+home = "https://theora.org/"
+strings = ['Xiph\.Org libtheora (?P<version>\d+\.\d+(?:\.\d+)?)', 'Xiph\.Org libTheora I \d{8}']
+aside = true
+
+[[library]]
+id = "freetype"
+name = "FreeType"
+kind = "source"
+home = "https://freetype.org/"
+strings = ['FreeType (?P<version>\d+\.\d+\.\d+)', 'FT_Init_FreeType']
+aside = true
+
+[[library]]
+id = "expat"
+name = "Expat"
+kind = "source"
+home = "https://libexpat.github.io/"
+strings = ['expat_(?P<version>\d+\.\d+\.\d+)']
+aside = true
+
+[[library]]
+id = "sqlite"
+name = "SQLite"
+kind = "source"
+home = "https://www.sqlite.org/"
+strings = ['SQLite format 3']
+versions = ['(?P<version>3\.\d+\.\d+)\s+\d{4}-\d\d-\d\d \d\d:\d\d:\d\d']
+aside = true
+
+[[library]]
+id = "openssl"
+name = "OpenSSL"
+kind = "source"
+home = "https://www.openssl.org/source/"
+strings = ['OpenSSL (?P<version>\d+\.\d+\.\d+[a-z]*)', 'SSLeay (?P<version>\d+\.\d+\.\d+[a-z]*)']
+aside = true
+
+[[library]]
+id = "sdl"
+name = "SDL"
+kind = "source"
+home = "https://www.libsdl.org/"
+strings = ['SDL_VIDEODRIVER', 'Simple DirectMedia Layer', 'SDL_mixer']
+aside = true
+
+[[library]]
+id = "tinyxml"
+name = "TinyXML"
+kind = "source"
+home = "https://sourceforge.net/projects/tinyxml/"
+strings = ['Error parsing Element\.', 'TiXml']
+aside = true
+
+[[library]]
+id = "stlport"
+name = "STLport"
+kind = "source"
+home = "https://sourceforge.net/projects/stlport/"
+strings = ['stlp_std', 'STLport']
+aside = true
+
+[[library]]
+id = "mad"
+name = "libmad"
+kind = "source"
+home = "https://www.underbit.com/products/mad/"
+strings = ['MPEG Audio Decoder (?P<version>\d+\.\d+\.\d+\w*)']
+aside = true
+
+[[library]]
+id = "speex"
+name = "Speex"
+kind = "source"
+home = "https://www.speex.org/"
+strings = ['speex-(?P<version>\d+\.\d+[\w.]*)']
+aside = true
+
+[[library]]
+id = "bink"
+name = "Bink Video (RAD Game Tools)"
+kind = "middleware"
+home = "https://www.radgametools.com/"
+strings = ['Bink(?:W32)?(?:Open|Close|DoFrame)', 'RAD Game Tools', 'binkw32\.dll']
+
+[[library]]
+id = "miles"
+name = "Miles Sound System (RAD Game Tools)"
+kind = "middleware"
+home = "https://www.radgametools.com/"
+strings = ['Miles Sound System', '_AIL_\w+@\d+', 'mss32\.dll']
+
+[[library]]
+id = "fmod"
+name = "FMOD"
+kind = "middleware"
+home = "https://www.fmod.com/"
+strings = ['FMOD (?:Ex )?(?:Version|version) ?(?P<version>\d+\.\d+)', 'fmod(?:ex)?\.dll', 'FSOUND_\w+']
+
+[[library]]
+id = "havok"
+name = "Havok"
+kind = "middleware"
+home = "https://www.havok.com/"
+strings = ['Havok-(?P<version>\d+\.\d+\.\d+)', 'hkBaseSystem']
+
+[[library]]
+id = "physx"
+name = "PhysX/NovodeX"
+kind = "middleware"
+home = "https://developer.nvidia.com/physx-sdk"
+strings = ['PhysXLoader', 'NovodeX', 'NxPhysics']
+
+[[library]]
+id = "renderware"
+name = "RenderWare"
+kind = "middleware"
+home = "https://en.wikipedia.org/wiki/RenderWare"
+strings = ['RenderWare', 'rwID_\w+', 'Rw[A-Z]\w+Create']
+
+[[library]]
+id = "gamebryo"
+name = "Gamebryo/NetImmerse"
+kind = "middleware"
+home = "https://en.wikipedia.org/wiki/Gamebryo"
+strings = ['NetImmerse File Format', 'Gamebryo File Format']
+
+[[library]]
+id = "criware"
+name = "CRI Middleware (ADX, Sofdec)"
+kind = "middleware"
+home = "https://www.criware.com/"
+strings = ['\(c\)CRI', 'CRI ADX', 'CRI Sofdec', 'CRI Middleware']
+
+[[library]]
+id = "gamespy"
+name = "GameSpy SDK"
+kind = "middleware"
+home = "https://en.wikipedia.org/wiki/GameSpy"
+strings = ['gamespy\.(?:com|net)']
+
+[[library]]
+id = "scaleform"
+name = "Scaleform GFx"
+kind = "middleware"
+home = "https://en.wikipedia.org/wiki/Scaleform_GFx"
+strings = ['Scaleform', 'GFxPlayer']
+
+[[library]]
+id = "granny"
+name = "Granny 3D (RAD Game Tools)"
+kind = "middleware"
+home = "https://www.radgametools.com/"
+strings = ['granny2\.dll', 'GrannyReadEntireFile']
+
+[[library]]
+id = "wwise"
+name = "Wwise (Audiokinetic)"
+kind = "middleware"
+home = "https://www.audiokinetic.com/"
+strings = ['Audiokinetic', 'AK::SoundEngine']
+
+[[library]]
+id = "speedtree"
+name = "SpeedTree"
+kind = "middleware"
+home = "https://store.speedtree.com/"
+strings = ['SpeedTree', 'CSpeedTreeRT']
+
+[[library]]
+id = "dinkumware"
+name = "Dinkumware's C++ library (the one Visual C++ ships)"
+kind = "runtime"
+home = "https://www.dinkumware.com/"
+strings = ['P\.J\. Plauger, licensed by Dinkumware']
