@@ -210,7 +210,7 @@ def test_a_file_with_flags_of_its_own_is_built_with_them(tmp_path, monkeypatch):
     subprocess.run([sys.executable, "tools/configure.py", "T", "--msvc", str(tmp_path / "msvc")], cwd=root, check=True,
                    capture_output=True)
     ninja = (root / "build.ninja").read_text()
-    block = lambda unit: ninja.split(f"build build/T/src/auto/{unit}.obj: cl", 1)[1].split("\nbuild ", 1)[0]  # noqa: E731
+    block = lambda unit: ninja.split(f"build build/T/raw/src/auto/{unit}.obj: cl_raw", 1)[1].split("\nbuild ", 1)[0]  # noqa: E731
     assert "cflags = /Oy-" in block("a") and "cflags = /Oy-" not in block("b")
     assert "config/T/file_flags.json" in ninja.split("build build.ninja: configure", 1)[1].split("\n\n", 1)[0]
     scratch_pe.set_file_flags(root, "T", "src/auto/a.cpp", [])

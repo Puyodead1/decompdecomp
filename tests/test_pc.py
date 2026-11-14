@@ -78,7 +78,9 @@ def test_generated_pc_builds_quote_paths_and_only_process_successful_objects(tmp
         compiler.chmod(0o755)
     # Only command routing is under test: no fake object ever reaches the real judge.
     (root / "tools/names.py").write_text('import sys\nfrom pathlib import Path\n'
-                                        'out = Path(sys.argv[2])\nassert out.read_text() == "object"\n'
+                                        'made = Path(sys.argv[2])\nassert made.read_text() == "object"\n'
+                                        'out = Path(sys.argv[3]) if len(sys.argv) > 3 else made\n'
+                                        'out.parent.mkdir(parents=True, exist_ok=True)\nout.write_text("object")\n'
                                         'out.with_suffix(".named").write_text("processed")\n')
     # every compiler pack: the build takes the one with its version (the 2005-2010 pack has no 6.0)
     newer = tmp_path / "newer pack"
@@ -92,6 +94,14 @@ def test_generated_pc_builds_quote_paths_and_only_process_successful_objects(tmp
     assert obj.with_suffix(".named").read_text() == "processed"
     args = record.read_text(encoding="utf-8-sig").splitlines()
     assert "/I" + str(compiler_root / "6.0/Include") in args and "/GX" in args
+    # a rename (functions.json's names change): the names step runs again, the compiler doesn't (a 2005 PC game's
+    # 1,872 files were all compiled again on every rename, minutes each, and agents' tools timed out waiting)
+    record.unlink()
+    obj.with_suffix(".named").unlink()
+    config.write_text(json.dumps({"exe": "orig/test.exe", "units": {"sample": {}}, "names": {"func_00401000": "f"}}))
+    ok, output = project.run(["ninja", "all_source"], log=lambda _: None, timeout=30)
+    assert ok, output
+    assert obj.with_suffix(".named").exists() and not record.exists()
     obj.with_suffix(".named").unlink()
     obj.unlink()
     source.write_text("int sample(void) { return 2; }\n")  # also exercise configure.py's regeneration command
@@ -261,7 +271,7 @@ def test_visual_cpp_2017_files_build_through_wine_with_windows_paths(tmp_path, m
     wine = next(r for r in ran if r[0] == "wine")
     assert wine[1] == str(prefix) and wine[2].lower() == str(packs / "14.16/Bin/cl.exe").lower()  # (a Unix path)
     z = "Z:" + str(packs / "14.16/Include").replace("/", "\\")
-    assert {"/Iinclude", f"/I{z}", "/Fobuild\\TEST\\src\\auto\\new.obj", "src\\auto\\new.cpp"} <= set(wine), wine
+    assert {"/Iinclude", f"/I{z}", "/Fobuild\\TEST\\raw\\src\\auto\\new.obj", "src\\auto\\new.cpp"} <= set(wine), wine
     # the SDK's headers after the compiler's own (Visual C++'s sal.h wins), the project's before both
     z_sdk = "Z:" + str(sdk).replace("/", "\\")
     assert [a for a in wine if a.startswith("/I")] == ["/Iinclude", f"/I{z}", f"/I{z_sdk}"], wine
@@ -322,7 +332,7 @@ def test_the_libraries_in_libs_give_their_headers_to_every_compile(tmp_path, mon
     subprocess.run([sys.executable, "tools/configure.py", "TEST", "--msvc", str(packs)], cwd=root, check=True,
                    capture_output=True, timeout=30)
     text = (root / "build.ninja").read_text()
-    cl = text.split("build build/TEST/src/auto/new.obj", 1)[1].split("\nbuild ", 1)[0]
+    cl = text.split("build build/TEST/raw/src/auto/new.obj", 1)[1].split("\nbuild ", 1)[0]
     assert cl.index("6.0/Include") < cl.index("libs/glut-3.7.6/include") < cl.index("libs/openal-1.1/include")
     assert "config/TEST/library_includes.txt" in text.split("build build.ninja", 1)[1]
 
@@ -3958,7 +3968,7 @@ def test_each_files_compiler_and_flags_are_read_from_the_build():
              "      $includes --output $out --source $in -- /nologo /c /O2 /GX $cflags\n"
              "build build/g/src/auto/a.obj: cl src/auto/a.cpp $\n    | include/common.h\n  cl = /opt/7.0/CL.EXE\n"
              "  includes = --include /opt/7.0/Include\n  runner = --wrapper /opt/wibo\n  cflags = /Oy- /GS\n"
-             "build build/g/src/auto/b.obj: cl src/auto/b.cpp\n  cl = /opt/14.16/cl.exe\n"
+             "build build/g/raw/src/auto/b.obj: cl_raw src/auto/b.cpp\n  cl = /opt/14.16/cl.exe\n"
              "  includes = --include /opt/14.16/Include --include /opt/sdk/ucrt\n  runner = --wine\n")
     assert stl.unit_compilers(ninja) == {
         "build/g/src/auto/a.obj": ("/opt/wibo", "/opt/7.0/CL.EXE", ("/opt/7.0/Include",),

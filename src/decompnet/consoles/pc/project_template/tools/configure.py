@@ -198,6 +198,11 @@ def main() -> None:
         # $runner: what runs the file's compiler (wibo, wine or nothing: runner())
         n.rule("cl", q(compiler).replace("$", "$$") + " $runner --compiler $cl $includes --output $out "
                "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
+        n.rule("cl_raw", q(compiler).replace("$", "$$") + " $runner --compiler $cl $includes --output $out --no-names "
+               "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
+        # the names the project gave (functions.json's), put in each object as a step of its own: a rename runs this
+        # on every object, never the compiler, and an object it doesn't change stays as it was (restat)
+        n.rule("names", f"{PY} tools/names.py {CONFIG.as_posix()} $in $out", restat=True)
         n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
 
         exe = Path(info["exe"]).as_posix()
@@ -237,7 +242,9 @@ def main() -> None:
             src_posix = src.as_posix()
             version = versions.get(src_posix, MSVC_VERSION)
             cl, includes = msvc(version)
-            n.build(obj, "cl", src_posix, implicit=[*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"],
+            raw = (BUILD / "raw" / src.with_suffix(".obj")).as_posix()
+            n.build(obj, "names", raw, implicit=[CONFIG.as_posix(), "tools/names.py"])
+            n.build(raw, "cl_raw", src_posix, implicit=[*headers, "tools/compile.py"],
                     variables={"cl": q([cl]).replace("$", "$$"),
                                "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
                                "runner": q(runner(version)).replace("$", "$$"),

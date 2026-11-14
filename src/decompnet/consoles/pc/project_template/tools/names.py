@@ -98,10 +98,15 @@ def rename(data: bytes, names: dict[bytes, bytes], real: dict[bytes, bytes] | No
 
 
 def main() -> None:
+    """names.py CONFIG OBJECT [OUT]: OBJECT renamed in place, or into OUT. OUT is only written when it changes: a
+    rename (functions.json's names) then remakes no object whose symbols it doesn't touch (the build's restat)."""
     config, obj = Path(sys.argv[1]), Path(sys.argv[2])
+    out = Path(sys.argv[3]) if len(sys.argv) > 3 else obj
     info = json.loads(config.read_text(encoding="utf-8"))
-    data = obj.read_bytes()
-    obj.write_bytes(rename(data, wanted(info), real_names(info)))
+    made = rename(obj.read_bytes(), wanted(info), real_names(info))
+    if out == obj or not out.exists() or out.read_bytes() != made:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(made)
 
 
 if __name__ == "__main__":
