@@ -92,8 +92,11 @@ DATA_READ, DATA_SHOWN = 32, 40  # bytes read of each, globals listed at most
 
 # memory read through a cast and an offset: `*(unsigned int *)(tex + 0x2c)`, `*(short *)((char *)e + 8)`
 OFFSET_READ = re.compile(r"\*\s*\(\s*[\w\s]+\*+\s*\)\s*\(\s*(?:\(\s*[\w\s]+\*+\s*\)\s*)?\w+\s*\+\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)")
-UNTYPED_READING = 3  # the version of reopen_untyped's reading, in the project's config (2: reads the header names,
-# 3: through parameters the debug information types)
+UNTYPED_READING = 4  # the version of reopen_untyped's reading, in the project's config (2: reads the header names,
+# 3: through parameters the debug information types, 4: every read through an offset, types known or not)
+# (4: a PC game with no debug information was "polished" through and through and still read `*(int*)(self + 0x58)`
+# in every function: an agent can tell what a struct is from the code that uses it, as a person would)
+EVERY_OFFSET = 4
 LAYOUT_FUNCTIONS = 2  # functions whose code a guessed layout comes from, for reopen_untyped to polish again for it
 
 
@@ -105,7 +108,8 @@ class Readability:
         `*(unsigned int *)(tex + 0x2c)` for `Tex->flags` among them. Once per project (UNTYPED_READING), for the
         debug information's types: the layouts the code shows are guesses (about 4 in 5 of their fields fall in a
         real one, on a game whose debug information says), and a PC game had 239 of its 692 readable functions with
-        one, so polishing those again (`guesses`) is the user's to ask for."""
+        one, so polishing those again (`guesses`) was the user's to ask for. Since EVERY_OFFSET every one still
+        reading through an offset is, once, types known or not: the job asks for the structs the code shows."""
         proj = self.net.project_row(slug)
         done = self.net.cfg(proj).get("untyped_reading", 0)
         if (not guesses and done >= UNTYPED_READING) or self.net._link(slug):
@@ -123,8 +127,8 @@ class Readability:
                 continue
             # (2: the reads the header names, which polishing now lists; the rest were polished again under 1 and
             # would only be again)
-            if self._named_reads(proj, fn, source) or (
-                    (guesses or done < 1) and self._worth_polishing_again(proj, fn, fork, guesses)):
+            if done < EVERY_OFFSET or self._named_reads(proj, fn, source) or (
+                    guesses and self._worth_polishing_again(proj, fn, fork, guesses)):
                 again.append(fn["id"])
         if dry:  # (how many: what the Polish launcher offers)
             return len(again)
@@ -332,6 +336,7 @@ class Readability:
         self._tidying: dict[tuple[int, str], tuple[int, float]] = {}  # (project, unit) -> (agent, until)
         self._tidy_lock = threading.Lock()  # (helpers claim at once: one file, one helper)
         self._named_asked: set[int] = set()  # functions whose rewrite was sent back once for reads the header names
+        self._offsets_asked: set[int] = set()  # ... and once for reads through offsets no header names yet
 
     def _untidy(self, proj) -> list[str]:
         """The project's source files (units) to tidy, most functions first: every function of the game's in them
@@ -501,6 +506,15 @@ class Readability:
                  "- describe structs, enums and constants in the shared header (edit_context) and use their names here;\n")
         # helpers named two getters of class names "static data" without looking at what the globals held, and each
         # picked its own style (Shape3_Init, Shape2_init, vec3_dot_product)
+        # every job, debug information or not: polished C that still read `*(int*)(self + 0x58)` throughout a PC game
+        # without debug information wasn't readable, and the code says what each field is as well as a symbol would
+        names += ("- no reads or writes through casts and offsets (`*(int*)(self + 0x58)`): work out what the pointer "
+                  "points to from how this function and the others that take it use it (guess_struct gives the "
+                  "offsets and sizes the code uses), declare that struct "
+                  + ("in a header in include/" if fork else "in the shared header") +
+                  " with a field named for each use and `char pad_XX[n]` for the gaps, and write `self->field`. The "
+                  "compiler makes the same code for a field as for its offset; extend a struct that's declared "
+                  "already rather than making a second one;\n")
         names += ("- read_data a global before you name it: what it holds (a string, a table, a constant) says what it "
                   "is;\n- name things in the style the names around them already use.\n")
         # The game's own types for it and what it calls: polished C kept `int tex` and `*(unsigned int *)(tex + 0x2c)`
@@ -654,10 +668,21 @@ class Readability:
         named = self._named_reads(proj, fn, source)
         if named and fn["id"] not in self._named_asked:
             self._named_asked.add(fn["id"])
+            self._offsets_asked.add(fn["id"])  # (sent back once, for either)
             return ("✋ Not judged yet: it still reads through offsets that the header names:\n" + "\n".join(named)
                     + "\nWrite them by name (a field read compiles to the same code as its offset), then "
                     f"make_readable(\"{fn['name']}\", source) again. If the named form doesn't match, send this one "
                     "again and it's judged as it is.")
+        # Once per function too: reads through offsets with no struct at all, whatever the header has
+        if OFFSET_READ.search(source) and fn["id"] not in self._offsets_asked:
+            self._offsets_asked.add(fn["id"])
+            reads = sorted({m.group(0) for m in OFFSET_READ.finditer(source)})
+            return ("✋ Not judged yet: it still reads memory through casts and offsets, which isn't readable:\n"
+                    + "\n".join(f"- `{r}`" for r in reads[:12]) + ("\n- ..." if len(reads) > 12 else "") +
+                    "\nDeclare the struct each pointer points to (guess_struct shows what the code uses; name the "
+                    "fields for what the code does with them, `char pad_XX[n]` for gaps), use its fields, then "
+                    f"make_readable(\"{fn['name']}\", source) again. A field compiles to the same code as its "
+                    "offset. If the struct form really can't match, send this one again and it's judged as it is.")
         # what happened before it's judged: a rename or a header edit committed while it is (a helper sends
         # make_readable and rename_symbol together) wasn't judged with this C, nor this C with it
         since = self.net.store.one("SELECT COALESCE(MAX(id), 0) AS id FROM events WHERE project_id=?", proj["id"])["id"]

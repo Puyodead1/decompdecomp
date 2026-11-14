@@ -257,6 +257,7 @@ def test_without_debug_information_briefs_show_what_calls_return_and_polishing_a
     (structs.recover: one type per function's results), in the brief and the polishing job. Polishing again what
     was made readable through offsets is a guess's worth only when the user asks (the Polish launcher's button)."""
     from decompnet import structs
+    from decompnet.app import readable
     from decompnet.app.engine import layouts
 
     net, slug = _imported(demo, "guesses")
@@ -277,7 +278,8 @@ def test_without_debug_information_briefs_show_what_calls_return_and_polishing_a
         db.execute("UPDATE functions SET readable=1 WHERE project_id=?", (proj["id"],))
         db.execute("UPDATE functions SET status='matched', matched_source=? WHERE id=?",
                    ("int f(int p) { return *(int *)(p + 0x18); }", fn["id"]))
-    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0  # (at start: debug information's only)
+    net._update_cfg(slug, lambda c: c.update(untyped_reading=readable.UNTYPED_READING))  # (once done at start)
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0
     assert net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True, dry=True) == 1
     assert net.store.one("SELECT readable FROM functions WHERE id=?", fn["id"])["readable"] == 1
     assert net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True) == 1

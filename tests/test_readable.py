@@ -142,3 +142,27 @@ def test_the_function_list_tells_polished_functions_and_helpers_say_they_polish(
                       why="", todo="", until=None, stopped_by=None, last_message="", runs=0, restarts=0, error="",
                       started_at=0, usd=0, tokens=0, feed=[], options={"task": "readable"})
     assert s.snapshot()["task"] == "readable"
+
+
+def test_offsets_are_sent_back_once_for_a_struct_debug_information_or_not(matched):
+    """A PC game without debug information was polished through and through and still read `*(int*)(self + 0x58)`
+    in every function: the job asks for the structs the code shows, a rewrite that still reads through offsets is
+    sent back once, and what was polished so before goes on the list again."""
+    net, slug, agent = matched
+    brief = net.readability.claim(agent, slug)
+    assert "guess_struct" in brief and "no reads or writes through casts and offsets" in brief
+    offsets = READABLE.replace("return value;", "return *(s32 *)(value + 0x10);")
+    said = net.readability.submit(agent, slug, "clamp_s32", offsets)
+    assert said.startswith("✋") and "`*(s32 *)(value + 0x10)`" in said and "Declare the struct" in said
+    assert "✋" not in net.readability.submit(agent, slug, "clamp_s32", offsets)  # (the second time it's judged)
+    proj = net._project(slug)
+    with net.store.tx() as db:
+        db.execute("DELETE FROM claims")
+        db.execute("UPDATE functions SET readable=1, matched_source=? WHERE name='clamp_s32' AND project_id=?",
+                   (offsets, proj["id"]))
+    net._update_cfg(slug, lambda c: c.update(untyped_reading=3))  # (polished before EVERY_OFFSET)
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 1
+    assert net._function("clamp_s32", slug)["readable"] == 0
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET readable=1 WHERE name='clamp_s32' AND project_id=?", (proj["id"],))
+    assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0  # (once)
