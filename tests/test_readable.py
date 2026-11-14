@@ -166,3 +166,23 @@ def test_offsets_are_sent_back_once_for_a_struct_debug_information_or_not(matche
     with net.store.tx() as db:
         db.execute("UPDATE functions SET readable=1 WHERE name='clamp_s32' AND project_id=?", (proj["id"],))
     assert net.readability.reopen_untyped(slug, log=lambda *_: None) == 0  # (once)
+
+
+def test_tidying_a_cpp_file_of_a_game_written_in_c_asks_for_c(matched, tmp_path, monkeypatch):
+    """A debug-built Visual C++ 6.0 game written in C was made a project of .cpp files, its C full of extern "C" and
+    one-method classes: tidying one of its C++ files asks for it as C (set_file_language). Not for a .c file, nor a
+    game written in C++."""
+    from decompnet import consoles
+    from decompnet.forks.project import ForkProject
+
+    net, slug, _ = matched
+    proj = net._project(slug)
+    pc = consoles.get("pc")
+    monkeypatch.setattr(net, "cfg", lambda proj: {"platform": "pc"})
+    monkeypatch.setattr(type(pc), "game_language", lambda self, fp: "c")
+    fp = ForkProject(tmp_path)
+    said = net.readability._in_c(proj, fp, "src/auto/text_00401000.cpp")
+    assert 'set_file_language("src/auto/text_00401000.cpp", "c")' in said and "C89" in said
+    assert net.readability._in_c(proj, fp, "src/auto/text_00401000.c") == ""
+    monkeypatch.setattr(type(pc), "game_language", lambda self, fp: "c++")
+    assert net.readability._in_c(proj, fp, "src/auto/text_00401000.cpp") == ""

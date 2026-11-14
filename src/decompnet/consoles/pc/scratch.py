@@ -85,6 +85,14 @@ RICH_COMPILERS = (
     ("12.0", (0xE0, 0xE1, 0xF2, 0xF3), (*range(0xE4, 0xEB), *range(0xF6, 0xFD))),
     ("14", (0x104, 0x105), range(0x108, 0x10F)),  # 2015 and every version since: the build says which
 )
+# The C compiler's and the C++ compiler's ids among them, where comp_id.txt tells them apart (Utc12_C, Utc12_CPP...):
+# a game whose own files were mostly C is written in C (C files, `.c`). A debug-built 6.0 game whose Rich header says
+# 208 files of C and 2 of C++ was made a project of .cpp files, and its agents wrote extern "C" on every declaration
+# and classes of one method for __thiscall calls that were __fastcall ones in C
+RICH_C = (0x0A, 0x1C, 0x5F, 0x6D, 0x83, 0xAA, 0xCE, 0xE0, 0x104)
+RICH_CPP = (0x0B, 0x1D, 0x60, 0x6E, 0x84, 0xAB, 0xCF, 0xE1, 0x105)
+C_SHARE = 4
+RTTI_NAME = b".?AV"  # a class's type descriptor's name (`.?AVCGame@@`): only C++ makes one
 # Visual C++ 2015 to 2026 share their tools' ids: the first build of each (comp_id.txt)
 VC14_BUILDS = ((35503, "14.5"), (30401, "14.3"), (27508, "14.2"), (25017, "14.1"), (0, "14.0"))
 VISUAL_STUDIO = {"2.0": "2.0", "4.0": "4.0", "4.1": "4.1", "4.2": "4.2", "5.0": "5.0", "6.0": "6.0", "7.0": ".NET 2002", "7.1": ".NET 2003", "8.0": "2005", "9.0": "2008", "10.0": "2010",
@@ -593,6 +601,34 @@ def describe(data: bytes) -> Build:
     machine = MACHINES.get(machine_id, f"machine type {machine_id:#x}")
     return Build(machine, version, number, whole, sum(files.values()), wrapper,
                  None if machine == X64 else own_copy(version, number))
+
+
+def program_language(data: bytes) -> str:
+    """The language the game's own files were written in, "c" or "c++": C where the Rich header counts C_SHARE times
+    as many files of C as of C++ from the compiler build that built most of it (describe) and the program has no
+    C++ class's run-time type information; "c++" where it doesn't say (no Rich header, 5.0's one id for both). (The
+    static C runtime's files count as C too, and from 2005 on they're the game's compiler build's: a C++ 2005 puzzle
+    game's header says 206 files of C and 178 of C++, and it has 93 classes' type information.)"""
+    if RTTI_NAME in data:
+        return "c++"
+    try:
+        build = describe(data).build
+    except ForkError:
+        return "c++"
+    c = cpp = 0
+    for product, number, n in rich_builds(data):
+        if build is None or number == build:
+            c += n if product in RICH_C else 0
+            cpp += n if product in RICH_CPP else 0
+    return "c" if c > C_SHARE * cpp else "c++"
+
+
+def source_suffix(root: Path) -> str:
+    """The suffix a new source file of a project gets: its source files' (.c in a project of a game written in C:
+    program_language), .cpp where they're mostly C++ or there are none yet."""
+    files = [p.suffix for p in (root / "src" / "auto").rglob("*") if p.suffix in (".c", ".cpp")] \
+        if (root / "src" / "auto").is_dir() else []
+    return ".c" if files.count(".c") > files.count(".cpp") else ".cpp"
 
 
 def program_versions(data: bytes) -> dict[str, int]:
@@ -2685,10 +2721,11 @@ def reanalyse_program(root: Path, version: str, found: dict[str, list[dict]], ke
     for program, fns in homeless.items():
         added.update({f"{program}/{u}" if program else u: fns for u, fns in units(fns, pes[program]).items()})
     added = {u: fns for u, fns in added.items() if u not in info["units"]}
+    suffix = source_suffix(root)
     for unit, fns in added.items():
         for f in fns:
             f.unit = unit
-        src = root / "src" / "auto" / f"{unit}.cpp"
+        src = root / "src" / "auto" / f"{unit}{suffix}"
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text(f"/* {len(fns)} function{'s' if len(fns) != 1 else ''} from 0x{fns[0].addr:08X}, found by a new "
                        "analysis. */\n#include \"common.h\"\n", encoding="utf-8")
@@ -3321,6 +3358,20 @@ TYPES_H_X64 = TYPES_H.replace("(32-bit x86, Visual C++, written in C++)",
  * what they compile to the original's symbol names, so any C++ name mangling pairs with the game's code. Data:
  * `extern int D_140003000;`. */""")
 
+TYPES_C = ("""/* Basic types for this decompilation (32-bit x86, Visual C++, written in C: the game's own files were C, as
+ * its Rich header says). Agents add structs and prototypes here or in new headers next to it.
+ *
+ * The game's functions are func_<address> and its data D_<address>: write them as C functions with the original's
+ * calling convention (__cdecl, __stdcall or __fastcall, as the code shows; a function taking a pointer in ecx and
+ * edx is __fastcall), and its records as structs. The build gives what they compile to the original's symbol
+ * names. Data: `extern int D_00402034;`. */""")
+
+
+def types_h(language: str) -> str:
+    """common.h for a game written in `language` ("c": program_language)."""
+    return TYPES_C + TYPES_H[TYPES_H.index(" */") + 3:] if language == "c" else TYPES_H
+
+
 # what common.h defines already: the game's typedefs of these names are left out of its types (cheader.Header)
 HEADER_NAMES = {name for pair in re.findall(r"typedef [^;]*\b(\w+);|#define (\w+)", TYPES_H) for name in pair if name}
 DEBUG_TYPES = "debug_types.h"  # include/: the game's own types and globals, from its debug information
@@ -3778,6 +3829,8 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
     args = args or tool_args()
     ensure_ghidra(log)
     pe = read_pe(game.read_bytes())
+    language = program_language(pe.data)  # (its source files .c for a game written in C)
+    suffix = ".c" if language == "c" else ".cpp"
     modules, left_out = find_modules(game, pe)
     if modules or left_out:
         log(f"the game's own DLLs beside {game.name}: {', '.join(m.rel for m in modules) or 'none'}")
@@ -3837,7 +3890,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
         version_of = m.built.pack_version
         if version_of != compiler:  # a DLL built by another Visual C++ than the program builds with its own
             if version_of in own_versions(args) or (toolchains.path(compiler_pack(version_of)) / version_of).is_dir():
-                own.update({f"src/auto/{u}.cpp": version_of for u in made})
+                own.update({f"src/auto/{u}{suffix}": version_of for u in made})
             else:
                 log(f"{m.rel} was built with {m.built.compiler}: its files build with Visual C++ {compiler} until "
                     f"{toolchains.get(compiler_pack(version_of)).name} is installed (Setup), then with try_compiler")
@@ -3855,7 +3908,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
         except OSError:
             shutil.copyfile(source, dest)
     (root / "include").mkdir()
-    types = TYPES_H_X64 if pe.x64 else TYPES_H
+    types = TYPES_H_X64 if pe.x64 else types_h(language)
     (root / "include" / "common.h").write_text(types, encoding="utf-8")
     cfg = root / "tools" / "configure.py"
     text = configure_settings(cfg.read_text(encoding="utf-8"), compiler, pe, log=log, modules=modules,
@@ -3908,7 +3961,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print, in
             "with /Od and /GZ, unoptimised, as the game's were")
     sources = {addr: source for known in debugs for addr, source in known.units.items()}
     for u, fns in groups.items():
-        src = root / "src" / "auto" / f"{u}.cpp"  # C++, as PC games of the time were written (C compiles too)
+        src = root / "src" / "auto" / f"{u}{suffix}"  # C or C++, as the game's own files were (program_language)
         src.parent.mkdir(parents=True, exist_ok=True)
         named = next((sources[f.addr] for f in fns if f.addr in sources), "") \
             if not u.rsplit("/", 1)[-1].startswith("text_") else ""

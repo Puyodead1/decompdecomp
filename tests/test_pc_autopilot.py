@@ -233,7 +233,10 @@ def demo(tmp_path_factory):
         subprocess.run([sys.executable, str(DEMO / "build.py")], check=True)
     work = tmp_path_factory.mktemp("pcauto")
     net = RomNetwork(work / "app.db", work)
-    slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
+    # (the demo is C, as its Rich header says: its story writes C++ in it, classes and methods, as a C++ game's would)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("decompnet.consoles.pc.scratch.program_language", lambda data: "c++")
+        slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
     return net, slug
 
 

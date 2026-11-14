@@ -44,6 +44,7 @@ packs: build.py 10.0SP1). Older projects' configs say "win32" (decomp.dev's id):
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from pathlib import Path
@@ -672,13 +673,16 @@ class WindowsPC(Console):
             return []
         entry = _entries(fp).get(symbol)
         code = entry and scratch.data_bytes(fp.root, fp.manifest or {}, entry["addr"], entry["size"])
-        return drafts.exact(code, entry["addr"], entry["relocs"], known) if code else []
+        found = drafts.exact(code, entry["addr"], entry["relocs"], known) if code else []
+        return [d for d in found if "::" not in d[1]] if _written_in_c(fp, entry) else found
 
     def compilable_draft(self, fp, symbol: str, draft: str, known: str = "") -> tuple[str, str] | None:
         from . import drafts
 
         entries = _entries(fp)
-        return drafts.compilable(draft, symbol, {f"func_{e['addr']:08X}": n for n, e in entries.items()}, known)
+        made = drafts.compilable(draft, symbol, {f"func_{e['addr']:08X}": n for n, e in entries.items()}, known)
+        # (a C file has no classes: a method's draft, `this` in ecx, is C++ only)
+        return None if made and "::" in made[1] and _written_in_c(fp, entries.get(symbol)) else made
 
     # The game's names are its addresses (func_0041B470, D_0066DDA4): objdiff pairs a function with the original's by
     # the symbol tools/names.py gives it, and the report keeps that symbol. A real name is kept by address in
@@ -801,6 +805,16 @@ class WindowsPC(Console):
         names = info.get("names") or {}
         return {fn["name"]: names[key] for fns in info.get("units", {}).values() for fn in fns
                 if (key := f"func_{fn['addr']:08X}") in names}
+
+    def game_language(self, fp) -> str | None:
+        manifest = fp.manifest or {}
+        if manifest.get("created") != "from scratch":
+            return None
+        path = fp.root / manifest.get("game", {}).get("path", f"orig/{manifest.get('version')}.exe")
+        try:
+            return _language(str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return None
 
     def generated_functions(self, fp, version: str) -> dict[str, str]:
         """functions.json's `generated` entries: the exception-handling stubs (scratch.mark_exception_stubs)."""
@@ -939,8 +953,25 @@ def _entries(fp) -> dict[str, dict]:
         return {}
     if (kept := _ENTRIES.get(str(path))) is None or kept[0] != mtime:
         info = _functions_json(fp, (fp.manifest or {})["version"])
-        kept = _ENTRIES[str(path)] = (mtime, {fn["name"]: fn for fns in info.get("units", {}).values() for fn in fns})
+        kept = _ENTRIES[str(path)] = (mtime, {fn["name"]: {**fn, "unit": u} for u, fns in info.get("units", {}).items()
+                                              for fn in fns})
     return kept[1]
+
+
+@functools.lru_cache(maxsize=8)
+def _language(path: str, _mtime: int) -> str:
+    """scratch.program_language of the program at `path`, read once per change of it (every tidy job asks)."""
+    from . import scratch
+
+    return scratch.program_language(Path(path).read_bytes())
+
+
+def _written_in_c(fp, entry: dict | None) -> bool:
+    """Whether a function's source file is C (.c: a game written in C, scratch.program_language), where a draft can't
+    be a class's method."""
+    from . import scratch
+
+    return entry is not None and scratch._source(fp.root, entry["unit"]).endswith(".c")
 
 
 def _address_key(name: str) -> str | None:

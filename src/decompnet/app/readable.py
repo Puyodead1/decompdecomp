@@ -82,7 +82,7 @@ driver files) and read_file them.
 3. Globals and functions it still knows by address (D_..., func_...): read_data shows what a global holds (a string,
    a table, a constant); rename_symbol each once you can tell.
 4. Duplicate declarations, ones nothing uses, stray stubs: gone.
-5. One naming style: the one most of the file uses.
+5. One naming style: the one most of the file uses.{language}
 Then tidy_done("{unit}", summary): what you changed, in a sentence or two.{data}"""
 # The globals a file declares, read for its tidy brief: helpers named two getters of class-name strings "static
 # data" though read_data was in their brief, and in the tidy's; what each one holds, given up front, can't be missed
@@ -406,7 +406,28 @@ class Readability:
             self._tidying[(proj["id"], mine)] = (agent.id, now + CLAIM_SECONDS)
         fp = ForkProject(Path(proj["root"]))
         source = next((u.source for u in fp.units() if u.name == mine), None) or mine
-        return TIDY.format(unit=mine, source=source, data=self._data_held(agent, proj, fp, source)), left
+        return TIDY.format(unit=mine, source=source, data=self._data_held(agent, proj, fp, source),
+                           language=self._in_c(proj, fp, source)), left
+
+    def _in_c(self, proj, fp: ForkProject, source: str) -> str:
+        """The tidy job's step for a C++ file of a game written in C (Console.game_language): a debug-built Visual
+        C++ 6.0 game whose Rich header says 208 files of C and 2 of C++ was made a project of .cpp files, and its
+        agents' C had extern "C" on every declaration and one-method classes for its __fastcall calls. '' else."""
+        if not source.endswith((".cpp", ".cc", ".cxx")):
+            return ""
+        try:
+            from .. import consoles
+
+            language = consoles.get(self.net.cfg(proj).get("platform")).game_language(fp)
+        except Exception:  # (help for the job, never in its way)
+            return ""
+        if language != "c":
+            return ""
+        return ("\n6. Language: the game was written in C (its build record says so), and this file is C++. Write it as "
+                "C: no extern \"C\", no classes (a function that takes its object in ecx is __fastcall, with an "
+                "unused second argument in edx), no references, declarations at the start of each block (Visual C++'s "
+                f"C is C89), then set_file_language(\"{source}\", \"c\"): it's kept only if every match still "
+                "matches; where one doesn't, leave the file C++.")
 
     def _data_held(self, agent: Agent, proj, fp: ForkProject, source: str) -> str:
         """What the globals a source file declares hold in the original (read_data's summary of each), for its tidy

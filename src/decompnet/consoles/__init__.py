@@ -541,6 +541,11 @@ class Console:
         rename_symbol gave it: how its source spells it now."""
         return {}
 
+    def game_language(self, fp) -> str | None:
+        """The language the game's own code was written in, where its program says ("c", "c++"; PC: the Rich header,
+        scratch.program_language): tidying asks for C files in a game written in C. None: it doesn't say."""
+        return None
+
     def generated_functions(self, fp, version: str) -> dict[str, str]:
         """The report's name of each function the project's analysis found no C of its own makes -> why (PC: Visual
         C++'s exception-handling stubs, which compiling the function they belong to makes): measuring sets them aside

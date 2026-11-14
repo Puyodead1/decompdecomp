@@ -727,7 +727,10 @@ def pc(tmp_path_factory):
         subprocess.run([sys.executable, str(DEMO / "build.py")], check=True)
     work = tmp_path_factory.mktemp("pc")
     net = RomNetwork(work / "app.db", work)
-    slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
+    # (the demo is C, as its Rich header says: its story writes C++ in it, classes and methods, as a C++ game's would)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("decompnet.consoles.pc.scratch.program_language", lambda data: "c++")
+        slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
     return net, slug
 
 
@@ -3912,10 +3915,10 @@ def test_a_games_dll_is_source_too_and_builds_and_links_from_it(tmp_path):
     assert "// GLOBAL: DEMOQUEST 0x" in (root / "source" / "data").glob("*.c").__next__().read_text()
     # two functions given C: reccmp finds them by the lines the C's CodeView (/Z7) puts in the PDB, so `ninja reccmp`
     # links those objects whole; a publics-only PDB (the C cut into the game's pieces) paired none of them
-    unit = next(p for p in (root / "src" / "auto").glob("text_00401*.cpp"))
-    unit.write_text(unit.read_text() + "\nextern \"C\" int func_004011A0(int v, int lo, int hi)\n{\n"
+    unit = next(p for p in (root / "src" / "auto").glob("text_00401*.c*"))  # (.c: the demo is C)
+    unit.write_text(unit.read_text() + "\nint func_004011A0(int v, int lo, int hi)\n{\n"
                     "    if (v < lo) {\n        return lo;\n    }\n    if (v > hi) {\n        return hi;\n    }\n"
-                    "    return v;\n}\n\nextern \"C\" int func_004011C0(int v)\n{\n    return v < 0 ? -v : v;\n}\n")
+                    "    return v;\n}\n\nint func_004011C0(int v)\n{\n    return v < 0 ? -v : v;\n}\n")
     ok, out = fp.run(["ninja", "reccmp"], log=lambda *_: None)
     assert ok, out
     from decompnet.consoles.pc import pdb as pdb_reader
@@ -5172,3 +5175,36 @@ def test_an_incrementally_linked_games_calls_name_the_functions_its_jumps_go_to(
     _delink(root)
     assert scratch_pe.check_code(root, "game", log=lambda *_: None)["identical"]
     assert scratch_pe.rename_incremental(root, "game") == (0, 0)  # (done)
+
+
+def test_a_game_written_in_c_is_a_project_of_c_files():
+    """A debug-built Visual C++ 6.0 game's Rich header says 208 files of C and 2 of C++: it was made a project of .cpp
+    files, and its agents wrote extern "C" on every declaration and one-method classes for its __fastcall calls. Its
+    files are .c now, with a common.h that says C. Not where C++ files are many (a 2005 game whose static C runtime
+    counts as C too) or the program has a class's type information."""
+    c_game = _windows_program(rich=[(0x0A, 9782, 208), (0x0B, 9782, 2), (0x0B, 8168, 2), (0x04, 9782, 1)])
+    assert scratch_pe.program_language(c_game) == "c"
+    assert scratch_pe.program_language(c_game + b".?AVCGame@@") == "c++"
+    puzzle = _windows_program(rich=[(0x6D, 50727, 206), (0x6E, 50727, 85), (0x72, 50727, 93), (0x78, 50727, 1)])
+    assert scratch_pe.program_language(puzzle) == "c++"
+    assert scratch_pe.program_language(_windows_program()) == "c++"  # (no Rich header: as before)
+    header = scratch_pe.types_h("c")
+    assert "written in C:" in header and "class" not in header and header.endswith(scratch_pe.TYPES_H[-40:])
+    assert scratch_pe.types_h("c++") == scratch_pe.TYPES_H
+
+
+def test_a_c_file_gets_no_drafts_of_methods(tmp_path, monkeypatch):
+    """A C file can't hold a class's method: a draft that is one isn't offered there."""
+    pc = consoles.get("pc")
+    fp = ForkProject(tmp_path)
+    monkeypatch.setattr(sys.modules[type(pc).__module__], "_entries",
+                        lambda fp: {"_func_00401000": {"addr": 0x401000, "unit": "text_00401000", "relocs": []}})
+    method = ("struct C_00401000 {\n    int func_00401000(void);\n};\n", "int C_00401000::func_00401000(void) {}")
+    from decompnet.consoles.pc import drafts as pc_drafts
+
+    monkeypatch.setattr(pc_drafts, "compilable", lambda *a, **k: method)
+    (tmp_path / "src" / "auto").mkdir(parents=True)
+    (tmp_path / "src" / "auto" / "text_00401000.cpp").write_text("")
+    assert pc.compilable_draft(fp, "_func_00401000", "draft") == method
+    (tmp_path / "src" / "auto" / "text_00401000.cpp").rename(tmp_path / "src" / "auto" / "text_00401000.c")
+    assert pc.compilable_draft(fp, "_func_00401000", "draft") is None
