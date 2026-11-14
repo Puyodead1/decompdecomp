@@ -69,6 +69,11 @@ FILE_COMPILERS = CONFIG.parent / "file_compilers.json"  # {"src/auto/text_004010
 FILE_FLAGS = CONFIG.parent / "file_flags.json"  # {"src/auto/text_00401000.cpp": ["/Oy-"]}: files built with more flags
 BUILD = Path("build") / VERSION
 FACTS = BUILD / "configure.facts"
+# the header folders of the libraries the game uses, from their own source in libs/ (decompdecomp writes it: one folder
+# a line, relative to the project): searched after Visual C++'s own, so `#include <GL/glut.h>` finds GLUT's
+LIBRARY_INCLUDES = CONFIG.parent / "library_includes.txt"
+LIBRARIES = [line.strip() for line in (LIBRARY_INCLUDES.read_text(encoding="utf-8").splitlines()
+                                       if LIBRARY_INCLUDES.exists() else []) if line.strip() and Path(line.strip()).is_dir()]
 
 
 def q(argv: list[str]) -> str:
@@ -87,7 +92,7 @@ def msvc(version: str) -> tuple[str, list[str]]:
     """A Visual C++ version's compiler and its header folders, from the first --msvc folder that has it: its own
     Include, then the ones its includes.txt names (a Windows SDK installed beside the pack), searched in that order."""
     if version in OWN:  # (a compiler of the user's own: an early Xbox game's, its XDK's)
-        return OWN[version][1], OWN[version][2:]
+        return OWN[version][1], [*OWN[version][2:], *LIBRARIES]
     homes = [Path(d) / version for d in args.msvc]
     home, cl = next(((h, p) for h in homes for p in (h / "Bin" / "CL.EXE", h / "Bin" / "cl.exe") if p.exists()),
                     (None, None))
@@ -100,7 +105,7 @@ def msvc(version: str) -> tuple[str, list[str]]:
     if missing := [d for d in extra if not Path(d).is_dir()]:
         sys.exit(f"configure: Visual C++ {version}'s headers aren't where {more} says ({missing[0]}): install it again "
                  "in decompdecomp's Compilers & tools")
-    return str(cl), [str(home / "Include"), *extra]
+    return str(cl), [str(home / "Include"), *extra, *LIBRARIES]
 
 
 def pack_of(version: str) -> Path | None:
@@ -329,7 +334,8 @@ def main() -> None:
         n.build(FACTS.as_posix(), "facts", looked_at, implicit=["tools/configure.py"])
         # (the harness files stay: configure reads what's in them, a driver's HarnessEntry and HARNESS-LINK lines)
         n.build("build.ninja", "configure", ["tools/configure.py", CONFIG.as_posix(), FACTS.as_posix(),
-                                             *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()],
+                                             *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS, LIBRARY_INCLUDES)
+                                               if p.exists()],
                                              *harness_files])
         n.default(["prepare"])
 

@@ -186,6 +186,10 @@ class LibraryIdMixin:
             if "error" in f:
                 log(f"your signatures: {f['file']} wasn't read: {f['error']}")
         started = time.time()
+        try:  # (the libraries the user put in libs/: their headers for every compile)
+            self.scan_libraries(slug)
+        except (OSError, NetworkError) as e:
+            log(f"the libs/ folder wasn't read: {e}")
         codes, rows = self._library_codes(proj)
         program = self._program_file(proj)
         data = program.read_bytes() if program else None
@@ -389,6 +393,5 @@ class LibraryIdMixin:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(top), str(dest))
         log(f"{lib['name']} {lib['version']}'s source is in {dest}")
-        if self.is_rom(proj):
-            self.scan_libraries(slug)
+        self.scan_libraries(slug)
         return {"folder": str(dest), "already": False}

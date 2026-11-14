@@ -163,7 +163,14 @@ class LibraryMixin:
         root = Path(proj["root"])
         found = library_includes(root)
         self._update_cfg(slug, lambda cfg: cfg.update(library_includes=found))
-        return {"libraries": [lib.name for lib in library_folders(root)], "includes": found}
+        built = True
+        if not self.is_rom(proj):  # (a ROM project's compiles read the config; a project's own build, its files)
+            from ...forks.project import ForkProject
+
+            fp = ForkProject(root)
+            version = (fp.manifest or {}).get("version")
+            built = bool(version) and self.console(proj).set_library_includes(fp, version, found)
+        return {"libraries": [lib.name for lib in library_folders(root)], "includes": found, "built": built}
 
     def match_libraries(self, slug: str, log=print) -> dict:
         """Compile every library source file with the game's compiler and set aside, as the library's code, every
