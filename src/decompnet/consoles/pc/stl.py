@@ -50,8 +50,9 @@ PROBES = (
 )
 PROBE_SECONDS = 300
 _USES = re.compile(r"^const std::(\w+)<char>& stl_")
-# a unit's build statement in build.ninja: its object, then its compiler, include folder and flags
-_BUILD = re.compile(r"^build (\S+): cl\b.*\n(?:[ \t]+.*\n)*", re.M)
+# a unit's build statement in build.ninja: its object, then its compiler, include folder and flags (cl_raw: the
+# compiler's object, build/<version>/raw/..., which the names step makes the unit's; cl: a build.ninja before it)
+_BUILD = re.compile(r"^build (\S+): (cl|cl_raw)\b.*\n(?:[ \t]+.*\n)*", re.M)
 
 
 def spoiler(line: str) -> re.Pattern | None:
@@ -90,7 +91,8 @@ def unit_compilers(ninja: str) -> dict[str, tuple[str, str, tuple[str, ...], tup
         includes = _args(get("includes"))
         folders = tuple(includes[k + 1] for k in range(len(includes) - 1) if includes[k] == "--include") or \
             tuple(_args(get("include")))
-        out[m.group(1)] = (run_with, get("cl"), folders, flags + tuple(get("cflags").split()))
+        obj = re.sub(r"^(build/[^/]+)/raw/", r"\1/", m.group(1)) if m.group(2) == "cl_raw" else m.group(1)
+        out[obj] = (run_with, get("cl"), folders, flags + tuple(get("cflags").split()))
     return out
 
 

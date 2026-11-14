@@ -84,6 +84,9 @@ def main() -> int:
     parser.add_argument("--wrapper", default="")  # wibo
     parser.add_argument("--wine", action="store_true")  # through wine: Visual C++ 2015+ (configure.py's WINE_FROM)
     parser.add_argument("--output", required=True)
+    # the compiler's object as it makes it: names.py renames it as a build step of its own (configure.py), so a
+    # rename, which changes functions.json, doesn't compile every file again (1,872 files, minutes, on a 2005 game)
+    parser.add_argument("--no-names", action="store_true")
     parser.add_argument("--source", required=True)
     parser.add_argument("flags", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -120,7 +123,7 @@ def main() -> int:
                 sys.stdout.flush()
     else:
         result = subprocess.run(command, timeout=COMPILE_SECONDS, creationflags=NO_WINDOW)
-    if result.returncode:
+    if result.returncode or args.no_names:
         return result.returncode
     return subprocess.run([sys.executable, str(Path(__file__).with_name("names.py")), args.config, args.output],
                           timeout=COMPILE_SECONDS, creationflags=NO_WINDOW).returncode
