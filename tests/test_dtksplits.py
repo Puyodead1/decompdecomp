@@ -115,6 +115,28 @@ def test_hand_written_code_gets_a_function_hint(tmp_path):
     assert _overlap_hint(tmp_path, "RMCP01", "some other failure") is None
 
 
+def test_a_jump_table_read_past_its_end_is_ended_at_its_first_bad_entry(tmp_path):
+    """A GameCube game's first analysis wrote a jump table longer than the table into symbols.txt, and the next one
+    stopped at the text after it ("Invalid jump table entry 0x2A2A2A2A"): the table ends there, then the analysis
+    runs again; once that's said, it isn't said again."""
+    from decompnet.consoles.gc_wii.scratch import _end_jump_table
+
+    config = tmp_path / "config" / "G97753"
+    config.mkdir(parents=True)
+    (config / "symbols.txt").write_text(
+        "fn_80003100 = .text:0x80003100; // type:function size:0x20\n"
+        "jumptable_8049BECC = .data:0x8049BECC; // type:object size:0x38 scope:local\n", encoding="utf-8")
+    tail = ("Failed: While loading object 'main.dol'\n\nCaused by:\n"
+            "    0: While fetching jump table entries starting at 7:0x8049BECC\n"
+            "    1: Invalid jump table entry 0x2A2A2A2A at 7:0x8049BEF0\n"
+            "    2: Failed to locate section @ 0x2A2A2A2A\nninja: error")
+    assert _end_jump_table(tmp_path, "G97753", b"", tail) == ("0x8049BECC", 0x24)
+    assert (config / "symbols.txt").read_text() == (
+        "fn_80003100 = .text:0x80003100; // type:function size:0x20\n"
+        "jumptable_8049BECC = .data:0x8049BECC; // type:object size:0x24 scope:local\n")
+    assert _end_jump_table(tmp_path, "G97753", b"", tail) is None  # said once: no loop
+    assert _end_jump_table(tmp_path, "G97753", b"", "some other failure") is None
+
 def test_a_link_failure_tries_the_next_newer_linker(monkeypatch, tmp_path):
     from decompnet.consoles.gc_wii import scratch as scratch_dtk
 

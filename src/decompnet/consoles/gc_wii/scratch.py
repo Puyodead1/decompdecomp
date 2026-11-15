@@ -709,6 +709,44 @@ def _declare_function(root: Path, game_id: str, dol: bytes, log_tail: str) -> tu
     return f"0x{address:08X}", size
 
 
+_BAD_JUMP_TABLE = re.compile(r"While fetching jump table entries starting at \d+:0x([0-9A-Fa-f]{8})\s*\n\s*\d+: "
+                             r"Invalid jump table entry 0x[0-9A-Fa-f]+ at \d+:0x([0-9A-Fa-f]{8})")
+
+
+def _end_jump_table(root: Path, game_id: str, dol: bytes, log_tail: str) -> tuple[str, int] | None:
+    """dtk's first analysis of a GameCube game wrote a jump table into symbols.txt longer than the table: its last
+    words were the text after it (0x2A2A2A2A, "****"), and the next analysis, reading the table back, stopped there
+    ("Invalid jump table entry 0x2A2A2A2A"). The table ends at its first word that isn't code. Returns (address,
+    size), or None when there's nothing left to try."""
+    m = _BAD_JUMP_TABLE.search(log_tail)
+    if not m or not re.search(r"While loading object '[^']*\.dol'", log_tail):
+        return None  # (a module's addresses aren't the program's)
+    start, bad = int(m.group(1), 16), int(m.group(2), 16)
+    if not start < bad < start + MAX_FUNCTION_BYTES:
+        return None
+    size = bad - start
+    path = root / "config" / game_id / "symbols.txt"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    line_re = re.compile(rf"^(\S+) = (\S+):0x{start:08X};(.*)$")
+    lines = text.splitlines()
+    at = next((i for i, ln in enumerate(lines) if line_re.match(ln)), None)
+    if at is not None:
+        mm = line_re.match(lines[at])
+        own = re.search(r"\bsize:0x([0-9A-Fa-f]+)", mm.group(3))
+        if own and int(own.group(1), 16) <= size:
+            return None  # already that short, and dtk still fails: something else is wrong
+        rest = re.sub(r"\bsize:0x[0-9A-Fa-f]+", f"size:0x{size:X}", mm.group(3)) if own else \
+            f"{mm.group(3)} size:0x{size:X}" if "//" in mm.group(3) else f" // type:object size:0x{size:X}"
+        lines[at] = f"{mm.group(1)} = {mm.group(2)}:0x{start:08X};{rest}"
+    else:
+        section = next((s for s in _dtk_sections(dol) if s[1] <= start < s[1] + s[2]), None)
+        if section is None:
+            return None
+        lines.append(f"jumptable_{start:08X} = {section[0]}:0x{start:08X}; // type:object size:0x{size:X} scope:local")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f"0x{start:08X}", size
+
+
 def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
     """(name, address, size) of the program's sections, named as dtk names them."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-dol-") as tmp:
@@ -855,6 +893,9 @@ write_asm: true
         elif (declared := _declare_function(root, gid, info["dol"], tail)):
             log(f"the program's exception table has a function decomp-toolkit's analysis stopped short of (a zeroed "
                 f"word inside its code): declared {declared[0]} ({declared[1]} bytes), analysing again")
+        elif (ended := _end_jump_table(root, gid, info["dol"], tail)):
+            log(f"decomp-toolkit read the jump table at {ended[0]} past its end, into the data after it: it ends after "
+                f"{ended[1] // 4} entries now, analysing again")
         elif (dropped := _drop_module(root, gid, tail)):
             need = re.search(r"Failed to locate module (\d+)", tail)
             what = (f"the module {dropped[0]}" if len(dropped) == 1 else
