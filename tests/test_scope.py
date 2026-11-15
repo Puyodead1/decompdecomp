@@ -283,6 +283,8 @@ def test_a_file_whose_functions_are_all_readable_is_tidied_next(tmp_path, monkey
     # then it's reviewed against the game's code: a match proves only the bytes (a struct off by 0x2C, an int that
     # holds a float), by a helper other than the one that tidied it where there is one
     assert net.readability.left(proj) == 1
+    assert "Nothing to take right now" in net.readability.claim(other, slug)  # not its own tidy, fresh
+    net.store.conn.execute("UPDATE events SET created_at=created_at-? WHERE kind='tidied'", (readable.SELF_REVIEW,))
     review = net.readability.claim(agent, slug)
     assert review.startswith("REVIEW A FILE: game (src/game.c)") and 'review_done("game"' in review
     with pytest.raises(NetworkError, match="aren't reviewing"):

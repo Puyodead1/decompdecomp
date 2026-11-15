@@ -106,6 +106,8 @@ beside the game's code (get_function shows each function's original assembly) as
    call on a made-up object, a number cast to a pointer).
 Fix what's wrong with edit_file and rename_symbol (each edit must keep every match, or it's undone). Then
 review_done("{unit}", findings, fixed): what you found and fixed (fixed=true), or that it all holds (fixed=false)."""
+SELF_REVIEW = 30 * 60  # a file is reviewed by the helper that last tidied or reviewed it only this long after
+# (seconds): a helper handed its own tidy back reviewed it 5 seconds later, with the same context, and found it fine
 REVIEWS = 2  # reviews a file gets at most in a round: one that fixed something is reviewed once more, by another helper
 # A call through a made-up object to put a value in ecx: `((Dst*)0x379)->draw_ui_quad(...)` (a PC game built with /Gr
 # whose project wasn't: the function was __fastcall with that value as its first argument)
@@ -574,15 +576,16 @@ class Readability:
         return [r["unit"] for r in rows if r["tidied"] and not r["clean"] and r["reviews"] < REVIEWS
                 and r["tries"] < POLISH_TRIES * REVIEWS]
 
-    def _last_hand(self, proj, unit: str) -> int | None:
-        """The helper that last tidied or reviewed a file: its review is another helper's, where there is one."""
-        row = self.net.store.one("SELECT agent_id FROM events WHERE project_id=? AND detail=? AND kind IN "
+    def _own_fresh(self, proj, unit: str, agent: Agent) -> bool:
+        """Whether this helper tidied or reviewed the file last, less than SELF_REVIEW ago: its review is another
+        helper's then (fresh eyes), or its own later."""
+        row = self.net.store.one("SELECT agent_id, created_at FROM events WHERE project_id=? AND detail=? AND kind IN "
                                  "('tidied', 'reviewed') ORDER BY id DESC LIMIT 1", proj["id"], unit)
-        return row["agent_id"] if row else None
+        return row is not None and row["agent_id"] == agent.id and time.time() - row["created_at"] < SELF_REVIEW
 
     def _review_job(self, agent: Agent, proj) -> str | None:
-        """A tidied file to review for this agent (the one it holds, or the next nobody does, preferring one it didn't
-        tidy or review itself), or None."""
+        """A tidied file to review for this agent (the one it holds, or the next nobody does that it didn't just tidy
+        or review itself), or None."""
         now = time.time()
         with self._tidy_lock:
             self._reviewing = {k: v for k, v in self._reviewing.items() if v[1] > now}
@@ -595,8 +598,7 @@ class Readability:
             if mine is None:
                 held = {u for (pid, u) in self._reviewing if pid == proj["id"]}
                 free = [u for u in todo if u not in held]
-                mine = next((u for u in free if self._last_hand(proj, u) != agent.id), None) or \
-                    next(iter(free), None)
+                mine = next((u for u in free if not self._own_fresh(proj, u, agent)), None)
                 if mine is None:
                     return None
             with self.net.store.tx() as db:
@@ -693,12 +695,14 @@ class Readability:
         given_up = _left_as_it_is(left, "a rewrite that kept it matching") if left else ""
         if fn is None:
             if fork:  # every function done: the files next
+                # a file tidied is reviewed first, while its tidy is fresh: with reviews last, a game's 1,736 files
+                # would all be tidied before any review could say what its tidies get wrong
+                job = self._review_job(agent, proj)
+                if job is not None:
+                    return given_up + job
                 job, file_left = self._tidy_job(agent, proj)
                 if file_left:
                     given_up += _left_as_it_is(file_left, "being tidied")
-                if job is not None:
-                    return given_up + job
-                job = self._review_job(agent, proj)  # every file tidy: each reviewed
                 if job is not None:
                     return given_up + job
             if self.left(proj):  # what's left is held by other helpers
