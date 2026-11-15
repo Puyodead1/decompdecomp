@@ -271,6 +271,10 @@ def test_a_file_whose_functions_are_all_readable_is_tidied_next(tmp_path, monkey
     assert net.readability.claim(other, slug) == job
     with pytest.raises(NetworkError, match="aren't tidying"):
         net.readability.tidy_done(agent, slug, "game", "late")
+    # what the file still has that a person's code wouldn't is sent back once (a PC game's files were "tidy" with
+    # their own externs and D_ names throughout); a second time it's taken as it is
+    again = net.readability.tidy_done(other, slug, "game", "Particle in include/particle.h")
+    assert again.startswith("✋ Not tidy yet") and "D_00403000" in again and "extern declarations" in again
     assert net.readability.tidy_done(other, slug, "game", "Particle in include/particle.h").startswith("✅")
     assert net.readability.left(proj) == 0 and "Stop here" in net.readability.claim(agent, slug)
     kinds = [r["kind"] for r in net.store.all("SELECT kind FROM events WHERE kind LIKE 'tid%' ORDER BY id")]
@@ -282,6 +286,11 @@ def test_a_file_whose_functions_are_all_readable_is_tidied_next(tmp_path, monkey
         assert net.readability.claim(agent, slug).startswith("TIDY A FILE")
         net.readability._tidying.clear()  # (its claim ran out)
     assert net.readability.left(proj) == 0
+    # a new round of tidying (TIDY_ROUND) hands out every file again, once per project
+    net._update_cfg(slug, lambda c: c.pop("tidy_round", None))
+    net.store.conn.execute("UPDATE events SET created_at=created_at-10 WHERE kind LIKE 'tid%'")
+    assert net.readability.retidy(slug, log=lambda *_: None) is False  # (none tidied in this round's test)
+    assert net.readability.left(proj) == 1 and net.readability.retidy(slug, log=lambda *_: None) is False
     assert "tidy_done" in tools.tool_names(fork=True) and "tidy_done" not in tools.tool_names(fork=False)
 
 

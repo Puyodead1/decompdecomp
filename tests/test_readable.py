@@ -3,6 +3,7 @@ still matches byte for byte, refused otherwise, and the project counts how much 
 
 import pytest
 
+from decompnet.app import readable
 from decompnet.app.engine import RomNetwork
 from decompnet.network import NetworkError
 
@@ -186,3 +187,15 @@ def test_tidying_a_cpp_file_of_a_game_written_in_c_asks_for_c(matched, tmp_path,
     assert net.readability._in_c(proj, fp, "src/auto/text_00401000.c") == ""
     monkeypatch.setattr(type(pc), "game_language", lambda self, fp: "c++")
     assert net.readability._in_c(proj, fp, "src/auto/text_00401000.cpp") == ""
+
+
+def test_names_made_of_addresses_are_found_and_words_are_not():
+    """What polishing and tidying send back once: a PC game's "tidy" files had struct C_0046C950 { int f28; },
+    D_06880AC8 and func_0046C250 throughout."""
+    found = readable.placeholders("struct C_0046C950 { int f28; }; x->f28 = D_06880AC8 + func_0046C250(s.unk_c) "
+                                  "+ c->fc + b.field_10 + a->flags + d->fade + e->feed + 1.f + FUN_00401000();")
+    assert found == ["C_0046C950", "f28", "D_06880AC8", "func_0046C250", "unk_c", "fc", "field_10", "FUN_00401000"]
+    assert readable.EXTERN_LINE.findall('extern int g;\nextern "C" void f(int);\nextern "C" {\n') == \
+        ["extern int g;", 'extern "C" void f(int);']
+    for step in ("Declarations in headers", "No names made of addresses", "enum"):
+        assert step in readable.TIDY

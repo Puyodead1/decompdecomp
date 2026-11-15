@@ -74,20 +74,43 @@ TIDY A FILE: {unit} ({source}). Every function of the game's in it is readable n
 yet. Make it read like code a person wrote, one edit_file at a time: each edit must build and keep every match, or
 it's undone. Find what else declares the same things with search_code (headers, other source files, a build's own
 driver files) and read_file them.
-1. Types: a struct or class declared in more than one file goes in one header in include/ (create it with an include
-   guard), then each copy is replaced by an #include of it, one file per edit.
-2. Names: fields, classes and parameters named for what the code does with them (the functions' comments say);
-   code that is a class's method written as one, Class::method, where it still matches; a function or global whose
-   name doesn't fit what it does or holds (read_data shows what a global holds) renamed with rename_symbol.
-3. Globals and functions it still knows by address (D_..., func_...): read_data shows what a global holds (a string,
-   a table, a constant); rename_symbol each once you can tell.
-4. Duplicate declarations, ones nothing uses, stray stubs: gone.
-5. One naming style: the one most of the file uses.{language}
+1. Declarations in headers: the file declares nothing another file defines. Each function and global it uses from
+   elsewhere is declared once, in a header in include/ for that part of the game (the one that declares its
+   neighbours already, or a new one with an include guard), and the file #includes it; its own extern lines go. A
+   struct, enum or class the same: one header, and each copy in other files replaced by an #include of it.{headers}
+2. No names made of addresses: a struct C_<address> named for what the object is; fields like f28 or unk_c named for
+   what the code does with them (guess_struct shows the layout and which functions use it: one struct per kind of
+   object, shared through its header); globals D_... and functions func_... renamed with rename_symbol once
+   read_data and read_file show what they are. A person's code has none of them.
+3. Numbers that mean something: switch cases, type codes, flags and modes written as an enum (or #define) in the
+   header, each named for what it means (`case SCRIPT_PLAY_SOUND:`). The compiler makes the same code for either.
+4. Names: parameters and locals named for what they hold; code that is a class's method written as one,
+   Class::method, where it still matches (in a C++ game); a function or global whose name doesn't fit what it does
+   or holds renamed with rename_symbol.
+5. Duplicate declarations, ones nothing uses, stray stubs: gone.
+6. One naming style: the one most of the game uses.{language}
 Then tidy_done("{unit}", summary): what you changed, in a sentence or two.{data}"""
 # The globals a file declares, read for its tidy brief: helpers named two getters of class-name strings "static
 # data" though read_data was in their brief, and in the tidy's; what each one holds, given up front, can't be missed
 EXTERN_DATA = re.compile(r"^[ \t]*extern\s+(?!\"C\")[^;(){}=]*?\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*;", re.M)
 DATA_READ, DATA_SHOWN = 32, 40  # bytes read of each, globals listed at most
+
+
+# A name made of an address, which no person writes: a struct C_0046C950 for the object a function takes, fields
+# f28 and unk_c, globals D_06880AC8, functions func_0046C250 (Ghidra's FUN_/DAT_ too). A PC game's files were all
+# "tidy" with them throughout (770 of 1,869 files), as the tidy job asked only for what was clear
+PLACEHOLDER = re.compile(r"\b(?:[CD]_[0-9A-Fa-f]{8}|_?func_[0-9A-Fa-f]{8}|(?:FUN|DAT|PTR|LAB)_[0-9A-Fa-f]{6,8})\b"
+                         r"|(?:->|(?<=[\w\])])\.)\s*(?:f|field_?|unk_?)(?:0x)?(?:[0-9a-f]*[0-9][0-9a-f]*|[0-9a-f])\b")
+# (a field's hex has a digit, or is one letter: f28 and fc, not fade or feed)
+EXTERN_LINE = re.compile(r"^[ \t]*extern\b(?!\s*\"C\"\s*\{)[^\n]*", re.M)  # a declaration a header should make
+TIDY_ROUND = 2  # the version of the tidy job, in the project's config: files tidied before it are tidied again
+# (2: headers instead of each file's externs, no names made of addresses, enums for the numbers, C for a game written
+# in C: a PC game's 1,739 files were all "tidy" with none of that)
+
+
+def placeholders(source: str) -> list[str]:
+    """The names made of addresses in `source` (PLACEHOLDER), each once, in order."""
+    return list(dict.fromkeys(m.group(0).lstrip("->.").strip() for m in PLACEHOLDER.finditer(source)))
 
 
 # memory read through a cast and an offset: `*(unsigned int *)(tex + 0x2c)`, `*(short *)((char *)e + 8)`
@@ -337,6 +360,8 @@ class Readability:
         self._tidy_lock = threading.Lock()  # (helpers claim at once: one file, one helper)
         self._named_asked: set[int] = set()  # functions whose rewrite was sent back once for reads the header names
         self._offsets_asked: set[int] = set()  # ... and once for reads through offsets no header names yet
+        self._placeholders_asked: set[int] = set()  # ... and once for names made of addresses
+        self._tidy_asked: set[tuple[int, str]] = set()  # files whose tidy_done was sent back once for what's left
 
     def _untidy(self, proj) -> list[str]:
         """The project's source files (units) to tidy, most functions first: every function of the game's in them
@@ -344,19 +369,46 @@ class Readability:
         a ROM project's C is the database's, one function at a time."""
         if self.net.is_rom(proj):
             return []
+        since = self._tidy_since(proj)
         rows = self.net.store.all(
             "SELECT unit, COUNT(*) AS n FROM functions WHERE project_id=? AND unit != '' AND "
             f"{GAME_CODE} AND {IN_BUILD} GROUP BY unit HAVING SUM(status='matched' AND readable=1) = COUNT(*) "
-            "AND unit NOT IN (SELECT detail FROM events WHERE project_id=? AND kind='tidied') "
-            "AND unit NOT IN (SELECT detail FROM events WHERE project_id=? AND kind='tidy' GROUP BY detail "
-            f"HAVING COUNT(*) >= {POLISH_TRIES}) ORDER BY n DESC, unit", proj["id"], proj["id"], proj["id"])
+            "AND unit NOT IN (SELECT detail FROM events WHERE project_id=? AND kind='tidied' AND created_at >= ?) "
+            "AND unit NOT IN (SELECT detail FROM events WHERE project_id=? AND kind='tidy' AND created_at >= ? "
+            f"GROUP BY detail HAVING COUNT(*) >= {POLISH_TRIES}) ORDER BY n DESC, unit",
+            proj["id"], proj["id"], since, proj["id"], since)
         return [r["unit"] for r in rows]
+
+    def _tidy_since(self, proj) -> float:
+        """When this round of tidying began (retidy): files tidied before it are tidied again."""
+        # (the project's row as it is now: a row read before retidy began the round has the old config)
+        return float(self.net.cfg(self.net.project_row(proj["slug"])).get("tidy_since") or 0)
+
+    def retidy(self, slug: str, log=print) -> bool:
+        """Every file tidied before the tidy job asked what it asks now (TIDY_ROUND) on the tidying list again, once
+        per project: a PC game's files were all "tidy" with each declaring its own externs, structs named C_<address>
+        with fields f28, and D_/func_ names throughout. Project mode only (ROM mode tidies declarations itself)."""
+        proj = self.net.project_row(slug)
+        if self.net.is_rom(proj) or self.net._link(slug):
+            return False
+        if self.net.cfg(proj).get("tidy_round", 0) >= TIDY_ROUND:
+            return False
+        tidied = self.net.store.one("SELECT COUNT(DISTINCT detail) AS n FROM events WHERE project_id=? AND "
+                                    "kind='tidied'", proj["id"])["n"]
+        now = time.time()
+        self.net._update_cfg(slug, lambda c: c.update(tidy_round=TIDY_ROUND, tidy_since=now))
+        if tidied:
+            log(f"{slug}: the {tidied} files tidied so far are on the tidying list again: headers instead of each "
+                "file's own declarations, names for what was still known by address, enums for the numbers that "
+                "mean something")
+        return bool(tidied)
 
     def _file_given_up(self, proj, unit: str) -> bool:
         """Whether a file was handed out POLISH_TRIES times without being tidied (rather than tidied while held)."""
         row = self.net.store.one(
             "SELECT SUM(kind='tidy') AS tried, SUM(kind='tidied') AS tidied FROM events "
-            "WHERE project_id=? AND detail=? AND kind IN ('tidy', 'tidied')", proj["id"], unit)
+            "WHERE project_id=? AND detail=? AND kind IN ('tidy', 'tidied') AND created_at >= ?", proj["id"], unit,
+            self._tidy_since(proj))
         return (row["tried"] or 0) >= POLISH_TRIES and not row["tidied"]
 
     def _matching_c(self, proj, fn) -> str:
@@ -406,8 +458,11 @@ class Readability:
             self._tidying[(proj["id"], mine)] = (agent.id, now + CLAIM_SECONDS)
         fp = ForkProject(Path(proj["root"]))
         source = next((u.source for u in fp.units() if u.name == mine), None) or mine
+        language = self._in_c(proj, fp, source)
+        headers = ("\n   While the game's files are C and C++ both, a header wraps its declarations in `#ifdef __cplusplus` "
+                   "`extern \"C\" {` `#endif` (and the closing one), so either includes it." if language else "")
         return TIDY.format(unit=mine, source=source, data=self._data_held(agent, proj, fp, source),
-                           language=self._in_c(proj, fp, source)), left
+                           language=language, headers=headers), left
 
     def _in_c(self, proj, fp: ForkProject, source: str) -> str:
         """The tidy job's step for a C++ file of a game written in C (Console.game_language): a debug-built Visual
@@ -460,6 +515,16 @@ class Readability:
         proj = self.net._project(slug)
         if not summary.strip():
             raise NetworkError("say what you changed in the summary, in a sentence or two")
+        left = self._untidy_left(proj, unit)
+        if left and (proj["id"], unit) not in self._tidy_asked:
+            with self._tidy_lock:
+                held = self._tidying.get((proj["id"], unit))
+                if held is not None and held[0] == agent.id and held[1] > time.time():
+                    self._tidy_asked.add((proj["id"], unit))
+                    return ("✋ Not tidy yet:\n" + "\n".join(f"- {line}" for line in left) + "\nFix these with "
+                            f"edit_file and rename_symbol, then tidy_done(\"{unit}\", summary) again. Where one "
+                            "really can't be (it breaks a match), say why in the summary and send it again: it's "
+                            "taken as it is.")
         # under the lock and only while the claim lasts: a helper whose claim had run out could mark tidy a file
         # _tidy_job had given to another helper since, whose edits then landed in a file already counted tidy (#89)
         with self._tidy_lock:
@@ -471,6 +536,31 @@ class Readability:
             self.net._event(db, proj["id"], agent.id, "tidied", unit)
             self.net._event(db, proj["id"], agent.id, "tidy_summary", f"{unit}: {summary.strip()[:500]}")
         return f"✅ {unit} is tidy. claim_readable for the next one."
+
+    def _untidy_left(self, proj, unit: str) -> list[str]:
+        """What a file still has that the tidy job asks to be gone: names made of addresses, its own extern
+        declarations, C++ in a game written in C. [] when it's tidy, or the file can't be read."""
+        try:
+            fp = ForkProject(Path(proj["root"]))
+            source = next((u.source for u in fp.units() if u.name == unit), None)
+            if source is None:
+                return []
+            text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
+        except OSError:
+            return []
+        left = []
+        names = placeholders(text)
+        if names:
+            left.append(f"names made of addresses: {', '.join(names[:16])}{', ...' if len(names) > 16 else ''} "
+                        "(rename_symbol the globals and functions; name the structs and fields for what they are)")
+        externs = EXTERN_LINE.findall(text)
+        if externs:
+            left.append(f"{len(externs)} extern declarations of its own (`{externs[0].strip()}`...): declare them in "
+                        "a header in include/ and #include it")
+        if self._in_c(proj, fp, source):
+            left.append(f"it's C++ and the game was written in C: write it as C and set_file_language(\"{source}\", "
+                        "\"c\")")
+        return left
 
     def claim(self, agent: Agent, slug: str) -> str:
         """The next matched function that isn't readable yet, held for this agent, with what it needs to know."""
@@ -536,6 +626,9 @@ class Readability:
                   " with a field named for each use and `char pad_XX[n]` for the gaps, and write `self->field`. The "
                   "compiler makes the same code for a field as for its offset; extend a struct that's declared "
                   "already rather than making a second one;\n")
+        names += ("- no names made of addresses: a struct C_<address> named for what the object is, fields like f28 or "
+                  "unk_c named for what the code does with them, globals D_... and functions func_... it uses renamed "
+                  "with rename_symbol; numbers that mean something (switch cases, type codes, flags) as an enum;\n")
         names += ("- read_data a global before you name it: what it holds (a string, a table, a constant) says what it "
                   "is;\n- name things in the style the names around them already use.\n")
         # The game's own types for it and what it calls: polished C kept `int tex` and `*(unsigned int *)(tex + 0x2c)`
@@ -704,6 +797,16 @@ class Readability:
                     "fields for what the code does with them, `char pad_XX[n]` for gaps), use its fields, then "
                     f"make_readable(\"{fn['name']}\", source) again. A field compiles to the same code as its "
                     "offset. If the struct form really can't match, send this one again and it's judged as it is.")
+        # Once per function too: names made of addresses (struct C_0046C950 { int f28; }, D_06880AC8, func_0046C250)
+        names = [n for n in placeholders(source) if n.lstrip("_") != fn["name"].lstrip("_")]
+        if names and fn["id"] not in self._placeholders_asked:
+            self._placeholders_asked.add(fn["id"])
+            return ("✋ Not judged yet: it still has names made of addresses, which aren't readable: "
+                    + ", ".join(names[:16]) + (", ..." if len(names) > 16 else "") +
+                    "\nName the struct for what the object is and its fields for what the code does with them; "
+                    "read_data and read_file the globals and functions, then rename_symbol each. Then "
+                    f"make_readable(\"{fn['name']}\", source) again. Where you really can't tell what one is, send "
+                    "it again and it's judged as it is.")
         # what happened before it's judged: a rename or a header edit committed while it is (a helper sends
         # make_readable and rename_symbol together) wasn't judged with this C, nor this C with it
         since = self.net.store.one("SELECT COALESCE(MAX(id), 0) AS id FROM events WHERE project_id=?", proj["id"])["id"]

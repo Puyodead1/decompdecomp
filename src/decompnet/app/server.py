@@ -121,6 +121,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 if net.is_rom(row):
                     net.rangechecks.reopen(row["slug"])
                 net.readability.reopen_untyped(row["slug"], log=jobs.logger.info)
+                net.readability.retidy(row["slug"], log=jobs.logger.info)
                 net.readability.repair_renamed(row["slug"], log=jobs.logger.info)
                 net.console(row).on_start(net, row["slug"], log=jobs.logger.info)
                 # (the long ones last: each judges matched functions again)
