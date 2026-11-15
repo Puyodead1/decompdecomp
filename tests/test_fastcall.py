@@ -38,3 +38,4 @@ def test_fastcall_is_the_default_and_what_had_none_says_cdecl():
 def test_the_conventions_a_file_defines_its_functions_with():
     """What says a game was built with /Gr: its own files define most functions __fastcall."""
     assert fastcall.conventions(SOURCE) == {"__cdecl": 1, "__fastcall": 1}
+

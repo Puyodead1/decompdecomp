@@ -938,9 +938,15 @@ class ForkProject:
         """Units whose source object the build couldn't make: it failed, or a step it's made from did. A unit built
         in steps (objects linked into one, a generated source) reports only the step: `ninja -k 0` never tries what
         depends on it. Counting the object alone, an x86 game's edits that broke such a step were kept as breaking
-        nothing, and the next agent to compile there was told the file was broken before it came."""
+        nothing, and the next agent to compile there was told the file was broken before it came. A target with one
+        folder of its path left out counts too: a PC project compiles build/<v>/raw/src/x.obj and names it into
+        build/<v>/src/x.obj, so a header edit that broke the compile failed only the raw one, and the object left from
+        the last build still measured as matched."""
         # (the build's targets are named from the folder it runs in: `-C sub` says final.o for sub/final.o)
         want = {os.path.normpath(t) for t in [*targets, *self._made_from(targets)]}
+        for t in targets:
+            parts = Path(os.path.normpath(t)).parts
+            want |= {os.path.normpath(os.path.join(*parts[:i], *parts[i + 1:])) for i in range(len(parts) - 1)}
         return {u.name for u in self.units() if u.base is not None and self._target(u.base) in want}
 
     def _build_dir(self) -> str:

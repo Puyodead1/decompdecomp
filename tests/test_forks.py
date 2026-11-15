@@ -1677,3 +1677,21 @@ def test_the_archive_waits_for_the_export_writing_its_tree(tmp_path, monkeypatch
     with pytest.raises(NetworkError, match="the build failed"):
         net.export_rom("p")
     assert seen == [True] and "p" not in net.exporting() and "still running" in EXPORT_RUNNING
+
+
+def test_a_compile_that_failed_before_naming_fails_its_unit(tmp_path):
+    """A header edit that broke a PC project's compile failed build/<v>/raw/src/x.obj, a step before the unit's own
+    object: the old object still measured as matched, the edit was kept and the build stayed broken."""
+    import json
+
+    from decompnet.forks.project import ForkProject
+
+    (tmp_path / "objdiff.json").write_text(json.dumps({"units": [
+        {"name": "text_00401000", "target_path": "build/v/target/text_00401000.obj",
+         "base_path": "build/v/src/auto/text_00401000.obj", "metadata": {"source_path": "src/auto/text_00401000.c"}},
+        {"name": "text_00402000", "target_path": "build/v/target/text_00402000.obj",
+         "base_path": "build/v/src/auto/text_00402000.obj", "metadata": {"source_path": "src/auto/text_00402000.c"}}]}))
+    fp = ForkProject(tmp_path)
+    assert fp.failed_units(["build/v/raw/src/auto/text_00401000.obj"]) == {"text_00401000"}
+    assert fp.failed_units(["build/v/src/auto/text_00402000.obj"]) == {"text_00402000"}
+    assert fp.failed_units(["build/v/raw/other.obj"]) == set()
