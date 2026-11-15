@@ -1833,7 +1833,7 @@ class ForkEngine:
 
         spans = {}
         for r in rows:
-            if (span := self._find(text, self._names(self._meta(r), r))[1]):
+            if (span := self._defined(text, self._names(self._meta(r), r))):
                 spans[span] = (self._meta(r).get("symbol") or r["name"]) in going
         moving = sorted(s for s, g in spans.items() if g)
         declarations = without(spans).strip()
@@ -2728,6 +2728,21 @@ class ForkEngine:
             if span:
                 return n, span
         return None, None
+
+    @staticmethod
+    def _defined(text: str, names: list[str]) -> tuple[int, int] | None:
+        """The span of the definition of the first of `names` the file defines, only one at file scope that opens its
+        body: find() takes a call followed by a block for one (`} else if (f(p) != 0 && ...) {`), and split_file,
+        moving that "definition", cut the function holding the call in two (a DS game: every split of one file
+        failed with "declaration syntax error")."""
+        for n in names:
+            at = 0
+            while (found := csource.find(text[at:], n)) is not None:
+                span = (at + found[0], at + found[1])
+                if csource.at_file_scope(text, span[0]) and csource.opens_body(text, span, n):
+                    return span
+                at = span[1]
+        return None
 
     @classmethod
     def _seen_beside(cls, fp: ForkProject, text: str, span: tuple[int, int], hit: str,

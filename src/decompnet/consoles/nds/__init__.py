@@ -206,6 +206,19 @@ class NintendoDS(Console):
             new_block = f"{new}:\n    .text start:{at_addr:#010x} end:{t.group(3)}"
             saved[path] = text
             path.write_text(text[:m.start()] + block + "\n\n" + new_block + "\n" + text[m.end():], encoding="utf-8")
+            # A label the file's code reaches from either side of the cut is global from now on: dsd can't import a
+            # local one from another file. On a DS game every split of one file failed so ("Imported symbol
+            # .L_0202d87c ... is local"): a function before the cut branched into the middle of one after it.
+            symbols = path.with_name("symbols.txt")
+            if symbols.exists():
+                own = symbols.read_text(encoding="utf-8")
+                lo, hi = int(t.group(2), 16), int(t.group(3), 16)
+                lines = [ln[:-len(" local")] if ln.endswith(" local") and (s := recover.SYMBOL.match(ln))
+                         and s.group(2) == "label" and lo <= int(s.group(4), 16) < hi else ln
+                         for ln in own.split("\n")]
+                if (shared := "\n".join(lines)) != own:
+                    saved[symbols] = own
+                    symbols.write_text(shared, encoding="utf-8")
             break
         else:
             raise ForkError(f"{source} isn't one of the project's source files")

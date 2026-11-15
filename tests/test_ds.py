@@ -960,6 +960,39 @@ def test_a_split_takes_every_declaration_with_the_functions_it_moves(tmp_path):
     assert "void f(void)" in old and "int g(void)" not in old and "extern int data_x;" in old
 
 
+def test_a_ds_split_makes_the_files_local_labels_global(tmp_path):
+    """A function before the cut branched into the middle of one after it, at a label symbols.txt marked local: dsd
+    can't import a local label from another file, so every split of that file failed ("Imported symbol .L_0202d87c
+    ... is local"). The file's local labels become global; others' stay as they were."""
+    folder = tmp_path / "config" / "v1" / "arm9"
+    folder.mkdir(parents=True)
+    (folder / "symbols.txt").write_text(f"f kind:function(arm,size=0x8) addr:{BASE:#010x}\n"
+                                        f"g kind:function(arm,size=0x8) addr:{BASE + 8:#010x}\n"
+                                        f".L_in kind:label(arm) addr:{BASE + 0xc:#010x} local\n"
+                                        f".L_out kind:label(arm) addr:{BASE + 0x14:#010x} local\n")
+    (folder / "delinks.txt").write_text(f"src/a.c:\n    .text start:{BASE:#010x} end:{BASE + 0x10:#010x}\n\n"
+                                        f"src/b.c:\n    .text start:{BASE + 0x10:#010x} end:{BASE + 0x20:#010x}\n")
+    fp = type("FP", (), {"root": tmp_path})()
+    saved = consoles.get("nds").split_source(fp, "v1", "src/a.c", "g", "src/a_g.c")
+    symbols = (folder / "symbols.txt").read_text()
+    assert f".L_in kind:label(arm) addr:{BASE + 0xc:#010x}\n" in symbols
+    assert f".L_out kind:label(arm) addr:{BASE + 0x14:#010x} local" in symbols
+    assert " local" in saved[folder / "symbols.txt"].split("\n")[2]  # put back if the split doesn't hold
+
+
+def test_a_split_doesnt_take_a_call_followed_by_a_block_for_a_definition(tmp_path):
+    """`} else if (h(p) != 0 && ...) {` in g read as h's definition: the split moved it from there, cut g in two, and
+    both files failed to build ("declaration syntax error"). Only h's own definition moves."""
+    from decompnet.app.forkengine import ForkEngine
+
+    text = ('void f(void) {\n}\n\nint g(int p) {\n    if (p) {\n        p = 1;\n    } else if (h(p) != 0 && p) {\n'
+            '        p = 2;\n    }\n    return p;\n}\n\nint h(int p) {\n    return p;\n}\n')
+    rows = [{"name": n, "meta": json.dumps({"symbol": n}), "status": "open"} for n in ("f", "g", "h")]
+    eng = ForkEngine.__new__(ForkEngine)
+    new, old, moved = eng._divide(text, rows, {"g", "h"})
+    assert moved == 2 and "void f(void)" in old and "int g(int p)" not in old and "p = 2;" not in old
+    assert new.index("int g(int p)") < new.index("p = 2;") < new.index("int h(int p)")
+
 def test_an_address_outside_a_modules_code_is_no_function_start(tmp_path):
     """A pointer whose value lies in another module's range (overlays share addresses) was checked against this
     module's bytes: below its start the offset was negative, passed the length check and indexed out of range, and
