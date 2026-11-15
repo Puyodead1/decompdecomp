@@ -145,7 +145,7 @@ def test_work_in_progress_survives_following_the_host(room):
     res = guest.attempt(gagent, fn, wip, gslug)  # an attempt, not a match: stays in its file
     assert not res["matched"], res["text"]
     groot = Path(guest.project_row(gslug)["root"])
-    src = next(p for p in (groot / "src").rglob("*.cpp") if "return 76;" in p.read_text())
+    src = next(p for p in (groot / "src").rglob("*") if p.suffix in (".c", ".cpp") and "return 76;" in p.read_text())
     hagent, _ = host.local_agent("claude-host2")
     host.forks.claim(hagent, slug, other)
     assert host.attempt(hagent, other, source, slug)["matched"]

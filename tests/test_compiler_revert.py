@@ -76,7 +76,7 @@ def test_a_project_files_compiler_removed_and_reverted_through_the_api_comes_bac
                    ("revert-gc", "Revert GC", str(root), "ppc",
                     json.dumps({"kind": "fork", "platform": "gc", "version": "GZ2E01", "compiler": "GC/1.3.2"})))
 
-    def switch(self, slug, source, compiler):
+    def switch(self, slug, source, compiler, force=False):
         _, project, cfg = self.get(slug)
         GAMECUBE.set_file_compiler(project, source, compiler)
     monkeypatch.setattr(type(net.forks), "set_file_compiler_by_hand", switch)
