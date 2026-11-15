@@ -49,9 +49,7 @@ def test_decorated_names():
 
 
 @pytest.mark.parametrize("version", ["6.0", "7.0", "7.1"])
-@pytest.mark.skipif(toolchains.installed("msvc") is None
-                    or (sys.platform != "win32" and toolchains.installed("wibo") is None),
-                    reason="needs Visual C++ 6.0-7.1 (msvc, proprietary), and wibo off Windows")
+@pytest.mark.skipif(sys.platform != "win32" and toolchains.installed("wibo") is None, reason="needs wibo off Windows")
 def test_each_visual_cpp_of_the_pack_compiles_on_this_computer(tmp_path, version):
     """On Windows, Visual C++ 7.1 couldn't start: its archive has no C runtime (wibo brings its own on Linux and
     macOS), so Windows stopped cl.exe with "MSVCR71.dll was not found", a dialog on the desktop for every compile."""
@@ -59,7 +57,9 @@ def test_each_visual_cpp_of_the_pack_compiles_on_this_computer(tmp_path, version
         import ctypes
 
         ctypes.windll.kernel32.SetErrorMode(0x8003)  # SEM_FAILCRITICALERRORS | NOGPFAULTERRORBOX | NOOPENFILEERRORBOX
-    folder = toolchains.path("msvc") / version
+    if toolchains.installed(pack := scratch_pe.compiler_pack(version)) is None:
+        pytest.skip(f"needs Visual C++ {version} ({pack}, proprietary)")
+    folder = toolchains.path(pack) / version
     cl = next(p for p in (folder / "Bin").iterdir() if p.name.lower() == "cl.exe")
     (tmp_path / "t.c").write_text("int add(int a, int b) { return a + b; }\n")
     wibo = [] if sys.platform == "win32" else [str(toolchains.binary("wibo"))]
@@ -5002,6 +5002,8 @@ def test_a_function_a_matched_one_calls_can_still_lose_what_follows_its_end(monk
     target = scratch_pe.Function(0x401010, len(thunk), "_thunk", unit="text_00401010")
 
     class PE:
+        x64 = False
+
         def read(self, at, n):
             return thunk[at - 0x401010:at - 0x401010 + n]
     cut = []
@@ -5169,7 +5171,9 @@ def test_an_incrementally_linked_games_calls_name_the_functions_its_jumps_go_to(
     assert "D_0040100A" in third.read_text()
     assert info["names"] == {"func_00401040": "helper", "func_00401050": "third"}  # (the jump's name, its function's)
     assert [0x401005, 0x401040] in info["incremental"]
-    assert info["units"]["text_00401000"][0]["generated"] == scratch_pe.INCREMENTAL_WHY
+    # (the table is no function at all now, the import's own doing; a project made before has it set aside)
+    assert "text_00401000" not in info["units"] or info["units"]["text_00401000"][0]["generated"] == \
+        scratch_pe.INCREMENTAL_WHY
     names = _template_tool("names")
     assert names.address_of(b"_helper", names.real_names(info)) == b"func_00401040"
     _delink(root)

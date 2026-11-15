@@ -182,7 +182,8 @@ const FREE_PACK = {
 // the pack the game's program asks for (a PC game's Visual C++: pcPack), else its console's first
 const packOf = (info) => {
   const id = info?.pack || consoleOf(info?.platform)?.packs[0];
-  return CW_PACK[id] || (S.st?.toolchains || []).some((t) => t.id === id && t.license === "proprietary") ? id : "";
+  // (a Visual C++ pack is proprietary whether the state lists it yet or not: one per version, cwPack writes it up)
+  return CW_PACK[id] || /^msvc/.test(id || "") || (S.st?.toolchains || []).some((t) => t.id === id && t.license === "proprietary") ? id : "";
 };
 
 /* Which Visual C++ pack a 32-bit Windows program needs, from the head bytes the drop has read: scratch.describe in

@@ -399,7 +399,7 @@ def test_the_demo_built_with_its_pdb_imports_with_its_names_files_and_types(tmp_
     info = json.loads((root / "config" / "demoquest" / "functions.json").read_text())
     names = info["names"]
     assert {"entity_spawn", "game_tick", "settings_get", "mix_score", "g_player", "g_entities"} <= set(names.values())
-    assert set(info["units"]) == {"game", "pcmain"} and (root / "src" / "auto" / "game.cpp").exists()
+    assert set(info["units"]) == {"game", "pcmain"} and (root / "src" / "auto" / "game.c").exists()  # (a C game: C files)
     types = (root / "include" / "debug_types.h").read_text()
     assert "struct Entity { /* 0x1C bytes */" in types and "extern struct Player g_player;" in types
     assert '#include "debug_types.h"' in (root / "include" / "common.h").read_text()
@@ -412,5 +412,6 @@ def test_the_demo_built_with_its_pdb_imports_with_its_names_files_and_types(tmp_
                      .read_text(), re.S).group(0)
     code = code.replace("MAX_ENTITIES", "32").replace("ENTITY_FLAG_ACTIVE", "1").replace("s16", "short") \
         .replace("s32", "int").replace("NULL", "0")
+    code = "typedef struct Entity Entity;\n" + code  # (C: the debug types name it `struct Entity`)
     res = net.attempt(agent, spawn, code, slug)
     assert res["matched"], res["text"]

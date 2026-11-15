@@ -92,15 +92,17 @@ class FileCompilers:
         says nothing (DS, GameCube/Wii: probing), the project's compilers, nearest to its own first."""
         _, fp, cfg = self.net.forks.get(slug)
         console = consoles.get(cfg.get("platform"))
-        said = [c for c, _, _, installed in console.program_compilers(fp) if installed]
+        named = console.program_compilers(fp)
+        said = [c for c, _, _, installed in named if installed and console.program_rules_out(fp, c) is None]
         # (a file an agent once moved to a compiler the program rules out isn't evidence for trying it on the rest:
         # on a 7.0 game, one such file had the survey try 7.1 everywhere, and its one "match" became a suggestion)
         own = [own for *_, own in self._files(slug)
                if own == console.file_compiler(fp, "") or console.program_rules_out(fp, own) is None]
-        if said:
+        if named:  # (what it names, installed or not: not the project's other versions, which it rules out)
             return list(dict.fromkeys([*said, *own]))
-        known = [c.id for c in console.project_compilers(fp)]
         current = console.file_compiler(fp, "")
+        known = [c.id for c in console.project_compilers(fp)
+                 if c.id == current or console.program_rules_out(fp, c.id) is None]
         if current not in known:  # (a project whose own compiler isn't one of its build's: a file's may be)
             current = next((c for c in own if c in known), None)
         if current in known:

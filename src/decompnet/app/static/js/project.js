@@ -199,7 +199,7 @@ function workingAgents() {
    browser's look at a file names it with. */
 function consoleOf(p) {
   const key = { gcwii: "gc", playstation: "ps2" }[p] || p;  // (a PlayStation disc not read yet: all are ROM consoles)
-  return ((S.st && S.st.consoles) || []).find((c) => c.id === key || c.aliases.includes(key));
+  return ((S.st && S.st.consoles) || []).find((c) => c.id === key || (c.aliases || []).includes(key));
 }
 /* recommended | beta | "" for a platform key. */
 function platformStatus(p) {

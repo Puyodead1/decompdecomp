@@ -646,6 +646,13 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                           "matches byte for byte.", s(function=st("function", True), source=st("readable C", True))),
         "tidy_done": ("The source file claim_readable gave you to tidy is done: say what you changed.",
                       s(unit=st("the file claim_readable gave you", True), summary=st("what you changed", True))),
+        "review_done": ("The source file claim_readable gave you to review is done: what you found wrong and fixed "
+                        "(fixed=true), or that it holds against the game's code (fixed=false).",
+                        s(unit=st("the file claim_readable gave you", True), findings=st("what you found", True),
+                          fixed=bo("whether you fixed something"))),
+        "name_instance": ("PC games: the function is a template's instance (the STL's): make its file compile the "
+                          "instance, then call this, and the compiled function takes the game's name.",
+                          s(function=st("function", True))),
         "share_knowledge": ("Propose something every agent on this game should know, or back proposal #N "
                             "(supports=N). It counts once two different models agree. Not for compiler questions.",
                             s(text=st("what every agent should know"), supports=it("a proposal's number to back"))),
