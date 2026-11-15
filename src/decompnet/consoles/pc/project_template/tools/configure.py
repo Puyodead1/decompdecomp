@@ -325,9 +325,6 @@ def main() -> None:
                             implicit=[*asm, "tools/assemble.py", "tools/relink.py", "tools/delink.py"],
                             variables={"objects": (BUILD / folder).as_posix()})
             n.build("relink-source", "phony", made)
-            n.build(from_source, "relink_source", ["source/program.json"],
-                    implicit=[*asm, "tools/assemble.py", "tools/relink.py"])
-            n.build("relink-source", "phony", [from_source])
         # The facts look again when a file they list changes, or a folder holding them does (a file added or
         # removed changes its folder's date: one added on its own was never seen), and change only when what they
         # say does (restat). Each is also a phony with no inputs, so one that's gone makes the facts out of date
