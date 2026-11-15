@@ -134,7 +134,8 @@ class WindowsPC(Console):
     # didn't compile failed 22's setup and took it back (forkengine.reanalyse now blames a step only for what it breaks);
     # 24 an incrementally linked game's calls to the linker's jumps named by the functions they go to, its C too
     # (scratch.rename_incremental)
-    ANALYSIS = 24
+    # 25 a game built with /Gr (__fastcall by default) builds with it, its C as its developers' (scratch.fastcall_default)
+    ANALYSIS = 25
 
     def target(self, fp) -> str:
         """The project's program's processor: x86 (a 32-bit program: every game started so far), or x64."""
@@ -396,6 +397,27 @@ class WindowsPC(Console):
             return (f"it was linked incrementally: the calls to {jumps:,} jumps of the linker's table name the functions "
                     f"they go to now ({files:,} source files call them by those functions' names)" if jumps else None)
 
+        def fastcall(fp):
+            import tempfile
+
+            from ...forks import objdiff
+
+            def build() -> list[str]:
+                failed: list[str] = []
+                for cmd in fp.setup_commands(version):
+                    ninja = Path(cmd[0]).name in ("ninja", "ninja.exe")
+                    fp.run([*cmd, "-k", "0"] if ninja else cmd, log=lambda *_: None, failed=failed)
+                return failed
+
+            def report() -> dict:
+                with tempfile.TemporaryDirectory(prefix="decomp-gr-") as tmp:
+                    return objdiff.report(fp.root, Path(tmp) / "report.json")
+
+            done = scratch.fastcall_default(fp.root, version, build, report)
+            return (f"it was built with /Gr, __fastcall unless a function says otherwise: {done[0]:,} of its {done[1]:,} "
+                    "source files build with it now, written as its developers' (no __fastcall on every function, "
+                    "__cdecl on its callbacks)" if done and done[0] else None)
+
         def tools(fp):  # (no source file changes: agents' C stays as it is)
             changed = scratch.write_tools(fp.root, version)
             return (f"its build has the fixes decompdecomp's has had since the project was made ({', '.join(changed)})"
@@ -406,12 +428,13 @@ class WindowsPC(Console):
                  7: (newer_rules, False), 8: (pieces, False), 9: (purges, True), 10: (int3s, False), 11: (gs, True),
                  12: (merged, False), 13: (merged, False), 14: (library, True), 15: (runtime_code, True),
                  16: (runtime_code, True), 17: (runtime_flag, False), 18: (runtime_code, True), 19: (pieces, False), 20: (pieces, False), 21: (stubs, True),
-                 22: (debug, True), 23: (debug, True), 24: (incremental, False)}
+                 22: (debug, True), 23: (debug, True), 24: (incremental, False),
+                 25: (fastcall, False)}
         kept = {}
         for level, (step, fix) in steps.items():
             if manifest.get("analysis", 1) < level:
                 if not (level == 7 and 4 in kept):  # (7 is 3 and 4 again, by their rules now: not when they just ran)
-                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config", "tools") if level in (22, 23) else ("config", "src") if level == 24 else ("config",),
+                    kept[level] = net.forks.reanalyse(slug, step, paths=("tools",) if level == 17 else ("config", "tools") if level in (22, 23) else ("config", "src") if level == 24 else ("config", "src", "include") if level == 25 else ("config",),
                                                       fix=fix, log=log)  # (17 changes configure.py's CL_FLAGS)
                 if level == 9 and renamed and not kept[level]:  # (taken back: the rows go back to their names)
                     rename_rows({new: old for old, new in renamed.items()})

@@ -3109,6 +3109,77 @@ def set_debug_flags(root: Path, version: str, compiler: str | None, keep: set[st
     return len(wanted)
 
 
+FASTCALL_FLAG = "/Gr"
+FASTCALL_SHARE = 2  # a game whose own files define this many times more functions __fastcall than not: built with /Gr
+FASTCALL_ROUNDS = 3  # builds that put back the files that lost a match, until none does
+
+
+def fastcall_default(root: Path, version: str, build, report) -> tuple[int, int] | None:
+    """/Gr for the game's own source files, when it was built with it (fastcall.py says why): most of the free
+    functions they define say __fastcall. Each file is rewritten for it (fastcall.convert; its headers only get
+    __cdecl), built with it, and put back as it was where one of its functions no longer matches or it doesn't build,
+    until none does. `build()` builds the project and returns the targets that failed; `report()` is objdiff's report
+    of it. Returns (files that build with /Gr now, files tried); None when the game wasn't built with it."""
+    from . import fastcall
+
+    if missing(root, version):
+        return None
+    _, info, _, _ = _project_functions(root, version)
+    try:
+        aside = json.loads((root / "config" / version / "set_aside.json").read_text(encoding="utf-8")).get(
+            "functions") or {}
+    except (OSError, ValueError):
+        aside = {}
+    flags = file_flags(root, version)
+    own = []
+    for unit, fns in info["units"].items():
+        if any(not fn.get("generated") and f"0x{fn['addr']:08X}" not in aside for fn in fns):
+            source = _source(root, unit)
+            if (root / source).is_file() and FASTCALL_FLAG not in flags.get(source, ()):
+                own.append(source)
+    texts = {s: (root / s).read_text(encoding="utf-8", errors="surrogateescape") for s in own}
+    counts: dict[str, int] = {}
+    for text in texts.values():
+        for conv, n in fastcall.conventions(text).items():
+            counts[conv] = counts.get(conv, 0) + n
+    if counts.get("__fastcall", 0) <= FASTCALL_SHARE * (counts.get("", 0) + counts.get("__cdecl", 0)) or not own:
+        return None
+
+    def matched(found: dict) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for u in found.get("units", []):
+            path = (u.get("metadata") or {}).get("source_path")
+            if path:
+                out[path] = {f["name"] for f in u.get("functions", []) if f.get("fuzzy_match_percent") == 100.0}
+        return out
+
+    before = matched(report())
+    for header in sorted((root / "include").rglob("*.h")) if (root / "include").is_dir() else []:
+        text = header.read_text(encoding="utf-8", errors="surrogateescape")
+        if (new := fastcall.convert(text, header=True)) != text:
+            header.write_text(new, encoding="utf-8", errors="surrogateescape")
+    for source, text in texts.items():
+        if (new := fastcall.convert(text)) != text:
+            (root / source).write_text(new, encoding="utf-8", errors="surrogateescape")
+        flags[source] = [*flags.get(source, []), FASTCALL_FLAG]
+    _write_compilers(flags_file(root, version), flags)
+    kept = set(own)
+    for _ in range(FASTCALL_ROUNDS):
+        failed = {Path(t).stem for t in build()}
+        after = matched(report())
+        lost = {s for s in kept if before.get(s, set()) - after.get(s, set()) or Path(s).stem in failed}
+        if not lost:
+            break
+        for source in lost:
+            (root / source).write_text(texts[source], encoding="utf-8", errors="surrogateescape")
+            flags[source] = [f for f in flags[source] if f != FASTCALL_FLAG]
+            if not flags[source]:
+                del flags[source]
+        kept -= lost
+        _write_compilers(flags_file(root, version), flags)
+    return len(kept), len(own)
+
+
 # ---------------------------------------------------------------------------------------------------- the project
 
 

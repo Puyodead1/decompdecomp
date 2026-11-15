@@ -28,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import addresses, cfields, scoring, structs, tidy
+from .. import addresses, cfields, scoring, structcheck, structs, tidy
 from ..forks.project import ForkProject
 from ..network import GAME_CODE, IN_BUILD, Agent, NetworkError
 from .engine import layouts
@@ -86,10 +86,31 @@ driver files) and read_file them.
    header, each named for what it means (`case SCRIPT_PLAY_SOUND:`). The compiler makes the same code for either.
 4. Names: parameters and locals named for what they hold; code that is a class's method written as one,
    Class::method, where it still matches (in a C++ game); a function or global whose name doesn't fit what it does
-   or holds renamed with rename_symbol.
+   or holds renamed with rename_symbol. Calls as the callee is declared, with its own convention: no method call on
+   a made-up object (`((Dst*)1)->draw(...)`) to put a value in a register.
 5. Duplicate declarations, ones nothing uses, stray stubs: gone.
 6. One naming style: the one most of the game uses.{language}
 Then tidy_done("{unit}", summary): what you changed, in a sentence or two.{data}"""
+REVIEW = """\
+REVIEW A FILE: {unit} ({source}). It matches and was tidied. A match proves only the bytes: a field named and sized
+wrong, an int that holds a float, a case's body under another case's name all compile to the same code. Read it
+beside the game's code (get_function shows each function's original assembly) as a reviewer would, and check:
+1. Structs: each field's offset, size and type against how this file's functions, and the others that take the same
+   object, use it (guess_struct; search_code for the struct's other users). An array's element size against code
+   that indexes it with a variable; one struct per kind of object, in one header.
+2. Types: float where the code uses the FPU (fld, fstp), signed or unsigned as its compares and shifts say, a pointer
+   where it's dereferenced, a struct pointer rather than an int.
+3. Switches and conditions: each case's value and its body belong together, named (an enum) for what that body does.
+4. Names and comments: each says what the code really does; a wrong one is worse than none.
+5. Calls: the convention and the arguments each callee really takes; no tricks to put a value in a register (a method
+   call on a made-up object, a number cast to a pointer).
+Fix what's wrong with edit_file and rename_symbol (each edit must keep every match, or it's undone). Then
+review_done("{unit}", findings, fixed): what you found and fixed (fixed=true), or that it all holds (fixed=false)."""
+REVIEWS = 2  # reviews a file gets at most in a round: one that fixed something is reviewed once more, by another helper
+# A call through a made-up object to put a value in ecx: `((Dst*)0x379)->draw_ui_quad(...)` (a PC game built with /Gr
+# whose project wasn't: the function was __fastcall with that value as its first argument)
+FAKE_THIS = re.compile(r"\(\s*\(\s*\w+\s*\*\s*\)\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)\s*->\s*\w+\s*\(")
+
 # The globals a file declares, read for its tidy brief: helpers named two getters of class-name strings "static
 # data" though read_data was in their brief, and in the tidy's; what each one holds, given up front, can't be missed
 EXTERN_DATA = re.compile(r"^[ \t]*extern\s+(?!\"C\")[^;(){}=]*?\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*;", re.M)
@@ -362,6 +383,7 @@ class Readability:
         self._offsets_asked: set[int] = set()  # ... and once for reads through offsets no header names yet
         self._placeholders_asked: set[int] = set()  # ... and once for names made of addresses
         self._tidy_asked: set[tuple[int, str]] = set()  # files whose tidy_done was sent back once for what's left
+        self._reviewing: dict[tuple[int, str], tuple[int, float]] = {}  # (project, unit) -> (agent, until)
 
     def _untidy(self, proj) -> list[str]:
         """The project's source files (units) to tidy, most functions first: every function of the game's in them
@@ -428,7 +450,7 @@ class Readability:
         """How many functions polishing can still take, held ones included, and files to tidy: a polishing helper
         stops at none (a game with nothing left to decompile stopped its polishing helpers before they began)."""
         return self.net.store.one(f"SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND {TODO}",
-                                  proj["id"], proj["id"])["n"] + len(self._untidy(proj))
+                                  proj["id"], proj["id"])["n"] + len(self._untidy(proj)) + len(self._unreviewed(proj))
 
     def _tidy_job(self, agent: Agent, proj) -> tuple[str | None, str | None]:
         """A file to tidy for this agent (the one it holds, or the next nobody does), and the file it held that was let
@@ -537,6 +559,71 @@ class Readability:
             self.net._event(db, proj["id"], agent.id, "tidy_summary", f"{unit}: {summary.strip()[:500]}")
         return f"✅ {unit} is tidy. claim_readable for the next one."
 
+    def _unreviewed(self, proj) -> list[str]:
+        """The files tidied this round still to review (REVIEW), most recently tidied last: none reviewed as holding
+        yet, fewer than REVIEWS reviews, and not given up on (POLISH_TRIES hand-outs per review). Project mode only,
+        as tidying is."""
+        if self.net.is_rom(proj):
+            return []
+        since = self._tidy_since(proj)
+        rows = self.net.store.all(
+            "SELECT detail AS unit, SUM(kind='reviewed') AS reviews, SUM(kind='review') AS tries, "
+            "SUM(kind='review_clean') AS clean, SUM(kind='tidied') AS tidied, MAX(id) AS last FROM events "
+            "WHERE project_id=? AND kind IN ('tidied', 'review', 'reviewed', 'review_clean') AND created_at >= ? "
+            "GROUP BY detail ORDER BY MIN(id)", proj["id"], since)
+        return [r["unit"] for r in rows if r["tidied"] and not r["clean"] and r["reviews"] < REVIEWS
+                and r["tries"] < POLISH_TRIES * REVIEWS]
+
+    def _last_hand(self, proj, unit: str) -> int | None:
+        """The helper that last tidied or reviewed a file: its review is another helper's, where there is one."""
+        row = self.net.store.one("SELECT agent_id FROM events WHERE project_id=? AND detail=? AND kind IN "
+                                 "('tidied', 'reviewed') ORDER BY id DESC LIMIT 1", proj["id"], unit)
+        return row["agent_id"] if row else None
+
+    def _review_job(self, agent: Agent, proj) -> str | None:
+        """A tidied file to review for this agent (the one it holds, or the next nobody does, preferring one it didn't
+        tidy or review itself), or None."""
+        now = time.time()
+        with self._tidy_lock:
+            self._reviewing = {k: v for k, v in self._reviewing.items() if v[1] > now}
+            todo = self._unreviewed(proj)
+            mine = next((u for (pid, u), (who, _) in self._reviewing.items() if pid == proj["id"] and who == agent.id),
+                        None)
+            if mine is not None and mine not in todo:
+                del self._reviewing[(proj["id"], mine)]
+                mine = None
+            if mine is None:
+                held = {u for (pid, u) in self._reviewing if pid == proj["id"]}
+                free = [u for u in todo if u not in held]
+                mine = next((u for u in free if self._last_hand(proj, u) != agent.id), None) or \
+                    next(iter(free), None)
+                if mine is None:
+                    return None
+            with self.net.store.tx() as db:
+                self.net._event(db, proj["id"], agent.id, "review", mine)
+            self._reviewing[(proj["id"], mine)] = (agent.id, now + CLAIM_SECONDS)
+        fp = ForkProject(Path(proj["root"]))
+        source = next((u.source for u in fp.units() if u.name == mine), None) or mine
+        return REVIEW.format(unit=mine, source=source)
+
+    def review_done(self, agent: Agent, slug: str, unit: str, findings: str, fixed: bool) -> str:
+        """An agent's review of a tidied file: what it found and whether it fixed anything. A file whose review fixed
+        something is reviewed again (REVIEWS), preferably by another helper; one whose review found it holds is done."""
+        proj = self.net._project(slug)
+        if not findings.strip():
+            raise NetworkError("say what you found in findings: what was wrong and what you fixed, or that it holds")
+        with self._tidy_lock:
+            held = self._reviewing.get((proj["id"], unit))
+            if held is None or held[0] != agent.id or held[1] <= time.time():
+                raise NetworkError(f"you aren't reviewing {unit}: claim_readable gives you a file to review")
+            del self._reviewing[(proj["id"], unit)]
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], agent.id, "reviewed", unit)
+            if not fixed:
+                self.net._event(db, proj["id"], agent.id, "review_clean", unit)
+            self.net._event(db, proj["id"], agent.id, "review_summary", f"{unit}: {findings.strip()[:800]}")
+        return f"✅ {unit} reviewed. claim_readable for the next one."
+
     def _untidy_left(self, proj, unit: str) -> list[str]:
         """What a file still has that the tidy job asks to be gone: names made of addresses, its own extern
         declarations, C++ in a game written in C. [] when it's tidy, or the file can't be read."""
@@ -557,6 +644,15 @@ class Readability:
         if externs:
             left.append(f"{len(externs)} extern declarations of its own (`{externs[0].strip()}`...): declare them in "
                         "a header in include/ and #include it")
+        fakes = sorted({m.group(0) for m in FAKE_THIS.finditer(text)})
+        if fakes:
+            left.append(f"calls through a made-up object to put a value in a register (`{fakes[0]}...)`): declare the "
+                        "callee with its real convention and arguments and call it as a function")
+        try:
+            left += [f"two copies of one struct disagree, {c} (they can't both be right: the code that uses it says "
+                     "which; keep one, in a header)" for c in structcheck.conflicts(fp.root, source)]
+        except Exception:  # (a check over the project's text: never in the way)
+            logging.getLogger("decompdecomp").exception("the struct check of %s", source)
         if self._in_c(proj, fp, source):
             left.append(f"it's C++ and the game was written in C: write it as C and set_file_language(\"{source}\", "
                         "\"c\")")
@@ -600,6 +696,9 @@ class Readability:
                 job, file_left = self._tidy_job(agent, proj)
                 if file_left:
                     given_up += _left_as_it_is(file_left, "being tidied")
+                if job is not None:
+                    return given_up + job
+                job = self._review_job(agent, proj)  # every file tidy: each reviewed
                 if job is not None:
                     return given_up + job
             if self.left(proj):  # what's left is held by other helpers
@@ -749,7 +848,7 @@ class Readability:
             f"JOIN (SELECT id, name FROM functions WHERE project_id=? AND {TODO}) f ON f.id=c.function_id "
             "LEFT JOIN agents a ON a.id=c.agent_id", proj["id"], proj["id"])]
         with self._tidy_lock:
-            files = [(u, who, until) for (pid, u), (who, until) in self._tidying.items()
+            files = [(u, who, until) for (pid, u), (who, until) in [*self._tidying.items(), *self._reviewing.items()]
                      if pid == proj["id"] and until > now]
         for unit, who, until in files:
             row = self.net.store.one("SELECT name FROM agents WHERE id=?", who)

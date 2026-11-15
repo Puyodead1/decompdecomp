@@ -110,7 +110,9 @@ functions, then stop:
    (read_data shows it).
 
 Once every function in a source file is readable, claim_readable may give you the file to tidy instead (TIDY A
-FILE): follow its list with edit_file and rename_symbol, then tidy_done. A file counts as one of your {count}.
+FILE): follow its list with edit_file and rename_symbol, then tidy_done. Once tidy, a file is reviewed (REVIEW A
+FILE): check what it says against the game's code, fix what's wrong, then review_done. A file counts as one of your
+{count}.
 
 Write C people would write. Be brief in your messages: work, don't narrate.
 """
@@ -350,6 +352,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "claim_readable": lambda net, agent, slug: net.readability.claim(agent, slug),
     "make_readable": lambda net, agent, slug, function, source: net.readability.submit(agent, slug, function, source),
     "tidy_done": lambda net, agent, slug, unit, summary: net.readability.tidy_done(agent, slug, unit, summary),
+    "review_done": lambda net, agent, slug, unit, findings, fixed=False:
+        net.readability.review_done(agent, slug, unit, findings, bool(fixed)),
     "suggest": lambda net, agent, slug, text, compiler="", flags="", function="", ranges="", source="":
         net.suggest(agent, slug, text, compiler, flags, function or None, ranges, source),
     "try_compiler": lambda net, agent, slug, function, compiler, flags="", source="":
@@ -384,7 +388,7 @@ READ_ONLY = frozenset({"project_info", "get_function", "last_diff", "get_context
 ROM_ONLY = {"get_context", "edit_context", "split_function", "redraft", "search_flags", "name_instance"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_files", "set_file_language",
              "join_functions",
-             "tidy_done", "standins_for", "name_instance"}
+             "tidy_done", "review_done", "standins_for", "name_instance"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
 
 
@@ -733,6 +737,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """The source file claim_readable gave you to tidy is done (its types, names and declarations): say what you
         changed in a sentence or two."""
         return await run(ctx, "tidy_done", unit=unit, summary=summary)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def review_done(ctx: Context, unit: str, findings: str, fixed: bool = False) -> str:
+        """The source file claim_readable gave you to review is done: what you found wrong and fixed (fixed=true),
+        or that what it says holds against the game's code (fixed=false)."""
+        return await run(ctx, "review_done", unit=unit, findings=findings, fixed=fixed)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def share_knowledge(ctx: Context, text: str = "", supports: int = 0) -> str:

@@ -105,6 +105,10 @@ def test_polishing_helpers_carry_on_once_nothing_is_left_to_decompile(tmp_path, 
     assert m._left(slug, "readable") == 1  # the file to tidy now
     with net.store.tx() as db:
         net._event(db, net._project(slug)["id"], None, "tidied", "game")
+    assert m._left(slug, "readable") == 1  # its review now
+    with net.store.tx() as db:
+        net._event(db, net._project(slug)["id"], None, "reviewed", "game")
+        net._event(db, net._project(slug)["id"], None, "review_clean", "game")
     assert m._left(slug, "readable") == 0
 
 
@@ -276,12 +280,22 @@ def test_a_file_whose_functions_are_all_readable_is_tidied_next(tmp_path, monkey
     again = net.readability.tidy_done(other, slug, "game", "Particle in include/particle.h")
     assert again.startswith("✋ Not tidy yet") and "D_00403000" in again and "extern declarations" in again
     assert net.readability.tidy_done(other, slug, "game", "Particle in include/particle.h").startswith("✅")
+    # then it's reviewed against the game's code: a match proves only the bytes (a struct off by 0x2C, an int that
+    # holds a float), by a helper other than the one that tidied it where there is one
+    assert net.readability.left(proj) == 1
+    review = net.readability.claim(agent, slug)
+    assert review.startswith("REVIEW A FILE: game (src/game.c)") and 'review_done("game"' in review
+    with pytest.raises(NetworkError, match="aren't reviewing"):
+        net.readability.review_done(other, slug, "game", "fine", False)
+    assert net.readability.review_done(agent, slug, "game", "Particle.life was a float", True).startswith("✅")
+    assert net.readability.claim(other, slug).startswith("REVIEW A FILE")  # what it fixed is reviewed again
+    assert net.readability.review_done(other, slug, "game", "it holds", False).startswith("✅")
     assert net.readability.left(proj) == 0 and "Stop here" in net.readability.claim(agent, slug)
     kinds = [r["kind"] for r in net.store.all("SELECT kind FROM events WHERE kind LIKE 'tid%' ORDER BY id")]
     # the second claim of a held file is a try too (#108): one tidy for each of the three hand-outs
     assert kinds == ["tidy", "tidy", "tidy", "tidied", "tidy_summary"]
     # a file no helper finishes is left after its tries, as a function is
-    net.store.conn.execute("DELETE FROM events WHERE kind LIKE 'tid%'")
+    net.store.conn.execute("DELETE FROM events WHERE kind LIKE 'tid%' OR kind LIKE 'review%'")
     for _ in range(readable.POLISH_TRIES):
         assert net.readability.claim(agent, slug).startswith("TIDY A FILE")
         net.readability._tidying.clear()  # (its claim ran out)

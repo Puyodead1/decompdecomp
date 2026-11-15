@@ -107,6 +107,10 @@ Where to start on a gap:
 - **Tidying a ROM project**: its C is the database's, one function at a time, with one shared header per segment
   (`edit_context`), so there's no file to tidy (`app/readable.py`, `_untidy`). The header is the place to start: its
   types and names, then the functions' C that uses them, each still matching.
+- **Reviewing a ROM project's files**: once tidy, a project's file is reviewed against the game's code by another
+  helper (REVIEW A FILE, `app/readable.py`, `_review_job`: struct layouts, float or int, each case's body, names),
+  as a match proves only the bytes. A ROM project has no file to tidy, so none to review: its functions' review
+  waits on the shared header's tidy above.
 - **Struct layouts** read MIPS and x86 loads and stores (`arch/mips_fields.py`, `arch/x86_fields.py`); another
   processor adds its reader as its `Arch.field_accesses`, and structs.py does the rest. Still open on MIPS: the PS2's
   fifth to eighth arguments (t0-t3), and a pointer into the middle of a struct handed to a callee (`&this->pos`). On
