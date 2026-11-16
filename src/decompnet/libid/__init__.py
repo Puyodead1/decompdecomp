@@ -108,6 +108,10 @@ class Signature:
     crc: tuple[int, int, int] | None = None  # (from, length, crc16): FLIRT's
     tail: tuple[tuple[int, int], ...] = ()  # (offset, byte)
     origin: str = ""
+    # the object file it's from, where known (a kit's archives): code that's the same in several objects says too
+    # little which it is (a 2001 GameCube SDK's empty callbacks and getters, CARDProbe or GXSaveCPUFifo, are the
+    # game's own too)
+    unit: str = ""
 
 
 @dataclass
@@ -401,7 +405,7 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
     for code in codes:
         cands = by_size.get(len(code.raw), []) + by_size.get(_trimmed(code.raw), []) + by_size.get(None, [])
         hits = [s for s in cands if signature_matches(s, code)]
-        if not hits:
+        if not hits or len({s.unit for s in hits if s.unit}) > 1:
             continue
         names = sorted({s.name for s in hits})
         s = hits[0]

@@ -15,6 +15,7 @@ project says what's its game's: there the report only lists what's found.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
@@ -24,7 +25,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from ... import libid
+from ... import kits, libid
 from ...network import NetworkError
 
 # report_library: agents recognise library code by what it does (MD5's rounds, zlib's inflate) where nothing in the
@@ -34,6 +35,9 @@ LIBRARY_AGENTS = 2
 DOWNLOAD_BYTES = 200 << 20  # a library's source archive, at most
 DOWNLOAD_SECONDS = 300
 FUNCTION_NAME = re.compile(r"func_([0-9A-Fa-f]{6,8})")
+# a function of the user's SDK libraries with fewer bytes no relocation fills is too short to say it's theirs: a
+# GameCube SDK's OSInitThreadQueue (li, stw, stw, blr) is the game's own list initialiser's code too
+KIT_SHORTEST = 24
 LIBRARY_WHY = "library code: {why}; its own source is the decomp's, not the game's to write"
 
 
@@ -87,6 +91,67 @@ def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int], frozenset
         mine = [(o - lo, t) for o, t in relocs.get(shndx, []) if lo <= o < lo + s["st_size"]]
         out[s.name] = (raw_of[shndx][lo:lo + s["st_size"]], _wild(mine, arch), frozenset())
     return out
+
+
+def archive_members(data: bytes):
+    """(name, bytes) of every object in a System V or GNU archive (.a)."""
+    if data[:8] != b"!<arch>\n":
+        return
+    at, longnames = 8, b""
+    while at + 60 <= len(data):
+        head = data[at:at + 60]
+        name = head[:16].decode("latin-1").rstrip()
+        try:
+            size = int(head[48:58].decode("latin-1").strip())
+        except ValueError:
+            return
+        body = data[at + 60:at + 60 + size]
+        if name == "//":
+            longnames = body
+        elif name.startswith("/") and name[1:].isdigit() and longnames:
+            off = int(name[1:])
+            end = longnames.find(b"/\n", off)
+            yield longnames[off:end if end >= 0 else None].decode("latin-1"), body
+        elif name not in ("/", "/SYM64/", "__.SYMDEF", "__.SYMDEF SORTED"):
+            yield name.rstrip("/"), body
+        at += 60 + size + (size & 1)
+
+
+def kit_signatures(archives: list[Path]) -> list[libid.Signature]:
+    """Every function of the user's library archives (a console's kits: kits.libraries) as a signature, its
+    relocated bytes left out: the library is the archive's ("os.a"), the origin the object it's in."""
+    out: list[libid.Signature] = []
+    for path in archives:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        out += _archive_signatures(str(path), st.st_size, st.st_mtime_ns)
+    return out
+
+
+@functools.lru_cache(maxsize=256)
+def _archive_signatures(path: str, size: int, mtime_ns: int) -> tuple[libid.Signature, ...]:
+    from elftools.common.exceptions import ELFError
+
+    lib = Path(path).name
+    out = []
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ()
+    for member, obj in archive_members(data):
+        try:
+            found = object_code(obj)
+        except (ELFError, ValueError, KeyError, AttributeError, TypeError):
+            continue
+        for symbol, (raw, wild, _) in found.items():
+            mask = bytes(0 if i in wild else 1 for i in range(len(raw)))
+            if sum(mask) < KIT_SHORTEST:
+                continue
+            out.append(libid.Signature(lib, "", symbol, len(raw), raw, mask, origin=f"{member}, your own copy",
+                                      unit=member))
+    return tuple(out)
 
 
 def _holds(folder: str, library: str) -> bool:
@@ -194,6 +259,11 @@ class LibraryIdMixin:
         for f in catalog.files:
             if "error" in f:
                 log(f"your signatures: {f['file']} wasn't read: {f['error']}")
+        console = self.console(proj)
+        if (archives := kits.libraries(console.kits)):  # (the console's SDK, the user's own copy: Setup)
+            own = kit_signatures(archives)
+            catalog.signatures += own
+            log(f"your {console.name} libraries: {len(own):,} functions in {len(archives)} archives")
         started = time.time()
         try:  # (the libraries the user put in libs/: their headers for every compile)
             self.scan_libraries(slug)
@@ -203,7 +273,6 @@ class LibraryIdMixin:
         program = self._program_file(proj)
         data = program.read_bytes() if program else None
         extra = self._fid_findings(proj, codes, catalog, program, log) if fid and catalog.fid and program else {}
-        console = self.console(proj)
         big = self.cfg(proj).get("big_endian", console.big_endian) if self.is_rom(proj) else console.big_endian
         report = libid.identify(data, codes, catalog, arch=proj["arch"] or console.arch, big_endian=bool(big),
                                 extra=extra, links=console.linked_libraries(data) if data else [])

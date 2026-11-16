@@ -249,3 +249,72 @@ def test_a_libs_folder_is_a_librarys_by_its_name_as_released():
     assert _holds("glut-3.7.6", "glut") and _holds("freeglut", "glut") and _holds("jpeg-6b", "libjpeg")
     assert _holds("zlib-1.1.3", "zlib") and _holds("lua5.1", "lua")
     assert not _holds("glut-3.7.6", "glu") and not _holds("openal-1.1", "alut")
+
+
+def test_code_several_objects_of_a_kit_have_says_too_little_which_it_is(tmp_path):
+    """A 2001 GameCube SDK's empty callbacks and getters (CARDProbe or GXSaveCPUFifo, in different objects) are the
+    game's own code too: a function only some of one object's functions fit is theirs, one several objects' fit isn't."""
+    body = bytes(range(0x20, 0x40))
+    one = [libid.Signature("os.a", "", n, 32, body, b"\1" * 32, unit="OSThread.o")
+           for n in ("OSInitMutexQueue", "OSInitThreadQueue")]
+    other = libid.Signature("card.a", "", "CARDProbe", 32, body, b"\1" * 32, unit="CARDBios.o")
+    game = libid.Code(1, "fn_803C0000", 0x803C0000, body)
+    found = libid.identify(None, [game], libid.Catalog([], one, [], []))["libraries"]
+    assert found[0]["keys"] == [1] and "OSInitMutexQueue or OSInitThreadQueue of os.a" in found[0]["functions"][0]["why"]
+    assert libid.identify(None, [game], libid.Catalog([], [*one, other], [], []))["libraries"] == []
+
+
+@pytest.mark.skipif(__import__("decompnet.toolchains", fromlist=["x"]).installed("gc-wii-binutils") is None,
+                    reason="needs the GameCube binutils")
+def test_a_gamecube_sdk_copy_is_a_kit_whose_functions_the_library_finder_matches(tmp_path, monkeypatch):
+    """The user's GameCube SDK (kits/dolphin.py): its archives' functions, relocations left out, are signatures the
+    library finder matches against the game's; one too short to say it's theirs (li, stw, stw, blr) is left out."""
+    import subprocess
+
+    from decompnet import consoles, kits, toolchains
+    from decompnet.app.engine.libraryid import kit_signatures, object_code
+
+    bin_dir = toolchains.path("gc-wii-binutils")
+    (tmp_path / "os.s").write_text("""
+    .text
+    .globl OSInitThreadQueue
+    .type OSInitThreadQueue, @function
+OSInitThreadQueue:
+    li r0, 0
+    stw r0, 0(r3)
+    stw r0, 4(r3)
+    blr
+    .size OSInitThreadQueue, .-OSInitThreadQueue
+    .globl OSReport
+    .type OSReport, @function
+OSReport:
+    stwu r1, -0x70(r1)
+    mflr r0
+    stw r0, 0x74(r1)
+    lis r3, msg@ha
+    addi r3, r3, msg@l
+    bl vprintf
+    lwz r0, 0x74(r1)
+    mtlr r0
+    addi r1, r1, 0x70
+    blr
+    .size OSReport, .-OSReport
+""")
+    lib = tmp_path / "Dolphin" / "HW2" / "lib"
+    lib.mkdir(parents=True)
+    subprocess.run([str(bin_dir / "powerpc-eabi-as"), "-mgekko", "-mregnames", "-o", str(tmp_path / "OS.o"),
+                    str(tmp_path / "os.s")], check=True)
+    subprocess.run([str(bin_dir / "powerpc-eabi-ar"), "rcs", str(lib / "os.a"), str(tmp_path / "OS.o")], check=True)
+    monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
+    assert "dolphin-sdk" in consoles.get("gc").kits and "dolphin-sdk" in consoles.get("wii").kits
+    toolchains.install("dolphin-sdk", folder=tmp_path / "Dolphin", accept_license=True, log=lambda *_: None)
+    assert kits.libraries(consoles.get("gc").kits) == [(lib / "os.a").resolve()]
+    sigs = kit_signatures(kits.libraries(["dolphin-sdk"]))
+    assert [(s.name, s.unit) for s in sigs] == [("OSReport", "OS.o")]
+    raw, _, _ = object_code((tmp_path / "OS.o").read_bytes())["OSReport"]
+    game = bytearray(raw)
+    game[14:16] = b"\x80\x48"  # (the game's own address of its message: a relocated field)
+    found = libid.identify(None, [libid.Code(5, "fn_803C1000", 0x803C1000, bytes(game))],
+                           libid.Catalog([], sigs, [], []))["libraries"]
+    assert found[0]["id"] == "os.a" and found[0]["aside"] and found[0]["keys"] == [5]
+    assert "OSReport of os.a (OS.o, your own copy)" in found[0]["functions"][0]["why"]

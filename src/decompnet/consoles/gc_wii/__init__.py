@@ -44,6 +44,8 @@ class GameCube(Console):
     layout = "dtk-template"
     compilers = tuple(Compiler(v, f"CodeWarrior {v}") for v in GC_VERSIONS)
     packs = (("mwcc", "CodeWarrior, the compilers of GameCube and Wii games (proprietary)"),)
+    # Nintendo's libraries, the user's own copies: their code in a game set aside by the library finder (kits/dolphin.py)
+    kits = ("dolphin-sdk",)
     guides = ("ppc", "mwcc", "cpp")
     compiler_guide = "mwcc"  # CodeWarrior's register and stack rules decide most of what's left
     compiler_family = "mwcc"
