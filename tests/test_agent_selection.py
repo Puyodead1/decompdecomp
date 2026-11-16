@@ -44,6 +44,29 @@ def test_the_queue_takes_only_what_the_selection_does(tmp_path):
     assert net.claim_row(other, "game", "f1")["name"] == "f1"  # another helper's choices are its own
 
 
+def test_a_selection_takes_functions_of_so_many_instructions(tmp_path):
+    """A strong model on the big functions, a cheap one on the small: a GameCube game's 8 Haiku agents all worked
+    the small end, and nobody the big."""
+    assert network.validate_selection({"min_insns": "64", "max_insns": 256}) == {"min_insns": 64, "max_insns": 256}
+    for bad in ({"min_insns": 0}, {"max_insns": 2.5}, {"min_insns": 300, "max_insns": 200}):
+        with pytest.raises(NetworkError):
+            network.validate_selection(bad)
+    net = _game(tmp_path, functions=3)
+    with net.store.tx() as db:
+        db.executemany("UPDATE functions SET n_insns=? WHERE name=?", [(4, "f0"), (100, "f1"), (900, "f2")])
+    big, _ = net.local_agent("claude-sonnet-1")
+    net.set_selection("game", big.name, {"min_insns": 64, "max_insns": 256})
+    with pytest.raises(NetworkError, match="4 instructions.*64 or more"):
+        net.claim_row(big, "game", "f0")
+    with pytest.raises(NetworkError, match="900 instructions.*256 or fewer"):
+        net.claim_row(big, "game", "f2")
+    assert net.selection_left(big, "game") == 1
+    assert net.claim_row(big, "game")["name"] == "f1"
+    small, _ = net.local_agent("claude-haiku-1")
+    net.set_selection("game", small.name, {"max_insns": 63, "strategy": "hardest"})
+    assert net.claim_row(small, "game")["name"] == "f0"
+
+
 def test_the_new_orders_and_filters_of_a_selection(tmp_path):
     """From RetroReversing's fork: untried first, the longest unchecked first, only functions no C has compiled for
     yet (a filter: the helper stops when there's none), and only functions no agent of its model has tried (whatever its effort)."""

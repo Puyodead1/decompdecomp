@@ -196,6 +196,8 @@ function selectionFields(sel = {}) {
     <p class="muted small" data-hint aria-live="polite">${esc(strategyHint(sel.strategy))}</p>
     <label class="check"><input data-k="model_untried" type="checkbox" ${sel.model_untried ? "checked" : ""}><span>Only functions no agent of this model has tried yet (whatever its effort; compile errors count as tries)</span></label>
     ${num("match_below", "Only functions below this % matched", 0, 100, "any", "any")}
+    ${num("min_insns", "Only functions of at least this many instructions", 1, 1000000, 1, "any size")}
+    ${num("max_insns", "Only functions of at most this many instructions", 1, 1000000, 1, "any size")}
     ${num("max_tries", "Compiles of one function at most (then it's released, its best attempt kept)", 1, 10000, 1, "no limit")}
     ${num("stall_compiles", "Move on after this many compiles without a better score", 1, 1000, 1, "by the function's size")}`;
 }
@@ -214,6 +216,8 @@ function wireSelection(box) {
 function selectionSummary(sel = {}) {
   const parts = [sel.strategy ? (STRATEGY_NAMES.find(([k]) => k === sel.strategy) || [, sel.strategy])[1] : "",
     sel.model_untried ? "new to its model" : "", sel.match_below != null ? `below ${sel.match_below}%` : "",
+    sel.min_insns && sel.max_insns ? `${sel.min_insns}–${sel.max_insns} instructions` : sel.min_insns ? `${sel.min_insns}+ instructions`
+      : sel.max_insns ? `up to ${sel.max_insns} instructions` : "",
     sel.max_tries ? `${plural(sel.max_tries, "compile")} each` : "", sel.stall_compiles ? `moves on after ${sel.stall_compiles}` : ""].filter(Boolean);
   return parts.join(" · ");
 }

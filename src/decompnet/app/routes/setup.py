@@ -256,7 +256,8 @@ def register(app: App) -> None:
 
     @mcp.custom_route("/api/agents/selection", methods=["POST"])
     async def api_agents_selection(request: Request) -> Response:
-        """A helper's work selection (`id`, `selection`: strategy, match_below, max_tries, stall_compiles)."""
+        """A helper's work selection (`id`, `selection`: strategy, match_below, max_tries, stall_compiles,
+        min_insns, max_insns)."""
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)

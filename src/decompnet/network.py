@@ -204,9 +204,13 @@ FILTERING = {"no_compiling_c"}
 # what an agent's name says of its effort ("claude-opus-high-1"): the same model whatever it was asked to think
 EFFORT_WORDS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 # A helper's work selection (Settings of the helper, on its card): the order it takes functions in (a STRATEGIES
-# name), functions below a match percentage only, at most so many compiles of one function, and its own move-on number
-# in place of the size's (STALL_BUDGET). The user's choice, kept by the queue and the judge, not left to the prompt.
-SELECTION_RANGES = {"match_below": (0, 100), "max_tries": (1, 10000), "stall_compiles": (1, 1000)}
+# name), functions below a match percentage only, at most so many compiles of one function, its own move-on number
+# in place of the size's (STALL_BUDGET), and functions of so many instructions only (min_insns..max_insns: a strong
+# model on the big ones while a cheap one takes the small; a GameCube game's 8 Haiku agents all worked the small end
+# autopilot was matching too, and nobody the 4,400 of over 256 bytes). The user's choice, kept by the queue and the
+# judge, not left to the prompt.
+SELECTION_RANGES = {"match_below": (0, 100), "max_tries": (1, 10000), "stall_compiles": (1, 1000),
+                    "min_insns": (1, 1000000), "max_insns": (1, 1000000)}
 # yes-or-no parts of a selection: model_untried takes only functions no agent of its model has tried (any attempt,
 # compile errors too; its effort aside: model_key), so a new model sweeps what it hasn't seen, beside the others
 SELECTION_SWITCHES = ("model_untried",)
@@ -558,6 +562,8 @@ def validate_selection(policy) -> dict:
             raise NetworkError(f"{key.replace('_', ' ')} must be {'a whole number' if whole else 'a number'} "
                                f"from {low} to {high}")
         out[key] = int(number) if whole else number
+    if out.get("min_insns", 0) > out.get("max_insns", float("inf")):
+        raise NetworkError("the fewest instructions must be no more than the most")
     for key in SELECTION_SWITCHES:
         if policy.get(key) not in (None, False, "", 0):
             if policy.get(key) is not True:
@@ -897,6 +903,10 @@ class Network:
             return f"{fn['name']} is {_percent(fn):.0f}% matched, and your work selection takes functions below {below:g}%"
         if (limit := policy.get("max_tries")) and self.tries(agent.id, fn["id"]) >= limit:
             return f"you've compiled {fn['name']} {limit} times, the most your work selection allows"
+        if (low := policy.get("min_insns")) and (fn["n_insns"] or 0) < low:
+            return f"{fn['name']} has {fn['n_insns'] or 0} instructions, and your work selection takes {low} or more"
+        if (high := policy.get("max_insns")) and (fn["n_insns"] or 0) > high:
+            return f"{fn['name']} has {fn['n_insns']} instructions, and your work selection takes {high} or fewer"
         if policy.get("strategy") in FILTERING and (fn["best_score"] is not None or self.store.one(
                 "SELECT 1 FROM attempts WHERE function_id=? AND compiled=1 LIMIT 1", fn["id"])):
             return f"C has compiled for {fn['name']} already, and your work selection takes only functions none has"
@@ -910,11 +920,11 @@ class Network:
         return ""
 
     def selection_left(self, agent: Agent, slug: str) -> int | None:
-        """How many open functions a helper's work selection still takes (match percentage, max tries); None when
-        it has neither, and takes whatever is open."""
+        """How many open functions a helper's work selection still takes (match percentage, max tries, sizes); None
+        when it has none of them, and takes whatever is open."""
         policy = self.selection(slug, agent.name)
         if policy.get("match_below") is None and not policy.get("max_tries") and not policy.get("model_untried") \
-                and policy.get("strategy") not in FILTERING:
+                and not policy.get("min_insns") and not policy.get("max_insns") and policy.get("strategy") not in FILTERING:
             return None
         with self.store.tx() as db:  # (named parameters)
             return db.execute(f"""SELECT COUNT(*) AS n FROM functions f JOIN projects p ON p.id=f.project_id
@@ -929,7 +939,8 @@ class Network:
             key = model_key(agent.name)
             mine = json.dumps([r["id"] for r in db.execute("SELECT id, name FROM agents") if model_key(r["name"]) == key])
         return {"agent": agent.id, "below": policy.get("match_below"), "tries": policy.get("max_tries"),
-                "uncompiled": int(policy.get("strategy") in FILTERING), "my_model": mine}
+                "uncompiled": int(policy.get("strategy") in FILTERING), "my_model": mine,
+                "min_insns": policy.get("min_insns"), "max_insns": policy.get("max_insns")}
 
     def stall_after(self, fn, agent: Agent | None) -> int | None:
         """A helper's own move-on number for its work selection, else None (the function's size decides)."""
@@ -2006,8 +2017,8 @@ def _percent(fn) -> float:
     return max(0.0, 100.0 * (1.0 - (fn["best_score"] or 0) / max(1, (fn["n_insns"] or 0) * 100)))
 
 
-# the functions a helper's work selection takes (:below, :tries, :agent; NULL: no such rule): one never compiled yet
-# counts as 0% matched
+# the functions a helper's work selection takes (:below, :tries, :agent, :min_insns, :max_insns; NULL: no such rule):
+# one never compiled yet counts as 0% matched
 _SELECTED = """(:below IS NULL OR f.best_score IS NULL OR
                 MAX(0.0, 100.0 * (1.0 - CAST(f.best_score AS REAL) / MAX(1, f.n_insns * 100))) < :below)
                AND (:tries IS NULL OR (SELECT COUNT(*) FROM attempts a WHERE a.function_id=f.id
@@ -2015,4 +2026,6 @@ _SELECTED = """(:below IS NULL OR f.best_score IS NULL OR
                AND (:uncompiled = 0 OR (f.best_score IS NULL AND NOT EXISTS (
                     SELECT 1 FROM attempts a WHERE a.function_id=f.id AND a.compiled=1)))
                AND (:my_model IS NULL OR NOT EXISTS (SELECT 1 FROM attempts a WHERE a.function_id=f.id
-                                                     AND a.agent_id IN (SELECT value FROM json_each(:my_model))))"""
+                                                     AND a.agent_id IN (SELECT value FROM json_each(:my_model))))
+               AND (:min_insns IS NULL OR COALESCE(f.n_insns, 0) >= :min_insns)
+               AND (:max_insns IS NULL OR COALESCE(f.n_insns, 0) <= :max_insns)"""
