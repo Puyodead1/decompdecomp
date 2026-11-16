@@ -388,6 +388,7 @@ _SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 TRY_ALL_SECONDS = 120  # try_compiler "all" stops trying more versions after this (Codex gives a tool call 180)
 COMPARE_SECONDS = 900  # a comparison of every compiler and flag variant on one function stops after this
+FILE_FUNCTIONS = 200  # functions a file decompdecomp gives code holds at most (start_files)
 
 
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
@@ -1541,6 +1542,9 @@ class ForkEngine:
         threading.Thread(target=run, daemon=True, name=f"link-{slug}").start()
 
     # ------------------------------------------------------------------ source files for all the code
+    # A stretch is cut into files of at most FILE_FUNCTIONS functions: a GameCube game's one stretch of 16,695 in one
+    # file made every claim and compile read all of them (objdiff's whole unit, 17 s and 32 s each; with 8 agents
+    # waiting on one another, minutes: they timed out). Files this size are what contributors start from too.
     # Code no source file covers (dtk's auto_..._text units) can't be decompiled: there's nowhere to write it. Real
     # projects split it into files by hand. decompdecomp gives each such stretch of code a file of its own, the way
     # contributors start (split_file divides one further), and keeps the change only if the game still builds byte
@@ -1610,11 +1614,15 @@ class ForkEngine:
                 continue
             folder = "auto" if module == "main" else f"REL/{module}"
             ext = ".cpp" if u.name in cpp else ".c"
-            name = f"{folder}/text_{extent[0]:08X}{ext}"
-            while name in taken or (fp.root / src / name).exists() or f"{src}/{name}" in listed:
-                name = name[:-len(ext)] + "_" + ext
-            taken.add(name)
-            split.append((module, name, extent[0], extent[1], rep_fns.get(u.name, 0)))
+            starts = self._starts(dtksplits.symbols(mods[module].symbols), *extent)
+            cuts = [extent[0], *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], extent[1]]
+            for lo, hi in zip(cuts, cuts[1:]):
+                name = f"{folder}/text_{lo:08X}{ext}"
+                while name in taken or (fp.root / src / name).exists() or f"{src}/{name}" in listed:
+                    name = name[:-len(ext)] + "_" + ext
+                taken.add(name)
+                n = sum(1 for a in starts if lo <= a < hi) if len(cuts) > 2 else rep_fns.get(u.name, 0)
+                split.append((module, name, lo, hi, n))
         return {"create": sorted(set(create)), "split": sorted(split)}
 
     def start_files(self, slug: str, log=print, agent: Agent | None = None) -> dict:
@@ -1627,8 +1635,11 @@ class ForkEngine:
         with self._tree(proj).exclusive(), self._build_lock(proj):
             fp.build_all()
             plan = self.code_without_files(slug, fp.report())
+            divided = self._divide_big_files(proj, fp, mods, src, fp.report(), log)
             if not plan["create"] and not plan["split"]:
-                return {"created": [], "split": [], "functions": 0}
+                if divided:
+                    self.sync(slug, log=lambda *_: None, rep=fp.report())
+                return {"created": [], "split": divided, "functions": 0}
             saved = {conf: conf.read_text(encoding="utf-8")}
             made: list[Path] = []
             try:
@@ -1683,6 +1694,127 @@ class ForkEngine:
                                 f"{len(made)} new source files for {n} functions")
         log(f"{len(made)} new source files; {n} more functions can be decompiled")
         return {"created": plan["create"], "split": [i[1] for i in plan["split"]], "functions": n}
+
+    @staticmethod
+    def _starts(syms: dict, lo: int, hi: int) -> list[int]:
+        """Where code in .text [lo, hi) may be cut: each symbol's start that's inside no other symbol (not
+        __save_gpr's _savegpr_14..31 labels, which dtk refuses a file to end within)."""
+        out, end = [], lo
+        for a, size in sorted((a, size) for sec, a, size in syms.values() if sec == ".text" and lo <= a < hi):
+            if a >= end and (not out or out[-1] != a):
+                out.append(a)
+            end = max(end, a + size)
+        return out
+
+    @staticmethod
+    def _big_units(rep: dict) -> list[dict]:
+        """The report's units of files decompdecomp gave code (auto/text_XXXXXXXX, REL/<module>/text_XXXXXXXX) with
+        more than FILE_FUNCTIONS functions: an older decompdecomp made one file of a whole stretch."""
+        return [u for u in rep.get("units", []) if len(u.get("functions") or []) > FILE_FUNCTIONS
+                and re.search(r"/(?:auto|REL/[^/]+)/text_[0-9A-F]{8}_*$", u["name"])]
+
+    def _divide_big_files(self, proj, fp: ForkProject, mods: dict, src: str, rep: dict, log) -> list[str]:
+        """Cut each file decompdecomp made that holds more than FILE_FUNCTIONS functions into files of that many, its
+        C going with its functions (as split_file does, all cuts at once): kept only if the game still builds byte
+        for byte and every function that matched still matches. Returns the new files. The caller holds the tree."""
+        made_all: list[str] = []
+        for entry in self._big_units(rep):
+            try:
+                unit = fp.unit(entry["name"])
+            except (ForkError, ValueError):
+                continue
+            rel = unit.source or ""
+            name = rel[len(src) + 1:] if rel.startswith(src + "/") else rel
+            if fp.link_states().get(rel, ("",))[0] != "NonMatching":
+                continue
+            owners = [(mod, sp) for mod in mods.values()
+                      for sp in [dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8"))]
+                      if any(f.name == name for f in sp.files)]
+            if len(owners) != 1:
+                continue
+            mod, sp = owners[0]
+            f = next(x for x in sp.files if x.name == name)
+            if ".text" not in f.sections:
+                continue
+            lo, hi = f.sections[".text"]
+            syms = dtksplits.symbols(mod.symbols)
+            starts = self._starts(syms, lo, hi)
+            cuts = [lo, *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], hi]
+            if len(cuts) <= 2:
+                continue
+            ext = Path(name).suffix or ".c"
+            parts = [(a, b, f"{Path(name).parent.as_posix()}/text_{a:08X}{ext}") for a, b in zip(cuts[1:], cuts[2:])]
+            if any((fp.root / src / n).exists() or any(x.name == n for x in sp.files) for _, _, n in parts):
+                log(f"{rel}: a file of the names it would be cut into exists already; left as it is")
+                continue
+            old_path, conf = fp.root / src / name, fp.root / "configure.py"
+            text = old_path.read_text(errors="replace", encoding="utf-8") if old_path.exists() else ""
+            rows = self.net.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND unit=?",
+                                      proj["id"], unit.name)
+            # (the build directly: the caller holds the build lock, which _baseline's build takes)
+            built, _ = fp.build_unit(unit)
+            try:
+                before = fp.diff(unit, None).unit_scores if built else {}
+            except (ObjdiffError, ForkError):
+                before = {}
+            protected = {n for n, pct in before.items() if pct is not None and pct >= 100}
+            saved = {conf: conf.read_text(encoding="utf-8"), mod.splits: mod.splits.read_text(encoding="utf-8"),
+                     old_path: text}
+            made: list[Path] = []
+            log(f"cutting {rel} ({len(starts):,} functions) into {len(cuts) - 1} files of up to {FILE_FUNCTIONS}")
+            try:
+                rest, texts = text, {}
+                for a, b, n in reversed(parts):  # (from the end: each cut takes what's after it)
+                    going = {s for r in rows if (s := self._meta(r).get("symbol")) in syms and a <= syms[s][1] < b}
+                    texts[n], rest, _ = self._divide(rest, rows, going)
+                f.sections = dict(f.sections, **{".text": (lo, cuts[1])})  # (its data stays: split_file's `data` moves it)
+                sp.files.extend(dtksplits.FileSplit(n, {".text": (a, b)}) for a, b, n in parts)
+                mod.splits.write_text(sp.render(), encoding="utf-8")
+                ctext = saved[conf]
+                spot = next(((s0, e0) for lib in dtksplits.libs(ctext) for p_, s0, e0 in lib.objects if p_ == name), None)
+                if spot is None:
+                    raise ForkError(f"{name} isn't in configure.py")
+                indent = dtksplits.indent_of(ctext, spot[0])
+                extra = "".join(f',\n{indent}Object(NonMatching, "{n}")' for _, _, n in parts)
+                conf.write_text(ctext[:spot[1]] + extra + ctext[spot[1]:], encoding="utf-8")
+                for n, body in texts.items():
+                    p_ = fp.root / src / n
+                    p_.write_text(body, encoding="utf-8")
+                    made.append(p_)
+                old_path.write_text(rest, encoding="utf-8")
+                ok, out = fp.verify()
+                if not ok:
+                    raise ForkError(f"the game didn't build identically with the file cut:\n{_tail(out)}")
+                now: dict[str, float | None] = {}
+                for u in fp.units():
+                    if u.source in {rel, *(f"{src}/{n}" for _, _, n in parts)}:
+                        built, out = fp.build_unit(u)
+                        if not built:
+                            raise ForkError(f"{u.source} doesn't compile once cut:\n{_tail(out)}")
+                        now.update(fp.diff(u, None).unit_scores)
+                lost = sorted(n for n in protected if (now.get(n) or 0) < 100)
+                if lost:
+                    raise ForkError(f"these functions would stop matching: {', '.join(lost[:8])}")
+            except (ForkError, ObjdiffError, OSError, ValueError) as e:
+                for p_, old in saved.items():
+                    p_.write_text(old, encoding="utf-8")
+                for p_ in made:
+                    p_.unlink(missing_ok=True)
+                fp.verify()
+                log(f"{rel} wasn't cut, nothing changed: {e}")
+                continue
+            self._commit_paths(proj, fp, [str(p_.relative_to(fp.root)) for p_ in [*saved, *made]],
+                               f"Cut {Path(name).name} into {len(cuts) - 1} files of up to {FILE_FUNCTIONS} functions\n\n"
+                               "One file of the whole stretch made every claim and compile read all of its functions; "
+                               "the game still builds byte for byte and every match still matches.\n\nCut by decompdecomp.")
+            with self.net.store.tx() as db:
+                self.net._event(db, proj["id"], None, "split", f"{rel} cut into {len(cuts) - 1} files")
+            made_all += [f"{src}/{n}" for _, _, n in parts]
+        if made_all:
+            fp.build_all()
+            self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+            log(f"{len(made_all)} new source files from files too big to work on")
+        return made_all
 
     def split_file(self, agent: Agent | None, slug: str, path: str, at: str, new_name: str = "", data: str = "") -> str:
         """Divide a source file in two at a function: it and everything after it in the file's code go to a new file
@@ -2346,7 +2478,9 @@ class ForkEngine:
         """Code no source file covers (dtk's auto_..._text units): agents can't reach it until it has a file."""
         autos = [u for u in rep.get("units", []) if (u.get("metadata") or {}).get("auto_generated")
                  and u["name"].endswith("_text") and u.get("functions")]
-        return {"stretches": len(autos), "functions": sum(len(u["functions"]) for u in autos)}
+        big = ForkEngine._big_units(rep)
+        return {"stretches": len(autos), "functions": sum(len(u["functions"]) for u in autos),
+                "big_files": len(big), "big_functions": sum(len(u["functions"]) for u in big)}
 
     def uncovered(self, slug: str) -> dict | None:
         """{"stretches", "functions"} without a source file, from the last measurement (a project measured by an

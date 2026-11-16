@@ -336,10 +336,14 @@ function renderCompilerNotice(ov) {
   const n = $("compilerNotice");
   if (n._working) return;
   const unc = ov.kind === "fork" && ov.ready ? ov.uncovered : null;
-  if (unc && unc.functions) {
+  if (unc && (unc.functions || unc.big_functions)) {
     n.hidden = false;
     n.className = "notice";
-    setHtml(n, `<span><b>${unc.functions.toLocaleString()} functions</b> are in code no source file covers yet, so agents can't decompile them. decompdecomp can give each stretch of code a file (checked against the game's checksum, committed to git).</span><span class="grow"></span><button class="primary small-btn" id="startFiles" type="button">Give them source files</button><div class="job-feedback"><pre class="joblog" id="startFilesLog" hidden></pre></div>`);
+    // (an older decompdecomp gave a whole stretch one file: every claim and compile then read all of its functions)
+    const what = unc.functions
+      ? `<b>${unc.functions.toLocaleString()} functions</b> are in code no source file covers yet, so agents can't decompile them. decompdecomp can give each stretch of code files`
+      : `<b>${unc.big_functions.toLocaleString()} functions</b> are in ${unc.big_files === 1 ? "a source file" : `${unc.big_files} source files`} too big to work on: every claim and compile reads all of them, so agents wait minutes. decompdecomp can cut ${unc.big_files === 1 ? "it" : "them"} into files of a few hundred functions`;
+    setHtml(n, `<span>${what} (checked against the game's checksum, committed to git).</span><span class="grow"></span><button class="primary small-btn" id="startFiles" type="button">${unc.functions ? "Give them source files" : "Cut into smaller files"}</button><div class="job-feedback"><pre class="joblog" id="startFilesLog" hidden></pre></div>`);
     $("startFiles").onclick = async () => {
       n._working = true;
       const log = $("startFilesLog");
@@ -350,7 +354,8 @@ function renderCompilerNotice(ov) {
       try {
         const { job } = await api("/api/fork/start-files", { method: "POST", body: { slug: S.slug } });
         const res = await followJob(job, log);
-        toast(`${(res && res.functions || 0).toLocaleString()} more functions can be decompiled now.`, "match");
+        toast(res && res.functions ? `${res.functions.toLocaleString()} more functions can be decompiled now.`
+          : `${(res && res.split || []).length.toLocaleString()} new source files.`, "match");
         await refreshMap();
       } catch (e) { showJobError(log, e.message); } finally { finish(); button.textContent = label; n._working = false; }
     };

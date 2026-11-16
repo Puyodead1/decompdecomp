@@ -125,6 +125,52 @@ def test_code_without_a_file_gets_one(gc):
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=?", pid)["n"] == total
 
 
+def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_cut(gc, monkeypatch):
+    """A GameCube game's one stretch of 16,695 functions got one file, and every claim and compile then read all of
+    them (minutes each, with 8 agents: they timed out). A stretch gets files of FILE_FUNCTIONS functions; a file an
+    older decompdecomp made bigger is cut so, its C going with its functions, the game still built byte for byte."""
+    from decompnet.app import forkengine
+    from decompnet.forks import dtksplits
+
+    net, slug = gc
+    fp = net.forks.get(slug)[1]
+    proj = net.project_row(slug)
+    mod = dtksplits.modules(fp.root, json.loads(proj["config"])["version"])["main"]
+    sp = dtksplits.Splits.parse(mod.splits.read_text())
+    syms = dtksplits.symbols(mod.symbols)
+
+    def count(f):
+        return len(forkengine.ForkEngine._starts(syms, *f.sections.get(".text", (0, 0))))
+
+    gone = max((f for f in sp.files if ".text" in f.sections), key=count)
+    assert count(gone) >= 3
+    sp.files.remove(gone)
+    mod.splits.write_text(sp.render())
+    conf = fp.root / "configure.py"
+    conf.write_text(re.sub(rf'\s*Object\(\w+, "{re.escape(gone.name)}"\),', "", conf.read_text()))
+    (fp.root / "src" / gone.name).unlink()
+    assert fp.verify()[0]
+    net.forks.check(slug, log=lambda *_: None)
+
+    monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 2)
+    plan = net.forks.code_without_files(slug, fp.report())["split"]
+    assert len(plan) == (count(gone) + 1) // 2 and all(n <= 2 for *_, n in plan)
+    assert [(a, b) for _, _, a, b, _ in plan] == list(zip([plan[0][2], *(x[2] for x in plan[1:])],
+                                                         [*(x[2] for x in plan[1:]), plan[-1][3]]))
+
+    monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 10**6)  # (as an older decompdecomp did: one file)
+    [whole] = net.forks.start_files(slug, log=lambda *_: None)["split"]
+    monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 2)
+    assert net.forks._count_uncovered(fp.report())["big_files"] >= 1  # (the test before's file too)
+    logged = []
+    res = net.forks.start_files(slug, log=logged.append)
+    assert len([n for n in res["split"] if n.startswith(f"src/{Path(whole).parent.as_posix()}/")]) >= \
+        (count(gone) + 1) // 2 - 1, res
+    assert fp.verify()[0] and not forkengine.ForkEngine._big_units(fp.report()), logged
+    assert all((fp.root / "src" / n.split("src/", 1)[-1]).exists() for n in res["split"])
+    assert "Cut text_" in fp.git("log", "--format=%s", "-1")[1]
+
+
 def test_autopilot_matches_from_machine_drafts(gc):
     """Drop a game, and before any agent: every function's machine draft is built and judged by the project's own
     build and objdiff. What matches is committed; what doesn't is kept as the best attempt, and the source file
