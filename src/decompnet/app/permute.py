@@ -351,7 +351,12 @@ class Permuter:
             deadline = self._turn_deadline()
             batches = misses = 0
             refused, taken = None, 0  # the last refusal of a variant (NetworkError), variants the project took
-            while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
+            # in a project its turn holds the tree (trial_run), and what needs the tree alone (a compiler range check,
+            # an edit of a finished file) waits for the turn to end, with every agent's compile waiting behind it: on
+            # a GameCube game with 600 s turns, agents' compiles went through once every ten minutes. Such a wait
+            # ends the turn.
+            yielding = (lambda: self.net.forks.tree_wanted(proj)) if fork else (lambda: False)
+            while time.monotonic() < deadline and best > 0 and not st.stop.is_set() and not yielding():
                 if gen is not None:
                     # a batch of decomp-permuter's variants, of the C the turn started from and of the best so far in
                     # turn: from the best alone, rewrites piled on rewrites and got stuck on one of nine near misses of
@@ -373,7 +378,7 @@ class Permuter:
                     if misses >= REWRITE_MISSES:
                         break
                 for cand in batch:
-                    if cand is None or time.monotonic() >= deadline or st.stop.is_set():
+                    if cand is None or time.monotonic() >= deadline or st.stop.is_set() or yielding():
                         break
                     st.add(variants=1)
                     try:

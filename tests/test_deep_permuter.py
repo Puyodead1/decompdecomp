@@ -313,6 +313,9 @@ def test_a_project_mode_turn_judges_its_variants(tmp_path, monkeypatch):
             runs.append(unit)
             yield
 
+        def tree_wanted(self, proj):
+            return False
+
     monkeypatch.setattr(net, "forks", Forks(), raising=False)
     monkeypatch.setattr(net, "fork_slug", lambda slug: slug)
     monkeypatch.setattr(permute, "available", lambda: False)  # the simple rewrites: no decomp-permuter needed

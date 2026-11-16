@@ -129,6 +129,9 @@ def test_a_projects_turn_judges_its_variants_in_one_run_of_tries(monkeypatch):
         def permuter_name(self, fork, name, source):
             return name
 
+        def tree_wanted(self, proj):
+            return False
+
     class ForkNet(FakeNet):
         forks = Forks()
 
@@ -174,6 +177,58 @@ def test_a_projects_turn_judges_its_variants_in_one_run_of_tries(monkeypatch):
     p = ScriptedPermuter(net, {})
     p._permute(AGENT, net.project_row("game"), net.function(), State())
     assert p.judged == [] and net.store.one("SELECT agent_id FROM claims")["agent_id"] == 2
+
+
+def test_a_turn_ends_when_something_waits_for_the_tree_alone(monkeypatch):
+    """A project's turn holds its tree (trial_run): a compiler range check waiting for the tree alone waited out
+    600 s turns, and every agent's compile behind it, so a GameCube game's agents compiled once every ten minutes."""
+    from contextlib import contextmanager
+
+    from decompnet.app.forkengine import _TreeLock
+
+    tree = _TreeLock()
+
+    class Forks:
+        @contextmanager
+        def trial_run(self, proj, unit):
+            with tree.shared():
+                yield
+
+        def permuter_header(self, fork, name):
+            return HEADER
+
+        def permuter_name(self, fork, name, source):
+            return name
+
+        def tree_wanted(self, proj):
+            return tree.wanted
+
+    class ForkNet(FakeNet):
+        forks = Forks()
+
+        def fork_slug(self, slug):
+            return slug
+
+    took = threading.Event()
+
+    def check():
+        with tree.exclusive():
+            took.set()
+
+    class Judging(ScriptedPermuter):
+        def _score(self, agent, proj, fn, source, best, fork):
+            if source == "first":  # a check comes for the tree alone during the turn
+                threading.Thread(target=check, daemon=True).start()
+                while not tree.wanted:
+                    time.sleep(0.01)
+            return super()._score(agent, proj, fn, source, best, fork)
+
+    net = ForkNet()
+    batches(monkeypatch, ["first", "second", "third"], ["fourth"])
+    p = Judging(net, {})
+    p.seconds = 600
+    p._permute(AGENT, net.project_row("game"), net.function(), State())
+    assert p.judged == ["first"] and took.wait(5)
 
 
 def test_decomp_permuter_looks_a_function_up_by_the_name_its_c_has(monkeypatch):

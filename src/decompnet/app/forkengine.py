@@ -163,6 +163,12 @@ class _TreeLock:
         self._waiting = 0
         self._mine = threading.local()
 
+    @property
+    def wanted(self) -> bool:
+        """Whether something waits to take it exclusively: from then on nobody new takes it shared, so a long holder
+        (the permuter's turn) lets go early, or everything waits for it."""
+        return self._waiting > 0
+
     @contextmanager
     def shared(self):
         me = threading.get_ident()
@@ -712,6 +718,10 @@ class ForkEngine:
     def _build_all(self, proj, fp: ForkProject, failed: list[str] | None = None) -> tuple[bool, str]:
         with self._build_lock(proj):
             return fp.build_all(failed=failed)
+
+    def tree_wanted(self, proj) -> bool:
+        """Whether something waits for the project's tree alone (_TreeLock.wanted): a permuter turn holding it ends."""
+        return self._tree(proj).wanted
 
     @contextmanager
     def trial_run(self, proj, unit_name: str):
