@@ -162,6 +162,9 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     [whole] = net.forks.start_files(slug, log=lambda *_: None)["split"]
     monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 2)
     assert net.forks._count_uncovered(fp.report())["big_files"] >= 1  # (the test before's file too)
+    # a project counted by a decompdecomp before files too big were: the overview counts again, and offers the cut
+    net._update_cfg(slug, lambda c: c.update(uncovered={"stretches": 0, "functions": 0}))
+    assert net.forks.overview(slug)["uncovered"]["big_files"] >= 1
     logged = []
     res = net.forks.start_files(slug, log=logged.append)
     assert len([n for n in res["split"] if n.startswith(f"src/{Path(whole).parent.as_posix()}/")]) >= \

@@ -2486,13 +2486,13 @@ class ForkEngine:
         """{"stretches", "functions"} without a source file, from the last measurement (a project measured by an
         older decompdecomp: from its saved report)."""
         proj, fp, cfg = self.get(slug)
-        if "uncovered" in cfg:
+        if "big_files" in (cfg.get("uncovered") or {}):  # (one counted before files too big were: counted again)
             return cfg["uncovered"]
         try:
             counted = self._count_uncovered(json.loads((fp.root / STATE / "report.json").read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return None
-        self.net._update_cfg(slug, lambda c: c.setdefault("uncovered", counted))
+        self.net._update_cfg(slug, lambda c: c.update(uncovered=counted))
         return counted
 
     # ------------------------------------------------------------------ look-alike index
