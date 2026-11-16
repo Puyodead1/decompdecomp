@@ -80,8 +80,16 @@ def test_a_file_is_split_and_its_match_moves_along(gc):
     assert net._function(name, slug)["status"] == "matched"
     old = net.forks.file_status(slug, name).splitlines()[0][3:]
     agent, _ = net.local_agent("gc-splitter")
+    # a compiler try's leftover in configure.py went into the split's commit: twice on a GameCube game, a file
+    # stayed on GC/1.3 that no agent chose (there another file's entry; the demo has one file)
+    from decompnet.consoles.gc_wii import scratch
+
+    scratch.set_file_compiler(fp.root, fp.src_dir(), old, "GC/1.3", scratch.configured_compiler(fp.root))
+    assert "configure.py" in fp.git("diff", "--name-only")[1].split()
     out = net.forks.split_file(agent, slug, old, f"0x{at:X}")
     assert out.startswith("✅"), out
+    assert 'mw_version="GC/1.3"' not in fp.git("show", "HEAD:configure.py")[1]
+    assert 'mw_version="GC/1.3"' not in (fp.root / "configure.py").read_text()
     new = f"src/auto/text_{at:08X}.c"
     assert (fp.root / new).exists() and f"{name}(" in (fp.root / new).read_text()
     assert f"{name}(" not in (fp.root / old).read_text()
@@ -108,6 +116,7 @@ def test_code_without_a_file_gets_one(gc):
     conf = fp.root / "configure.py"
     conf.write_text(re.sub(rf'\s*Object\(NonMatching, "{re.escape(gone.name)}"\),', "", conf.read_text()))
     (fp.root / "src" / gone.name).unlink()
+    fp.git("commit", "-qam", "Take a file out")  # (as committed: what isn't is a try's leftover, put back)
     assert fp.verify()[0]
     net.forks.check(slug, log=lambda *_: None)
     pid = proj["id"]
@@ -149,6 +158,7 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     conf = fp.root / "configure.py"
     conf.write_text(re.sub(rf'\s*Object\(\w+, "{re.escape(gone.name)}"\),', "", conf.read_text()))
     (fp.root / "src" / gone.name).unlink()
+    fp.git("commit", "-qam", "Take a file out")  # (as committed: what isn't is a try's leftover, put back)
     assert fp.verify()[0]
     net.forks.check(slug, log=lambda *_: None)
 

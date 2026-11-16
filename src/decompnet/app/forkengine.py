@@ -797,14 +797,26 @@ class ForkEngine:
         """At start, a change to the project's config no commit has is a try the app ended part-way (a restart for an
         update in the middle of try_compiler or search_flags, whose clean-up never ran): agents can't edit the config,
         and the app commits what it keeps. Put back as committed, before any helper starts; returns the files."""
-        _, fp, cfg = self.get(slug)
-        if cfg.get("origin") != "scratch":  # (a public decomp's config may be someone's own change)
+        proj, fp, _ = self.get(slug)
+        return self._put_back_config(proj, fp, log=log)
+
+    def _put_back_config(self, proj, fp: ForkProject, log=None) -> list[str]:
+        """The project's config as committed, where it differs (a game started from scratch: its config is the app's).
+        Only the app writes it, and it commits what it keeps, so a difference no try in progress makes (the caller
+        holds the tree alone, or the app is starting) is a try's leftover. A GameCube game keeps each file's compiler
+        in configure.py, outside config/, where the start-up's put-back never looked: a compiler a try had left there
+        went into the commit of each agent's split_file, and a file stayed on GC/1.3 that no agent chose."""
+        if json.loads(proj["config"]).get("origin") != "scratch":  # (a public decomp's config may be someone's own change)
             return []
-        ok, out = fp.git("diff", "--name-only", "HEAD", "--", "config")
+        ok, out = fp.git("diff", "--name-only", "HEAD", "--", "config", "configure.py")
         changed = out.splitlines() if ok else []
         if changed:
             fp.git("checkout", "HEAD", "--", *changed)
-            log(f"{slug}: put back {', '.join(changed)} as committed (a try the app was stopped in the middle of)")
+            logging.getLogger("decompdecomp").warning("%s: put back %s as committed (a compiler or flags try's leftover)",
+                                                      proj["slug"], ", ".join(changed))
+            if log:
+                log(f"{proj['slug']}: put back {', '.join(changed)} as committed (a try the app was stopped in the "
+                    "middle of)")
         return changed
 
     def _commit(self, proj, fp: ForkProject, rel: str, message: str) -> None:
@@ -1090,6 +1102,7 @@ class ForkEngine:
             return fine
 
         with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             before = (fp.manifest or {}).get("rebuild") or \
                 (console.check_rebuild(fp, version, log=log) if checks and baseline else {})
             # What doesn't build already isn't the step's doing: an agent's attempt that doesn't compile, left in a
@@ -1643,6 +1656,7 @@ class ForkEngine:
         src = fp.src_dir()
         conf = fp.root / "configure.py"
         with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             fp.build_all()
             plan = self.code_without_files(slug, fp.report())
             divided = self._divide_big_files(proj, fp, mods, src, fp.report(), log)
@@ -1904,6 +1918,7 @@ class ForkEngine:
         unit = fp.units_for(rel)[0]
         rows = self.net.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND unit=?", proj["id"], unit.name)
         with self._tree(proj).exclusive():  # no other build runs meanwhile
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             text = old_path.read_text(errors="replace", encoding="utf-8") if old_path.exists() else ""
             going = {s for r in rows if (s := self._meta(r).get("symbol")) in syms and addr <= syms[s][1] < hi}
             new_text, rest, moved = self._divide(text, rows, going)
@@ -2032,6 +2047,7 @@ class ForkEngine:
         protected = {n for n, pct in (self._baseline(proj, fp, unit, text)[0] or {}).items() if pct is not None and pct >= 100}
         checks = consoles.REBUILD_CHECK in console.features
         with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             before = (fp.manifest or {}).get("rebuild") or {}
             saved = {old_path: text}
             try:
@@ -2110,6 +2126,7 @@ class ForkEngine:
                      if pct is not None and pct >= 100}
         checks = consoles.REBUILD_CHECK in console.features
         with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             before = (fp.manifest or {}).get("rebuild") or {}
             saved: dict = {}
             try:
@@ -2201,6 +2218,7 @@ class ForkEngine:
         choices = [None] if own[0] == own[1] else [f for f in own if f is not None]
         why = ""
         with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             before = (fp.manifest or {}).get("rebuild") or {}
             for flags in choices:
                 saved = {fp.root / p_: t for p_, t in texts.items()}
