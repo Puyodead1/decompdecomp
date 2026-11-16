@@ -4,7 +4,11 @@
 - code no compiler makes (asm_reason): its first instructions, up to the first branch, read r0, r11 or r12 before
   setting them. Compiled code receives its arguments in r3-r10 and f1-f8 and never reads a scratch register it
   hasn't set; CodeWarrior's runtime helpers take theirs there: __ptmf_scall and its kin the pointer-to-member in
-  r12, __save_gpr the save area in r11 (Mario Party 6's minigame modules each link their own copies).
+  r12, __save_gpr the save area in r11 (Mario Party 6's minigame modules each link their own copies);
+- and a C++ this-adjusting thunk (subi r3,r3,N; b method, 8 bytes): CodeWarrior writes one by itself for a class with
+  several bases that overrides a later base's virtual method (`@24@g__1CFv`), beside the method, and never makes it
+  from C (it never ends a C function in a tail call: the same call there gets a stack frame and a bl). On a GameCube
+  game of 20,000 functions 558 were, and agents spent attempts on each; it's matched with its class, in C++.
 
 Not a sign: instructions only assembly has (mtmsr, mtspr of a GQR...). C functions get them too, inlined from the
 SDK's headers (OSInitFastCast's asm block, in HuSysInit), and an agent matches those by calling the same helpers.
@@ -116,6 +120,12 @@ def _uses(w: int) -> tuple[list[int], list[int]] | None:
 def asm_reason(code: bytes, big_endian: bool = True, **_facts) -> str | None:
     """Why this PowerPC function (its big-endian code, from the entry) can't come from a compiler, or None. (No
     console fact changes it.)"""
+    if len(code) == 8:
+        first, second = _words(code)
+        # addi r3,r3,-N; b (not bl, not absolute): the target's bits are a relocation, whatever they hold
+        if first >> 16 == 0x3863 and first & 0x8000 and second >> 26 == 18 and second & 3 == 0:
+            return (f"a C++ thunk CodeWarrior writes for a class with several bases (this -= {0x10000 - (first & 0xFFFF):#x}, "
+                    "then the method): no C makes it, it's matched with its class's method, in C++")
     written: set[int] = set()
     for w in _words(code):
         uses = _uses(w)

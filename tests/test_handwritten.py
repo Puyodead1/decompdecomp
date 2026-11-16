@@ -3,6 +3,7 @@ Mario Party 6 module links copies of them), are taken out of agents' way; compil
 
 import struct
 import subprocess
+import sys
 
 import pytest
 
@@ -32,6 +33,31 @@ def test_compiled_code_is_not():
     assert ppc_reason(code(0x60000000, 0x38000000, 0x80600010, 0x4E800020)) is None  # nop; li r0,0; lwz r3,16(0)
     assert ppc_reason(code(0x7C0004AC, 0x4E800020)) is None  # sync: C has it too, from the SDK's inline helpers
     assert ppc_reason(b"") is None and ppc_reason(code(0)) is None
+
+
+def test_a_cpp_thunk_codewarrior_writes_is_set_aside():
+    """subi r3,r3,0x14; b method: a GameCube game had 558 of them open, and agents spent attempts on each."""
+    assert "C++ thunk" in ppc_reason(code(0x3863FFEC, 0x48000000)) and "0x14" in ppc_reason(code(0x3863FFEC, 0x48000000))
+    assert ppc_reason(code(0x3863FFEC, 0x48000001)) is None  # bl: a call, not the thunk
+    assert ppc_reason(code(0x38630014, 0x48000000)) is None  # this += 0x14: no thunk does that
+    assert ppc_reason(code(0x3864FFEC, 0x48000000)) is None  # r3 = r4 - 0x14: C does that
+    assert ppc_reason(code(0x3863FFEC, 0x48000000, 0x4E800020)) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32" or any(toolchains.installed(t) is None for t in ("mwcc", "wibo")),
+                    reason="needs CodeWarrior for GameCube and wibo")
+def test_codewarrior_makes_the_thunk_from_cpp_and_never_from_c(tmp_path):
+    (tmp_path / "a.c").write_text("void method(void *);\nvoid thunk(void *p) { method((char *)p - 0x14); }\n")
+    (tmp_path / "b.cpp").write_text("struct A { char pad[0x14]; virtual void f(); };\nstruct B { virtual void g(); };\n"
+                                    "struct C : A, B { void g(); };\nvoid C::g() {}\n")
+    cc = toolchains.path("mwcc") / "GC" / "1.3.2" / "mwcceppc.exe"
+    flags = ["-nodefaults", "-proc", "gekko", "-O4,p", "-inline", "auto", "-Cpp_exceptions", "off", "-RTTI", "off"]
+    for src in ("a.c", "b.cpp"):
+        subprocess.run([str(toolchains.binary("wibo")), str(cc), *flags, "-c", src, "-o", src + ".o"],
+                       cwd=tmp_path, check=True, timeout=120, capture_output=True)
+    c, cpp = (object_prints((tmp_path / f).read_bytes()) for f in ("a.c.o", "b.cpp.o"))
+    assert c["thunk"].asm == "" and c["thunk"].size > 8  # a stack frame and a bl
+    assert cpp["@24@g__1CFv"].size == 8 and "C++ thunk" in cpp["@24@g__1CFv"].asm and cpp["g__1CFv"].asm == ""
 
 
 @pytest.mark.skipif(toolchains.installed("gc-wii-binutils") is None, reason="needs the GameCube binutils")
