@@ -47,7 +47,7 @@ def _archives(folder: Path, stamp: int) -> tuple[Path, ...]:
 class Dolphin(Kit):
     id = "dolphin-sdk"
     name = "Nintendo GameCube and Wii libraries (your own copies)"
-    platform = "GameCube · Wii"
+    platform = "GameCube/Wii"  # (as the CodeWarrior pack says it: Setup groups cards by it, its chip "GameCube, Wii")
     description = ("The libraries GameCube and Wii games link: the Dolphin SDK's (OS, GX, DVD, PAD, AX...) and the "
                    "Revolution SDK's. Their code in a game is found and set aside on Check again, so agents "
                    "work on the game's own. Give the folder of your own copy (the SDK's, or one holding several).")

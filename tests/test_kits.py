@@ -24,6 +24,12 @@ def test_every_kit_says_what_setup_shows_and_is_a_local_toolchain(kit):
     assert tc.local and tc.supported and tc.local_files == list(kit.files) and not tc.parts  # (nothing to download)
     assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in kit.known)
     assert any(kit.id in c.kits for c in consoles.CONSOLES), "a kit no console takes"
+    # Setup groups cards by their platform: a kit's is said as its console's pinned packs say it ("GameCube/Wii",
+    # not "GameCube · Wii", which put the SDK's card in a group of its own away from CodeWarrior's)
+    words = re.compile(r"[^\w]+")
+    alike = {t.platform for t in toolchains.registry().values()
+             if not t.local and set(words.split(t.platform)) & set(words.split(kit.platform)) - {""}}
+    assert alike <= {kit.platform}, f"{kit.platform!r} is said differently by the packs: {alike}"
 
 
 def test_only_kits_and_their_consoles_name_a_kit():
