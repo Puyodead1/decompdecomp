@@ -3735,8 +3735,21 @@ class ForkEngine:
             fn = self.net.claim_row(agent, slug, name, strategy)
         except NetworkError:  # the host has a newer tree (new files, a split): follow it, then claim here
             link.sync()
+            self._open_as_the_host_has_it(slug, name)
             fn = self.net.claim_row(agent, slug, name, strategy)
         return self.brief(fn, agent, "CLAIMED")
+
+    def _open_as_the_host_has_it(self, slug: str, name: str) -> None:
+        """A function the host handed out is open: the room's statuses are the host's. A member's copy that still had
+        it matched (the host measured it again and reopened it) refused the claim with "already matched", while the
+        host held it for the agent: a member's agents got only such functions, claim after claim."""
+        try:
+            fn = self._fn(slug, name)
+        except NetworkError:
+            return
+        if fn["status"] == "matched":
+            with self.net.store.tx() as db:
+                db.execute("UPDATE functions SET status='open' WHERE id=?", (fn["id"],))
 
     def get_function(self, agent: Agent | None, slug: str, function: str) -> str:
         return self.brief(self._fn(slug, function), agent, "VIEW")

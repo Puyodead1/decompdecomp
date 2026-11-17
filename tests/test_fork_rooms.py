@@ -215,3 +215,17 @@ def test_a_busy_index_is_waited_out_when_following_the_host(tmp_path, monkeypatc
         forkroom._git(tmp_path, "rev-parse", "nope")
     import os
     assert os.environ.get("GIT_OPTIONAL_LOCKS") == "0"  # (reads leave the index alone: forks/project.py)
+
+
+def test_a_function_the_host_hands_out_is_open_in_the_members_copy_too(room):
+    """The host measured functions again and reopened them; a member's copy still had them matched, refused each
+    claim with "already matched" while the host held it for the agent, and its agents got only such functions."""
+    host, slug, guest, gslug, client, link, said = room
+    agent, _ = guest.local_agent("claude-3")
+    fn, _ = _work("clamp_s32")
+    with host.store.tx() as db:  # (the host reopened it; this copy still says matched)
+        db.execute("UPDATE functions SET status='open' WHERE name=? AND project_id=?", (fn, host.project_row(slug)["id"]))
+    with guest.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched' WHERE name=? AND project_id=?", (fn, guest.project_row(gslug)["id"]))
+    brief = guest.forks.claim(agent, gslug, fn)
+    assert "CLAIMED" in brief and guest._function(fn, gslug)["status"] == "open"
