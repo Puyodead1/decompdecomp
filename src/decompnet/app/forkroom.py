@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -102,13 +103,20 @@ def bundle(root: Path, have: str = "") -> bytes:
     return data
 
 
+# what another computer can fetch: a project cloned from a folder on the host's has none to give
+_REACHABLE = re.compile(r"^(https?://|ssh://|git://|[\w.-]+@[\w.-]+:)")
+
+
 def hello(net, slug: str) -> dict:
-    """What a member needs to know about a git project's room before joining (no game data)."""
+    """What a member needs to know about a git project's room before joining (no game data). A project cloned from a
+    folder of the host's computer gets its whole history from the host instead: members were told to fetch it from
+    that folder, which isn't on theirs ("does not appear to be a git repository")."""
     proj, fp, cfg = net.forks.get(slug)
+    url = cfg.get("repo_url") if _REACHABLE.match(cfg.get("repo_url") or "") else None
     return {"kind": "fork", "title": proj["name"], "game_code": cfg.get("version") or "", "region": "",
-            "platform": cfg.get("platform"), "origin": cfg.get("origin") or "public", "repo_url": cfg.get("repo_url"),
+            "platform": cfg.get("platform"), "origin": cfg.get("origin") or "public", "repo_url": url,
             "version": cfg.get("version"), "fork_kind": cfg.get("fork_kind"), "sha1": project_identity(cfg),
-            "compiler": cfg.get("compiler"), "base": base(fp.root) if cfg.get("repo_url") else None,
+            "compiler": cfg.get("compiler"), "base": base(fp.root) if url else None,
             "head": head(fp.root), "branch": branch(fp.root)}
 
 

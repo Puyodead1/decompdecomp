@@ -985,3 +985,24 @@ def test_everyone_in_a_room_runs_the_same_version(room):
     older = httpx.MockTransport(lambda request: httpx.Response(200, json={"room": slug, "app_version": "0.9"}))
     with httpx.Client(transport=older) as http, pytest.raises(NetworkError, match="same version"):
         collab._hello(http, link)
+
+
+def test_a_room_of_a_project_cloned_from_a_folder_sends_its_history_itself(tmp_path, monkeypatch):
+    """A GameCube project cloned from a folder on the host's computer: members were told to fetch it from that folder,
+    which isn't on theirs ("does not appear to be a git repository"). Only an address another computer can reach
+    goes to members; otherwise they get the whole history from the host."""
+    import subprocess as sp
+    from types import SimpleNamespace
+
+    from decompnet.app import forkroom
+
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+            "-m", "first"], check=True)
+    for url, sent in (("/tmp/somewhere/hotwheels", None), ("C:\\Users\\x\\project", None),
+                      ("https://github.com/someone/game", "https://github.com/someone/game"),
+                      ("git@github.com:someone/game.git", "git@github.com:someone/game.git")):
+        cfg = {"repo_url": url, "platform": "gc", "version": "V"}
+        net = SimpleNamespace(forks=SimpleNamespace(get=lambda slug, cfg=cfg: ({"name": "G"}, SimpleNamespace(root=tmp_path), cfg)))
+        monkeypatch.setattr(forkroom, "project_identity", lambda cfg: "s")
+        assert forkroom.hello(net, "g")["repo_url"] == sent, url
