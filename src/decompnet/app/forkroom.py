@@ -190,7 +190,11 @@ def pull(root: Path, data: bytes, ref: str) -> str:
 
 def register_member(net, slug: str, root: Path, info: dict, host_title: str) -> dict:
     """The project's settings on the member's side, as the host has them."""
-    cfg = {"kind": "fork", "origin": info.get("origin") if info.get("origin") == "scratch" else None,
+    from .forkengine import started_from_scratch
+
+    scratch = info.get("origin") == "scratch" or started_from_scratch(ForkProject(root))  # (a host that took its
+    # own clone for a public decomp said "public")
+    cfg = {"kind": "fork", "origin": "scratch" if scratch else None,
            "repo_url": info.get("repo_url"), "platform": info.get("platform") or "", "version": info.get("version"),
            "fork_kind": ForkProject(root).kind(), "ready": False, "compiler": info.get("compiler"),
            "legal": {"basis": "personal-copy", "license": "personal use only",

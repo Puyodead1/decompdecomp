@@ -524,6 +524,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.forks.try_compiler(agent, room.slug, str(d.get("function", "")), str(d.get("compiler", "")),
                                                str(d.get("flags", "")), str(d.get("source", "")))}
 
+    def report_library(room, member, d):
+        """A member's agent's word that a function is a known library's code: counted here with the host's own
+        agents' (LIBRARY_AGENTS), and set aside here, so every copy in the room follows."""
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.report_library(agent, str(d.get("function", "")), str(d.get("library", "")),
+                                           str(d.get("why", "")), room.slug)}
+
     def split_file(room, member, d):
         if not room.fork:
             raise NetworkError("this room's project has no files to split")
@@ -581,6 +588,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),
         Route("/collab/try_compiler", endpoint(try_compiler), methods=["POST"]),
+        Route("/collab/report_library", endpoint(report_library), methods=["POST"]),
         Route("/collab/bundle", get_bundle),
     ]
     return Starlette(routes=routes)

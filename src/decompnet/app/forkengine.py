@@ -346,6 +346,15 @@ def ltcg_unresolved(base: Path) -> list[str]:
         return []
 
 
+def started_from_scratch(fp: ForkProject) -> bool:
+    """Whether decompdecomp made the project from the user's copy of a game (its manifest says so), wherever this
+    copy came from: a clone of the folder, a room member's copy."""
+    try:
+        return (fp.manifest or {}).get("created") == "from scratch"
+    except (OSError, ValueError):
+        return False
+
+
 def _set_aside(fp: ForkProject) -> dict[str, str]:
     """Symbol -> why it's set aside, for functions a project says aren't the game's own (library code, middleware,
     an SDK, the C runtime): config/<version>/set_aside.json, or the file the manifest names (`set_aside`)."""
@@ -857,7 +866,11 @@ class ForkEngine:
         """At start, a change to the project's config no commit has is a try the app ended part-way (a restart for an
         update in the middle of try_compiler or search_flags, whose clean-up never ran): agents can't edit the config,
         and the app commits what it keeps. Put back as committed, before any helper starts; returns the files."""
-        proj, fp, _ = self.get(slug)
+        proj, fp, cfg = self.get(slug)
+        if cfg.get("origin") is None and started_from_scratch(fp):
+            cfg["origin"] = "scratch"  # (a copy cloned before clone() read the manifest: see there)
+            self._save_cfg(proj, cfg)
+            proj = self.net._project(slug)
         return self._put_back_config(proj, fp, log=log)
 
     def _put_back_config(self, proj, fp: ForkProject, log=None) -> list[str]:
@@ -948,6 +961,10 @@ class ForkEngine:
         version = version if version in versions else (versions[0] if versions else version)
         cfg = {"kind": "fork", "repo_url": url, "platform": platform, "version": version, "fork_kind": kind,
                "ready": False, "legal": {"basis": "personal-copy", "license": "the project's own license"}}
+        if started_from_scratch(fp):  # a game decompdecomp started from scratch, cloned (another computer's copy):
+            # still the app's own project. Taken for a public decomp, a GameCube game's 14 SDK libraries were found
+            # and none set aside, autopilot refused, and a try's leftover compiler was never put back
+            cfg["origin"] = "scratch"
         self._register(slug, name or url.rstrip("/").split("/")[-1], f"fork of {url}", dest, cfg, f"cloned {url}")
         log(f"cloned into {dest} ({kind} project)")
         return slug

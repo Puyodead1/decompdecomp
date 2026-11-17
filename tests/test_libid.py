@@ -318,3 +318,44 @@ OSReport:
                            libid.Catalog([], sigs, [], []))["libraries"]
     assert found[0]["id"] == "os.a" and found[0]["aside"] and found[0]["keys"] == [5]
     assert "OSReport of os.a (OS.o, your own copy)" in found[0]["functions"][0]["why"]
+
+
+def test_a_clone_of_a_game_started_from_scratch_sets_its_library_code_aside_and_commits_it(tmp_path):
+    """A GameCube game decompdecomp started from scratch, cloned from its folder (another computer's copy) was taken
+    for a public decomp: its 14 SDK libraries were found and none set aside (only a scratch project's are), and a
+    try's leftover compiler was never put back. Its manifest says what it is; an older clone is fixed at start. The
+    set-aside list is committed: config/ is the app's (an uncommitted change is a try's leftover, put back) and a
+    room's members follow commits."""
+    import subprocess as sp
+
+    from decompnet.app.engine import RomNetwork
+
+    repo = tmp_path / "theirs"
+    (repo / "config" / "V").mkdir(parents=True)
+    (repo / ".decomp.wtf.json").write_text(json.dumps({"created": "from scratch", "platform": "gc", "version": "V"}))
+    (repo / "config" / "V" / "config.yml").write_text("name: V\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    sp.run([*git, "-C", str(repo), "add", "-A"], check=True)
+    sp.run([*git, "-C", str(repo), "commit", "-q", "-m", "first"], check=True)
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "home")
+    slug = net.forks.clone(str(repo), name="Theirs", platform="gc", log=lambda *_: None)
+    proj = net._project(slug)
+    assert json.loads(proj["config"])["origin"] == "scratch"
+
+    cfg = json.loads(proj["config"]) | {"origin": None}  # (cloned before the manifest was read)
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,vram,meta,attempts,abandons,unit) "
+                   "VALUES(?,?,?,?,?,?,?,0,0,?)", (proj["id"], "OSInitAlarm", 64, 16, "open", 0x80001000,
+                                                   json.dumps({"symbol": "OSInitAlarm"}), "main/os"))
+    net.forks.put_back_tries(slug, log=lambda *_: None)
+    proj = net._project(slug)
+    assert json.loads(proj["config"])["origin"] == "scratch"
+
+    rows = {r["id"]: r for r in net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])}
+    assert net._library_aside(proj, rows, {next(iter(rows)): "os.a's OSInitAlarm"}, {"name": "os.a"}) == 1
+    root = Path(proj["root"])
+    assert "OSInitAlarm" in json.loads((root / "config" / "V" / "set_aside.json").read_text())
+    assert sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout == ""
+    assert "os.a" in sp.run(["git", "-C", str(root), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout

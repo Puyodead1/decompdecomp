@@ -340,7 +340,7 @@ class LibraryIdMixin:
             return 0  # (a public decomp says itself what's its game's: the report only lists what's found)
         if not self.is_rom(proj):
             self._fork_set_aside(proj, {json.loads(m).get("symbol") or r["name"].split("@")[0]:
-                                        json.loads(m)["asm_code"] for m, _, r in changes})
+                                        json.loads(m)["asm_code"] for m, _, r in changes}, label)
         with self.store.tx() as db:
             db.executemany("DELETE FROM claims WHERE function_id=?", [(fid,) for _, fid, _ in changes])
             db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'",
@@ -349,9 +349,10 @@ class LibraryIdMixin:
                         f"set aside as {label}'s code: " + ", ".join(r["name"] for _, _, r in changes[:6]))
         return len(changes)
 
-    @staticmethod
-    def _fork_set_aside(proj, entries: dict[str, str]) -> None:
-        """Symbol -> why, into the project's set_aside.json (forkengine's _set_aside reads it on every refresh)."""
+    def _fork_set_aside(self, proj, entries: dict[str, str], label: str = "library") -> None:
+        """Symbol -> why, into the project's set_aside.json (forkengine's _set_aside reads it on every refresh), and
+        committed: config/ is the app's, so a change no commit has is put back as a try's leftover (the next start,
+        the next split), and a room's members follow the host's commits, not its files."""
         from ...forks.project import ForkProject
 
         fp = ForkProject(Path(proj["root"]))
@@ -365,6 +366,9 @@ class LibraryIdMixin:
         data.update(entries)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        if (fp.root / ".git").exists():
+            self.forks._commit(proj, fp, rel, f"Set aside {len(entries)} function{'' if len(entries) == 1 else 's'} "
+                                              f"as {label}'s code\n\nFound by decompdecomp.")
 
     def libraries_found(self, slug: str) -> dict:
         """The last report (find_libraries), with what's in the user's signatures folder now."""
@@ -402,9 +406,16 @@ class LibraryIdMixin:
         library, why = library.strip(), why.strip()
         if not library or not why:
             raise NetworkError("name the library (\"zlib 1.1.3\", \"RSA's MD5, RFC 1321\") and say how you can tell")
-        if self._link(project) is not None:
-            raise NetworkError("in a room, the room's host decides what's library code: say so in your notes instead")
         fn = self._function(function, project)
+        if (link := self._link(project)) is not None:
+            # a member's word counts on the host, as its own agents' does (refused here, a GameCube room's SDK
+            # functions stayed open for members' agents to try again and again); the host ended the claim there
+            text = link.call("/collab/report_library", agent, function=fn["name"], library=library, why=why)
+            with self.store.tx() as db:
+                db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
+            if "set aside as" in text:
+                link.sync()  # (the host committed it: this copy follows)
+            return text
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         with self.store.tx() as db:
             row = db.execute("SELECT meta, status FROM functions WHERE id=?", (fn["id"],)).fetchone()

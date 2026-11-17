@@ -197,6 +197,24 @@ def test_a_members_try_compiler_runs_on_the_hosts_copy(room):
     assert "decides each file's compiler" not in out and ("already matches" in out or unit.source in out), out
 
 
+def test_a_members_report_library_counts_on_the_host_and_the_room_follows(room):
+    """A GameCube room's member agents had report_library refused ("the room's host decides what's library code"):
+    the SDK's functions stayed open for them, one agent after another. Their word counts on the host now, as its own
+    agents' does; the set-aside is committed there and the member's copy follows."""
+    host, slug, guest, gslug, client, link, said = room
+    fn, _ = _work("mix_score")
+    one, _ = guest.local_agent("claude-lib1")
+    two, _ = guest.local_agent("codex-lib2")
+    out = guest.report_library(one, fn, "the demo's runtime", "a mixing routine the runtime ships", gslug)
+    assert "1 of 2" in out, out
+    out = guest.report_library(two, fn, "the demo's runtime", "the runtime's mixing routine", gslug)
+    assert "set aside as" in out, out
+    assert host._function(fn, slug)["status"] == "asm"
+    hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
+    assert _git(groot, "rev-parse", "HEAD") == _git(hroot, "rev-parse", "HEAD")  # the commit came with it
+    assert guest._function(fn, gslug)["status"] == "asm"
+
+
 def test_a_busy_index_is_waited_out_when_following_the_host(tmp_path, monkeypatch):
     """A Windows member's "git stash failed: could not write index" ended following the host, and its agents' claims:
     a moment's busy index is tried again; another failure isn't."""
