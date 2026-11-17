@@ -4131,6 +4131,15 @@ class ForkEngine:
         recorded. "all": the file's own compiler first (C that matches with it needs no switch), then the others,
         nearest versions first, until one matches or TRY_ALL_SECONDS pass (on the DS demo, C that matched with its
         own 2.0sp1p5 moved its file to 2.0/base when the own one was skipped and the oldest went first)."""
+        if agent is not None and (link := self.net.links.get(slug)) is not None:
+            # a member's tree follows the host's: the host tries it on its copy, keeps the compiler only where the
+            # file's matches hold, and this copy follows (refused here, a GameCube room's SDK function whose prologue
+            # wanted another CodeWarrior was left for good)
+            text = link.call("/collab/try_compiler", agent, function=function, compiler=compiler, flags=flags,
+                             source=source)
+            if "from now on" in text:
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         fn = self._fn(slug, function)
@@ -4138,8 +4147,6 @@ class ForkEngine:
         own = console.file_compiler(fp, unit.source) if unit.source else None
         if own is None:
             raise NetworkError("a fork builds with its project's own compilers")
-        if self.net.links.get(slug) is not None:  # a guest's tree follows the host's: its build is the host's to change
-            raise NetworkError("in a room, the host's project decides each file's compiler: try_compiler works there")
         # flags with the compiler, where each file has flags of its own too (PC): a 6.0 game's RSA MD5 was built /Od by
         # Visual C++ 4.2, and neither half matched alone (try_compiler refused flags, search_flags kept the compiler)
         own_flags = console.file_flags(fp, unit.source) if unit.source else None

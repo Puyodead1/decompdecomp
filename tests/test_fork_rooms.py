@@ -177,3 +177,21 @@ def test_reconnecting_keeps_the_place_in_the_tree(room):
     assert head == _git(Path(host.project_row(slug)["root"]), "rev-parse", "HEAD")
     assert collab.join_room(guest, link, "alex", b"", log=lambda *_: None, client=client, start=False) == gslug
     assert guest.links[gslug].head == head
+
+
+def test_a_members_try_compiler_runs_on_the_hosts_copy(room):
+    """A GameCube room's member agent found an SDK function whose prologue wanted another CodeWarrior, and its
+    try_compiler was refused ("the host's project decides each file's compiler"): the host tries it now."""
+    from decompnet import consoles
+
+    host, slug, guest, gslug, client, link, said = room
+    agent, _ = guest.local_agent("claude-2")
+    fn, source = _work("clamp_s32")
+    _, fp, cfg = host.forks.get(slug)
+    unit = fp.unit(host._function(fn, slug)["unit"])
+    own = consoles.get(cfg["platform"]).file_compiler(fp, unit.source)
+    try:
+        out = guest.forks.try_compiler(agent, gslug, fn, own, source=source)
+    except collab.Refused as e:  # (it matches already: the host's own answer, from its copy)
+        out = str(e)
+    assert "decides each file's compiler" not in out and ("already matches" in out or unit.source in out), out

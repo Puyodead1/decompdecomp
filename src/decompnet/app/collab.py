@@ -516,6 +516,14 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.forks.edit_file(agent, room.slug, str(d.get("path", "")), str(d.get("old", "")),
                                             str(d.get("new", "")), str(d.get("message", "")))}
 
+    def try_compiler(room, member, d):
+        """A member's agent's try_compiler, on the host's copy: its build is the room's."""
+        if not room.fork:
+            raise NetworkError("this room's project has no files of their own compilers")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.try_compiler(agent, room.slug, str(d.get("function", "")), str(d.get("compiler", "")),
+                                               str(d.get("flags", "")), str(d.get("source", "")))}
+
     def split_file(room, member, d):
         if not room.fork:
             raise NetworkError("this room's project has no files to split")
@@ -572,6 +580,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),
+        Route("/collab/try_compiler", endpoint(try_compiler), methods=["POST"]),
         Route("/collab/bundle", get_bundle),
     ]
     return Starlette(routes=routes)
