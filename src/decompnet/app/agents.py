@@ -844,6 +844,20 @@ class Manager:
                     self._save(s)
             self._release(s)
 
+    def restart_project(self, slug: str) -> dict:
+        """Start every stopped or paused helper on one project again, by hand ("Start all"): {started, skipped},
+        skipped with each one's reason (still stopping, at work on another game, its account gone)."""
+        started, skipped = 0, []
+        for s in list(self.sessions.values()):
+            if s.slug != slug or s.state in LIVE:
+                continue
+            try:
+                self.restart(s.id)
+                started += 1
+            except ValueError as e:
+                skipped.append(f"{s.agent_name}: {e}")
+        return {"started": started, "skipped": skipped}
+
     def stop_project(self, slug: str) -> None:
         """Stop every helper working on one project (by the user)."""
         for s in list(self.sessions.values()):

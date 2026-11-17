@@ -121,6 +121,9 @@ function renderSessions(sessions) {
   const running = sessions.filter((s) => LIVE.includes(s.state));
   const paused = sessions.filter((s) => s.state === "paused");
   $("stopAll").hidden = running.length < 2;
+  const resting = sessions.filter((s) => !LIVE.includes(s.state)).length;
+  $("startAll").hidden = resting === 0;
+  $("startAll").textContent = resting ? `Start all (${resting})` : "Start all";
   $("removePaused").hidden = paused.length === 0;
   $("removePaused").textContent = paused.length ? `Remove paused (${paused.length})` : "Remove paused";
   // decompiling helpers, then polishing ones (task "readable"), each group under its heading when both are at work
@@ -243,6 +246,19 @@ $("stopAll").onclick = async () => {
   await api("/api/agents/stop", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
   toast("Stopping every agent on this project.");
   poll(false);
+};
+$("startAll").onclick = async () => {
+  const button = $("startAll");
+  button.disabled = true;
+  try {
+    const { started, skipped } = await api("/api/agents/restart", { method: "POST", body: { slug: S.slug } });
+    toast(`Started ${plural(started, "agent")} again.${skipped.length ? ` ${esc(skipped.join("; "))}.` : ""}`, skipped.length ? "err" : "");
+    poll(false);
+  } catch (e) {
+    toast(esc(e.message), "err");
+  } finally {
+    button.disabled = false;
+  }
 };
 $("removePaused").onclick = async () => {
   const button = $("removePaused");

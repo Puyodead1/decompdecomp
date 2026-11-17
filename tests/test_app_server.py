@@ -1249,3 +1249,30 @@ def test_compiler_profile_jobs_stream_progress_and_reuse_active_task(app, monkey
         release.set()
     bad = client.post('/api/compiler/test-default', headers={'X-Decomp': '1'}, json={**data, 'action': 'unsupported'})
     assert bad.status_code == 400
+
+
+def test_start_all_starts_every_stopped_or_paused_helper_on_the_project(app, monkeypatch):
+    """"Start all": each helper on the project that isn't at work starts again; one that can't says why."""
+    from types import SimpleNamespace
+
+    client, _, manager = app
+    monkeypatch.setattr(manager, "sessions", {
+        "stopped-here": SimpleNamespace(id="stopped-here", slug="game", state="stopped", agent_name="a"),
+        "paused-here": SimpleNamespace(id="paused-here", slug="game", state="paused", agent_name="b"),
+        "busy-here": SimpleNamespace(id="busy-here", slug="game", state="stopped", agent_name="c"),
+        "working-here": SimpleNamespace(id="working-here", slug="game", state="working", agent_name="d"),
+        "stopped-elsewhere": SimpleNamespace(id="stopped-elsewhere", slug="other", state="stopped", agent_name="e"),
+    })
+    started = []
+
+    def restart(sid):
+        if sid == "busy-here":
+            raise ValueError("c works on another game right now: start a new helper instead")
+        started.append(sid)
+    monkeypatch.setattr(manager, "restart", restart)
+
+    response = client.post("/api/agents/restart", json={"slug": "game"}, headers={"X-Decomp": "1"})
+
+    assert response.status_code == 200
+    assert response.json()["started"] == 2 and "another game" in response.json()["skipped"][0]
+    assert sorted(started) == ["paused-here", "stopped-here"]
