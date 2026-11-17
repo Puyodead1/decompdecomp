@@ -289,8 +289,20 @@ def _tail(log: str, lines: int = 14) -> str:
     so the end was their warnings: agents splitting a PC game's files read "unknown pragma" five times and never the
     error."""
     every = log.strip().splitlines()
-    errors = [ln for ln in every if _BUILD_ERROR.search(ln)]
-    return "\n".join(errors[:lines] if errors else every[-lines:])
+    at = [i for i, ln in enumerate(every) if _BUILD_ERROR.search(ln)]
+    if not at:
+        return "\n".join(every[-lines:])
+    # with CodeWarrior's "#" lines around each: the file and line before "Error:", what's wrong after it (a GameCube
+    # game's cut said only "#   Error:      ^"); another tool's warnings after an error stay out
+    keep: set[int] = set()
+    for i in at:
+        keep.add(i)
+        for step in (-1, 1):
+            j = i + step
+            while 0 <= j < len(every) and abs(j - i) <= 4 and every[j].lstrip().startswith("#"):
+                keep.add(j)
+                j += step
+    return "\n".join(every[j] for j in sorted(keep)[:lines * 2])
 
 
 def with_constant_values(rows: list, console, fp) -> list:
@@ -1800,7 +1812,11 @@ class ForkEngine:
                 if spot is None:
                     raise ForkError(f"{name} isn't in configure.py")
                 indent = dtksplits.indent_of(ctext, spot[0])
-                extra = "".join(f',\n{indent}Object(NonMatching, "{n}")' for _, _, n in parts)
+                # the file's own settings go with its pieces (mw_version="GC/1.2.5n", cflags=...): on the default
+                # compiler a GameCube game's SDK file stopped matching, and another's C didn't compile
+                own = re.match(r'Object\(\s*\w+\s*,\s*"[^"]*"(.*)\)\s*$', ctext[spot[0]:spot[1]], re.S)
+                settings = own.group(1).rstrip().rstrip(",") if own else ""
+                extra = "".join(f',\n{indent}Object(NonMatching, "{n}"{settings})' for _, _, n in parts)
                 conf.write_text(ctext[:spot[1]] + extra + ctext[spot[1]:], encoding="utf-8")
                 for n, body in texts.items():
                     p_ = fp.root / src / n

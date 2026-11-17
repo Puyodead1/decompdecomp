@@ -139,6 +139,7 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     them (minutes each, with 8 agents: they timed out). A stretch gets files of FILE_FUNCTIONS functions; a file an
     older decompdecomp made bigger is cut so, its C going with its functions, the game still built byte for byte."""
     from decompnet.app import forkengine
+    from decompnet.consoles.gc_wii import scratch
     from decompnet.forks import dtksplits
 
     net, slug = gc
@@ -171,6 +172,12 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 10**6)  # (as an older decompdecomp did: one file)
     [whole] = net.forks.start_files(slug, log=lambda *_: None)["split"]
     monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 2)
+    # the file's own compiler goes with its pieces: on the default one a GameCube game's SDK file stopped matching
+    own = scratch.configured_compiler(fp.root)
+    conf.write_text(conf.read_text().replace(f'Object(NonMatching, "{whole.split("src/", 1)[-1]}")',
+                                             f'Object(NonMatching, "{whole.split("src/", 1)[-1]}", mw_version="{own}")'))
+    assert f'mw_version="{own}"' in conf.read_text()
+    fp.git("commit", "-qam", "The file's own compiler")
     assert net.forks._count_uncovered(fp.report())["big_files"] >= 1  # (the test before's file too)
     # a project counted by a decompdecomp before files too big were: the overview counts again, and offers the cut
     net._update_cfg(slug, lambda c: c.update(uncovered={"stretches": 0, "functions": 0}))
@@ -182,6 +189,11 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     assert fp.verify()[0] and not forkengine.ForkEngine._big_units(fp.report()), logged
     assert all((fp.root / "src" / n.split("src/", 1)[-1]).exists() for n in res["split"])
     assert "Cut text_" in fp.git("log", "--format=%s", "-1")[1]
+    # (the pieces follow their file's entry; the test before's file, on the default compiler, is cut too)
+    entries = re.findall(r'Object\(NonMatching, "([^"]+)"(.*?)\)', conf.read_text())
+    at = next(i for i, (n, _) in enumerate(entries) if n == whole.split("src/", 1)[-1])
+    after = [settings for _, settings in entries[at + 1:at + (count(gone) + 1) // 2]]
+    assert entries[at][1] == f', mw_version="{own}"' and after and all(x == entries[at][1] for x in after), entries
 
 
 def test_autopilot_matches_from_machine_drafts(gc):

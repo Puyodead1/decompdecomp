@@ -1588,6 +1588,13 @@ def test_a_failed_builds_message_shows_its_errors_not_the_warnings_after_them():
                     + [f"b.cpp({k}) : warning C4068: unknown pragma" for k in range(30)])
     assert "error C2065" in _tail(log) and "FAILED: a.obj" in _tail(log) and "C4068" not in _tail(log)
     assert _tail("\n".join(f"line {k}" for k in range(30))).splitlines()[-1] == "line 29"  # no error: the end
+    # CodeWarrior: where, before "Error:", and what, after it (a GameCube game's cut showed only the caret)
+    mwcc = "\n".join(["[2/9] MWCC b.o", "#    File: src\\auto\\b.c", "#   15709: n = f(list, 128);", "#   Error:     ^",
+                      "#   illegal implicit conversion from 'unsigned char *[128]' to", "#   'void **'",
+                      "FAILED: [code=2] b.o", "[3/9] MWCC c.o"])
+    shown = _tail(mwcc)
+    assert "File: src" in shown and "illegal implicit conversion" in shown and "'void **'" in shown
+    assert "[3/9]" not in shown
 
 
 def test_a_forks_archive_has_its_work_uncommitted_too_but_never_the_game(tmp_path):
