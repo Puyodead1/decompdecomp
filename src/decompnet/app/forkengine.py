@@ -633,6 +633,7 @@ class ForkEngine:
         self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
         self._unit_builds: dict[int, _UnitBuilds] = defaultdict(_UnitBuilds)  # project id -> its units' builds
         self._git_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
+        self._try_local = threading.local()  # the units this thread tries compilers on (_trying)
         self._mlock = threading.Lock()
         # (project id, unit) -> (sha1 of its source, base object mtime, {function: match %}): what objdiff said
         # the last time it measured the unit, so a compile doesn't need a second objdiff run to know the baseline
@@ -787,6 +788,52 @@ class ForkEngine:
             return None, True
         self._keep_scores(proj, unit, text, d.unit_scores)
         return d.unit_scores, True
+
+    def _trying_units(self) -> set[str]:
+        """The units this thread is trying compilers on (try_compiler, compare_compilers): their file's compiler is
+        meant to differ from the committed one while they build."""
+        return getattr(self._try_local, "units", set())
+
+    @contextmanager
+    def _trying(self, unit_name: str):
+        units = self._trying_units()
+        self._try_local.units = units | {unit_name}
+        try:
+            yield
+        finally:
+            self._try_local.units = units
+
+    def _put_back_own_entry(self, proj, fp: ForkProject, unit) -> None:
+        """Before a compile measures its file: the file's compiler and flags as committed, when they differ and no try
+        is on it (the caller holds the file's lock, which every try holds). A GameCube game's file was built with a
+        try's compiler long after the try (GC/2.0p1 for GC/1.2.5n): every compile there reopened its matches (54 at
+        once), and a room member's agents were handed functions that matched."""
+        console = consoles.get(self.net.cfg(proj).get("platform"))
+        if not unit.source or console.file_compiler(fp, unit.source) is None:
+            return
+        with self._build_lock(proj):
+            ok, changed = fp.git("diff", "--name-only", "HEAD", "--", "config", "configure.py")
+            paths = [fp.root / r for r in changed.split()] if ok and changed.strip() else []
+            if not paths:
+                return
+            now_c, now_f = console.file_compiler(fp, unit.source), console.file_flags(fp, unit.source)
+            saved = {path: path.read_text(encoding="utf-8") for path in paths if path.exists()}
+            try:
+                for path in saved:
+                    ok, head = fp.git("show", f"HEAD:{path.relative_to(fp.root).as_posix()}")
+                    if ok:
+                        path.write_text(head + "\n", encoding="utf-8")
+                head_c, head_f = console.file_compiler(fp, unit.source), console.file_flags(fp, unit.source)
+            finally:
+                for path, text in saved.items():
+                    path.write_text(text, encoding="utf-8")
+            if (now_c, now_f) == (head_c, head_f):
+                return
+            console.set_file_compiler(fp, unit.source, head_c)
+            if head_f is not None and now_f != head_f:
+                console.set_file_flags(fp, unit.source, head_f)
+        logging.getLogger("decompdecomp").warning("%s: put %s back on %s as committed (a try's leftover: it was on %s)", proj["slug"],
+                    unit.source, head_c, now_c)
 
     def _commit_entry(self, proj, fp: ForkProject, rel: str, setter, message: str) -> None:
         """Commit one source file's entry of a map every file's tries write to (file_compilers.json, file_flags.json):
@@ -3951,6 +3998,8 @@ class ForkEngine:
                                (now + self.net.claim_ttl, fn["id"]))
             # What matches in the file as it is now is what this change must keep (not the database's idea of it,
             # which a change outside decompdecomp or a different measurement can leave behind)
+            if unit.name not in self._trying_units():
+                self._put_back_own_entry(proj, fp, unit)
             scores, builds = self._baseline(proj, fp, unit, before)
             held = self._held(proj, unit.name, before)
             if scores is not None:
@@ -4206,7 +4255,8 @@ class ForkEngine:
                             with self._build_lock(proj):  # (a build reads the map)
                                 rel = console.set_file_compiler(fp, unit.source, c)
                             changed = True
-                        res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
+                        with self._trying(unit.name):
+                            res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
                         if res["matched"] and c == own and not flags_set:
                             return f"{c}: {res['text']}\nThat's {unit.source}'s own compiler: nothing to switch."
                         if res["matched"]:
@@ -4290,7 +4340,8 @@ class ForkEngine:
                             rel = console.set_file_compiler(fp, unit.source, c)
                             if flags is not None:
                                 console.set_file_flags(fp, unit.source, flags)
-                        res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
+                        with self._trying(unit.name):
+                            res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
                         d = res.get("percent")
                         rows.append({"compiler": c, "flags": shown(flags), "score": res.get("score"), "percent": d,
                                      "exact": bool(res["matched"]), "own": c == own and flags == own_flags,

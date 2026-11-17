@@ -69,6 +69,28 @@ def test_agents_match_functions(gc):
     assert "Match fn_" in subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
 
 
+def test_a_compile_puts_a_trys_leftover_compiler_back_first(gc):
+    """A GameCube game's file was built with a try's compiler long after the try (GC/2.0p1 for GC/1.2.5n): every
+    compile there reopened its matches, 54 at once. Before a compile measures its file, a compiler that isn't the
+    committed one, with no try on the file, is put back."""
+    from decompnet.consoles.gc_wii import scratch
+
+    net, slug = gc
+    fp = net.forks.get(slug)[1]
+    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    agent, _ = net.local_agent("gc-leftover")
+    auto = f"fn_{syms['abs_s32']:08X}"
+    source = net.forks.file_status(slug, auto).splitlines()[0][3:]
+    committed = (fp.root / "configure.py").read_text()
+    scratch.set_file_compiler(fp.root, fp.src_dir(), source, "GC/1.0", scratch.configured_compiler(fp.root))
+    assert "GC/1.0" in (fp.root / "configure.py").read_text()
+    code = csource.get(GAME.read_text(), "abs_s32").replace("abs_s32(", auto + "(", 1)
+    res = net.attempt(agent, auto, code, slug)
+    assert "GC/1.0" not in (fp.root / "configure.py").read_text()
+    assert (fp.root / "configure.py").read_text() == committed
+    assert net._function(auto, slug)["status"] == "matched", res["text"]
+
+
 def test_a_file_is_split_and_its_match_moves_along(gc):
     """split_file: the matched function and what follows it go to a new file; the game still builds identically
     and the match still counts (it runs after test_agents_match_functions)."""
