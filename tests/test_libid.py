@@ -272,7 +272,7 @@ def test_a_gamecube_sdk_copy_is_a_kit_whose_functions_the_library_finder_matches
     import subprocess
 
     from decompnet import consoles, kits, toolchains
-    from decompnet.app.engine.libraryid import kit_signatures, object_code
+    from decompnet.app.engine.libraryid import kit_names, kit_signatures, object_code
 
     bin_dir = toolchains.path("gc-wii-binutils")
     (tmp_path / "os.s").write_text("""
@@ -299,6 +299,16 @@ OSReport:
     addi r1, r1, 0x70
     blr
     .size OSReport, .-OSReport
+    .weak Hu_IsStub
+    .type Hu_IsStub, @function
+Hu_IsStub:
+    li r3, 0
+    blr
+    .size Hu_IsStub, .-Hu_IsStub
+    .type bitrev, @function
+bitrev:
+    blr
+    .size bitrev, .-bitrev
 """)
     lib = tmp_path / "Dolphin" / "HW2" / "lib"
     lib.mkdir(parents=True)
@@ -311,6 +321,9 @@ OSReport:
     assert kits.libraries(consoles.get("gc").kits) == [(lib / "os.a").resolve()]
     sigs = kit_signatures(kits.libraries(["dolphin-sdk"]))
     assert [(s.name, s.unit) for s in sigs] == [("OSReport", "OS.o")]
+    # by names: what the archive exports, short ones and weak ones too, never a file's own static (`bitrev`)
+    assert kit_names(kits.libraries(["dolphin-sdk"])) == {n: ("os.a", "OS.o, your own copy")
+                                                          for n in ("OSInitThreadQueue", "OSReport", "Hu_IsStub")}
     raw, _, _ = object_code((tmp_path / "OS.o").read_bytes())["OSReport"]
     game = bytearray(raw)
     game[14:16] = b"\x80\x48"  # (the game's own address of its message: a relocated field)
@@ -359,3 +372,63 @@ def test_a_clone_of_a_game_started_from_scratch_sets_its_library_code_aside_and_
     assert "OSInitAlarm" in json.loads((root / "config" / "V" / "set_aside.json").read_text())
     assert sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout == ""
     assert "os.a" in sp.run(["git", "-C", str(root), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout
+
+
+def test_a_function_named_as_the_users_libraries_export_is_theirs_in_another_version_too(tmp_path, monkeypatch):
+    """A GameCube game's SDK came between the user's 2001 and 2004 copies: a dozen CARD functions had other bytes in
+    each and agents spent hours on them. A function by a name the copies export is that library's; one whose code is
+    in several objects (the CARD wrappers, byte for byte the same) is the one its name says."""
+    monkeypatch.setattr(libid, "signature_folder", lambda: tmp_path / "sigs")
+    wrapper = bytes(range(1, 33))
+    sigs = [libid.Signature("card.a", "", n, 32, wrapper, b"\1" * 32, origin=f"{n}.o, your own copy", unit=f"{n}.o")
+            for n in ("CARDRead", "CARDWrite")]
+    codes = [libid.Code(1, "CARDRead", 0x100, wrapper), libid.Code(2, "__CARDEraseSector", 0x200, bytes(32)),
+             libid.Code(3, "Game_Run", 0x300, bytes(range(40, 72)))]
+    named = {"__CARDEraseSector": ("card.a", "CARDBios.o, your own copy"), "CARDRead": ("card.a", "CARDRead.o")}
+
+    def card(named):
+        catalog = libid.load()
+        catalog.signatures += sigs
+        report = libid.identify(None, codes, catalog, arch="ppc", big_endian=True, named=named)
+        lib = next((x for x in report["libraries"] if x["id"] == "card.a"), {"functions": []})
+        return {f["name"]: f["why"] for f in lib["functions"]}
+
+    found = card(named)
+    assert set(found) == {"CARDRead", "__CARDEraseSector"}
+    assert "your own copy" in found["CARDRead"] and "by its name" not in found["CARDRead"]  # (its code said so)
+    assert "by its name" in found["__CARDEraseSector"]
+    assert set(card(None)) == {"CARDRead"}  # by code alone
+
+
+def test_going_by_names_is_the_projects_choice_and_off_gives_them_back(tmp_path):
+    """Off: what names set aside is open to agents again, out of the project's committed set-aside list too."""
+    import subprocess as sp
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.app.engine.libraryid import BY_NAME, LIBRARY_WHY
+
+    repo = tmp_path / "theirs"
+    (repo / "config" / "V").mkdir(parents=True)
+    (repo / ".decomp.wtf.json").write_text(json.dumps({"created": "from scratch", "platform": "gc", "version": "V"}))
+    why = LIBRARY_WHY.format(why=f"__CARDEraseSector of card.a {BY_NAME}CARDBios.o, your own copy); another version")
+    (repo / "config" / "V" / "set_aside.json").write_text(json.dumps({"__CARDEraseSector": why, "OSInit": "os.a"}))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    sp.run([*git, "-C", str(repo), "add", "-A"], check=True)
+    sp.run([*git, "-C", str(repo), "commit", "-q", "-m", "first"], check=True)
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "home")
+    slug = net.forks.clone(str(repo), name="Theirs", platform="gc", log=lambda *_: None)
+    proj = net._project(slug)
+    with net.store.tx() as db:
+        for name, text in (("__CARDEraseSector", why), ("OSInit", LIBRARY_WHY.format(why="OSInit of os.a"))):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,vram,meta,attempts,abandons,unit) "
+                       "VALUES(?,?,?,?,?,?,?,0,0,?)", (proj["id"], name, 64, 16, "asm", 0x80001000,
+                                                       json.dumps({"symbol": name, "asm_code": text}), "main/x"))
+    assert net.libraries_found(slug)["names"] is True  # (on unless the project says otherwise)
+    assert net.set_library_names(slug, False) == 1
+    assert net.libraries_found(slug)["names"] is False
+    status = {r["name"]: r["status"] for r in net.store.all("SELECT name, status FROM functions")}
+    assert status == {"__CARDEraseSector": "open", "OSInit": "asm"}  # (what its code found stays)
+    root = Path(proj["root"])
+    assert set(json.loads((root / "config" / "V" / "set_aside.json").read_text())) == {"OSInit"}
+    assert sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout == ""

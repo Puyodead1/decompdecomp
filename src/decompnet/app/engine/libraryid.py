@@ -39,6 +39,7 @@ FUNCTION_NAME = re.compile(r"func_([0-9A-Fa-f]{6,8})")
 # GameCube SDK's OSInitThreadQueue (li, stw, stw, blr) is the game's own list initialiser's code too
 KIT_SHORTEST = 24
 LIBRARY_WHY = "library code: {why}; its own source is the decomp's, not the game's to write"
+BY_NAME = "by its name ("  # (in the why of what libid's `named` found: set_library_names gives those back)
 
 
 def _wild(relocs, arch: str) -> frozenset[int]:
@@ -154,6 +155,48 @@ def _archive_signatures(path: str, size: int, mtime_ns: int) -> tuple[libid.Sign
     return tuple(out)
 
 
+def kit_names(archives: list[Path]) -> dict[str, tuple[str, str]]:
+    """{function name: (archive, "its object, your own copy")} of the functions the user's library archives export
+    (ELF: global and weak STT_FUNC symbols they define: odenotstub.a has only a weak Hu_IsStub), for Find libraries' names (libid.identify `named`). A file's own
+    static functions are left out: their names (TimeoutHandler, bitrev) are anyone's."""
+    out: dict[str, tuple[str, str]] = {}
+    for path in archives:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        for name, lib, member in _archive_names(str(path), st.st_size, st.st_mtime_ns):
+            out.setdefault(name, (lib, f"{member}, your own copy"))
+    return out
+
+
+@functools.lru_cache(maxsize=256)
+def _archive_names(path: str, size: int, mtime_ns: int) -> tuple[tuple[str, str, str], ...]:
+    from io import BytesIO
+
+    from elftools.common.exceptions import ELFError
+    from elftools.elf.elffile import ELFFile
+
+    lib = Path(path).name
+    out = []
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ()
+    for member, obj in archive_members(data):
+        if not obj.startswith(b"\x7fELF"):
+            continue
+        try:
+            symtab = ELFFile(BytesIO(obj)).get_section_by_name(".symtab")
+            for sym in symtab.iter_symbols() if symtab is not None else ():
+                if sym["st_info"]["type"] == "STT_FUNC" and sym["st_info"]["bind"] in ("STB_GLOBAL", "STB_WEAK") \
+                        and sym["st_shndx"] != "SHN_UNDEF" and sym.name and sym.name != "main":
+                    out.append((sym.name, lib, member))
+        except (ELFError, ValueError, KeyError, AttributeError, TypeError):
+            continue
+    return tuple(out)
+
+
 def _holds(folder: str, library: str) -> bool:
     """Whether a libs/ folder, by its name, is a library's: zlib-1.2.3, and a fork's or a pack's names too
     (freealut-1.0.1 for ALUT, openal-1.1-core-sdk for OpenAL, freeglut for GLUT; not glut-3.7.6 for GLU)."""
@@ -260,10 +303,13 @@ class LibraryIdMixin:
             if "error" in f:
                 log(f"your signatures: {f['file']} wasn't read: {f['error']}")
         console = self.console(proj)
+        named = {}
         if (archives := kits.libraries(console.kits)):  # (the console's SDK, the user's own copy: Setup)
             own = kit_signatures(archives)
             catalog.signatures += own
             log(f"your {console.name} libraries: {len(own):,} functions in {len(archives)} archives")
+            if self.cfg(proj).get("library_names", True):  # (the project's choice: the Libraries panel)
+                named = kit_names(archives)
         started = time.time()
         try:  # (the libraries the user put in libs/: their headers for every compile)
             self.scan_libraries(slug)
@@ -275,7 +321,7 @@ class LibraryIdMixin:
         extra = self._fid_findings(proj, codes, catalog, program, log) if fid and catalog.fid and program else {}
         big = self.cfg(proj).get("big_endian", console.big_endian) if self.is_rom(proj) else console.big_endian
         report = libid.identify(data, codes, catalog, arch=proj["arch"] or console.arch, big_endian=bool(big),
-                                extra=extra, links=console.linked_libraries(data) if data else [])
+                                extra=extra, links=console.linked_libraries(data) if data else [], named=named)
         set_aside = 0
         for lib in report["libraries"]:
             keys = lib.pop("keys")
@@ -385,7 +431,48 @@ class LibraryIdMixin:
                 f["status"] = status.get(f["name"], "gone")
             lib["open"] = sum(1 for f in lib["functions"] if f["status"] == "open")
         return report | {"folder": str(libid.signature_folder()), "files": catalog.files,
-                         "signatures": len(catalog.signatures), "fid": [p.name for p in catalog.fid]}
+                         "signatures": len(catalog.signatures), "fid": [p.name for p in catalog.fid],
+                         # (the choice is there for a console whose libraries the user brings: kits)
+                         "kits": bool(self.console(proj).kits), "names": self.cfg(proj).get("library_names", True)}
+
+    def set_library_names(self, slug: str, on: bool) -> bool:
+        """The project's choice: Find libraries also takes a function named as one the user's library copies export
+        for that library's code, when its code is another version's (a game's SDK between two copies the user has).
+        Off: by its code alone, and what its names set aside is open to agents again. On: the next Find libraries
+        sets them aside (the panel runs it). Returns how many came back."""
+        proj = self._project(slug)
+        self._update_cfg(slug, lambda c: c.update(library_names=bool(on)))
+        if on:
+            return 0
+        back = [r for r in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='asm'", proj["id"])
+                if BY_NAME in str(json.loads(r["meta"] or "{}").get("asm_code") or "")]
+        if not back:
+            return 0
+        if not self.is_rom(proj):
+            from ...forks.project import ForkProject
+
+            fp = ForkProject(Path(proj["root"]))
+            manifest = fp.manifest or {}
+            rel = manifest.get("set_aside") or f"config/{manifest.get('version')}/set_aside.json"
+            path = fp.root / rel
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            for r in back:
+                data.pop(json.loads(r["meta"] or "{}").get("symbol") or r["name"].split("@")[0], None)
+            path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            if (fp.root / ".git").exists():
+                self.forks._commit(proj, fp, rel, f"Give {len(back)} functions set aside by their names back\n\n"
+                                                  "Library code by its code alone, as the user chose.")
+        with self.store.tx() as db:
+            for r in back:
+                meta = {k: v for k, v in json.loads(r["meta"] or "{}").items()
+                        if k not in ("asm_code", "set_aside", "library")}
+                db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
+                           (json.dumps(meta), r["id"]))
+            self._event(db, proj["id"], None, "reopen", f"{len(back)} functions set aside by their names are open again")
+        return len(back)
 
     def set_aside_library(self, slug: str, library: str) -> int:
         """The user's word: a found library's functions are its code (one the catalog doesn't set aside itself)."""

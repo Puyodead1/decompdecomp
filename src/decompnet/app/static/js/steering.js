@@ -757,7 +757,17 @@ async function renderFound() {
     } catch (e) { toast(esc(e.message), "error"); b.disabled = false; }
   }; });
   $("foundList").querySelectorAll("[data-get]").forEach((b) => { b.onclick = () => foundJob({ op: "get", library: b.dataset.get }, b); });
+  $("foundNamesRow").hidden = !r.kits;
+  $("foundNames").checked = r.names !== false;
 }
+$("foundNames").onchange = async (e) => {
+  const on = e.target.checked;
+  try {
+    const { back } = await api("/api/libraries/found", { method: "POST", body: { slug: S.slug, op: "names", on } });
+    if (back) toast(`${plural(back, "function")} set aside by ${back === 1 ? "its name is" : "their names are"} open to agents again.`);
+  } catch (err) { toast(esc(err.message), "error"); e.target.checked = !on; return; }
+  foundJob({}, $("foundBtn"));  // (looked for again at once: the choice shows in the list)
+};
 async function foundJob(body, button) {
   const log = $("foundLog"), work = $("foundWork");
   button.disabled = true;

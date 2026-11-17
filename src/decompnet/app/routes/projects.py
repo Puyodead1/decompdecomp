@@ -162,13 +162,16 @@ def register(app: App) -> None:
     def p_libraries_found(slug, request, data):
         """Which libraries the game has built in (engine/libraryid.py). GET: the last report, with the user's
         signatures folder; POST: find them again (a job); `op` "aside": set a found library's functions aside as its
-        code; "get": download its source into libs/ (a job); "folder": open the signatures folder."""
+        code; "names": whether a function named as one of the user's library copies' counts too (`on`); "get":
+        download its source into libs/ (a job); "folder": open the signatures folder."""
         if request.method != "POST":
             return net.libraries_found(slug)
         op = (data or {}).get("op") or "find"
         library = str((data or {}).get("library") or "")
         if op == "aside":
             return {"set_aside": net.set_aside_library(slug, library)}
+        if op == "names":  # by their names too, or by their code alone (the project's choice)
+            return {"back": net.set_library_names(slug, bool((data or {}).get("on")))}
         if op == "get":
             return {"job": jobs.start("library-source", lambda log: net.get_library_source(slug, library, log=log))}
         if op == "folder":

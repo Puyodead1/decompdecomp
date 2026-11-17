@@ -356,10 +356,13 @@ def linked(names: list[str], catalog: Catalog) -> tuple[dict[str, list[str]], li
 
 
 def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: str = "", big_endian: bool = False,
-             extra: dict | None = None, links: list[str] | None = None) -> dict:
+             extra: dict | None = None, links: list[str] | None = None,
+             named: dict[str, tuple[str, str]] | None = None) -> dict:
     """What libraries the program has built in. `program`: its file (its text says what's there); `codes`: its
     functions; `extra`: findings someone else made, {(library, version, name): {key: why}} (Ghidra's Function ID);
     `links`: the library files it loads (a PC game's DLLs, a Linux game's .so), whose headers its source includes.
+    `named`: {function name: (library, where)} of the user's own library copies (a console's kits): a function of the
+    game by one of those names is that library's, whatever its code (another version of it).
     Returns {"libraries": [Finding.as_dict...], "links": [...], "notices": [...], "paths": [...]}, with each function key taken by
     the first finding that has it."""
     found: dict[str, Finding] = {}
@@ -405,6 +408,8 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
     for code in codes:
         cands = by_size.get(len(code.raw), []) + by_size.get(_trimmed(code.raw), []) + by_size.get(None, [])
         hits = [s for s in cands if signature_matches(s, code)]
+        if len({s.unit for s in hits if s.unit}) > 1:  # (the same code in several objects: its name says which)
+            hits = [s for s in hits if s.name == code.name.split("@")[0]]
         if not hits or len({s.unit for s in hits if s.unit}) > 1:
             continue
         names = sorted({s.name for s in hits})
@@ -414,6 +419,19 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
         f.version = f.version or s.version
         f.functions.setdefault(code.key, f"{' or '.join(names[:3])} of {s.library}"
                                + (f" {s.version}" if s.version else "") + f" ({s.origin})")
+
+    # names: a function the user's library copies define by its name is theirs even when no copy has its code (a
+    # GameCube game's SDK came between the user's 2001 and 2004 copies: a dozen CARD functions had other bytes in
+    # each, and agents spent hours matching them). Only what the signatures left.
+    if named:
+        have = {k for f in found.values() for k in f.functions}
+        for code in codes:
+            hit = named.get(code.name.split("@")[0])
+            if hit is None or code.key in have:
+                continue
+            f = _finding(found, None, hit[0], hit[0])
+            f.functions.setdefault(code.key, f"{code.name.split('@')[0]} of {hit[0]} by its name ({hit[1]}); its code "
+                                             "is another version's")
 
     for (lid, version, name), funcs in (extra or {}).items():
         lib = next((lb for lb in catalog.libraries if lb.id == lid), None)
