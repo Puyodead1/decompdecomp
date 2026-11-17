@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .. import consoles
@@ -30,9 +31,20 @@ from ..network import NetworkError
 MAX_BUNDLE = 512 * 1024 * 1024
 
 
+# git's words for an index another program has open right now (an editor's git, antivirus, a status run beside it)
+_INDEX_BUSY = re.compile(r"could not write index|index\.lock|unable to write new index", re.I)
+INDEX_TRIES, INDEX_WAIT = 8, 0.5
+
+
 def _git(root: Path, *args: str, check: bool = True, timeout: float = 600) -> str:
-    res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, text=True,
-                         encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
+    """git in a room's tree. An index that's busy for a moment is waited out: on a Windows member's computer "git
+    stash failed: could not write index" ended following the host, and the agent's claims with it."""
+    for attempt in range(INDEX_TRIES):
+        res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
+        if res.returncode == 0 or not _INDEX_BUSY.search(res.stderr or "") or attempt == INDEX_TRIES - 1:
+            break
+        time.sleep(INDEX_WAIT * (attempt + 1))
     if check and res.returncode != 0:
         raise NetworkError(f"git {args[0]} failed: {(res.stderr or res.stdout).strip()[-400:]}")
     return res.stdout.strip()

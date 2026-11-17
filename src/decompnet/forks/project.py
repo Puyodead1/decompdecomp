@@ -76,6 +76,12 @@ class Unit:
     auto: bool = False  # split off by dtk because no file covers it (auto_00_80003100_text)
 
 
+# git that only reads (status, diff) refreshes the index when it can, taking its lock: beside a write in the same
+# tree (a room's member following the host stashed its work), that write failed with "could not write index" on
+# Windows. Reads don't touch it in any git decompdecomp runs (its helpers' too: they inherit this).
+os.environ.setdefault("GIT_OPTIONAL_LOCKS", "0")
+
+
 @functools.lru_cache(maxsize=64)
 def _git_env(root: Path) -> dict | None:
     """Commits need an identity: when git has none set up on this computer, commits are by decompdecomp."""

@@ -195,3 +195,23 @@ def test_a_members_try_compiler_runs_on_the_hosts_copy(room):
     except collab.Refused as e:  # (it matches already: the host's own answer, from its copy)
         out = str(e)
     assert "decides each file's compiler" not in out and ("already matches" in out or unit.source in out), out
+
+
+def test_a_busy_index_is_waited_out_when_following_the_host(tmp_path, monkeypatch):
+    """A Windows member's "git stash failed: could not write index" ended following the host, and its agents' claims:
+    a moment's busy index is tried again; another failure isn't."""
+    from types import SimpleNamespace
+
+    from decompnet.app import forkroom
+
+    said = iter([SimpleNamespace(returncode=128, stdout="", stderr="error: could not write index"),
+                 SimpleNamespace(returncode=0, stdout="ok\n", stderr="")])
+    monkeypatch.setattr(forkroom.subprocess, "run", lambda *a, **k: next(said))
+    monkeypatch.setattr(forkroom, "INDEX_WAIT", 0)
+    assert forkroom._git(tmp_path, "stash", "push") == "ok"
+    monkeypatch.setattr(forkroom.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="fatal: bad revision"))
+    with pytest.raises(NetworkError, match="bad revision"):
+        forkroom._git(tmp_path, "rev-parse", "nope")
+    import os
+    assert os.environ.get("GIT_OPTIONAL_LOCKS") == "0"  # (reads leave the index alone: forks/project.py)
