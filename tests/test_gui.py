@@ -83,7 +83,8 @@ def test_a_big_games_map_redraws_what_changed_and_polls_dont_pile_up():
     """A poll that brought one better score redrew all of a big game's map (28,900 cells), and every frame of the
     working functions' pulse copied the whole canvas; the project list's asks piled up behind a slow one, and the live
     poll went on in a minimised window. The compiler answer says a project without a map has none, and not that it
-    reads MIPS code only (tests/gui_map.js)."""
+    reads MIPS code only. The map's hover tip says a function compiled with no best was tried, not "not started", and
+    that one set aside is (tests/gui_map.js)."""
     if NODE is None:
         pytest.skip("needs node to run the GUI's scripts")
     subprocess.run([NODE, str(Path(__file__).with_name("gui_map.js"))], check=True,
@@ -108,6 +109,7 @@ def gui():
 
     env = {**os.environ, "GUI_CONSOLES": json.dumps([c.describe() for c in CONSOLES])}  # (/api/state's)
     out = subprocess.run([NODE, str(Path(__file__).with_name("gui_polls.js"))], capture_output=True, text=True,
+                         encoding="utf-8",  # node writes UTF-8; Windows' default (cp1252) garbled "Stopping…"
                          timeout=GUI_TIMEOUT_SECONDS, check=True, env=env)
     result = json.loads(out.stdout)
     assert result["errors"] == []
@@ -139,6 +141,20 @@ def test_a_ps3_program_is_taken_and_its_encrypted_eboot_says_what_to_do(gui):
     ps3 = gui["checks"]["ps3"]
     assert ps3["good"] == ["ps3", "ELF program", 0x13000] and ps3["self"] is None
     assert "SELF" in ps3["said"] and "decrypt your own copy" in ps3["said"] and "EBOOT.ELF" in ps3["said"]
+
+
+def test_compiler_comparison_is_available_on_all_rom_consoles(gui):
+    assert gui['checks']['compilerComparisonConsoles'] == [
+        ['gba', False], ['ps3', False], ['n64', False], ['pc', True]]
+
+
+def test_a_running_compiler_comparison_can_be_stopped(gui):
+    """#241: the start disabled the button until the job existed, and only the job's end enabled it again, so its
+    Stop comparison couldn't be clicked while a comparison ran."""
+    stop = gui['checks']['compilerStop']
+    assert stop['whileStarting'] is True  # a second click can't start a second job
+    assert stop['running'] == {'disabled': False, 'text': 'Stop comparison'}
+    assert stop['stopping'] == 'Stopping…' and stop['cancels'] == 1
 
 
 def test_a_gba_rom_is_told_by_its_header_as_the_server_tells_it(gui):
@@ -372,6 +388,12 @@ def test_a_ps4_drop_never_requests_codewarrior_and_explains_host_restrictions(gu
         assert drop["extras"] == ["game.functions.jsonl"]
     unsupported = gui["checks"]["ps4Drop"]["unsupported"]
     assert unsupported["disabled"] and not unsupported["consent"] and "WSL 2" in unsupported["note"]
+
+def test_compiler_profiles_group_sort_and_route_all_profile_actions():
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_compiler_groups.js"))], check=True,
+                   capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)
 
 
 def test_agent_prompt_editor_inherits_previews_and_reports_errors():

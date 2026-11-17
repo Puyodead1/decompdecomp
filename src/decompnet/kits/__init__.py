@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,7 +120,10 @@ def find(folder: Path, rel: str, dirs: bool = False) -> Path | None:
     for part in Path(rel).parts:
         if not at.is_dir():
             return None
-        at = next((c for c in at.iterdir() if c.name.lower() == part.lower()), None)
+        try:
+            at = next((c for c in at.iterdir() if c.name.lower() == part.lower()), None)
+        except OSError:
+            return None  # a folder that can't be read (bad permissions, a dropped mount) holds nothing we can use
         if at is None:
             return None
     return at if at.is_file() or (dirs and at.is_dir()) else None
@@ -176,7 +180,12 @@ def compilers(kids) -> list[OwnCompiler]:
         if type(get(k)).compilers is Kit.compilers:
             continue
         for at in folders(k):
-            for c in get(k).compilers(at):
+            try:
+                found = get(k).compilers(at)
+            except OSError as e:  # a copy with a file that can't be read: skip it, the other copies still count (wine.build_env)
+                logging.getLogger(__name__).warning("a %s copy in %s can't be read, skipping it: %s", k, at, e)
+                continue
+            for c in found:
                 out.setdefault(c.version, c)
     return list(out.values())
 

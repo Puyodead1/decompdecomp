@@ -541,6 +541,7 @@ platforms = ["linux-x86_64"]
 ["mwcps2-2.3.3"]
 cplusplus = true
 name = "CodeWarrior for PS2 2.3.3 (000906)"
+family = "metrowerks"
 platform = "PS2"
 arch = "mipsel"
 license = "proprietary"
@@ -557,6 +558,7 @@ platforms = ["linux-x86_64", "macos-x86_64", "macos-arm64"]
 ["mwcps2-3.0.1"]
 cplusplus = true
 name = "CodeWarrior for PS2 3.0.1 (b145, 050209)"
+family = "metrowerks"
 platform = "PS2"
 arch = "mipsel"
 license = "proprietary"
@@ -608,6 +610,7 @@ platforms = ["linux-x86_64"]
 ["pspsnc-1.2.7503"]
 cplusplus = true
 name = "SN Systems SNC for PSP 1.2.7503"
+family = "snc"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -624,6 +627,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b121"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b121)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -640,6 +644,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b134"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b134)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -656,6 +661,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b139"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b139)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -672,6 +678,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b147"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b147)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -688,6 +695,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b151"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b151)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -704,6 +712,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b180"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b180)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -720,6 +729,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b192"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b192)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -736,6 +746,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b201"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b201)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -752,6 +763,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b205"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b205)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -768,6 +780,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b210"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b210)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"
@@ -784,6 +797,7 @@ platforms = ["linux-x86_64"]
 ["mwccpsp-3.0.1-b219"]
 cplusplus = true
 name = "CodeWarrior for PSP 3.0.1 (b219)"
+family = "metrowerks"
 platform = "PSP"
 arch = "mipsel"
 license = "proprietary"

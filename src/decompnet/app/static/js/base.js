@@ -59,6 +59,10 @@ const codePct = (p) => (codeBytes(p) ? (100 * (p.matched_bytes || 0)) / codeByte
 const cFunctions = (p) => (p.functions || 0) - (p.set_aside || 0);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+// An open function with no best score: "not started" only when nobody compiled it (every compile failing to build left
+// a function with 12 compiles saying "not started"). Not "none built": a fork's compile that built and scored but broke
+// a matched neighbour is undone and never becomes the best.
+const noBest = (compiles) => (compiles ? `${plural(compiles, "compile")}, no best yet` : "not started");
 const MINUTE = 60, HOUR = 3600, DAY = 86400;  // seconds
 const KIB = 1024, MIB = 1024 * 1024;
 function since(t) {
@@ -126,6 +130,7 @@ function beginWork(log, label, controls = [], completed = "Finished.") {
   bar.setAttribute("aria-label", label);
   bar.append(document.createElement("i"));
   log.before(bar);
+  log._workBar = bar;
   const disabled = controls.map((control) => control.disabled);
   controls.forEach((control) => { control.disabled = true; });
   return () => {
@@ -138,10 +143,12 @@ function beginWork(log, label, controls = [], completed = "Finished.") {
   };
 }
 
-async function followJob(id, logEl, onUpdate) {
+async function followJob(id, logEl, onUpdate, active = () => true) {
   for (;;) {
+    if (!active()) return;
     const job = await api(`/api/job?id=${id}`);
-    if (logEl) { logEl.textContent = job.log.join("\n"); logEl.scrollTop = logEl.scrollHeight; }
+    if (!active()) return;
+    if (logEl) { logEl.textContent = job.log.join("\n"); if (logEl._followTail !== false) logEl.scrollTop = logEl.scrollHeight; }
     if (onUpdate) onUpdate(job.log, job);
     if (job.state === "done") return job.result;
     if (job.state === "error" || job.state === "cancelled") {

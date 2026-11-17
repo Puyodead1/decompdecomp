@@ -129,6 +129,40 @@ def test_opening_a_project_recovers_its_own_successful_save_destination(app, tmp
         assert response.json()["save_folder"] == str((tmp_path / slug).resolve())
 
 
+def test_compiler_comparison_route_passes_options_and_reuses_running_job(tmp_path, monkeypatch):
+    from .test_loading import tiny_game
+
+    (tmp_path / '.decomp').mkdir()
+    net = RomNetwork(tmp_path / '.decomp' / 'decomp.db', tmp_path)
+    tiny_game(net, 'comparison-route')
+    mcp, _, security, _ = build(net, tmp_path / '.decomp', PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host='127.0.0.1'),
+                        base_url=f'http://127.0.0.1:{PORT}', headers=WINDOW)
+    started = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def compare(slug, log, **options):
+        seen.append((slug, options))
+        started.set()
+        assert release.wait(5)
+        return {'tried': 0, 'results': []}
+
+    monkeypatch.setattr(net, 'find_better_compiler_settings', compare)
+    request = {'slug': 'comparison-route', 'find_better_settings': True, 'flags_only': True,
+               'auto_apply': False}
+    try:
+        first = client.post('/api/compilermap', headers={'X-Decomp': '1'}, json=request)
+        assert first.status_code == 200, first.text
+        assert started.wait(5)
+        second = client.post('/api/compilermap', headers={'X-Decomp': '1'}, json=request)
+        assert second.status_code == 200 and second.json()['job'] == first.json()['job']
+    finally:
+        release.set()
+    assert seen == [('comparison-route', {'flags_only': True, 'used_profiles_only': False,
+                                          'untested_only': True, 'auto_apply': False})]
+
+
 def test_a_project_remembers_which_functions_helpers_take_first(app):
     """Issue #205: the owner's order is kept with the project, and only the choices it knows are taken."""
     from .test_loading import tiny_game
@@ -1185,3 +1219,33 @@ def test_the_source_tree_downloads_as_a_zip_without_the_game(app, tmp_path):
     assert not list(tmp_path.glob("*.zip")) and not (tree / ".git").exists()  # (nothing left behind)
     assert TestClient(client.app, base_url=f"http://127.0.0.1:{PORT}").get(
         f"/api/export/archive?slug={slug}").status_code == 401  # (only the app's own window)
+
+
+def test_compiler_profile_jobs_stream_progress_and_reuse_active_task(app, monkeypatch, tmp_path):
+    from decompnet.app import compiler_default_test
+
+    client, net, _ = app
+    with net.store.tx() as db:
+        db.execute('INSERT INTO projects(slug,name,root,config) VALUES(?,?,?,?)',
+                   ('profile-api', 'Profile API', str(tmp_path), json.dumps({'kind': 'rom', 'platform': 'n64'})))
+    release = threading.Event()
+    entered = threading.Event()
+    def run(net, slug, profile, log, **kwargs):
+        log.progress({'total': 2, 'checked': 1, 'passed': 1, 'failed': 0})
+        entered.set()
+        release.wait(3)
+        return {'compatible': True}
+    monkeypatch.setattr(compiler_default_test, 'run', run)
+    data = {'slug': 'profile-api', 'profile': {'toolchain': 'ido-5.3', 'flags': ['-O1']}, 'action': 'nonmatches'}
+    try:
+        first = client.post('/api/compiler/test-default', headers={'X-Decomp': '1'}, json=data)
+        assert first.status_code == 200, first.text
+        assert entered.wait(2)
+        second = client.post('/api/compiler/test-default', headers={'X-Decomp': '1'}, json=data)
+        assert second.json()['job'] == first.json()['job']
+        snapshot = client.get('/api/job', params={'id': first.json()['job']}).json()
+        assert snapshot['progress']['checked'] == 1 and snapshot['state'] == 'running'
+    finally:
+        release.set()
+    bad = client.post('/api/compiler/test-default', headers={'X-Decomp': '1'}, json={**data, 'action': 'unsupported'})
+    assert bad.status_code == 400

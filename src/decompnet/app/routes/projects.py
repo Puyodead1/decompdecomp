@@ -25,6 +25,7 @@ from . import App
 def register(app: App) -> None:
     net, mcp, manager, jobs = app.net, app.mcp, app.manager, app.jobs
     settings, guard, body, call, fail = app.settings, app.guard, app.body, app.call, app.fail
+    comparison_jobs: dict[str, str] = {}
 
     def with_project(fn):
         async def handler(request: Request) -> Response:
@@ -36,7 +37,8 @@ def register(app: App) -> None:
                 def perform():
                     result = fn(slug, request, data)
                     project = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
-                    if request.method == "POST" and project and not net.project_missing(project):
+                    if (request.method == "POST" and project and not net.project_missing(project)
+                            and request.url.path not in ("/api/compiler/test-default", "/api/compiler/cleanup")):
                         net.progress.sync(slug, force=True)
                     return result
                 return JSONResponse(await call(perform))
@@ -63,6 +65,41 @@ def register(app: App) -> None:
             since = {}
         out["sessions"] = [s for s in manager.snapshot(since) if s["slug"] == slug]
         return out
+
+    profile_jobs = {}
+
+    def p_compiler_default_test(slug, request, data):
+        from .. import compiler_default_test as trial
+
+        action = data.get("action", "test")
+        handlers = {
+            "test": lambda log: trial.run(net, slug, data.get("profile"), log),
+            "nonmatches": lambda log: trial.run(net, slug, data.get("profile"), log, nonmatches=True),
+            "replace": lambda log: trial.replace_default(net, slug, data.get("profile"), log),
+            "apply-matches": lambda log: trial.apply_matches(net, slug, data.get("profile"), data.get("functions"), log),
+        }
+        if action not in handlers:
+            raise NetworkError("Choose a compiler profile action from the list.")
+        key = (slug, action, json.dumps(data.get("profile"), sort_keys=True),
+               json.dumps(data.get("functions"), sort_keys=True))
+        with jobs._lock:
+            for old, jid in list(profile_jobs.items()):
+                if jobs.jobs.get(jid, {}).get("state") != "running":
+                    profile_jobs.pop(old, None)
+            previous = profile_jobs.get(key)
+            if previous and jobs.jobs.get(previous, {}).get("state") == "running":
+                return {"job": previous}
+            titles = {"test": "Test compiler profile as default", "nonmatches": "Test non-matching functions",
+                      "replace": "Replace default compiler", "apply-matches": "Apply verified matches"}
+            profile_jobs[key] = jobs.start(titles[action], handlers[action])
+            return {"job": profile_jobs[key]}
+
+    def p_compiler_cleanup(slug, request, data):
+        from ..compiler_cleanup import cleanup
+
+        net._rom_only(slug, "comparing a compiler profile with the default")
+        return {"job": jobs.start("compiler-cleanup", lambda log:
+                                 cleanup(net, slug, log=log, source_profile=data.get("profile")))}
 
     def p_compiler(slug, request, data):
         if net.fork_slug(slug) and "auto" not in data:  # its source files each have a compiler (DS)
@@ -148,7 +185,31 @@ def register(app: App) -> None:
     def p_compilermap(slug, request, data):
         """The compiler answer (GET): which compiler built the game, and its parts; the app checks by itself when the
         answer is old. POST: check again now (the survey and the applied ranges)."""
-        return net.compiler_answer(slug, check_now=request.method == "POST")
+        if request.method == "POST" and data.get("apply_compiler_result"):
+            fn, tc, flags = data.get("function"), data.get("toolchain"), data.get("flags")
+            if not isinstance(fn, str) or not isinstance(tc, str) or not isinstance(flags, list) or not all(
+                    isinstance(flag, str) for flag in flags):
+                raise NetworkError("Choose a tested function and compiler profile.")
+            return net.apply_compiler_test_result(slug, fn, tc, flags)
+        if request.method == "POST" and data.get("find_better_settings"):
+            options = {key: data.get(key, default) for key, default in (
+                ("flags_only", False), ("used_profiles_only", False),
+                ("untested_only", True), ("auto_apply", False))}
+            with jobs._lock:
+                existing = comparison_jobs.get(slug)
+                if existing and jobs.jobs.get(existing, {}).get("state") == "running":
+                    return {"job": existing}
+                jid = jobs.start("compiler settings comparison", lambda log:
+                                 net.find_better_compiler_settings(slug, log=log, **options))
+                comparison_jobs[slug] = jid
+            return {"job": jid}
+        if request.query_params.get("compiler_results") == "1":
+            active = comparison_jobs.get(slug)
+            results = net.compiler_comparison_results(slug)
+            return {"results": results, "ran": bool(results) or active is not None,
+                    "job": active if active and jobs.jobs.get(active, {}).get("state") == "running" else None}
+        return net.compiler_answer(slug, check_now=request.method == "POST",
+                                   include_functions=request.query_params.get("summary") != "1")
 
     def p_open(slug, request, data):
         root = Path(net.project_row(slug)["root"])
@@ -380,6 +441,8 @@ def register(app: App) -> None:
         "/api/function": (p_function, ["GET"]), "/api/deep": (p_deep, ["POST"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
+        "/api/compiler/test-default": (p_compiler_default_test, ["POST"]),
+        "/api/compiler/cleanup": (p_compiler_cleanup, ["POST"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
