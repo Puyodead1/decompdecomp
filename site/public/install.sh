@@ -18,11 +18,14 @@
 #   --source <what>     where decompdecomp comes from: "release" (default), "branch:<name>" (a branch on GitHub, for
 #                       testing; its updates follow that branch) or a folder with decompdecomp's source. Run from a
 #                       git checkout, the checkout is used (and updates follow its branch; main's are releases).
-# The same through the environment: DECOMP_SOURCE=..., DECOMP_BRANCH=<name>.
+#                       "branch:main" asked for here follows main's commits, as choosing them in Settings does.
+#   --repo <owner/name> the GitHub repository it comes from (default n-delic/decompdecomp): a fork, whose releases
+#                       or branch the app then keeps updating from
+# The same through the environment: DECOMP_SOURCE=..., DECOMP_BRANCH=<name>, DECOMP_REPO=<owner/name>.
 set -euo pipefail
 
 VERSION="1.0.10-alpha.2+puyo.1"
-REPO="n-delic/decompdecomp"
+REPO="${DECOMP_REPO:-n-delic/decompdecomp}"
 START=1
 SOURCE="${DECOMP_SOURCE:-}"
 [ -z "$SOURCE" ] && [ -n "${DECOMP_BRANCH:-}" ] && SOURCE="branch:${DECOMP_BRANCH}"
@@ -31,10 +34,18 @@ while [ $# -gt 0 ]; do
     --no-start) START=0 ;;
     --source) shift; SOURCE="${1:-}" ;;
     --source=*) SOURCE="${1#--source=}" ;;
+    --repo) shift; REPO="${1:-}" ;;
+    --repo=*) REPO="${1#--repo=}" ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+case "$REPO" in
+  */*/*|/*|*/|"") echo "--repo takes a GitHub repository as owner/name, not \"$REPO\"" >&2; exit 2 ;;
+  */*) ;;
+  *) echo "--repo takes a GitHub repository as owner/name, not \"$REPO\"" >&2; exit 2 ;;
+esac
 
 has_tty() { (exec </dev/tty) 2>/dev/null; }  # a terminal we can read, even when piped from curl
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -78,13 +89,15 @@ command -v curl >/dev/null || fail "curl is required"
 
 # ------------------------------------------------------------------------------------------- where it comes from
 # CHANNEL/BRANCH/COMMIT are remembered (decomp install-info): the app's updates come from the same place.
-CHANNEL=release BRANCH="" COMMIT="" SPEC="" SRC_DIR=""
+CHANNEL=release BRANCH="" COMMIT="" SPEC="" SRC_DIR="" CHOSEN=""
 case "$SOURCE" in
   release)
     SPEC="decompnet @ ${DECOMP_WHEEL:-https://github.com/$REPO/archive/refs/tags/v${VERSION}.tar.gz}" ;;
   branch:*)
     CHANNEL=branch BRANCH="${SOURCE#branch:}"
-    [ -n "$BRANCH" ] || fail "--source branch:<name> needs a branch name" ;;
+    [ -n "$BRANCH" ] || fail "--source branch:<name> needs a branch name"
+    # main asked for by name: its commits are the updates (a checkout of main, below, still updates on releases)
+    [ "$BRANCH" = main ] && CHOSEN="--chosen" ;;
   *)
     SRC_DIR="$(cd "$SOURCE" 2>/dev/null && pwd)" || fail "no folder $SOURCE (--source is release, branch:<name> or a folder)"
     [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/src/decompnet" ] || fail "$SRC_DIR isn't decompdecomp's source"
@@ -142,7 +155,7 @@ uv tool install --force --quiet --python 3.12 "$SPEC"
 [ -n "${TMP_SRC:-}" ] && rm -rf "$TMP_SRC"
 BIN="$(uv tool dir --bin)"
 uv tool update-shell >/dev/null 2>&1 || true
-"$BIN/decomp" install-info --channel "$CHANNEL" --branch "$BRANCH" --commit "$COMMIT" --repo "$REPO" >/dev/null
+"$BIN/decomp" install-info --channel "$CHANNEL" --branch "$BRANCH" --commit "$COMMIT" --repo "$REPO" $CHOSEN >/dev/null
 
 # the window: GTK and WebKitGTK 4.1 with their Python bindings, from the system (no browser involved)
 if [ "$OS" = Linux ] && ! /usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")' 2>/dev/null; then

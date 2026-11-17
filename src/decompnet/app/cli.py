@@ -266,7 +266,7 @@ def install_info(args) -> int:
     """Remember how decompdecomp was installed (by the installers): where its updates come from."""
     from . import updates
 
-    print(json.dumps(updates.record(args.channel, args.branch, args.commit, args.repo)))
+    print(json.dumps(updates.record(args.channel, args.branch, args.commit, args.repo, chosen=args.chosen)))
     return 0
 
 
@@ -365,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     ii.add_argument("--branch", default="")
     ii.add_argument("--commit", default="")
     ii.add_argument("--repo", default="n-delic/decompdecomp")
+    ii.add_argument("--chosen", action="store_true")  # main's commits, asked for by name (install.sh --source branch:main)
     args = ap.parse_args(argv)
     __import__("decompnet").utf8_output()
     __import__("decompnet.limits").limits.no_core_dumps()

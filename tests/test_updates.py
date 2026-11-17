@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import sys
 import urllib.error
 from pathlib import Path
@@ -348,3 +349,29 @@ def test_a_forks_own_releases_on_one_upstream_version_are_updates():
     order = ["1.0.9-alpha.4", "1.0.9-alpha.4+puyo.20", "1.0.9a4+puyo.22", "1.0.9-alpha.5", "1.0.9"]
     keys = [updates.version_key(v) for v in order]
     assert keys == sorted(keys) and len(set(keys)) == len(keys)
+
+
+def test_main_asked_for_by_name_follows_its_commits_from_the_repository_given():
+    """install.sh --source branch:main --repo <fork> (or DECOMP_REPO): a fork's main, commit by commit, as the
+    owner's own copy updates; a checkout of main (no --chosen) still updates on releases."""
+    from decompnet.app import cli
+
+    assert cli.main(["install-info", "--channel", "branch", "--branch", "main", "--commit", "b" * 40,
+                     "--repo", "someone/decompdecomp", "--chosen"]) == 0
+    cur = updates.installed()
+    assert (cur["channel"], cur["branch"], cur["repo"], cur.get("chosen")) == ("branch", "main", "someone/decompdecomp", True)
+    updates.record("branch", "main", "b" * 40, "someone/decompdecomp")
+    assert updates.installed()["channel"] == "release" and updates.installed()["repo"] == "someone/decompdecomp"
+    updates.record("branch", "feature", "b" * 40, chosen=True)
+    assert "chosen" not in updates.installed()  # (only main's commits are a choice; another branch follows its own)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="install.sh is for Linux and macOS")
+@pytest.mark.parametrize("repo", ["decompdecomp", "a/b/c", "/b", "a/"])
+def test_the_installer_refuses_a_repository_that_isnt_owner_and_name(repo):
+    """Before it installs anything: a typo in --repo or DECOMP_REPO would leave an app whose updates never come."""
+    script = Path(__file__).resolve().parents[1] / "site" / "public" / "install.sh"
+    for args, env in ((["--repo", repo], {}), ([], {"DECOMP_REPO": repo})):
+        r = subprocess.run(["bash", str(script), "--no-start", *args], capture_output=True, text=True, timeout=30,
+                           env={**os.environ, **env}, stdin=subprocess.DEVNULL)
+        assert r.returncode == 2 and "owner/name" in r.stderr, (args, env, r.stderr)

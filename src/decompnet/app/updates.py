@@ -56,12 +56,15 @@ def installed() -> dict:
     return data
 
 
-def record(channel: str, branch: str = "", commit: str = "", repo: str = REPO) -> dict:
-    """Write how this copy was installed, for the next update check."""
+def record(channel: str, branch: str = "", commit: str = "", repo: str = REPO, chosen: bool = False) -> dict:
+    """Write how this copy was installed, for the next update check. `chosen`: main's commits are its updates
+    (install.sh --source branch:main, as choosing them in Settings), not main's releases."""
     data = {"channel": channel if channel in ("release", "branch") else "release", "repo": repo or REPO,
             "branch": branch, "commit": commit, "version": __version__, "t": time.time()}
     if data["channel"] == "release":
         data.update(branch="", commit="")
+    elif chosen and branch == "main":
+        data["chosen"] = True
     info_file().parent.mkdir(parents=True, exist_ok=True)
     info_file().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return data

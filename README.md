@@ -68,6 +68,8 @@ To install the current source instead, run:
 
 ```sh
 curl -fsSL https://decomp.ndelic.com/install.sh | bash -s -- --source branch:main
+# A fork's main instead, updating on each of its commits (--repo, or DECOMP_REPO=<owner/name>):
+curl -fsSL https://decomp.ndelic.com/install.sh | bash -s -- --source branch:main --repo <owner>/decompdecomp
 # Alternatively, install a local checkout:
 git clone https://github.com/n-delic/decompdecomp.git
 cd decompdecomp
