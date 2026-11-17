@@ -607,3 +607,26 @@ def test_build_env_keeps_wine_for_a_readable_copy_despite_an_unreadable_sibling(
     finally:
         unreadable.chmod(0o644)
     assert env.get("DECOMPNET_WINE") == "/opt/wine/bin/wine"  # the good copy's wine survived the unreadable sibling
+
+
+def test_a_kit_copys_status_is_worked_out_once_while_its_folder_is_unchanged(tmp_path, monkeypatch):
+    """The app's state asked every kit copy's build on every refresh: a DS SDK folder's is a search of every folder in
+    it, 17 to 40 s in an app busy with agents. It's remembered until the folder changes."""
+    from decompnet import kits
+
+    kit = kits.get("nitro")
+    folder = tmp_path / "sdk"
+    folder.mkdir()
+    calls = []
+    monkeypatch.setattr(type(kit), "build", lambda self, at: calls.append(at) or "NitroSDK 4.2")
+    monkeypatch.setattr(type(kit), "verify", lambda self, at: "")
+    monkeypatch.setattr(type(kit), "contents", lambda self, at: [])
+    monkeypatch.setattr(toolchains, "find_local", lambda tc, c: Path(c))
+    tc = toolchains.get("nitro")
+    for _ in range(3):
+        assert toolchains._local_status(tc, {"folder": str(folder)})["copies"][0]["build"] == "NitroSDK 4.2"
+    assert len(calls) == 1
+    (folder / "lib").mkdir()  # (the folder changed: worked out again)
+    os.utime(folder, ns=(folder.stat().st_atime_ns, folder.stat().st_mtime_ns + 10**9))
+    toolchains._local_status(tc, {"folder": str(folder)})
+    assert len(calls) == 2

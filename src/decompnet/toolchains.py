@@ -1114,20 +1114,34 @@ def java_version() -> int:
     return int(m.group(1)) if m else 0
 
 
+_KIT_COPIES: dict[tuple, dict] = {}  # (kit, folder, the folder's mtime) -> what _local_status says of that copy
+
+
+def _kit_copy(tc: Toolchain, kit, c: str) -> dict:
+    """One copy of a kit: its build, whether its files are known ones, what it holds. Remembered while the folder is
+    unchanged: the app's state asked on every refresh, and a DS SDK folder's build is a search of every folder in it
+    (`**/include/*/version.h`), 17 to 40 s in an app busy with agents."""
+    at = find_local(tc, c)
+    if not at:
+        return {"folder": c, "build": "", "verified": "it isn't there any more: remove it or put it back",
+                "contents": []}
+    try:
+        key = (tc.id, str(at), at.stat().st_mtime_ns)
+        if key not in _KIT_COPIES:
+            _KIT_COPIES[key] = {"folder": c, "build": kit.build(at) or "", "verified": kit.verify(at),
+                                "contents": kit.contents(at)}
+        return dict(_KIT_COPIES[key], folder=c)
+    except OSError:
+        return {"folder": c, "build": "", "verified": ""}
+
+
 def _local_status(tc: Toolchain, m: dict) -> dict:
     """Where the copies of a kit the user set up are, each with its build and whether its files are ones
     decompdecomp knows (Kit.verify). `folder` and `verified` are the first copy's."""
     from . import kits
 
-    kit, copies = kits.get(tc.id), []
-    for c in _copies(m):
-        at = find_local(tc, c)
-        try:
-            copies.append({"folder": c, "build": (kit.build(at) or "") if at else "",
-                           "verified": kit.verify(at) if at else "it isn't there any more: remove it or put it back",
-                           "contents": kit.contents(at) if at else []})
-        except OSError:
-            copies.append({"folder": c, "build": "", "verified": ""})
+    kit = kits.get(tc.id)
+    copies = [_kit_copy(tc, kit, c) for c in _copies(m)]
     return {"folder": copies[0]["folder"], "verified": copies[0]["verified"], "copies": copies} if copies else {}
 
 
