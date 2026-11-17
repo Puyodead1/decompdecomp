@@ -104,3 +104,35 @@ def test_searches_start_once_per_function_and_only_on_c_that_scores(monkeypatch)
     with pytest.raises(NetworkError, match="in a room"):
         searches.start("game", "f")
     net.links = {}
+
+
+def test_a_search_of_a_projects_function_judges_its_variants(monkeypatch):
+    """A project's turn renews its hold once its unit is its own (trial_run); a search holds nothing, so that ended
+    every deep search of a GameCube game before its first variant: "no better in 0 variants and 0 s"."""
+    from contextlib import contextmanager
+
+    from .test_permute import HEADER
+
+    class Forks:
+        @contextmanager
+        def trial_run(self, proj, unit):
+            yield
+
+        def permuter_header(self, fork, name):
+            return HEADER
+
+        def permuter_name(self, fork, name, source):
+            return name
+
+        def tree_wanted(self, proj):
+            return False
+
+    class ForkNet(Net):
+        forks = Forks()
+
+        def fork_slug(self, slug):
+            return slug
+
+    batches(monkeypatch, ["far", "closer"], ["closest"])
+    result = Scripted(ForkNet(), {"closer": 30, "closest": 0}, minutes=5, variants=1000).run("game", "f")
+    assert result["matched"] and result["tested"] == 3

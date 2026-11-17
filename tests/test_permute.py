@@ -889,3 +889,26 @@ def test_a_pc_near_miss_gets_its_files_flags_tried_once_per_best_attempt(tmp_pat
         db.execute("UPDATE functions SET best_source='int f(void) { return 2; }'")
     p._try_flags(None, proj, fn, st)
     assert len(calls) == 2 and st.matched == 1
+
+
+@needs_tool
+def test_decomp_permuter_reads_a_function_of_a_file_with_old_style_definitions():
+    """A GameCube game's file had two old-style definitions (`f(a, b) u8 *a; s32 b; {`): as prototypes their heads
+    were no declarations, and pycparser refused every function of the file ("Syntax error in base.c")."""
+    from decompnet.app.forkengine import _without_bodies
+
+    file = ("typedef unsigned char u8;\ntypedef signed long s32;\n"
+            "void Slaves(arg0, list, n)\n    u8 *arg0;\n    u8 *list;\n    s32 n;\n{\n    arg0[n] = list[n];\n}\n"
+            "int Pause(arg0) u8 arg0; {\n    return arg0;\n}\n"
+            "s32 Info(u8 *arg0) {\n    Slaves(arg0, arg0, 1);\n    return Pause(arg0[2]) + 1;\n}\n")
+    header = _without_bodies(file)
+    assert "void Slaves();" in header and "int Pause();" in header and "s32 Info(u8 *arg0) ;" in header
+    source = "s32 Info" + file.split("s32 Info", 1)[1]
+    job = {"header": permute.permuter_header(header, source), "family": "base", "seed": 1, "count": 8,
+           "function": "Info", "source": source}
+    gen = permute.Generator()
+    try:
+        variants = gen.batch(job)
+    finally:
+        gen.close()
+    assert variants

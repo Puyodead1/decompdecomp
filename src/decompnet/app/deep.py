@@ -64,6 +64,11 @@ class Search(Permuter):
     def _hold(self, agent, fn) -> bool:
         return True
 
+    def _renew(self, agent, fn) -> bool:
+        # (with no claim there's none to renew: a project's turn asked, found none, and ended before its first
+        # variant, so every deep search of a GameCube game ended at once, "nothing new to write")
+        return True
+
     def _let_go(self, agent, fn) -> None:
         pass
 

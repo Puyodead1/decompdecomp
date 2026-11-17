@@ -506,20 +506,30 @@ _QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
 MAX_HEADERS = 64  # headers permuter_header follows from one file
 
 
+# an old-style definition's head: its parameters by name, then their declarations (`f(a, b) u8 *a; s32 b;`)
+_OLD_STYLE = re.compile(r"\(\s*\w+(?:\s*,\s*\w+)*\s*\)(?:\s*[^;{}()]+;)+\s*$")
+
+
 def _without_bodies(text: str) -> str:
     """A C file with each function's body cut to `;` (its definition becomes its prototype): its declarations, as
-    a parser needs them to read one of its functions."""
-    clean, out, i, depth, start = csource._blank(text), [], 0, 0, None
+    a parser needs them to read one of its functions. An old-style definition becomes `f();`: its head cut short
+    (`f(a, b) u8 *a; s32 b;`) is no declaration, and pycparser refused every function of a GameCube game's file
+    that had two ("Syntax error in base.c"), so Deep search ended at once with nothing tried."""
+    clean, out, i, depth, start, old = csource._blank(text), [], 0, 0, None, None
     for k, c in enumerate(clean):
         if c == "{":
-            if depth == 0 and clean[:k].rstrip().endswith(")"):  # a body, not a struct's or an initializer's
-                start = k
+            if depth == 0:
+                head = clean[:k].rstrip()
+                if head.endswith(")"):  # a body, not a struct's or an initializer's
+                    start, old = k, None
+                elif (m := _OLD_STYLE.search(head)) is not None:
+                    start, old = k, m
             depth += 1
         elif c == "}":
             depth -= 1
             if depth == 0 and start is not None:
-                out += [text[i:start], ";"]
-                i, start = k + 1, None
+                out += [text[i:old.start()] + "()" if old is not None else text[i:start], ";"]
+                i, start, old = k + 1, None, None
     return "".join(out) + text[i:]
 
 
