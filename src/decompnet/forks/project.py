@@ -779,7 +779,9 @@ class ForkProject:
                 continue
             first = m.group(2).strip().strip("'\"").split()[0] if m.group(2).strip() else ""
             prog = first.strip("'\"")
-            if prog not in missing and _absent_program(prog):
+            # (a path with a variable ninja fills in for each file can't be checked as written: on Windows a GameCube
+            # project runs `...\mwcc$mw_version\mwcceppc.exe`, and every session paused for a compiler that's there)
+            if prog not in missing and "$" not in prog and _absent_program(prog):
                 missing.append(prog)
         if missing:
             return (f"build.ninja runs {', '.join(missing[:3])}, which {'is' if len(missing) == 1 else 'are'} not on "

@@ -54,6 +54,15 @@ def test_a_build_set_up_on_windows_is_found_out_on_linux(tmp_path, monkeypatch):
     (root / "build.ninja").write_text(wrapped)
     assert GONE in ForkProject(root).build_problem()
 
+def test_a_compiler_path_ninja_fills_in_per_file_isnt_taken_for_a_missing_program(tmp_path):
+    """A GameCube project on Windows runs CodeWarrior by `...\\mwcc$mw_version\\mwcceppc.exe`, `$mw_version` set
+    for each file: taken as written, the path was never there, and every session paused for compilers that were."""
+    root = _project(tmp_path, fixes=True)
+    mwcc = r"C:\Users\someone\AppData\Local\decompnet\toolchains\mwcc$mw_version\mwcceppc.exe"
+    (root / "build.ninja").write_text(f"rule mwcc\n  command = {mwcc} $cflags -c $in -o $out\n")
+    assert ForkProject(root).build_problem() is None  # (off Windows a C:\\ path is never here: only the $ spares it)
+
+
 def test_preflight_runs_the_setup_again_and_keeps_what_it_couldnt_fix(tmp_path):
     for fixes in (True, False):
         net = RomNetwork(tmp_path / f"d{fixes}.db", tmp_path / "ws")
