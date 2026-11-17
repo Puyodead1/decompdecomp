@@ -1997,22 +1997,38 @@ class ForkEngine:
 
     def _divide(self, text: str, rows, going: set[str]) -> tuple[str, str, int]:
         """(the new file's C, the old file's, how many definitions moved) when the functions `going` (by symbol)
-        leave a source file: they go with every declaration the file has, wherever it stands between definitions
-        (a DS game's moved function used data declared just before it, far below the file's top), and leave it."""
-        def without(spans):
-            out = text
-            for a, b in sorted(spans, reverse=True):
-                out = out[:a].rstrip("\n") + "\n\n" + out[b:].lstrip("\n")
-            return out
-
+        leave a source file: each file keeps the original's order, with every declaration where it stood (a DS game's
+        moved function used data declared just before it, far below the file's top), and where a definition went to
+        the other file, its prototype. A GameCube game's file declared `s32 Thing_Init();` at the top and
+        `s32 Thing_Init(void *);` far below, after the calls the first allowed, and called `strstr` below its
+        definition: with the declarations lifted to the top and no prototype for what left, four of its files
+        didn't compile once cut."""
         spans = {}
         for r in rows:
             if (span := self._defined(text, self._names(self._meta(r), r))):
                 spans[span] = (self._meta(r).get("symbol") or r["name"]) in going
-        moving = sorted(s for s, g in spans.items() if g)
-        declarations = without(spans).strip()
-        code = "\n\n".join(text[a:b].strip("\n") for a, b in moving)
-        return (declarations + "\n\n" if declarations else "") + code + "\n", without(moving), len(moving)
+
+        def prototype(a: int, b: int) -> str:
+            """A definition's declaration (`s32 f(void *p);`), or "" where one could say something else: a static or
+            inline function (no other file can call it), an old-style definition (`int f(a) int a; {`)."""
+            head = text[a:b]
+            head = head[:head.find("{")].strip() if "{" in head else ""
+            # (nor a C++ method's, `s32 Num::f(s32);`: outside its class a member can't be declared again)
+            if not head or ";" in head or "#" in head or "::" in head or \
+                    re.search(r"\b(static|inline|__inline)\b", head):
+                return ""
+            return head + ";"
+
+        def leaving(gone):
+            out = text
+            for a, b in sorted(gone, reverse=True):
+                proto = prototype(a, b)
+                out = out[:a].rstrip("\n") + "\n\n" + (proto + "\n\n" if proto else "") + out[b:].lstrip("\n")
+            return out.strip() + "\n"
+
+        moving = [s for s, g in spans.items() if g]
+        staying = [s for s, g in spans.items() if not g]
+        return leaving(staying), leaving(moving), len(moving)
 
     def _split_source(self, agent: Agent | None, slug: str, console, path: str, at: str, new_name: str) -> str:
         """split_file for a console that divides source files in its config (Console.split_source: DS's delinks.txt):

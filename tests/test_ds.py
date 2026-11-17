@@ -956,8 +956,10 @@ def test_a_split_takes_every_declaration_with_the_functions_it_moves(tmp_path):
     rows = [{"name": n, "meta": json.dumps({"symbol": n}), "status": "open"} for n in ("f", "g")]
     eng = ForkEngine.__new__(ForkEngine)
     new, old, moved = eng._divide(text, rows, {"g"})
-    assert moved == 1 and "extern int data_x;" in new and "int g(void)" in new and "void f(void)" not in new
-    assert "void f(void)" in old and "int g(void)" not in old and "extern int data_x;" in old
+    assert moved == 1 and "extern int data_x;" in new and "int g(void) {" in new and "void f(void) {" not in new
+    assert "void f(void) {" in old and "int g(void) {" not in old and "extern int data_x;" in old
+    # (what went to the other file leaves its prototype where it stood, for the C after it that calls it)
+    assert "void f(void);" in new and "int g(void);" in old
 
 
 def test_a_ds_split_makes_the_files_local_labels_global(tmp_path):
@@ -990,7 +992,7 @@ def test_a_split_doesnt_take_a_call_followed_by_a_block_for_a_definition(tmp_pat
     rows = [{"name": n, "meta": json.dumps({"symbol": n}), "status": "open"} for n in ("f", "g", "h")]
     eng = ForkEngine.__new__(ForkEngine)
     new, old, moved = eng._divide(text, rows, {"g", "h"})
-    assert moved == 2 and "void f(void)" in old and "int g(int p)" not in old and "p = 2;" not in old
+    assert moved == 2 and "void f(void) {" in old and "int g(int p) {" not in old and "p = 2;" not in old
     assert new.index("int g(int p)") < new.index("p = 2;") < new.index("int h(int p)")
 
 def test_an_address_outside_a_modules_code_is_no_function_start(tmp_path):

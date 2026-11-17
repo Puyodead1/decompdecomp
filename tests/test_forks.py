@@ -1703,3 +1703,27 @@ def test_a_compile_that_failed_before_naming_fails_its_unit(tmp_path):
     assert fp.failed_units(["build/v/raw/src/auto/text_00401000.obj"]) == {"text_00401000"}
     assert fp.failed_units(["build/v/src/auto/text_00402000.obj"]) == {"text_00402000"}
     assert fp.failed_units(["build/v/raw/other.obj"]) == set()
+
+
+def test_a_cut_keeps_the_files_order_and_leaves_a_prototype_for_what_went():
+    """A GameCube game's big file declared `s32 Thing_Init();` at its top and `s32 Thing_Init(void *);` far below,
+    after the calls the first allowed, and called `strstr` below its definition: with the declarations lifted to the
+    top of each piece and nothing left for a definition that went, four of its files didn't compile once cut."""
+    from decompnet.app.forkengine import ForkEngine
+
+    text = ("s32 Thing_Init();\n\n"
+            "char *strstr(const char *s, const char *t) {\n    return 0;\n}\n\n"
+            "void a(void *p) {\n    Thing_Init(p, 0);\n    strstr(p, p);\n}\n\n"
+            "s32 Thing_Init(void *);\n\n"
+            "static int helper(void) {\n    return 1;\n}\n\n"
+            "void b(void *p) {\n    Thing_Init(p);\n}\n")
+    rows = [{"id": i, "name": n, "meta": json.dumps({"symbol": n})} for i, n in enumerate(["strstr", "a", "helper", "b"])]
+    new, old, moved = ForkEngine.__new__(ForkEngine)._divide(text, rows, {"a", "b"})
+    assert moved == 2
+    # the new file: the original's order, the loose declaration before the call it allows, the full one after it
+    assert new.index("s32 Thing_Init();") < new.index("void a(") < new.index("s32 Thing_Init(void *);") < new.index("void b(")
+    assert "char *strstr(const char *s, const char *t);" in new and new.index("strstr(const") < new.index("void a(")
+    assert "return 0" not in new and "helper" not in new  # (a static function: no other file can call it)
+    # the old file: what went leaves its prototype where it stood
+    assert "void a(void *p);" in old and "void b(void *p);" in old and "Thing_Init(p, 0)" not in old
+    assert old.index("char *strstr(const char *s, const char *t) {") < old.index("void a(void *p);")

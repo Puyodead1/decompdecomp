@@ -92,7 +92,8 @@ def test_a_file_is_split_and_its_match_moves_along(gc):
     assert 'mw_version="GC/1.3"' not in (fp.root / "configure.py").read_text()
     new = f"src/auto/text_{at:08X}.c"
     assert (fp.root / new).exists() and f"{name}(" in (fp.root / new).read_text()
-    assert f"{name}(" not in (fp.root / old).read_text()
+    left = (fp.root / old).read_text()  # (its definition went; its prototype stays, for what's left that calls it)
+    assert not re.search(rf"\b{name}\([^;{{]*\)\s*{{", left) and re.search(rf"\b{name}\([^;{{]*\);", left), left
     assert net._function(name, slug)["status"] == "matched"
     assert net.forks.file_status(slug, name).startswith(f"## {new}")
     assert fp.verify()[0]
