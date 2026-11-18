@@ -29,6 +29,7 @@ VARIANTS = (1, 1_000_000)  # how many variants it may judge
 DEFAULT_VARIANTS = 100_000
 MAX_SEARCHES = workers.WORKERS  # at once, in the whole app
 PROGRESS_SECONDS = 0.5  # how often its progress is published
+YIELD_WAIT = 1.0  # seconds a search waits after its turn stepped aside for a change of the whole tree
 STOPPED = "The deep search was stopped: what it found is kept as the function's best attempt."
 
 
@@ -134,10 +135,15 @@ class Search(Permuter):
                 break
             self.seconds = max(1, int(self.deadline - time.monotonic()))
             before = self.tested
+            self.ended = ""
             self._permute(agent, proj, fn, self.st)
             rounds += 1
-            if self.tested == before and not self.reason:  # nothing new left to write from this C, nor any rewrite
-                self.reason = self._over() or "exhausted"  # (or its time ran out as the turn began)
+            if self.tested == before and not self.reason:
+                if self.ended == "yielded":  # (the turn stepped aside for a change the whole tree waits for: in a
+                    # room, a member's match or edit; it ended a GameCube game's searches before their first variant)
+                    time.sleep(YIELD_WAIT)
+                    continue
+                self.reason = self._over() or "exhausted"  # nothing new left to write from this C, nor any rewrite
         row = self.net.store.one("SELECT status, best_score FROM functions WHERE id=?", fn["id"])
         matched = row is not None and row["status"] == "matched"
         best = 0 if matched else row["best_score"] if row is not None else self.best

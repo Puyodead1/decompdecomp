@@ -212,6 +212,7 @@ class Permuter:
         self.net = net
         self.jobs: dict[str, State] = {}
         self.max_insns, self.seconds, self.max_turns = MAX_INSNS, SECONDS, MAX_TURNS
+        self.ended = ""  # why the last turn ended without trying anything new (_permute)
 
     def configure(self, settings: dict) -> None:
         """The limits Settings gives it (LIMITS): from the next turn on, a turn under way keeps its deadline."""
@@ -356,6 +357,7 @@ class Permuter:
             # a GameCube game with 600 s turns, agents' compiles went through once every ten minutes. Such a wait
             # ends the turn.
             yielding = (lambda: self.net.forks.tree_wanted(proj)) if fork else (lambda: False)
+            why = ""
             while time.monotonic() < deadline and best > 0 and not st.stop.is_set() and not yielding():
                 if gen is not None:
                     # a batch of decomp-permuter's variants, of the C the turn started from and of the best so far in
@@ -370,12 +372,14 @@ class Permuter:
                         gen = None
                         continue
                     if not batch:  # nothing new left to write from this C
+                        why = "written out"
                         break
                 else:  # one simple rewrite, mostly of the last C kept
                     batch = [mutate(cur_src if rng.random() < 0.85 else best_src, rng)]
                     # none of them applies to this C (lerp's `a + (b - a) * t`): a minute of trying burnt a core
                     misses = 0 if batch[0] else misses + 1
                     if misses >= REWRITE_MISSES:
+                        why = "no rewrite"
                         break
                 for cand in batch:
                     if cand is None or time.monotonic() >= deadline or st.stop.is_set() or yielding():
@@ -402,6 +406,9 @@ class Permuter:
                             break
                     if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
                         cur, cur_src = score, cand
+            # why the turn ended, for a deep search (deep.py): one that stepped aside for a change the whole tree
+            # waits for tries again; one with nothing left to write is done
+            self.ended = why or ("yielded" if yielding() else "")
             if refused is not None and not taken:  # every variant refused: it's the C the turn started from
                 raise refused
         finally:

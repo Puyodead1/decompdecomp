@@ -136,3 +136,39 @@ def test_a_search_of_a_projects_function_judges_its_variants(monkeypatch):
     batches(monkeypatch, ["far", "closer"], ["closest"])
     result = Scripted(ForkNet(), {"closer": 30, "closest": 0}, minutes=5, variants=1000).run("game", "f")
     assert result["matched"] and result["tested"] == 3
+
+
+def test_a_search_waits_out_a_change_of_the_whole_tree_instead_of_ending(monkeypatch):
+    """A turn steps aside when something waits for the project's tree alone (a room member's match or edit): a
+    search took such a turn, with nothing tried, for the end of what it could write ("0 variants and 0 s")."""
+    from contextlib import contextmanager
+
+    from .test_permute import HEADER
+
+    turns = []
+
+    class Forks:  # (wanted through the first two turns: a member's two matches)
+        @contextmanager
+        def trial_run(self, proj, unit):
+            turns.append(1)
+            yield
+
+        def permuter_header(self, fork, name):
+            return HEADER
+
+        def permuter_name(self, fork, name, source):
+            return name
+
+        def tree_wanted(self, proj):
+            return len(turns) <= 2
+
+    class ForkNet(Net):
+        forks = Forks()
+
+        def fork_slug(self, slug):
+            return slug
+
+    monkeypatch.setattr(deep, "YIELD_WAIT", 0)
+    batches(monkeypatch, ["far", "closer"], ["closest"])
+    result = Scripted(ForkNet(), {"closer": 30, "closest": 0}, minutes=5, variants=1000).run("game", "f")
+    assert result["matched"] and result["tested"] == 3 and len(turns) >= 3
