@@ -44,6 +44,18 @@ def _archives(folder: Path, stamp: int) -> tuple[Path, ...]:
     return tuple(out)
 
 
+@functools.lru_cache(maxsize=16)
+def _headers(folder: Path, stamp: int) -> tuple[Path, ...]:
+    out = []
+    try:
+        for p in sorted(folder.rglob("*.h")):
+            if len(p.relative_to(folder).parts) <= MAX_DEPTH and p.is_file():
+                out.append(p)
+    except OSError:
+        pass
+    return tuple(out)
+
+
 class Dolphin(Kit):
     id = "dolphin-sdk"
     name = "Nintendo GameCube and Wii libraries (your own copies)"
@@ -60,6 +72,17 @@ class Dolphin(Kit):
     def libraries(self, folder: Path) -> list[Path]:
         try:
             return list(_archives(folder.resolve(), folder.stat().st_mtime_ns))
+        except OSError:
+            return []
+
+    # (CodeWarrior for the Gekko, as the SDK's own builds define it: its headers' Gekko code, never the PC
+    # emulator's (EMU), SN Systems' compiler's (__SN__) or Windows' (_WIN32))
+    defines = ("GEKKO", "HW2", "__MWERKS__", "__PPCGEKKO__")
+
+    def headers(self, folder: Path) -> list[Path]:
+        """Every header of the copy (an SDK's include/dolphin/os/OSFastCast.h), as deep as its libraries."""
+        try:
+            return list(_headers(folder.resolve(), folder.stat().st_mtime_ns))
         except OSError:
             return []
 

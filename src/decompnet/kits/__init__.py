@@ -13,6 +13,9 @@ What a kit can give:
 - its folders (the user can give several copies: two XDKs, a Visual C++ 6.0 and a 2008), where the console reads what it needs from it (the XDK's libraries, which find its code in a game);
 - its libraries (`libraries`): archives of the console's library code, which the library finder matches against a
   game's functions on every console that takes the kit (app/engine/libraryid.py), setting aside what's theirs;
+- its headers (`headers`, with the macros its compiler defines, `defines`): where the SDK's own inline functions are,
+  which a project takes whole from the user's copy (`sdk_inline`, kits/inlines.py) where no C can write them (the
+  Dolphin SDK's OSInitFastCast is an asm block);
 - its compilers (`OwnCompiler`): what a project's build runs for a version of its own, with the kit's headers,
   through the runner the program needs (wibo or wine on Linux and macOS);
 - its build, read from its files (`build`), and whether those files are ones decompdecomp knows (`verify`: their
@@ -92,6 +95,13 @@ class Kit:
         (none: a kit whose libraries its console reads itself, or that has none)."""
         return []
 
+    def headers(self, folder: Path) -> list[Path]:
+        """The copy's C headers, where its inline functions are (none: a kit without headers to take them from)."""
+        return []
+
+    # what the console's compiler defines when the kit's headers are read (`#ifdef GEKKO`: the Gekko's code, not a PC's)
+    defines: tuple[str, ...] = ()
+
     def contents(self, folder: Path) -> list[dict]:
         """What a copy holds, for Setup to list in sections it can fold: [{"name": "NitroSDK", "items": [{"name":
         "NitroSDK-4_2-20071210", "version": "4.2", "libraries": 210}]}]. None for a kit whose copy is one thing."""
@@ -168,6 +178,17 @@ def folder(kid: str) -> Path | None:
 def libraries(kids) -> list[Path]:
     """The library archives of every copy of the kits `kids` (a console's Console.kits) the user set up."""
     return list(dict.fromkeys(a for k in kids for at in folders(k) for a in get(k).libraries(at)))
+
+
+def headers(kids) -> list[tuple[Kit, Path]]:
+    """(kit, header) of every copy of the kits `kids` the user set up, each header once."""
+    seen: dict[Path, Kit] = {}
+    for k in kids:
+        kit = get(k)
+        for at in folders(k):
+            for h in kit.headers(at):
+                seen.setdefault(h, kit)
+    return [(kit, h) for h, kit in seen.items()]
 
 
 def compilers(kids) -> list[OwnCompiler]:

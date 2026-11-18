@@ -524,6 +524,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.forks.try_compiler(agent, room.slug, str(d.get("function", "")), str(d.get("compiler", "")),
                                                str(d.get("flags", "")), str(d.get("source", "")))}
 
+    def sdk_inline(room, member, d):
+        """A member's agent's sdk_inline, from the host's SDK copy into the host's tree: the member's follows."""
+        if not room.fork:
+            raise NetworkError("this room's project has no source files to put an SDK function in")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.sdk_inline(agent, room.slug, str(d.get("name", "")), str(d.get("path", "")))}
+
     def report_library(room, member, d):
         """A member's agent's word that a function is a known library's code: counted here with the host's own
         agents' (LIBRARY_AGENTS), and set aside here, so every copy in the room follows."""
@@ -589,6 +596,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),
         Route("/collab/try_compiler", endpoint(try_compiler), methods=["POST"]),
         Route("/collab/report_library", endpoint(report_library), methods=["POST"]),
+        Route("/collab/sdk_inline", endpoint(sdk_inline), methods=["POST"]),
         Route("/collab/bundle", get_bundle),
     ]
     return Starlette(routes=routes)

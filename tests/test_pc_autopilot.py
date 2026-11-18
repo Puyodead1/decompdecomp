@@ -311,7 +311,7 @@ def test_search_flags_finds_the_flags_a_file_was_built_with(demo):
             f"{{\n    if (index < 0 || index >= 6) {{\n        return fallback;\n    }}\n    return "
             f"{rename['g_settings']}[index];\n}}\n")
     source = fp.unit(fn["unit"]).source
-    pc.set_file_flags(fp, source, ["/Oy-"])
+    _committed(fp, pc.set_file_flags(fp, source, ["/Oy-"]))  # (the project's own flags: a try's would be put back)
     if fn["status"] != "matched":
         res = net.forks.attempt(agent, slug, fn["name"], code, keep=False)
         assert not res["matched"]  # it reads its arguments: with /Oy- it keeps a frame the game's doesn't
@@ -322,6 +322,13 @@ def test_search_flags_finds_the_flags_a_file_was_built_with(demo):
         assert fn["status"] == "matched"
     with pytest.raises(Exception, match="already matches"):
         net.search_flags(agent, slug, fn["name"], source=code)
+
+
+def _committed(fp, rel: str) -> None:
+    """A change of the project's config as the project has it: committed (an uncommitted one is a try's leftover,
+    put back before the next compile measures the file)."""
+    fp.git("add", "--", rel)
+    fp.git("commit", "-q", "-m", "flags", "--", rel)
 
 
 @needs_tools

@@ -243,3 +243,37 @@ def test_autopilot_matches_from_machine_drafts(gc):
     if tried:  # a draft that didn't match is the function's best attempt, for the agents that come after
         row = net.store.one("SELECT best_agent_id, status FROM functions WHERE id=?", tried[0])
         assert row["status"] == "open" and row["best_agent_id"] == agent.id
+
+
+def test_an_sdk_inline_that_is_asm_comes_from_the_users_sdk_never_an_agent(gc, tmp_path, monkeypatch):
+    """A GameCube game's main inlined the SDK's OSInitFastCast, four GQR writes in an asm block: agents may write no
+    assembly, and five set main aside. sdk_inline takes the function from the user's SDK headers, as their compiler
+    reads them, and puts it in the file the way edit_file does; an agent's own asm is still refused."""
+    from decompnet import kits
+    from decompnet.kits import dolphin
+    from decompnet.network import NetworkError
+
+    net, slug = gc
+    header = tmp_path / "include" / "os.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define GQR_U8 0x0004\n#ifdef GEKKO\nstatic inline void InitCasts(void)\n{\n#ifdef __SN__\n"
+                      "    asm volatile (\"\");\n#else\n    asm\n    {\n        li r3, GQR_U8\n        mtspr GQR2, r3\n"
+                      "    }\n#endif\n}\n#else\nstatic inline void InitCasts(void) {}\n#endif\n")
+    monkeypatch.setattr(kits, "headers", lambda kids: [(dolphin.DOLPHIN, header)] if "dolphin-sdk" in kids else [])
+    monkeypatch.setattr(kits, "folders", lambda kid: [tmp_path])
+    fp = net.forks.get(slug)[1]
+    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    source = net.forks.file_status(slug, f"fn_{syms['lerp']:08X}").splitlines()[0][3:]
+    agent, _ = net.local_agent("gc-sdk")
+    with pytest.raises(NetworkError, match="sdk_inline"):
+        net.forks.edit_file(agent, slug, source, "", "static inline void InitCasts(void) { asm { li r3, 4 } }")
+    said = net.forks.sdk_inline(agent, slug, "InitCasts", source)
+    assert said.startswith("✅"), said
+    text = (fp.root / source).read_text()
+    assert "li r3, 0x0004" in text and "mtspr GQR2, r3" in text and "include/os.h" in text
+    assert "asm volatile" not in text and "{}" not in text.split("InitCasts", 1)[1][:40]  # (the Gekko's, as MWCC reads it)
+    assert "Add the SDK's InitCasts" in subprocess.run(["git", "log", "-1", "--format=%s"], cwd=fp.root,
+                                                         capture_output=True, text=True).stdout
+    assert "defines InitCasts already" in net.forks.sdk_inline(agent, slug, "InitCasts", source)
+    with pytest.raises(NetworkError, match="isn't an inline function"):
+        net.forks.sdk_inline(agent, slug, "NoSuchThing", source)

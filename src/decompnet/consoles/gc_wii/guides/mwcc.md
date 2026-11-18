@@ -11,6 +11,12 @@ Inlining (the biggest source of mismatches)
   move or change the definition, or use the project's existing inline helper.
 - Vector/matrix math and getters are usually header inlines in the project: use them rather than
   writing the arithmetic out, or the instruction order differs.
+- A `#pragma dont_inline on` or `inline_depth(0)` with no `reset`/`pop` turns inlining off for the rest of the
+  file: a function below it whose target inlines needs `#pragma push`, `#pragma dont_inline off`,
+  `#pragma inline_depth(4)` before it and `#pragma pop` after (compile_and_diff takes those lines).
+- SDK code no C writes (`mtspr` to GQR2-GQR5 after `OSInit`: the SDK's OSInitFastCast, an asm block): call the
+  SDK's inline function in your C and `sdk_inline(name, path)` brings its definition from the user's SDK. A
+  GameCube game's main was set aside as "no C makes it"; with OSInitFastCast() it matched.
 
 Registers (GC/1.x's allocator, documented from the compiler itself; Wii/DS versions behave alike)
 - Callee-saved registers are claimed on demand from r31 down (r31, r30, ... r14; f31 down for floats).

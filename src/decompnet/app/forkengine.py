@@ -346,6 +346,42 @@ def ltcg_unresolved(base: Path) -> list[str]:
         return []
 
 
+def _definition_start(clean: str, name: str) -> int | None:
+    """Where the file-scope declaration holding the first call of `name` in a function body starts (its line, after
+    the last `;` or `}` at file scope before it: a #pragma just above it goes with it), in comment-blanked C. `name`
+    "": the file's first function's."""
+    depth, last = 0, 0
+    for k, c in enumerate(clean):
+        if c == "{":
+            if not name and depth == 0 and clean[:k].rstrip().endswith(")"):  # (a function's body: _without_bodies)
+                return _line_of(clean, last)
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                last = k + 1
+        elif c == ";" and depth == 0:
+            last = k + 1
+        elif name and depth > 0 and clean.startswith(name, k) and (k == 0 or not (clean[k - 1].isalnum() or clean[k - 1] == "_")) \
+                and re.match(rf"{re.escape(name)}\s*\(", clean[k:]):
+            return _line_of(clean, last)
+    return None
+
+
+def _line_of(clean: str, last: int) -> int:
+    """The start of the line where what follows `last` (a file-scope `;` or `}`) begins."""
+    start = last
+    while True:  # (blank lines, and a #pragma pop or reset that ends the function before it, aren't its own)
+        while start < len(clean) and clean[start] in " \t\r\n":
+            start += 1
+        end = clean.find("\n", start)
+        line = clean[start:end if end >= 0 else len(clean)]
+        if not re.match(r"#\s*pragma\s+(pop\b|\w+\s+reset\b)", line):
+            break
+        start += len(line)
+    return clean.rfind("\n", 0, start) + 1
+
+
 def started_from_scratch(fp: ForkProject) -> bool:
     """Whether decompdecomp made the project from the user's copy of a game (its manifest says so), wherever this
     copy came from: a clone of the folder, a room member's copy."""
@@ -851,8 +887,9 @@ class ForkEngine:
             console.set_file_compiler(fp, unit.source, head_c)
             if head_f is not None and now_f != head_f:
                 console.set_file_flags(fp, unit.source, head_f)
-        logging.getLogger("decompdecomp").warning("%s: put %s back on %s as committed (a try's leftover: it was on %s)", proj["slug"],
-                    unit.source, head_c, now_c)
+        said = lambda c, f: c + (f" {' '.join(f) or '(no flags of its own)'}" if f is not None else "")  # noqa: E731
+        logging.getLogger("decompdecomp").warning("%s: put %s back on %s as committed (a try's leftover: it was on %s)",
+                                                  proj["slug"], unit.source, said(head_c, head_f), said(now_c, now_f))
 
     def _commit_entry(self, proj, fp: ForkProject, rel: str, setter, message: str) -> None:
         """Commit one source file's entry of a map every file's tries write to (file_compilers.json, file_flags.json):
@@ -2679,7 +2716,7 @@ class ForkEngine:
             return None
         try:
             d = objdiff_diff(fp, unit, self._meta(row).get("symbol"), target_only=True)
-        except (ObjdiffError, ForkError):
+        except (ObjdiffError, ForkError, toolchains.ToolchainError):  # (objdiff gone meanwhile: the index waits)
             return None
         self._remember(proj, fp, unit, d)
         if save:
@@ -4456,7 +4493,8 @@ class ForkEngine:
                             with self._build_lock(proj):  # (a build reads the flags)
                                 rel = console.set_file_flags(fp, unit.source, flags)
                             changed = True
-                        res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
+                        with self._trying(unit.name):  # (its trial flags aren't a leftover to put back)
+                            res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
                         if res["matched"] and flags == own:
                             return f"{res['text']}\nThat's with {unit.source}'s own flags: nothing to change."
                         if res["matched"]:
@@ -5170,7 +5208,10 @@ class ForkEngine:
                         return "\n".join(hits + ["... (more matches; narrow the pattern)"])
         return "\n".join(hits) or "no matches"
 
-    def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str = "") -> str:
+    def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str = "",
+                  sdk: bool = False) -> str:
+        """`sdk`: the edit is the app's, an SDK inline function taken from the user's copy (sdk_inline), which may
+        be assembly as the SDK's header has it; an agent's edit never is."""
         # without a message the commit says what changed where: agents left it out hundreds of times a night, and
         # each refusal cost a turn
         message = message.strip() or f"Edit {Path(path).as_posix()}"
@@ -5182,13 +5223,59 @@ class ForkEngine:
         proj, fp, cfg = self.get(slug)
         p = fp.safe_path(path, write=True)
         self.net.bump_generation(proj["id"])  # (a header or shared file: compiles may come out differently now)
-        if _CHEAT.search(_strip_comments(new)):
-            raise NetworkError("inline assembly, asm functions and asm includes aren't allowed")
+        if not sdk and _CHEAT.search(_strip_comments(new)):
+            raise NetworkError("inline assembly, asm functions and asm includes aren't allowed (an SDK inline "
+                               "function that is assembly, like OSInitFastCast: sdk_inline puts in the SDK's own)")
         rel = Path(os.path.relpath(p, fp.root)).as_posix()
         units = [u for u in fp.units_for(rel) if u.base is not None]
         if units:  # a unit's own source file: only that unit can change
             return self._edit_source(agent, proj, fp, p, rel, units, old, new, message)
         return self._edit_shared(agent, proj, fp, slug, p, rel, old, new, message)
+
+    def sdk_inline(self, agent: Agent, slug: str, name: str, path: str) -> str:
+        """The SDK's own inline function `name`, from the user's copy of their console's kit (kits/inlines.py), put
+        in the source file `path` before the first function that calls it, as edit_file puts an edit in (built,
+        measured, undone if a match is lost, committed). Some are no C: the Dolphin SDK's OSInitFastCast is four
+        GQR writes in an asm block, inlined into a GameCube game's main, which agents set aside as no C makes it."""
+        name = name.strip()
+        if (link := self.net.links.get(slug)) is not None:  # (the host's SDK copy; this copy follows its commit)
+            text = link.call("/collab/sdk_inline", agent, name=name, path=path)
+            if text.startswith(("✅", "⚠️")):
+                link.sync()
+            return text
+        from .. import kits
+        from ..kits import inlines
+
+        _, fp, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        if not kits.headers(console.kits):
+            raise NetworkError(f"no SDK headers to take {name} from: the user sets up their own copy of the "
+                               f"{console.name} SDK in Setup (its folder with include/)")
+        found = inlines.find(console.kits, name)
+        if found is None:
+            raise NetworkError(f"{name} isn't an inline function in the headers of the user's SDK copies (a macro "
+                               "isn't one: write what it expands to)")
+        body, header = found
+        p = fp.safe_path(path, write=True)
+        if not p.is_file():
+            raise NetworkError(f"{path} isn't a file of this project: give the source file whose function calls {name}")
+        text = p.read_text(errors="replace", encoding="utf-8")
+        clean = csource._blank(text)
+        if re.search(rf"\b{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{", clean):
+            return f"{path} defines {name} already: use it as it is"
+        at = _definition_start(clean, name)
+        if at is None:  # (nothing calls it yet: above the file's first function, where every one of them sees it)
+            at = _definition_start(clean, "")
+        if at is None:
+            raise NetworkError(f"{path} has no function to put {name} above: give the source file of the function "
+                               "that calls it")
+        end = clean.find("{", at)
+        old = text[at:end + 1]
+        if text.count(old) != 1:
+            raise NetworkError(f"{path}'s function calling {name} isn't one of a kind there: edit_file it apart first")
+        block = f"/* {name}: the SDK's own, from {header} (your copy), its macros put in */\n{body}\n\n"
+        return self.edit_file(agent, slug, path, old, block + old,
+                              f"Add the SDK's {name}\n\nFrom {header} in the user's own copy of the SDK.", sdk=True)
 
     @staticmethod
     def _edited(p: Path, path: str, old: str, new: str) -> tuple[bool, str, str]:

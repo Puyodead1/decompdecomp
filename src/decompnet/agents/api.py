@@ -675,6 +675,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
                       "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),
                                                        new=st("replacement", True), message=st("why", True))),
+        "sdk_inline": ("Put the SDK's own inline function `name` (OSInitFastCast...) in source file `path`, from the "
+                       "user's SDK copy, above the first function calling it: for SDK code no C writes (an asm "
+                       "block). Call it in your C; never write assembly.",
+                       s(name=st("the SDK function's name", True), path=st("source file", True))),
         "file_status": ("How far a source file (or a function's file) is from being linked: functions left, its data "
                         "next to the original's, why the last link failed.", s(path=st("file or function", True))),
         "standins_for": ("Games built with link-time code generation: a starting harness for a unit (stand-ins for what "

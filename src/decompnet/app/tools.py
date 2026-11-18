@@ -172,8 +172,9 @@ neighbours may come along in one claim; one function back is normal.)
    libpng, Lua; RSA's MD5, RC5, SHA-1, AES, CRC-32)? report_library(...) at once, even when you could match
    it: no one decompiles it, the library's own source makes it, and matching it is wasted work.
 
-Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
-scripts (the tools refuse). Never fetch or copy code from outside this project (another repository, a
+Rules: C/C++ only (no inline asm, asm functions or asm includes; the SDK's own inline functions that are
+asm, like a GameCube SDK's OSInitFastCast, you call, and sdk_inline brings in their definition from the user's
+SDK, where the project offers it); don't touch targets, configs or build scripts (the tools refuse). Never fetch or copy code from outside this project (another repository, a
 finished decomp of this game, the internet): a match must come from your own C. Write code a human would
 have written: match the file's style and names.
 Guides: {guides}. Be brief in your messages: work, don't narrate.
@@ -367,6 +368,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "edit_file": lambda net, agent, slug, path, old, new, message="":
         net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
+    "sdk_inline": lambda net, agent, slug, name, path:
+        net.forks.sdk_inline(agent, _fork(net, slug, "sdk_inline"), name, path),
     "standins_for": lambda net, agent, slug, what: net.forks.standins_for(agent, _fork(net, slug, "standins_for"), what),
     "name_instance": lambda net, agent, slug, function:
         net.forks.name_instance(agent, _fork(net, slug, "name_instance"), function),
@@ -387,7 +390,7 @@ READ_ONLY = frozenset({"project_info", "get_function", "last_diff", "get_context
 # (name_instance is in both: only a console whose games started from scratch have it, Console.own_tools)
 ROM_ONLY = {"get_context", "edit_context", "split_function", "redraft", "search_flags", "name_instance"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_files", "set_file_language",
-             "join_functions",
+             "join_functions", "sdk_inline",
              "tidy_done", "review_done", "standins_for", "name_instance"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
 
@@ -411,6 +414,9 @@ def _supports(console, name: str, fork: bool) -> bool:
         return console.reads_structs
     if name == "compiler_map":
         return console.file_compilers if fork else arch.COMPILER_MAP in console.features
+    if name == "sdk_inline":  # (a console whose kit's headers the app reads: kits/inlines.py)
+        from .. import kits
+        return any(type(kits.get(k)).headers is not kits.Kit.headers for k in console.kits)
     return True
 
 
@@ -828,6 +834,14 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         function stops matching. Use it for structs, prototypes, globals and helpers. `message`: what the
         change is, for its commit."""
         return await run(ctx, "edit_file", path=path, old=old, new=new, message=message)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def sdk_inline(ctx: Context, name: str, path: str) -> str:
+        """Forks only: put the SDK's own inline function `name` (OSInitFastCast, OSf32tou8...) in source file `path`,
+        taken from the user's copy of the console's SDK, above the first function there that calls it. For what no
+        C writes but the SDK's header did (an asm block: OSInitFastCast's GQR writes): you never write assembly,
+        you call the function in your C and let this bring in its definition. Built and kept like edit_file."""
+        return await run(ctx, "sdk_inline", name=name, path=path)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def file_status(ctx: Context, path: str) -> str:

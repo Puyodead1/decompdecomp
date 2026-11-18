@@ -35,6 +35,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Source splitting (`split_file`) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ (`split_unit`) | by project |
 | Pieces of functions joined to their function | — | — | — | — | — | — | — | — | ✓ (`scratch.merge_pieces`; 64-bit: .pdata's extents, none to join) | ✓ (`scratch.merge_pieces`) | ✓ (`recover.merge_pieces`) | — | — | — |
 | Agents' verdict "no C makes this" (3 agents of 2 models: set aside, red in the map) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| The SDK's own inline functions from your copy (`sdk_inline`: an asm block like OSInitFastCast, no agent asm) | — | — | — | — | — | — | — | ✓ | — | — | — | — | — | — their own headers |
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | partly: code no C makes set aside; no new analysis yet | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | ✓ import stubs (NIDs) and `sc` calls | — | set aside, named by library and NID | set aside (BIOS calls) | — | ✓ import thunks | ✓ import thunks, named from the kernel export list | — (BIOS calls set aside, not named) | library calls by their PLT stubs' names | — | — |
 | SDK library code found by your copy, named and set aside | — | — | — | — | — | — | — | ✓ your Dolphin or Revolution SDK's libraries, set aside by the library finder (a 2001 SDK: 178 of a game's 20,000 functions; not named yet) | the C runtime (Visual C++'s libraries) | ✓ your XDK's libraries | ✓ your NitroSDK, TwlSDK, NitroSystem, WiFi, DWC and CodeWarrior runtime libraries | — | — | — |
@@ -1016,6 +1017,16 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   the time against 62% for the rest, because agents guessed the layouts.
 
 ## Next
+
+### The SDK's inline functions for every console
+
+`sdk_inline` (kits/inlines.py) takes an inline function whole from the user's own SDK headers, as their compiler
+reads them, for what no C writes but the SDK did: a GameCube game's main inlined the Dolphin SDK's OSInitFastCast,
+four GQR writes in an asm block, and agents (who may write no assembly) set it aside. It reads a kit's `headers`
+with its `defines`; only the Dolphin kit has them so far. Next: the Nitro kit's headers for DS (its inline
+functions are C, which agents can write, but its CP15 and IRQ helpers are asm), the XDK's for Xbox (`__asm` in
+d3d8's push-buffer inlines), the PS3 SDK's (its `__asm__` intrinsics); and ROM mode, where it would go into the
+context header (edit_context) instead of a source file. A public decomp has its own SDK headers in its tree.
 
 ### Your own compiler for GameCube, Wii and DS
 

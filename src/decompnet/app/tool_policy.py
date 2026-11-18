@@ -13,7 +13,7 @@ KEY = 'agent-disabled-tools'
 MATCHING = REQUIRED | {'get_candidate','compile_patch','compile_variants','get_assembly','last_diff',
     'try_local_repairs','compile_family','family_targets','get_context','edit_context','redraft',
     'report_candidate_issue','add_note','search_notes','share_knowledge','find_similar','guide',
-    'read_file','search_code','edit_file','file_status','standins_for'}
+    'read_file','search_code','edit_file','file_status','standins_for','sdk_inline'}
 PRESETS = {'full': ('All tools', None), 'matching': ('Matching essentials', MATCHING),
            'investigation': ('Compiler and data investigation', MATCHING | {'read_data','get_class','guess_struct',
                'compiler_map','try_compiler','search_flags','compiler_experiments','get_compiler_trial','suggest','report_boundary'}),
