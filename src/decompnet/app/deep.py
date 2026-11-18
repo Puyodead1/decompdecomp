@@ -21,7 +21,7 @@ import time
 
 from ..network import NetworkError
 from . import workers
-from .permute import Permuter, State
+from .permute import SECONDS, Permuter, State
 
 MINUTES = (1, 120)  # how long a search may run
 DEFAULT_MINUTES = 30
@@ -30,6 +30,7 @@ DEFAULT_VARIANTS = 100_000
 MAX_SEARCHES = workers.WORKERS  # at once, in the whole app
 PROGRESS_SECONDS = 0.5  # how often its progress is published
 YIELD_WAIT = 1.0  # seconds a search waits after its turn stepped aside for a change of the whole tree
+TURN_GAP = 0.5  # seconds between a search's turns: an agent waiting for the function's file takes it then
 STOPPED = "The deep search was stopped: what it found is kept as the function's best attempt."
 
 
@@ -133,7 +134,12 @@ class Search(Permuter):
             if (why := self._over()):
                 self.reason = why
                 break
-            self.seconds = max(1, int(self.deadline - time.monotonic()))
+            # a turn of a project's function holds its source file (trial_run): one as long as the search held it
+            # for 30 minutes, and five agents at work in that file of a GameCube game waited till their calls
+            # timed out. Turns of the permuter's own length, and a breath between them for whoever waits.
+            self.seconds = max(1, min(SECONDS, int(self.deadline - time.monotonic())))
+            if rounds:
+                time.sleep(TURN_GAP)
             before = self.tested
             self.ended = ""
             self._permute(agent, proj, fn, self.st)

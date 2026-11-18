@@ -172,3 +172,20 @@ def test_a_search_waits_out_a_change_of_the_whole_tree_instead_of_ending(monkeyp
     batches(monkeypatch, ["far", "closer"], ["closest"])
     result = Scripted(ForkNet(), {"closer": 30, "closest": 0}, minutes=5, variants=1000).run("game", "f")
     assert result["matched"] and result["tested"] == 3 and len(turns) >= 3
+
+
+def test_a_searchs_turns_are_the_permuters_length_so_agents_get_the_file_between_them(monkeypatch):
+    """A project's turn holds its function's source file: a search's one turn held it for its 30 minutes, and five
+    agents in that file waited till their calls timed out."""
+    seconds = []
+    orig = permute.Permuter._permute
+
+    def recording(self, agent, proj, fn, st):
+        seconds.append(self.seconds)
+        return orig(self, agent, proj, fn, st)
+
+    monkeypatch.setattr(permute.Permuter, "_permute", recording)
+    monkeypatch.setattr(deep, "TURN_GAP", 0)
+    batches(monkeypatch, ["far"], ["closest"])
+    result = Scripted(Net(), {"closest": 0}, minutes=30, variants=1000).run("game", "f")
+    assert result["matched"] and seconds and max(seconds) <= permute.SECONDS
