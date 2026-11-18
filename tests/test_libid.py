@@ -477,3 +477,47 @@ scePadRead:
     sigs = kit_signatures(kits.libraries(["ps2-sdk"]))
     assert [(s.name, s.library, s.unit) for s in sigs] == [("scePadRead", "libpad.a", "pad.o")]
     assert kit_names(kits.libraries(["ps2-sdk"])) == {"scePadRead": ("libpad.a", "pad.o, your own copy")}
+
+
+def test_a_stripped_games_library_functions_get_their_librarys_names(tmp_path, monkeypatch):
+    """A PS2 game of 3,223 functions, stripped, had 195 of Sony's functions: set aside, they were still called from
+    everywhere as func_00..., and agents read those calls in every brief. Find libraries names what its code says,
+    from an automatic name only, never a name another function has."""
+    from decompnet import kits
+    from decompnet.app.engine import RomNetwork, libraryid
+
+    monkeypatch.setattr(libid, "signature_folder", lambda: tmp_path / "sigs")
+    pad, mc, own = x86(*MD5_INIT), x86(*MD5_T), x86(7)
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "game.bin").write_bytes(b"\0")
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("demo", "demo", "", "x86", 0, str(root), json.dumps({"kind": "rom", "platform": "pc",
+                                                                             "rom": {"file": "game.bin"}}))).lastrowid
+        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                   "VALUES(?,1,'void func_00009100(void);',NULL,'',0,'')", (pid,))
+        for name, addr, code in (("func_00009000", 0x9000, pad), ("func_00009100", 0x9100, mc),
+                                 ("Game_Pad", 0x9200, pad), ("func_00009300", 0x9300, own)):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,status,vram,meta,"
+                       "attempts,abandons) VALUES(?,?,?,?,?,?,?,?,?,?,0,0)",
+                       (pid, name, len(code), 4, code, "[]", "", "open", addr, "{}"))
+            db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                       (pid, name, addr, len(code), "func"))
+    sig = lambda name, code, unit: libid.Signature("libpad.a", "", name, len(code), code, b"\1" * len(code),  # noqa: E731
+                                                   origin=f"{unit}, your own copy", unit=unit)
+    monkeypatch.setattr(kits, "libraries", lambda kids: [tmp_path / "libpad.a"])
+    monkeypatch.setattr(libraryid, "kit_signatures", lambda archives: [sig("scePadRead", pad, "pad.o"),
+                                                                     sig("sceMcOpen", mc, "mc.o")])
+    monkeypatch.setattr(libraryid, "kit_names", lambda archives: {})
+    monkeypatch.setattr(RomNetwork, "is_rom", lambda self, proj: True)
+    report = net.find_libraries("demo", log=lambda *_: None, fid=False)
+    names = {r["vram"]: (r["name"], r["status"]) for r in net.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
+    assert names[0x9100] == ("sceMcOpen", "asm") and report["named"] == 1
+    # (two of the game's functions are scePadRead's code: neither takes the name, and a real name stays)
+    assert names[0x9000][0] == "func_00009000" and names[0x9200][0] == "Game_Pad"
+    assert names[0x9300] == ("func_00009300", "open")
+    found = net.libraries_found("demo")
+    assert any(f["name"] == "sceMcOpen" and f.get("real") == "sceMcOpen" for lib in found["libraries"]
+               for f in lib["functions"])

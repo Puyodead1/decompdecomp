@@ -35,6 +35,8 @@ LIBRARY_AGENTS = 2
 DOWNLOAD_BYTES = 200 << 20  # a library's source archive, at most
 DOWNLOAD_SECONDS = 300
 FUNCTION_NAME = re.compile(r"func_([0-9A-Fa-f]{6,8})")
+# a name the import gave a function for want of one (its address's): func_00104610, fn_80003100, FUN_00401000
+AUTO_NAME = re.compile(r"(?:func|fn|FUN|sub)_[0-9A-Fa-f]{6,8}")
 # a function of the user's SDK libraries with fewer bytes no relocation fills is too short to say it's theirs: a
 # GameCube SDK's OSInitThreadQueue (li, stw, stw, blr) is the game's own list initialiser's code too
 KIT_SHORTEST = 24
@@ -323,11 +325,17 @@ class LibraryIdMixin:
         report = libid.identify(data, codes, catalog, arch=proj["arch"] or console.arch, big_endian=bool(big),
                                 extra=extra, links=console.linked_libraries(data) if data else [], named=named)
         set_aside = 0
+        real: list[tuple[str, str]] = []  # (the game's automatic name, the library's own) of what its code says
         for lib in report["libraries"]:
             keys = lib.pop("keys")
             if lib["aside"] and keys:
                 set_aside += self._library_aside(proj, rows, {k: w for k, w in zip(
                     keys, [f["why"] for f in lib["functions"]])}, lib)
+            real += [(rows[k]["name"], f["real"]) for k, f in zip(keys, lib["functions"]) if f.get("real") and k in rows]
+        renamed = dict(self._name_library_functions(proj, real, log))
+        for lib in report["libraries"]:  # (the report says the names they have now)
+            for f in lib["functions"]:
+                f["name"] = renamed.get(f["name"], f["name"])
         report.update(t=time.time(), signatures=len(catalog.signatures), files=catalog.files,
                       folder=str(libid.signature_folder()), fid=[str(p.name) for p in catalog.fid])
         self._update_cfg(slug, lambda c: c.update(libraries_found=report))
@@ -339,8 +347,42 @@ class LibraryIdMixin:
             + (f": {named}" if named else ""))
         if set_aside:
             log(f"{set_aside} function{'' if set_aside == 1 else 's'} set aside as library code")
+        if (n := len(renamed)):
+            log(f"{n} function{'' if n == 1 else 's'} named as {'its library names it' if n == 1 else 'their libraries name them'}")
+        report["named"] = n
         report["set_aside"] = set_aside
         return report
+
+    def _name_library_functions(self, proj, pairs: list[tuple[str, str]], log) -> list[tuple[str, str]]:
+        """A stripped game's library functions, found by their code, renamed from their automatic names (func_...)
+        to the library's own (sceMcOpen), where that name is a C identifier and no other function has it: the
+        game's calls to them say what they call. A PS2 game of 3,223 functions had 195 of Sony's, called from
+        everywhere as func_00..., and agents read those calls in every brief. Returns the renames made."""
+        if not pairs or self._link(proj["slug"]) is not None:  # (a room's member: the host names its copy)
+            return []
+        taken = {r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=?", proj["id"])}
+        wanted = [new for _, new in pairs]  # (the same code twice in the game: which is the library's isn't said)
+        pairs = [(old, new) for old, new in dict(pairs).items() if AUTO_NAME.fullmatch(old)
+                 and wanted.count(new) == 1 and new not in taken and re.fullmatch(r"[A-Za-z_]\w*", new)]
+        if not pairs:
+            return []
+        agent, _ = self.local_agent("decompdecomp")
+        message = "Name library functions as their libraries do"
+        try:
+            if self.is_rom(proj):
+                said = self.rename_symbols(agent, proj["slug"], pairs, message)
+                if not said.startswith("✅"):
+                    log(f"the library functions weren't named: {said.splitlines()[0]}")
+                    return []
+                return pairs
+            done = []
+            for old, new in pairs:  # (a project's own files and config, one rename at a time)
+                if self.rename_symbol(agent, proj["slug"], old, new, message).startswith("✅"):
+                    done.append((old, new))
+            return done
+        except NetworkError as e:
+            log(f"the library functions weren't named: {e}")
+            return []
 
     def _fid_findings(self, proj, codes, catalog, program: Path, log) -> dict:
         """Ghidra's Function ID with the user's databases: {(library, version, name): {function id: why}}."""

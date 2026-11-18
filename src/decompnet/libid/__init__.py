@@ -311,6 +311,7 @@ class Finding:
     download: str = ""
     evidence: list[str] = field(default_factory=list)
     functions: dict = field(default_factory=dict)  # Code.key -> why it's the library's
+    real: dict = field(default_factory=dict)  # Code.key -> the library's own name for it, where its code says one
     aside: bool = False  # its functions are set aside without asking
     linked: bool = False  # the game loads it from its own file (a DLL, a .so)
 
@@ -318,7 +319,8 @@ class Finding:
         return {"id": self.library, "name": self.name, "kind": self.kind, "version": self.version, "home": self.home,
                 "download": self.download.format(version=self.version) if self.download and self.version else "",
                 "evidence": self.evidence[:8], "aside": self.aside, "linked": self.linked,
-                "functions": [{"name": names.get(k, str(k)), "why": w} for k, w in self.functions.items()]}
+                "functions": [{"name": names.get(k, str(k)), "why": w} | ({"real": self.real[k]} if k in self.real else {})
+                              for k, w in self.functions.items()]}
 
 
 def _line(joined: bytes, m: re.Match) -> bytes:
@@ -419,6 +421,8 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
         f.version = f.version or s.version
         f.functions.setdefault(code.key, f"{' or '.join(names[:3])} of {s.library}"
                                + (f" {s.version}" if s.version else "") + f" ({s.origin})")
+        if len(names) == 1:  # (its code is that function's, by its name: a stripped game's call to it can say so)
+            f.real.setdefault(code.key, names[0])
 
     # names: a function the user's library copies define by its name is theirs even when no copy has its code (a
     # GameCube game's SDK came between the user's 2001 and 2004 copies: a dozen CARD functions had other bytes in
