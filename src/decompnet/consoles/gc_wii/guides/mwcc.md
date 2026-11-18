@@ -47,6 +47,16 @@ Code shape
 - Float literals come from .sdata2 in first-use order; `0.0f` vs `0.0` matters (double adds `frsp`).
 - `-enum int`: enums are 4 bytes; enum-typed struct fields are words.
 
+Writes to the GX FIFO (`lis rN, 0xcc01` then `stfs`/`stb`/`sth`/`stw ..., -0x8000(rN)`)
+- The game used the SDK's vertex inlines (gx/GXVert.h: `GXPosition3f32`, `GXColor4u8`, `GXTexCoord2f32`...)
+  on `volatile PPCWGPipe GXWGFifo : 0xCC008000;`. Write them as the SDK does, parameters `const`:
+  `static inline void GXPosition2f32(const f32 x, const f32 y) { GXWGFifo.f32 = (f32)x; GXWGFifo.f32 = (f32)y; }`
+  and call them with the values (`GXColor3u8(p[0x20], p[0x21], p[0x22])`), not with locals loaded first.
+- The `const` decides the registers: the same helper without it, or stores through a pointer cast, leave the FIFO
+  base and a value in each other's registers (r3/r5) and nothing else differs. A GameCube game's line-drawing
+  function stayed at 97.9% after three agents tried every respelling; with `const` it matched.
+- Put the helpers in the file (edit_file) before their first use, or use the project's own if it has them.
+
 Libraries: the Dolphin/Revolution SDK (OS, GX, DVD, PAD, VI, AX), MSL (the C library), the Runtime
 (`__ptmf`, `__construct_array`), NW4R, EGG or JSystem are usually already decompiled in the community;
 the project's headers have their prototypes and structs.
