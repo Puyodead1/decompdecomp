@@ -1027,7 +1027,8 @@ class Manager:
         proj = self.net.project_row(slug)
         if task == "readable":
             return self.net.readability.left(proj)
-        row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'", proj["id"])
+        row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open' "
+                                 "AND (size IS NULL OR size > 0)", proj["id"])
         return row["n"]
 
     def _ruled_out(self, slug: str, agent_name: str) -> int:
@@ -1128,6 +1129,9 @@ class Manager:
         change to the shared header or the compiler gives some back. True when it waited."""
         if task == "readable" or self.net.claimable(agent, s.slug):
             return False
+        if self.net.store.one("SELECT 1 FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=? "
+                              "AND f.status='open'", agent.id):
+            return False  # (it holds one: its next session works on that, and claimable counts no held function)
         n = self.net.given_up(agent, s.slug)
         why = (f"nothing to claim: {n} of the open functions its model gave back {network.MODEL_GIVE_UPS} times (left "
                "to other models, or until the shared header or the compiler changes), the rest are held by others")

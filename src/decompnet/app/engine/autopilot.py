@@ -54,8 +54,9 @@ class AutopilotMixin:
                     raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
                 elif not seeds.m2c_target(tc):
                     raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
-                ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
-                                                       "ORDER BY n_insns, vram", proj["id"])]
+                ids = [r["id"] for r in self.store.all(
+                    "SELECT id FROM functions WHERE project_id=? AND status='open' "
+                    "AND (size IS NULL OR size > 0) ORDER BY n_insns, vram", proj["id"])]
                 try_one = self._autopilot_one
             no_drafts = ""
         except NetworkError as e:
@@ -75,7 +76,9 @@ class AutopilotMixin:
         state = self.autopilots.get(slug)
         if state:
             return {k: v for k, v in state.items() if k != "stop"}
-        last = self.cfg(self._project(slug)).get("autopilot")  # the last run, from before the app restarted
+        # the last run, from before the app restarted (settings only: the project list asks this for every project
+        # every 5 s, and a read that syncs progress made that list a filesystem pass per project, #269)
+        last = self.cfg(self._project(slug, sync=False)).get("autopilot")
         return {"state": "done", **last} if last else None
 
     def _autopilot_run(self, slug: str, ids: list[int], state: dict, workers: int, try_one=None) -> None:

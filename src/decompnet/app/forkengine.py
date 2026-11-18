@@ -446,6 +446,8 @@ _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written a
 _KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries", "library_said", "library")
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 _MSVC_C = re.compile(r"[_@]([A-Za-z_]\w*?)(?:@\d+)?")  # how MSVC decorates a C function's name (PC, Xbox)
+_OLD_SYMBOL = re.compile(r"@?[A-Za-z_]\w*(?:@\d+)?")  # rename_symbol's old name (a PC report's @f@8 too)
+_THUNK_NAME = re.compile(r"@\d+@[A-Za-z_]\w*")  # a CodeWarrior this-adjust thunk's name: @48@f__4CFooFv (#300)
 # a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,
 # #include "src/Runtime.PPCEABI.H/runtime.c" (its asm helpers, which every module links a copy of)
 _SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.M)
@@ -965,6 +967,29 @@ class ForkEngine:
     @staticmethod
     def _meta(fn) -> dict:
         return json.loads(fn["meta"]) if fn["meta"] else {}
+
+    @staticmethod
+    def _going_symbols(rows, symbols: dict[str, tuple[str, int, int]], lo: int, hi: int) -> set[str]:
+        """The rows' symbols whose code is in [lo, hi): the functions a split moves. A file-local function's row
+        symbol carries its address (`stateBusy_8023FC14`) where symbols.txt has the bare name (`stateBusy`,
+        scope:local) at the same address: looked up verbatim it stayed in the kept file and its code moved without it
+        (#300)."""
+        out = set()
+        for row in rows:
+            symbol = ForkEngine._meta(row).get("symbol")
+            if not symbol:
+                continue
+            known = symbols.get(symbol)
+            if known is not None:
+                address = known[1]
+            else:
+                bare = re.sub(r"_[0-9A-Fa-f]{8}$", "", symbol)
+                address = None
+                if bare != symbol and bare in symbols and f"{symbols[bare][1]:08X}" == symbol[-8:].upper():
+                    address = symbols[bare][1]
+            if address is not None and lo <= address < hi:
+                out.add(symbol)
+        return out
 
     # ------------------------------------------------------------------ creating a fork
 
@@ -2048,7 +2073,7 @@ class ForkEngine:
         with self._tree(proj).exclusive():  # no other build runs meanwhile
             self._put_back_config(proj, fp)  # (a try's leftover isn't committed with this change)
             text = old_path.read_text(errors="replace", encoding="utf-8") if old_path.exists() else ""
-            going = {s for r in rows if (s := self._meta(r).get("symbol")) in syms and addr <= syms[s][1] < hi}
+            going = self._going_symbols(rows, syms, addr, hi)
             new_text, rest, moved = self._divide(text, rows, going)
             scores_before = self._baseline(proj, fp, unit, text)[0] or {}
             saved = {conf: conf.read_text(encoding="utf-8"), mod.splits: mod.splits.read_text(encoding="utf-8"), old_path: text}
@@ -2137,6 +2162,22 @@ class ForkEngine:
                 out = out[:a].rstrip("\n") + "\n\n" + (proto + "\n\n" if proto else "") + out[b:].lstrip("\n")
             return out.strip() + "\n"
 
+        # #300: the moving definitions are the file's tail (as an address-ordered file's are): the new file is the
+        # text before the cut, staying definitions cut to their prototypes, then the tail as it is; the old file is
+        # the text before the cut, with the moved definitions' prototypes where they stood. Pragmas and data after
+        # the tail go only where they stood.
+        order = sorted(spans)
+        first = next((i for i, span in enumerate(order) if spans[span]), None)
+        if first is not None and all(spans[span] for span in order[first:]):
+            cut = order[first][0]
+            head = text[:cut]
+            for a, b in sorted(order[:first], reverse=True):
+                proto = prototype(a, b)
+                head = head[:a].rstrip("\n") + "\n\n" + (proto + "\n\n" if proto else "") + head[b:].lstrip("\n")
+            head = head.strip()
+            protos = [proto for a, b in order[first:] if (proto := prototype(a, b))]
+            kept = text[:cut].rstrip("\n") + "\n" + ("\n" + "\n".join(protos) + "\n" if protos else "")
+            return (head + "\n\n" if head else "") + text[cut:].lstrip("\n"), kept, len(order) - first
         moving = [s for s, g in spans.items() if g]
         staying = [s for s, g in spans.items() if not g]
         return leaving(staying), leaving(moving), len(moving)
@@ -2569,14 +2610,22 @@ class ForkEngine:
         put back. Polishing in project mode had local names only: functions and globals stayed func_0205d0f4 and
         data_0222f194. The function's row keeps its history under the new name. Where the report keeps the original's
         symbol (Console.renames_in_report: a PC game's _func_0041B470@8), the row keeps that name too, and the new one
-        is the function's real name (Console.real_names), how its source spells it."""
+        is the function's real name (Console.real_names), how its source spells it. A project whose compiler names a
+        this-adjust thunk (`@48@<mangled override>`) has no C body for it: only the game's symbols take its name
+        (#300)."""
         # (`old` as the report gives a PC function: _func_0041B470@8, @func_0041B470@8)
-        if not re.fullmatch(r"[A-Za-z_]\w*", new) or not re.fullmatch(r"@?[A-Za-z_]\w*(?:@\d+)?", old) or old == new:
-            raise NetworkError("rename_symbol takes two different C names: old and new")
+        # #300: MWCC emits a class's this-adjust thunks as local/weak symbols named @N@<mangled override>; no C
+        # compiles to a bare tail `b`, so the only way to match the game's thunk is to give its symbol that name.
+        thunk = bool(_THUNK_NAME.fullmatch(new))
+        if not (re.fullmatch(r"[A-Za-z_]\w*", new) or thunk) or not _OLD_SYMBOL.fullmatch(old) or old == new:
+            raise NetworkError("rename_symbol takes two different C names (or, for a CodeWarrior this-adjust thunk, "
+                               "@N@<mangled member name>): old and new")
         proj, fp, cfg = self.get(slug)
         if slug in self.net.links:
             raise NetworkError("in a room, the host's project is the one to rename in: say it in a note")
         console = consoles.get(cfg.get("platform"))
+        if thunk and not console.thunk_names:
+            raise NetworkError("this project's compiler has no @N@ thunk names: give the function a C name")
         version = (fp.manifest or {}).get("version") or cfg.get("version")
         word, taken = re.compile(console.rename_pattern(old)), re.compile(rf"\b{re.escape(new)}\b")
         checks = consoles.REBUILD_CHECK in console.features
@@ -2586,7 +2635,7 @@ class ForkEngine:
             files = sorted(p for d in ("src", "include") if (fp.root / d).is_dir() for p in (fp.root / d).rglob("*")
                            if p.is_file() and p.suffix in self.SOURCE_SUFFIXES)
             texts = {p: p.read_text(errors="replace", encoding="utf-8") for p in files}
-            if (used := next((p for p, t in texts.items() if taken.search(t)), None)) is not None:
+            if not thunk and (used := next((p for p, t in texts.items() if taken.search(t)), None)) is not None:
                 # helpers asked for renames made hours before (often their own): on a PC game, 30 in a day, each told
                 # only "pick another name"
                 if self.net.store.one("SELECT 1 FROM events WHERE project_id=? AND kind='rename' AND detail=?",
@@ -2605,10 +2654,11 @@ class ForkEngine:
             saved: dict[Path, str] = {}
             try:
                 saved.update(console.rename_symbol(fp, version, old, new))
-                for p, t in texts.items():
-                    if word.search(t):
-                        saved[p] = t
-                        p.write_text(word.sub(new, t), encoding="utf-8")
+                if not thunk:  # (no source spells a thunk's name: only the game's symbols change)
+                    for p, t in texts.items():
+                        if word.search(t):
+                            saved[p] = t
+                            p.write_text(word.sub(new, t), encoding="utf-8")
                 for cmd in fp.setup_commands(version):
                     ok, out = fp.run(cmd, log=lambda *_: None)
                     if not ok:
@@ -5180,11 +5230,22 @@ class ForkEngine:
 
     def search(self, slug: str, pattern: str, glob: str = "") -> str:
         _, fp, _ = self.get(slug)
+        root = fp.root.resolve()
+        # Python owns the pattern: grep -E reads e.g. \\d differently, and capturing its output kept every match
+        # in memory before the 80-line cut. Prune build trees before walking and read only as far as that cut.
+        excluded = {".git", "build", STATE}
+
+        def sources():
+            for folder, dirs, names in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in excluded)
+                for name in sorted(names):
+                    if Path(name).suffix.lower() in (".c", ".cc", ".cpp", ".h", ".hpp", ".inc"):
+                        yield Path(folder) / name
+
         try:
             rx = re.compile(pattern)
         except re.error:  # e.g. "func(": search for the text itself
             rx = re.compile(re.escape(pattern))
-        root = fp.root.resolve()
         if glob:
             glob = _path_glob(glob)
             try:
@@ -5192,20 +5253,21 @@ class ForkEngine:
             except ValueError as e:
                 raise NetworkError(f"glob {glob!r}: {e} (e.g. src/**/*.cpp, include/*.h)") from None
         else:
-            files = sorted(p for ext in ("c", "cc", "cpp", "h", "hpp", "inc") for p in fp.root.rglob(f"*.{ext}"))
+            files = sources()
         hits = []
         for p in files:
             rp = p.resolve()
             if root not in rp.parents or not rp.is_file():
                 continue
             rel = rp.relative_to(root)
-            if {".git", "build", STATE} & set(rel.parts):
+            if excluded & set(rel.parts):
                 continue
-            for i, line in enumerate(rp.read_text(errors="replace", encoding="utf-8").splitlines(), 1):
-                if rx.search(line):
-                    hits.append(f"{rel.as_posix()}:{i}: {line.strip()[:160]}")
-                    if len(hits) >= 80:
-                        return "\n".join(hits + ["... (more matches; narrow the pattern)"])
+            with rp.open(errors="replace", encoding="utf-8") as source:
+                for i, line in enumerate(source, 1):
+                    if rx.search(line):
+                        hits.append(f"{rel.as_posix()}:{i}: {line.strip()[:160]}")
+                        if len(hits) >= 80:
+                            return "\n".join(hits + ["... (more matches; narrow the pattern)"])
         return "\n".join(hits) or "no matches"
 
     def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str = "",
@@ -5525,6 +5587,7 @@ class ForkEngine:
     def compiler_answer(self, slug: str, *, include_functions: bool = True) -> dict:
         """The Settings panel's answer (engine.compiler_answer's form): the project's compiler and the files built
         with another, each kept because its matched functions match with it."""
+        self.net.filecompilers.normalise(slug)  # (#260: a saved "checking" with no run behind it never spins the panel)
         proj, fp, cfg = self.get(slug)
         found = self._file_parts(fp, cfg)
         if found is None:
@@ -5547,7 +5610,8 @@ class ForkEngine:
                 "elsewhere": [{"start": r.start, "end": r.end, "compiler": consoles.compiler_name(r.label[0]),
                                "functions": r.functions, "confirmed": r.confirmed} for r in elsewhere[:12]],
                 "elsewhere_count": len(elsewhere),
-                "checking": state.get("state") == "running" or any(c["status"] == "checking" for c in checks),
+                "checking": (state.get("state") == "running" or files.working(slug)
+                             or any(c["status"] == "checking" for c in checks)),
                 "survey": {"state": state.get("state"), "tried": len(survey.get("tried", {})),
                            "confirmed": len(survey.get("confirmed", {})), "running_tried": state.get("tried", 0),
                            "t": survey.get("t")},

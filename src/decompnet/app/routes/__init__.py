@@ -55,5 +55,6 @@ class App:
     viewer: Callable[..., str | None] | None = None  # viewer(request): "window", "browser" or None
     # what one part of the app lends another (set by the module that defines it)
     autopilot: Callable[[str], None] | None = None  # state: start autopilot on a project
+    invalidate_map: Callable[[str], None] | None = None  # state: discard a removed or reimported project's map
     with_project: Callable[..., Any] | None = None  # projects: a project route from fn(slug, request, data)
     searches: Any = None  # projects: the deep searches on single functions (deep.Searches)
