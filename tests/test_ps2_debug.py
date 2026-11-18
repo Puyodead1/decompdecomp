@@ -401,3 +401,24 @@ def test_a_cpp_programs_types_compile_as_the_header_in_c_and_cpp(toolchain, tmp_
         result = compile_source(compiler_config(tmp_path, {"compiler": {"toolchain": toolchain, "flags": ["-O2"]}}),
                                 base, source)
         assert result.ok and result.language == language, result.log
+
+
+def test_small_data_is_what_the_code_reads_through_gp_not_the_gp_crt0_sets():
+    """Every PS2 program's crt0 sets $gp; a C++ game of 374,000 instructions never read through it, was imported at
+    -G8 for that $gp, and matched nothing that touched a global (its code matches only at -G0). Small data is the
+    code's own loads, stores and addresses through $gp."""
+    from decompnet import consoles
+    from decompnet.consoles.ps2 import elf
+
+    words = lambda *w: struct.pack(f"<{len(w)}I", *w)  # noqa: E731
+    crt0 = words(0x3C1C002C, 0x279C4570, 0x03E00008, 0)  # lui $gp, 0x2c; addiu $gp, $gp, 0x4570; jr $ra; nop
+    lw_gp = words(0x8F828010)  # lw $v0, -0x7ff0($gp)
+    lq_gp = words(0x7B828000)  # lq $v0, -0x8000($gp): the EE's own
+    code = lambda text: _elf([(".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 0x100000, text, 0)])  # noqa: E731
+    assert not elf.uses_small_data(code(crt0))
+    assert elf.uses_small_data(code(crt0 + lw_gp)) and elf.uses_small_data(code(crt0 + lq_gp))
+    info = elf.read_elf(code(crt0), "SLUS_217.10")[1]
+    assert info["small_data"] is False
+    cfg = {"platform": "ps2", "gp": 0x2C4570, "rom": info}
+    assert consoles.default_flags(cfg, "ee-gcc-2.96") == ["-O2", "-G0"]
+    assert consoles.default_flags(cfg | {"rom": {**info, "small_data": True}}, "ee-gcc-2.96") == ["-O2", "-G8"]

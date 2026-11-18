@@ -432,3 +432,48 @@ def test_going_by_names_is_the_projects_choice_and_off_gives_them_back(tmp_path)
     root = Path(proj["root"])
     assert set(json.loads((root / "config" / "V" / "set_aside.json").read_text())) == {"OSInit"}
     assert sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout == ""
+
+
+@pytest.mark.skipif(__import__("decompnet.toolchains", fromlist=["x"]).installed("binutils-mips") is None,
+                    reason="needs the PS2 binutils")
+def test_a_ps2_sdk_copy_is_a_kit_whose_ee_libraries_the_library_finder_reads(tmp_path, monkeypatch):
+    """Sony's PS2 libraries, the user's own copy (kits/ps2sdk.py): the EE's archives give the library finder their
+    functions, by code and by name; the IOP's (another processor's) are left out. A C++ game said in its own text it
+    was built with SDK 3.1.0, and agents had been working on its library code."""
+    import subprocess
+
+    from decompnet import consoles, kits, toolchains
+    from decompnet.app.engine.libraryid import kit_names, kit_signatures
+
+    bin_dir = toolchains.path("binutils-mips")
+    (tmp_path / "pad.s").write_text("""
+    .set noreorder
+    .text
+    .globl scePadRead
+    .type scePadRead, @function
+scePadRead:
+    lui $2, %hi(pad_state)
+    lw $2, %lo(pad_state)($2)
+    addiu $sp, $sp, -16
+    sd $31, 0($sp)
+    daddu $4, $2, $0
+    ld $31, 0($sp)
+    jr $31
+    addiu $sp, $sp, 16
+    .size scePadRead, .-scePadRead
+""")
+    ee, iop = tmp_path / "sdk" / "sce" / "ee" / "lib", tmp_path / "sdk" / "sce" / "iop" / "lib"
+    ee.mkdir(parents=True)
+    iop.mkdir(parents=True)
+    obj = tmp_path / "pad.o"
+    subprocess.run([str(bin_dir / "mips-ps2-decompals-as"), "-EL", "-march=r5900", "-mabi=eabi", "-o", str(obj),
+                    str(tmp_path / "pad.s")], check=True)
+    for lib in (ee / "libpad.a", iop / "libpad.a"):
+        subprocess.run([str(bin_dir / "mips-ps2-decompals-ar"), "rcs", str(lib), str(obj)], check=True)
+    monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
+    assert "ps2-sdk" in consoles.get("ps2").kits
+    toolchains.install("ps2-sdk", folder=tmp_path / "sdk", accept_license=True, log=lambda *_: None)
+    assert kits.libraries(consoles.get("ps2").kits) == [(ee / "libpad.a").resolve()]
+    sigs = kit_signatures(kits.libraries(["ps2-sdk"]))
+    assert [(s.name, s.library, s.unit) for s in sigs] == [("scePadRead", "libpad.a", "pad.o")]
+    assert kit_names(kits.libraries(["ps2-sdk"])) == {"scePadRead": ("libpad.a", "pad.o, your own copy")}

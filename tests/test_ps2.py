@@ -116,7 +116,7 @@ def _attempt_every_function(net, slug, agent):
     for name in FUNCTIONS:
         res = net.attempt(agent, name, csource.get(source, name), slug)
         scores[name] = res["score"]
-        if not res["matched"]:
+        if not res["matched"] and res["score"] != 0:  # (0 unmatched: it matched already, as a range applied)
             print(name, res["text"][:3000])
             net.release(agent, name, "", slug)
     assert all(score == 0 for score in scores.values()), scores
@@ -220,7 +220,8 @@ def test_agents_suggest_a_compiler_and_the_user_applies_it(tmp_path):
     ov = net.overview(slug)
     assert ov["compiler"]["toolchain"] == tc and ov["compiler"]["flags"] == ["-O2", "-G8"]
     assert ov["suggestions"] == []
-    assert net.attempt(a, name, source, slug)["matched"]
+    # (applying it judged the agents' best C again with it: already matched, or matched by this try)
+    assert net._function(name, slug)["status"] == "matched" or net.attempt(a, name, source, slug)["matched"]
 
 
 def test_auto_adjust_applies_a_proven_compiler(tmp_path):
@@ -298,8 +299,13 @@ def test_a_game_built_with_two_compilers(tmp_path):
     ov = net.overview(slug)
     assert ov["compiler"]["toolchain"] == "ee-gcc-2.96"  # the rest of the game keeps its compiler
     assert [(r["start"], r["end"], r["toolchain"]) for r in ov["compiler_ranges"]] == [(start, end, "mwcps2-3.0.1")]
-    assert "this address range's compiler" in net.claim(agent, slug, "abs_s32")
-    net.release(agent, "abs_s32", "", slug)
+    # (applying it judged the range's best C again with CodeWarrior: what matches now is matched; one still open
+    # is claimed with the range's compiler)
+    still = net.store.one("SELECT name FROM functions WHERE project_id=? AND status='open' AND vram>=? AND vram<? "
+                          "ORDER BY vram LIMIT 1", net.project_row(slug)["id"], start, end)
+    if still is not None:
+        assert "this address range's compiler" in net.claim(agent, slug, still["name"])
+        net.release(agent, still["name"], "", slug)
     _attempt_every_function(net, slug, agent)  # every game function, now built with CodeWarrior
     zlib = net.store.one("SELECT name FROM functions WHERE project_id=? AND vram>=? ORDER BY vram LIMIT 1",
                          net.project_row(slug)["id"], end)["name"]

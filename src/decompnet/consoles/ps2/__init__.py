@@ -50,7 +50,9 @@ class PlayStation2(Console):
         Compiler("mwcps2-3.0.1", "CodeWarrior PS2 3.0.1", "PlayStation 2 games built with CodeWarrior (2002-2005, "
                  "proprietary)", guess="MWCPS2-3"),
     )
-    kits = ("own-ps2",)  # another build of one of its compilers, the user's (kits/owncompiler.py)
+    # another build of one of its compilers, the user's (kits/owncompiler.py); Sony's libraries, the user's copy
+    # (kits/ps2sdk.py: the library finder sets their code aside)
+    kits = ("own-ps2", "ps2-sdk")
     guides = ("mips", "ps2")
     compiler_guide = "ps2"
     m2c = "mipsee-gcc"  # m2c has no CodeWarrior MIPS target: the EE one reads its code as well

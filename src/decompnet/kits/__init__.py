@@ -223,11 +223,12 @@ def _registry() -> list[Kit]:
     from .dsbios import DSBIOS
     from .nitro import NITRO
     from .owncompiler import OWN_COMPILERS
+    from .ps2sdk import PS2SDK
     from .ps3sdk import PS3SDK
     from .visualcpp import VISUALCPP
     from .xdk import XDK
 
-    return [XDK, VISUALCPP, PS3SDK, DSBIOS, NITRO, DOLPHIN, *OWN_COMPILERS]
+    return [XDK, VISUALCPP, PS3SDK, DSBIOS, NITRO, DOLPHIN, PS2SDK, *OWN_COMPILERS]
 
 
 KITS: list[Kit] = _registry()

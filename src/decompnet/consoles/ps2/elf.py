@@ -53,6 +53,28 @@ def _sections(data: bytes) -> dict[str, bytes]:
     return out
 
 
+# loads and stores through a base register: the MIPS ones (lb..sw, lwc1/swc1, ldc1/sdc1, ld/sd) and the EE's 128-bit
+# lq/sq and lqc2/sqc2; with addiu, what small data compiles to through $gp
+_LOADS_STORES = frozenset(range(0x20, 0x30)) | {0x1E, 0x1F, 0x31, 0x35, 0x36, 0x37, 0x39, 0x3D, 0x3E, 0x3F}
+_ADDIU = 0x09
+_GP = 28
+
+
+def uses_small_data(data: bytes) -> bool:
+    """Whether the program's code keeps data $gp-relative (GCC's -G8, CodeWarrior's -sdatathreshold 8): a load, store
+    or address taken through $gp. Not by the $gp its start-up code sets: every PS2 program's crt0 sets one, and a
+    C++ game of 374,000 instructions whose code never reads through it was compiled with -G8 and matched nothing
+    that touched a global. False when the program has no section headers to find its code by."""
+    sections = _sections(data)
+    code = b"".join(v for k, v in sections.items() if k.startswith(".text") or k in (".init", ".fini"))
+    for word, in struct.iter_unpack("<I", code[:len(code) & ~3]):
+        op, base, rt = word >> OPCODE_SHIFT, word >> RS_SHIFT & REGISTER_BITS, word >> RT_SHIFT & REGISTER_BITS
+        # (start-up code that sets $gp itself, `addiu $gp, $gp, %lo(_gp)`, isn't small data)
+        if base == _GP and rt != _GP and (op == _ADDIU or op in _LOADS_STORES):
+            return True
+    return False
+
+
 def code_style(data: bytes, within: list[tuple[int, int]] | None = None) -> tuple[int, float, float, float]:
     """(returns, share of returns with a nop in the delay slot, `daddu rd, rs, $zero` moves per return, share of
     $ra saves made with sq) over the program's executable code, or only its code between the addresses `within`."""
@@ -177,5 +199,6 @@ def read_elf(data: bytes, boot_name: str = "") -> tuple[bytes, dict]:
         "version": 0, "entrypoint": entry, "gp": 0, "crc1": 0, "crc2": 0, "size": len(data),
         "sha1": hashlib.sha1(data).hexdigest(), "byte_order": "elf", "compiler_guess": guess_compiler(data), "platform": "ps2",
         "boot": boot_name, "symbols": has_symbols,
+        "small_data": uses_small_data(data),  # (its crt0 sets a $gp whether its code uses one or not)
         "compiler_parts": [list(part) for part in object_compilers(data)],  # after_import gives them their ranges
     }

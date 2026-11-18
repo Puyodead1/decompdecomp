@@ -113,6 +113,8 @@ class RangeChecks:
     def __init__(self, net):
         self.net = net
         self._lock = threading.Lock()  # one run at a time
+        self._here = threading.local()  # (the thread in a run: a match its weighing makes asks for another, after it)
+        self._after: dict[str, set] = {}  # slug -> the checks a run's own matches asked for
         self._queue_lock = threading.Lock()
         self._pending: dict[str, set] = {}  # slug -> ids of the checks to weigh again (None: every open one)
         self._draining: set[str] = set()  # projects with a run waiting or running
@@ -298,31 +300,48 @@ class RangeChecks:
 
     def _run(self, slug: str, wanted: set) -> None:
         """Weigh the wanted checks (None: every open one), reading every function's address and size, and the
-        compiler map, once for all of them."""
+        compiler map, once for all of them. One a run's own weighing asks for (a range it applied judged a function
+        again, the match asked to recheck) runs after it: in place, it waited for the run it was in (a PS2 game's
+        two-compiler check hung there)."""
+        if getattr(self._here, "running", False):
+            with self._queue_lock:
+                self._after.setdefault(slug, set()).update(wanted)
+            return
         with self._lock:
-            proj = None
-            checks: list[dict] = []
+            self._here.running = True
             try:
-                proj = self.net._project(slug)
-                checks = [c for c in self._open(proj) if None in wanted or c["id"] in wanted]
-                if not checks:
-                    return
-                rows = self._rows(proj)
-                at = {r["vram"]: i for i, r in enumerate(rows)}
-                cmap = self.net.compiler_map(proj)
-                for c in checks:
-                    try:
-                        self._weigh(proj, c, rows, at, cmap)
-                    except Exception:  # noqa: BLE001  #260: a check that failed waits, it doesn't say "checking"
-                        log.exception("range check #%s failed", c["id"])
-                        self._wait_stored(proj, c["id"], "waiting: weighing it failed; the next match tries again")
-            except Exception:  # noqa: BLE001  a check never stands between an agent and its work: it waits
-                log.exception("range check failed")
-                for c in checks:  # (#260: no check this run was to weigh stays "checking" with no work behind it)
-                    try:
-                        self._wait_stored(proj, c["id"], "waiting: weighing it failed; the next match tries again")
-                    except Exception:  # noqa: BLE001  the run's own failure is the one to report
-                        log.exception("range check #%s could not be marked waiting", c["id"])
+                self._run_held(slug, wanted)
+            finally:
+                self._here.running = False
+        with self._queue_lock:
+            again = self._after.pop(slug, None)
+        if again:
+            self._run(slug, again)
+
+    def _run_held(self, slug: str, wanted: set) -> None:
+        proj = None
+        checks: list[dict] = []
+        try:
+            proj = self.net._project(slug)
+            checks = [c for c in self._open(proj) if None in wanted or c["id"] in wanted]
+            if not checks:
+                return
+            rows = self._rows(proj)
+            at = {r["vram"]: i for i, r in enumerate(rows)}
+            cmap = self.net.compiler_map(proj)
+            for c in checks:
+                try:
+                    self._weigh(proj, c, rows, at, cmap)
+                except Exception:  # noqa: BLE001  #260: a check that failed waits, it doesn't say "checking"
+                    log.exception("range check #%s failed", c["id"])
+                    self._wait_stored(proj, c["id"], "waiting: weighing it failed; the next match tries again")
+        except Exception:  # noqa: BLE001  a check never stands between an agent and its work: it waits
+            log.exception("range check failed")
+            for c in checks:  # (#260: no check this run was to weigh stays "checking" with no work behind it)
+                try:
+                    self._wait_stored(proj, c["id"], "waiting: weighing it failed; the next match tries again")
+                except Exception:  # noqa: BLE001  the run's own failure is the one to report
+                    log.exception("range check #%s could not be marked waiting", c["id"])
 
     def _weigh(self, proj, c: dict, rows: list, at: dict[int, int], cmap) -> None:
         """One check, from its functions in address order (`at`: address -> index) and the compiler map."""
