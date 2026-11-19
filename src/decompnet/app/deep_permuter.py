@@ -40,8 +40,6 @@ def validate(net, slug: str, name: str, minutes: int, max_variants: int):
         raise NetworkError("Choose a variant limit from 1 to 1,000,000.")
     proj = net.project_row(slug)
     fn = net._function(name, slug)
-    if slug in net.links:
-        raise NetworkError("Run deep permuter on the room host's project.")
     if fn["status"] != "open" or not fn["best_source"] or fn["best_score"] is None:
         raise NetworkError("Choose an unmatched function with saved, scored C first.")
     if net.store.one("SELECT 1 FROM claims WHERE function_id=? AND expires_at>?", fn["id"], time.time()):

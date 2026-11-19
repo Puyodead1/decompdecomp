@@ -100,10 +100,7 @@ def test_searches_start_once_per_function_and_only_on_c_that_scores(monkeypatch)
         time.sleep(0.01)
     assert jobs.jobs[jid]["state"] == "cancelled" and jobs.jobs[jid]["error"] == deep.STOPPED
     assert searches.job_for("game", "f") is None
-    net.links = {"game": object()}
-    with pytest.raises(NetworkError, match="in a room"):
-        searches.start("game", "f")
-    net.links = {}
+    # (a room guest's too: test_collab, a guest's search shares what it finds with the host)
 
 
 def test_a_search_of_a_projects_function_judges_its_variants(monkeypatch):

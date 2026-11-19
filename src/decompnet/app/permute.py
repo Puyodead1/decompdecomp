@@ -463,5 +463,23 @@ class Permuter:
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
             if d.score < best:
+                link = self.net._link(proj["slug"])
+                if link is not None and d.bytes_match and not self._host_confirms(link, agent, fn, source):
+                    return max(1, d.score)  # (not a match until the room's host says so: it keeps the functions)
                 self.net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter")
+                if link is not None and not d.bytes_match:  # (as a guest's agents' better attempts reach it)
+                    threading.Thread(target=self.net._report, args=(link, agent, fn["name"], source, d.score),
+                                     daemon=True).start()
             return 0 if d.bytes_match else max(1, d.score)
+
+    def _host_confirms(self, link, agent, fn, source: str) -> bool:
+        """A room guest's match (a deep search the guest started: the host's own permuter does the rest), built by
+        the host on its copy, which records it for the room; the guest's copy follows. A host that can't confirm it
+        (its agent holds the function, another compile) records nothing, and its hold for the try is let go."""
+        try:
+            if link.attempt(agent, fn["name"], source).get("matched"):
+                return True
+            link.call("/collab/release", agent, function=fn["name"], notes="")
+        except NetworkError as e:
+            log.info("permuter: %s: the room's host didn't take the match: %s", fn["name"], e)
+        return False

@@ -1006,3 +1006,51 @@ def test_a_room_of_a_project_cloned_from_a_folder_sends_its_history_itself(tmp_p
         net = SimpleNamespace(forks=SimpleNamespace(get=lambda slug, cfg=cfg: ({"name": "G"}, SimpleNamespace(root=tmp_path), cfg)))
         monkeypatch.setattr(forkroom, "project_identity", lambda cfg: "s")
         assert forkroom.hello(net, "g")["repo_url"] == sent, url
+
+
+def test_a_guests_deep_search_shares_what_it_finds_with_the_host(built, tmp_path):  # noqa: F811
+    """A room guest has the game, the compiler and the judge, and its agents' attempts reach the host; its deep
+    searches were refused ("Run deep permuter on the room host's project."). Now a guest's search runs on its own
+    computer: a match is the host's to confirm on its copy, which records it for the room (and none is recorded
+    while the host's agent holds the function), and a better score reaches the host as an agent's does."""
+    import time
+
+    from decompnet.app import deep, deep_permuter
+    from decompnet.app.permute import Permuter
+
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "kim", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    agent, _ = g.local_agent("claude-1")
+    assert g.split_function(agent, gslug, "func_800007C4", "0x800007D0").startswith("✅")
+    searcher, _ = g.local_agent(deep_permuter.AGENT)
+    perm = Permuter(g)
+    proj = g.project_row(gslug)
+    # a better score: the host keeps it as the function's best, without a compile there
+    fn = g._function("func_800007F4", gslug)
+    score = perm._score(searcher, proj, fn, "s32 func_800007F4(s32 v) { return v + 1; }", 10**9, None)
+    assert score and score > 0
+    for _ in range(50):  # (reported from a background thread)
+        if host._function("func_800007F4", slug)["best_score"] == score:
+            break
+        time.sleep(0.1)
+    assert host._function("func_800007F4", slug)["best_score"] == score
+    # a match while the host's own agent holds the function: not recorded on either side
+    mine, _ = host.local_agent("claude-9")
+    host.claim(mine, slug, "func_800007D0")
+    fn = g._function("func_800007D0", gslug)
+    assert perm._score(searcher, proj, fn, CLAMP, 10**9, None) > 0
+    assert g._function("func_800007D0", gslug)["status"] == "open"
+    assert host._function("func_800007D0", slug)["status"] == "open"
+    host.release(mine, "func_800007D0", "", slug)
+    # once it's free: the host confirms and records it, and the guest's copy has it too
+    assert perm._score(searcher, proj, g._function("func_800007D0", gslug), CLAMP, 10**9, None) == 0
+    assert host._function("func_800007D0", slug)["status"] == "matched"
+    assert g._function("func_800007D0", gslug)["status"] == "matched"
+    assert not host.store.one("SELECT 1 FROM claims c JOIN functions f ON f.id=c.function_id WHERE f.name=?",
+                              "func_800007D0")
+    # both searches start on a guest's function
+    fn = g._function("func_800007F4", gslug)
+    deep_permuter.validate(g, gslug, fn["name"], 1, 10)
+    searches = deep.Searches(g, __import__("decompnet.app.support", fromlist=["Jobs"]).Jobs())
+    jid = searches.start(gslug, fn["name"], minutes=1, variants=1)
+    assert jid

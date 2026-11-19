@@ -103,9 +103,11 @@ class Search(Permuter):
         """A variant's score, recorded when it beats `best`: a project's try beside the agent's claim, a ROM
         project's as the permuter judges it."""
         if fork:
+            # (a room guest's: a try as the permuter's, whose matches and better scores the host takes; its tree
+            # follows the host's commits, so no try is made beside an agent's work there)
             with self.net.progress.judging(proj["slug"]):
                 return self.net.forks.attempt(agent, fork, fn["name"], source, keep=False, quiet=best,
-                                              background=True).get("score")
+                                              background=proj["slug"] not in self.net.links).get("score")
         return super()._score(agent, proj, fn, source, best, fork)
 
     def _show(self, force: bool = False) -> None:
@@ -217,8 +219,6 @@ class Searches:
         """Start a search on a function (or say which one runs on it): its job's id."""
         minutes = _limit(minutes, MINUTES, DEFAULT_MINUTES, "minutes")
         variants = _limit(variants, VARIANTS, DEFAULT_VARIANTS, "variants")
-        if slug in self.net.links:
-            raise NetworkError("in a room, the host's permuter searches: start a deep search on the host's computer")
         fn = self.net._function(function, slug)
         if fn["status"] != "open":
             raise NetworkError(f"{fn['name']} isn't open: a deep search is for a function that doesn't match yet")
