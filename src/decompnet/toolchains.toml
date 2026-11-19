@@ -308,6 +308,133 @@ subdir = "usr/lib"
 into = "crt"
 platforms = ["linux-x86_64"]
 
+["gcc-4.1.0-redhat-linux"]
+name = "GCC 4.1.0 for Linux (Red Hat's, Fedora Core 5)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-2.0"
+source = "Fedora Core 5's own i386 packages: gcc, cpp and gcc-c++ 4.1.0-3 with libstdc++'s headers, binutils 2.16.91.0.6, glibc-headers 2.4 and glibc-kernheaders 3.0 (their headers)"
+description = "Red Hat's build of GCC 4.1.0 (4.1.0-3, 20060304) and the binutils Fedora Core 5 shipped, with glibc 2.4's headers: the compiler a program or prebuilt library whose .comment says \"GCC: (GNU) 4.1.0 20060304 (Red Hat 4.1.0-3)\" was built with (a 2008 arcade game's Scaleform GFx). Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc/i386-redhat-linux/4.1.0"; x=; case "$src" in *.cpp) x="-I$tc/include/c++ -I$tc/include/c++/i386-redhat-linux -I$tc/include/c++/backward";; esac; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc" -B"$tc/cpp/usr/libexec/gcc/i386-redhat-linux/4.1.0/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" $x -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+cplusplus = true
+[["gcc-4.1.0-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/gcc-4.1.0-3.i386.rpm"
+sha256 = "72c3eff63c0b53fc4b72a9cdc7ff8d913d0a50fac01ea3c708662a7f6d0063ab"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/cpp-4.1.0-3.i386.rpm"
+sha256 = "47d6946a5a1f7900945837d751619125f65c78443eb9512286b06960144f7115"
+into = "cpp"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+# (C++: its compiler, beside cc1; its driver is gcc's, which compiles a .cpp with it)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/gcc-c%2B%2B-4.1.0-3.i386.rpm"
+file = "gcc-c++-4.1.0-3.i386.rpm"
+sha256 = "b6527305088bf381a368c8213e3b85bbf962707dca50c9b3749ca39c7ba335ad"
+keep = { "usr/libexec/gcc/i386-redhat-linux/4.1.0/cc1plus" = "usr/libexec/gcc/i386-redhat-linux/4.1.0/cc1plus" }
+into = "cpp"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/binutils-2.16.91.0.6-4.i386.rpm"
+sha256 = "5c62b9d0e431993172b8d8a8cae50f44f822afbfc42df5938c4bafe71aa75bf3"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/glibc-headers-2.4-4.i386.rpm"
+sha256 = "e711e68a2e96ff30a5de9baad3d42c7670de126c17546337749bf9faf702d932"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+# (the 32-bit stubs glibc-headers' gnu/stubs.h includes: Fedora has them in glibc-devel)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/glibc-devel-2.4-4.i386.rpm"
+sha256 = "92fd808cb1a5218eac9ecec3e25c7014753e579883b535b2232b10f039967778"
+keep = { "usr/include/gnu/stubs-32.h" = "gnu/stubs-32.h" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+# (its C runtime objects, crt1.o, crti.o, crtn.o and libc_nonshared.a: what a Linux export's build links a new program with)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/glibc-devel-2.4-4.i386.rpm"
+sha256 = "92fd808cb1a5218eac9ecec3e25c7014753e579883b535b2232b10f039967778"
+subdir = "usr/lib"
+into = "crt"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+# (the C++ library's headers, for C++: the judge puts them first only for a .cpp)
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/libstdc%2B%2B-devel-4.1.0-3.i386.rpm"
+file = "libstdc++-devel-4.1.0-3.i386.rpm"
+sha256 = "a1414499f6f633658e8f2e5713f21f039187fa1d0679757ac2548f79f5074e03"
+keep = { "usr/include/c++/4.1.0" = "c++" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-4.1.0-redhat-linux".parts]]
+url = "https://archives.fedoraproject.org/pub/archive/fedora/linux/core/5/i386/os/Fedora/RPMS/glibc-kernheaders-3.0-5.2.i386.rpm"
+sha256 = "ccfd2714b1a5abd215a3229d5031d792e5511ce907bb320674c6705f5dae0152"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+
+["gcc-3.3.1-linux"]
+name = "GCC 3.3.1 for Linux (Slackware 9.1)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-2.0"
+source = "Slackware 9.1's own packages: testing/gcc and gcc-g++ 3.3.1 (with libstdc++'s headers), d/binutils 2.14.90.0.6, l/glibc 2.3.2 and d/kernel-headers 2.4.22 (their headers)"
+description = "GCC 3.3.1 as released (C and C++) and the binutils Slackware 9.1 shipped, with glibc 2.3.2's headers: the compiler a program or library whose .comment says \"GCC: (GNU) 3.3.1\" was built with (Linux programs and prebuilt libraries of 2003-2004). Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc-lib/i486-slackware-linux/3.3.1"; x=; case "$src" in *.cpp) x="-I$tc/include/c++ -I$tc/include/c++/i486-slackware-linux -I$tc/include/c++/backward";; esac; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc-3.3.1" -B"$g/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" $x -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+cplusplus = true
+[["gcc-3.3.1-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-9.1/testing/packages/gcc-3.3.1/gcc-3.3.1-i486-1.tgz"
+sha256 = "9ffee1cf136f4857413fd251c285f7913df8501a7e76f99250f2e5bd6aa157f0"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+# (C++: its compiler, beside cc1; the driver is gcc's, which compiles a .cpp with it)
+url = "https://slackware.uk/slackware/slackware-9.1/testing/packages/gcc-3.3.1/gcc-g++-3.3.1-i486-1.tgz"
+sha256 = "32d5ef2f295ba94c8ad805b0164d82cf915631aa892f640b1d5ba36b8ac0e97a"
+keep = { "usr/lib/gcc-lib/i486-slackware-linux/3.3.1/cc1plus" = "usr/lib/gcc-lib/i486-slackware-linux/3.3.1/cc1plus" }
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+# (the C++ library's headers, for C++: the judge puts them first only for a .cpp)
+url = "https://slackware.uk/slackware/slackware-9.1/testing/packages/gcc-3.3.1/gcc-g++-3.3.1-i486-1.tgz"
+sha256 = "32d5ef2f295ba94c8ad805b0164d82cf915631aa892f640b1d5ba36b8ac0e97a"
+keep = { "usr/include/c++/3.3.1" = "c++" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-9.1/slackware/d/binutils-2.14.90.0.6-i486-1.tgz"
+sha256 = "7e0d493152e39e16d711b995e9e98bccc611cbcc89e718c9c3ddb1b8a32a7259"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-9.1/slackware/l/glibc-2.3.2-i486-1.tgz"
+sha256 = "f559a39f330fdc14f64b45717605ab213d0462cd7d81619e80623c2ca9807eae"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+# (the kernel's headers glibc's include; its install script links asm to asm-i386, which the installer doesn't run)
+url = "https://slackware.uk/slackware/slackware-9.1/slackware/d/kernel-headers-2.4.22-i386-1.tgz"
+sha256 = "5a2a5b31286ba9fe6e3cbb951eb59bb305c51897a7e39a1b39776d042519a88a"
+keep = { "usr/include/linux" = "linux", "usr/include/asm-i386" = "asm" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.3.1-linux".parts]]
+# (its C runtime objects, crt1.o, crti.o, crtn.o and libc_nonshared.a: what a Linux export's build links a new program with)
+url = "https://slackware.uk/slackware/slackware-9.1/slackware/l/glibc-2.3.2-i486-1.tgz"
+sha256 = "f559a39f330fdc14f64b45717605ab213d0462cd7d81619e80623c2ca9807eae"
+subdir = "usr/lib"
+into = "crt"
+platforms = ["linux-x86_64"]
+
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"

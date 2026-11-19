@@ -17,7 +17,9 @@ The compilers are the distributions' own (toolchains.toml): gcc-2.95.3-linux, Sl
 with glibc 2.2.3's headers; gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; and
 gcc-4.3.2-redhat-linux, Fedora 10's (Red Hat's 4.3.2-7, C and C++); egcs-1.1.2-linux, Slackware 7.0's egcs 1.1.2
 (egcs-2.91.66) and binutils 2.9.1 with glibc 2.1.2's headers; gcc-3.4.4-linux, Slackware 10.2's GCC 3.4.4 (C and
-C++) and binutils 2.15.92 with glibc 2.3.5's; all run on the pinned 32-bit runtime. The program's .comment says which
+C++) and binutils 2.15.92 with glibc 2.3.5's; gcc-3.3.1-linux, Slackware 9.1's GCC 3.3.1 (C and C++) and binutils
+2.14.90 with glibc 2.3.2's; gcc-4.1.0-redhat-linux, Fedora Core 5's (Red Hat's 4.1.0-3, C and C++) and binutils
+2.16.91 with glibc 2.4's; all run on the pinned 32-bit runtime. The program's .comment says which
 (default_compiler), and the import says when it names one there's none of. A program several GCCs built (its own
 code one's, a prebuilt library's another's) has a note per object file: objects.py says which built each part, and
 the import gives the others' code their ranges (after_import)."""
@@ -39,7 +41,8 @@ LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
 LIBRARY_MARCHES = ("", "i686", "amdfam10", "k8", "core2", "pentium4")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
 PIC_PROLOGUE = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
-OBJECT_READING = 1  # the version of objects.py's reading a project's compiler ranges come from
+OBJECT_READING = 2  # the version of objects.py's reading a project's compiler ranges come from (2: hidden symbols
+# aren't an object's own, and a 2008 C++ program's 389 of them had made its objects unreadable)
 DEBUG_LINES = 1  # the version of what add_line_tables reads into a project imported before it
 
 
@@ -62,7 +65,12 @@ class Linux(Console):
                           "Linux programs of 2008-2009 built on Fedora or Red Hat (C and C++)",
                           "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)"),
                  Compiler("gcc-3.4.4-linux", "GCC 3.4.4 (Slackware 10.2)",
-                          "Linux programs and prebuilt libraries of 2005-2006 (C and C++)", "GCC: (GNU) 3.4.4"))
+                          "Linux programs and prebuilt libraries of 2005-2006 (C and C++)", "GCC: (GNU) 3.4.4"),
+                 Compiler("gcc-4.1.0-redhat-linux", "GCC 4.1.0 (Red Hat, Fedora Core 5)",
+                          "Linux programs and prebuilt libraries of 2006-2007 built on Fedora or Red Hat (C and C++)",
+                          "GCC: (GNU) 4.1.0 20060304 (Red Hat 4.1.0-3)"),
+                 Compiler("gcc-3.3.1-linux", "GCC 3.3.1 (Slackware 9.1)",
+                          "Linux programs and prebuilt libraries of 2003-2004 (C and C++)", "GCC: (GNU) 3.3.1"))
     guides = ("linux",)  # (not the PC's x86 guide: its conventions are Visual C++'s)
     compiler_guide = "linux"  # (guides/linux.md: GCC 2.95's habits on i386, given every helper before its first claim)
     ram = (0x08048000, 0x10000000)

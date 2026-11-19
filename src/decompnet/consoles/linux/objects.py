@@ -61,7 +61,10 @@ def read_objects(elf) -> tuple[list[Obj], str] | None:
             objs.append(Obj(s.name))
         elif bind != "STB_LOCAL":
             break  # (the locals come first, object by object; then the globals)
-        elif objs and kind in ("STT_FUNC", "STT_NOTYPE") and lo <= s["st_value"] < hi:
+        elif objs and kind in ("STT_FUNC", "STT_NOTYPE") and lo <= s["st_value"] < hi \
+                and s["st_other"]["visibility"] == "STV_DEFAULT":
+            # (a hidden global is made local by the linker and listed after the last object's own locals: a 2008
+            # C++ program's 389 of libpng, zlib and Lua sat under its last file, crc.c)
             objs[-1].anchors.append(s["st_value"])
     crt = sum(o.name == CRT for o in objs)
     objs = [o for o in objs if o.name != CRT]

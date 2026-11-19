@@ -1012,6 +1012,9 @@ def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
     # GCC 3.4.4 as released, Slackware 10.2's: a 2009 game's prebuilt 3D engine and static libraries
     assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 3.4.4"}, "") == "gcc-3.4.4-linux"
     assert linux.compiler_said("GCC: (GNU) 3.3.6") == "" and linux.compiler_said("NASM 0.98.35") == ""
+    # a 2008 C++ program's Scaleform GFx (Fedora Core 5's Red Hat 4.1.0) and its arcade board's code (GCC 3.3.1)
+    assert linux.compiler_said("GCC: (GNU) 4.1.0 20060304 (Red Hat 4.1.0-3)") == "gcc-4.1.0-redhat-linux"
+    assert linux.compiler_said("GCC: (GNU) 3.3.1") == "gcc-3.3.1-linux"
 
 
 def test_an_export_relinks_with_data_sections_only_where_the_compiler_has_them():
@@ -2401,3 +2404,38 @@ def test_a_library_whose_own_flags_the_games_compiler_refuses_builds_with_its_ra
     res = net.match_libraries(slug, log=said.append)
     assert any("built with GCC 3.4.4" in line for line in said), said
     assert res["found"] >= 56, res
+
+
+def test_a_hidden_symbol_is_no_objects_own():
+    """ld makes a hidden global local and lists it after the last object's own locals: a 2008 C++ program's 389 of
+    libpng, zlib and Lua sat under its last file symbol (crc.c), out of its objects' order, and the program's
+    objects couldn't be read at all (its Scaleform GFx is Red Hat GCC 4.1.0's). They aren't anchors any more."""
+    from decompnet.consoles.linux import objects
+
+    def sym(name, kind, value, bind="STB_LOCAL", visibility="STV_DEFAULT"):
+        return type("S", (), {"name": name, "__getitem__": lambda self, k: {
+            "st_info": {"type": kind, "bind": bind}, "st_value": value, "st_other": {"visibility": visibility}}[k]})()
+
+    class Section:
+        def __init__(self, symbols=(), data=b"", addr=0, size=0):
+            self.symbols, self._data, self.addr, self.size = symbols, data, addr, size
+
+        def iter_symbols(self):
+            return iter(self.symbols)
+
+        def data(self):
+            return self._data
+
+        def __getitem__(self, k):
+            return {"sh_addr": self.addr, "sh_size": self.size}[k]
+
+    a, b = "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)", "GCC: (GNU) 3.3.1"
+    table = Section([sym("png.c", "STT_FILE", 0), sym("png_static", "STT_FUNC", 0x1000),
+                     sym("crc.c", "STT_FILE", 0), sym("crc_static", "STT_FUNC", 0x5000),
+                     sym("png_hidden", "STT_FUNC", 0x1100, visibility="STV_HIDDEN"),
+                     sym("main", "STT_FUNC", 0x1200, bind="STB_GLOBAL")])
+    sections = {".symtab": table, ".text": Section(addr=0x1000, size=0x6000),
+                ".comment": Section(data=f"\0{a}\0{b}\0".encode())}
+    elf = type("E", (), {"get_section_by_name": lambda self, n: sections.get(n)})()
+    objs, _ = objects.read_objects(elf)
+    assert [(o.name, o.said, o.anchors) for o in objs] == [("png.c", a, [0x1000]), ("crc.c", b, [0x5000])]

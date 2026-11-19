@@ -188,8 +188,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   objects lie: their local symbols, and between two compilers' objects the padding each toolchain's assembler leaves
   (`66 90` and `8d 76 00` from binutils 2.18, `89 f6` from 2.15); what neither says stays the project's compiler's.
   A library's source builds with the compiler of the range its functions are in. The import screen leaves the
-  compiler to the program first (it always sent one, so a ROM game's program was never read). Left: the engine's
-  object files without local symbols or a padding mark at either end of a run.
+  compiler to the program first (it always sent one, so a ROM game's program was never read). Also
+  gcc-4.1.0-redhat-linux (Fedora Core 5's) and gcc-3.3.1-linux (Slackware 9.1's): a 2008 C++ program's Scaleform GFx
+  is Red Hat's 4.1.0's (141 objects), its arcade board's code 3.3.1's (3); hidden symbols, which ld lists as the
+  last object's locals, aren't any object's own (389 of them made that program's objects unreadable). Left: the
+  engine's object files without local symbols or a padding mark at either end of a run (that program's three 3.3.1
+  files lie between 4.3.2 ones, with none).
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.
