@@ -12,6 +12,9 @@ import time
 from ...network import NetworkError
 from ...rom.symbols import AUTO_NAME, Symbol
 
+# what says why a function is set aside (network.set_aside): what a room's host sends with each
+SET_ASIDE_WHY = ("asm_code", "asm_twin", "not_c", "library", "set_aside")
+
 
 class RoomMixin:
     def link_project(self, slug: str, info: dict, client=None, start: bool = True):
@@ -121,6 +124,39 @@ class RoomMixin:
         with self.store.tx() as db:
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fid, aid, text, created_at))
+
+    def apply_remote_compiler(self, slug: str, settings: dict) -> None:
+        """The room's compiler settings, the host's: its compiler and flags, and its compiler ranges. A join copied the
+        compiler alone, and nothing after it: a 2009 game's 3.4.4 ranges, applied by the host, never reached its
+        guests, who built the game's engine with its 4.3.2 and saw none of their matches confirmed."""
+        def change(cfg):
+            cfg["compiler"] = settings["compiler"]
+            if settings.get("compiler_ranges"):
+                cfg["compiler_ranges"] = settings["compiler_ranges"]
+            else:
+                cfg.pop("compiler_ranges", None)
+
+        self._update_cfg(slug, change)
+        with self.store.tx() as db:
+            self._event(db, self._project(slug)["id"], None, "compiler", "the room's compiler settings, from its host")
+
+    def apply_remote_set_aside(self, slug: str, items: list) -> None:
+        """The host's set-aside functions ([vram, the meta that says why]): set aside here too, and those the host has
+        opened again open here. Only matches and the layout came before: a guest's list and progress still showed
+        open what the host had set aside as a library's or assembly."""
+        proj = self._project(slug)
+        aside = {int(vram): why for vram, why in items}
+        with self.store.tx() as db:
+            for r in db.execute("SELECT id, vram, status, meta FROM functions WHERE project_id=? AND status IN "
+                                "('open', 'asm')", (proj["id"],)).fetchall():
+                meta = json.loads(r["meta"] or "{}")
+                if r["vram"] in aside and r["status"] == "open":
+                    meta.update(aside[r["vram"]] or {})
+                    db.execute("UPDATE functions SET status='asm', meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+                    db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
+                elif r["vram"] not in aside and r["status"] == "asm":
+                    meta = {k: v for k, v in meta.items() if k not in SET_ASIDE_WHY}
+                    db.execute("UPDATE functions SET status='open', meta=? WHERE id=?", (json.dumps(meta), r["id"]))
 
     def apply_remote_best(self, slug: str, vram: int, score: int, source: str) -> None:
         proj = self._project(slug)

@@ -306,8 +306,11 @@ class Room:
             if len(events) == EVENTS_PAGE else 0
         return {"e": last, "events": events, "behind": behind}
 
-    def state(self, e: int, a: int, ctx_version: int, member: Agent, fresh: bool = False) -> dict:
-        """What changed since the guest's cursors: work product only, never ROM-derived data."""
+    def state(self, e: int, a: int, ctx_version: int, member: Agent, fresh: bool = False, compiler: str = "",
+              aside: str = "") -> dict:
+        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler` and `aside`:
+        digests of the room's compiler settings and set-aside functions as the guest has them; either is sent again
+        when it changed."""
         if self.fork:
             return self._fork_state(e, member, fresh)
         pid = self.proj["id"]
@@ -345,6 +348,17 @@ class Room:
         out["claims"] = [dict(r) for r in net.store.all(
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
             "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
+        cfg = net.cfg(net.project_row(self.slug))
+        settings = {"compiler": cfg["compiler"], "compiler_ranges": cfg.get("compiler_ranges") or []}
+        if (digest := _digest(settings)) != compiler:
+            out["compiler"] = settings | {"digest": digest}
+        rows = net.store.all("SELECT vram, meta FROM functions WHERE project_id=? AND status='asm' ORDER BY vram", pid)
+        if (digest := _digest([r["vram"] for r in rows])) != aside:
+            from .engine.rooms import SET_ASIDE_WHY
+
+            out["set_aside"] = {"digest": digest, "functions": [
+                [r["vram"], {k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_WHY}]
+                for r in rows]}
         out["members"] = self.members()
         return out
 
@@ -436,7 +450,36 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"name": member.name, "room": room.slug}
 
     def state(room, member, q):
-        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member, q.get("fresh") == "1")
+        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member,
+                          q.get("fresh") == "1", str(q.get("k") or ""), str(q.get("s") or ""))
+
+    def suggest(room, member, d):
+        """A member's agent's suggestion: the host's compiler settings are the room's, so it's the host's to check."""
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.suggest(agent, room.slug, str(d.get("text", "")), str(d.get("compiler") or ""),
+                                    str(d.get("flags") or ""), d.get("function") or None, str(d.get("ranges") or ""),
+                                    str(d.get("source") or ""))}
+
+    def wait(room, member, d):
+        """A member's agent released a function saying it needs another done first: the host hands out the
+        functions, so it keeps the wait (that one first, this one after everything else until it matches)."""
+        agent = room.agent_for(member, d.get("agent"))
+        fn, need = net._function(str(d.get("function", "")), room.slug), net._function(str(d.get("needs", "")), room.slug)
+        if fn["id"] != need["id"] and need["status"] == "open":
+            net.wait_for(agent, fn, need)
+        return {"ok": True}
+
+    def knowledge(room, member, d):
+        """What agents learn about the game, the room's: kept by the host. A member's agents propose and back it
+        here (`model`: the model behind the agent, as its own app knows it), and their prompts read it from here."""
+        what = d.get("what")
+        if what == "prompt":
+            return {"text": net.knowledge.for_prompt(room.slug)}
+        if what == "list":
+            return net.knowledge.listing(room.slug)
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.knowledge.share(agent, room.slug, str(d.get("text") or ""), int(d.get("supports") or 0),
+                                            model=str(d.get("model") or ""))}
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
@@ -592,6 +635,9 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/attempt", endpoint(attempt), methods=["POST"]),
         Route("/collab/best", endpoint(best), methods=["POST"]),
         Route("/collab/release", endpoint(release), methods=["POST"]),
+        Route("/collab/suggest", endpoint(suggest), methods=["POST"]),
+        Route("/collab/wait", endpoint(wait), methods=["POST"]),
+        Route("/collab/knowledge", endpoint(knowledge), methods=["POST"]),
         Route("/collab/context", endpoint(context), methods=["POST"]),
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
@@ -748,7 +794,7 @@ class Link:
             self.project_id = None
         info = json.loads(proj["config"]).get("link") or {}
         # kept with the link: from 0 after every restart, the room's whole history came again, twice in the feed
-        self.cursor = {"e": 0, "a": 0, "v": 0} | (info.get("cursor") or {})
+        self.cursor = {"e": 0, "a": 0, "v": 0, "k": "", "s": ""} | (info.get("cursor") or {})
         self.saved = dict(self.cursor)
         self.claims: list[dict] = []
         self.members: list[dict] = []
@@ -915,6 +961,12 @@ class Link:
         for ev in st.get("events") or []:
             if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "collab", "polish", "readable") and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
+        if st.get("compiler"):
+            net.apply_remote_compiler(slug, st["compiler"])
+            self.cursor["k"] = st["compiler"]["digest"]
+        if st.get("set_aside"):
+            net.apply_remote_set_aside(slug, st["set_aside"]["functions"])
+            self.cursor["s"] = st["set_aside"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
@@ -1177,6 +1229,11 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
                             "host_title": hello["title"], "head": info.get("head", "")}, client=client, start=start)
     log(f"joined {hello['title']} again as {joined['name']}")
     return slug
+
+
+def _digest(value) -> str:
+    """A short digest of what a room's host sends only when it changed (its compiler settings, its set-aside list)."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _in_batches(net, items: list, apply_one, size: int = 500) -> None:

@@ -31,6 +31,9 @@ MAX_FLAG_VARIANTS = 12
 FLAGS_SHOWN = 6
 
 
+ROOM_COMPILER = ("in a room, the host's compiler settings are the room's: the host changes them (an agent here can "
+                 "suggest(...) a change, which goes to the host), and this copy follows")
+
 class CompilerMixin:
     # Settings: auto-adjust compiler. A suggested compiler is applied without asking once it's proven (a function's
     # C matches with it) or three agents agree on it (see suggest)
@@ -487,6 +490,11 @@ class CompilerMixin:
         suggested compiler, matches the game or doesn't (GTA San Andreas: agents said EE-GCC 2.96, then 2.95.3). The
         same compiler and flags suggested again counts as another agent agreeing. `ranges` ("0x10BFD0-0x10CD40, ..."):
         the compiler built those address ranges only (a game built by several compilers)."""
+        if (link := self._link(slug)) is not None:
+            # a room guest's agent: the host keeps the room's compiler settings, so the suggestion is the host's to
+            # check and its user's to apply (it stayed on the guest's app, its range check applying to that copy only)
+            return link.call("/collab/suggest", agent, text=text, compiler=compiler, flags=flags,
+                             function=function or "", ranges=ranges, source=source)
         text = " ".join(text.split())[:1000]
         spans = parse_ranges(ranges)
         if spans and not compiler:
@@ -845,6 +853,8 @@ class CompilerMixin:
         suggestions name a whole range to replace or remove, so they keep the replacing."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
+        if self._link(slug) is not None:  # (rooms: the host's settings are the room's, sent to its guests)
+            raise NetworkError(ROOM_COMPILER)
         if toolchain:
             cfg = self.cfg(self._project(slug))
             toolchain = toolchains.get(toolchain).id
@@ -975,6 +985,8 @@ class CompilerMixin:
         across the game, or nothing changes."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
+        if self._link(slug) is not None:  # (rooms: the host's settings are the room's, sent to its guests)
+            raise NetworkError(ROOM_COMPILER)
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = json.loads(proj["config"])  # a copy of its own: changed below

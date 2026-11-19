@@ -222,6 +222,11 @@ class JudgeMixin:
         said = self.release(agent, function, notes, project, not_c)
         if need is not None:
             self.wait_for(agent, fn, need)
+            if (link := self._link(project)) is not None:  # (the host hands out the functions: it keeps the wait)
+                try:
+                    link.call("/collab/wait", agent, function=fn["name"], needs=need["name"])
+                except NetworkError:
+                    pass
             said += (f"\n{fn['name']} now waits for {need['name']}: it's claimed after everything else until "
                      f"{need['name']} matches, and {need['name']} goes first meanwhile.")
             said += self._pivot(agent, project, need)

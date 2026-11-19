@@ -1076,3 +1076,52 @@ def test_a_guests_work_selection_is_the_one_the_host_hands_out_by(built, tmp_pat
     g.set_selection(gslug, agent.name, {})  # (cleared on the guest's app: cleared on the host's too)
     g.claim(agent, gslug)
     assert host.selection(slug, "sven.codex-1") == {}
+
+
+def test_what_the_host_keeps_reaches_its_guests_and_what_their_agents_say_reaches_the_host(built, tmp_path):  # noqa: F811
+    """A ROM room's guest copied the host's compiler at its join, and nothing after: the host's compiler ranges
+    (a 2009 game's 3.4.4 ones) never reached it, nor the functions the host set aside; its agents' compiler
+    suggestions, shared knowledge and "needs this one first" stayed on its own app. Now the host sends its compiler
+    settings and its set-aside list whenever they change, and keeps the room's suggestions, knowledge and waits."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "rio", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    link = g.links[gslug]
+    toolchain = host.cfg(host.project_row(slug))["compiler"]["toolchain"]
+    # the host's compiler settings, ranges too
+    host.set_compiler(slug, toolchain, ["-O1"])
+    host.set_compiler_ranges(slug, [[0x800007C4, 0x80000800]], toolchain, ["-O0"])
+    link.sync()
+    cfg = g.cfg(g.project_row(gslug))
+    assert cfg["compiler"]["flags"] == ["-O1"] and cfg["compiler_ranges"][0]["flags"] == ["-O0"]
+    with pytest.raises(NetworkError, match="the host's compiler settings are the room's"):
+        g.set_compiler(gslug, toolchain, ["-O3"])
+    # the functions the host sets aside, and opens again
+    fn = host._function("func_800007F4", slug)
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET status='asm', meta=? WHERE id=?",
+                   (json.dumps({"asm_code": "a library's code (libfoo/foo.c)"}), fn["id"]))
+    link.sync()
+    mine = g._function("func_800007F4", gslug)
+    assert mine["status"] == "asm" and json.loads(mine["meta"])["asm_code"] == "a library's code (libfoo/foo.c)"
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET status='open', meta='{}' WHERE id=?", (fn["id"],))
+    link.sync()
+    mine = g._function("func_800007F4", gslug)
+    assert mine["status"] == "open" and "asm_code" not in json.loads(mine["meta"] or "{}")
+    # an agent's compiler suggestion is the host's to check and apply
+    agent, _ = g.local_agent("claude-1")
+    g.suggest(agent, gslug, "these look built at -O2", compiler=toolchain, flags="-O2")
+    assert host.cfg(host.project_row(slug)).get("suggestions") and not g.cfg(g.project_row(gslug)).get("suggestions")
+    # shared knowledge: proposed and backed on the host, read from there
+    said = g.knowledge.share(agent, gslug, "Entities keep their hit points at offset 0x10")
+    kid = int(re.search(r"#(\d+)", said).group(1))
+    hosts, _ = host.local_agent("codex-1")
+    host.knowledge.share(hosts, slug, supports=kid)
+    host.knowledge.decide(slug, kid, True)
+    assert "hit points at offset 0x10" in g.knowledge.for_prompt(gslug)
+    assert g.knowledge.listing(gslug)["items"][0]["id"] == kid
+    # "needs this one first": the host keeps the wait
+    g.claim(agent, gslug, "func_800007F4")
+    g.release_function(agent, "func_800007F4", "it calls func_80000808, whose convention decides this", gslug,
+                       needs="func_80000808", not_c=False)
+    assert host.store.one("SELECT 1 FROM waits w JOIN functions f ON f.id=w.function_id WHERE f.name='func_800007F4'")

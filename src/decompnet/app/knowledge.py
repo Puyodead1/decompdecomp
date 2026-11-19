@@ -90,6 +90,8 @@ class Knowledge:
         return bool(self.net.cfg(proj).get("knowledge_auto"))
 
     def set_auto(self, slug: str, on: bool) -> None:
+        if self._room(slug) is not None:
+            raise NetworkError("in a room, its host decides what its agents know: ask them")
         self.net._update_cfg(slug, lambda cfg: cfg.__setitem__("knowledge_auto", bool(on)))
         if on:
             proj = self.net._project(slug)
@@ -97,11 +99,20 @@ class Knowledge:
                 db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE project_id=? AND status=?",
                            (ACCEPTED, time.time(), proj["id"], AGREED))
 
-    def share(self, agent: Agent, slug: str, text: str = "", supports: int = 0) -> str:
-        """An agent proposes something every agent on this game should know, or backs a proposal (supports=id)."""
+    def _room(self, slug: str):
+        """The room this project is a guest in: the host keeps the room's knowledge (what its agents and every
+        member's propose, back and read), or None."""
+        return self.net._link(slug)
+
+    def share(self, agent: Agent, slug: str, text: str = "", supports: int = 0, model: str = "") -> str:
+        """An agent proposes something every agent on this game should know, or backs a proposal (supports=id).
+        `model`: (a room member's agent, on the host) the model behind it, as the member's app knows it."""
+        if (link := self._room(slug)) is not None:
+            return link.call("/collab/knowledge", agent, what="share", text=text, supports=int(supports or 0),
+                             model=self._model_of(agent))
         proj = self.net._project(slug)
         if supports:
-            return self._support(agent, proj, int(supports))
+            return self._support(agent, proj, int(supports), model)
         text = " ".join(text.split())[:MAX_TEXT]
         if not text:
             raise NetworkError("say what every agent on this game should know (text), or back a proposal (supports=id)")
@@ -117,16 +128,16 @@ class Knowledge:
         with self.net.store.tx() as db:
             kid = db.execute("INSERT INTO knowledge(project_id, text, status, created_at) VALUES(?,?,?,?)",
                              (proj["id"], text, PROPOSED, time.time())).lastrowid
-        self._support(agent, proj, kid)
+        self._support(agent, proj, kid, model)
         return (f"Proposed as #{kid}. It reaches every agent once a helper running another model backs it "
                 f"(and the user accepts it, unless the project adds agreed knowledge by itself), or once the user "
                 f"gives it to agents.")
 
-    def _support(self, agent: Agent, proj, kid: int) -> str:
+    def _support(self, agent: Agent, proj, kid: int, model: str = "") -> str:
         row = self.net.store.one("SELECT * FROM knowledge WHERE id=? AND project_id=?", kid, proj["id"])
         if row is None:
             raise NetworkError(f"no proposal #{kid} on this project")
-        model = self._model_of(agent)
+        model = model_key(model) if model else self._model_of(agent)
         with self.net.store.tx() as db:
             db.execute("INSERT OR IGNORE INTO knowledge_support(knowledge_id, agent_id, model, created_at) VALUES(?,?,?,?)",
                        (kid, agent.id, model, time.time()))
@@ -148,6 +159,8 @@ class Knowledge:
     def decide(self, slug: str, kid: int, accept: bool) -> None:
         """The user accepts a proposal (agreed by two models, or one model's that the user vouches for), or rejects
         (or takes back) one."""
+        if self._room(slug) is not None:
+            raise NetworkError("in a room, its host decides what its agents know: ask them")
         proj = self.net._project(slug)
         with self.net.store.tx() as db:
             db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE id=? AND project_id=?",
@@ -162,7 +175,13 @@ class Knowledge:
             db.execute("DELETE FROM knowledge WHERE project_id=?", (pid,))
 
     def listing(self, slug: str) -> dict:
-        """For the GUI: every proposal not rejected, with the models behind it, and the project's setting."""
+        """For the GUI: every proposal not rejected, with the models behind it, and the project's setting (a room
+        guest's: the host's, which it decides)."""
+        if (link := self._room(slug)) is not None:
+            try:
+                return link._req("POST", "/collab/knowledge", {"agent": "app", "what": "list"}) | {"room": True}
+            except NetworkError:
+                pass  # (the host out of reach: this copy's own, as before it joined)
         proj = self.net._project(slug)
         rows = self.net.store.all("SELECT * FROM knowledge WHERE project_id=? AND status != ? ORDER BY id DESC",
                                   proj["id"], REJECTED)
@@ -175,7 +194,13 @@ class Knowledge:
                            "models": sorted(support.get(r["id"], ()))} for r in rows]}
 
     def for_prompt(self, slug: str) -> str:
-        """What every agent starts with: the accepted knowledge, then the open proposals it can back."""
+        """What every agent starts with: the accepted knowledge, then the open proposals it can back (a room
+        guest's: the room's, from its host)."""
+        if (link := self._room(slug)) is not None:
+            try:
+                return str(link._req("POST", "/collab/knowledge", {"agent": "app", "what": "prompt"}).get("text") or "")
+            except NetworkError:
+                pass
         proj = self.net._project(slug)
         out, used = [], 0
         for r in self.net.store.all("SELECT text FROM knowledge WHERE project_id=? AND status=? ORDER BY id DESC",
