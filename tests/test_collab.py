@@ -1125,3 +1125,22 @@ def test_what_the_host_keeps_reaches_its_guests_and_what_their_agents_say_reache
     g.release_function(agent, "func_800007F4", "it calls func_80000808, whose convention decides this", gslug,
                        needs="func_80000808", not_c=False)
     assert host.store.one("SELECT 1 FROM waits w JOIN functions f ON f.id=w.function_id WHERE f.name='func_800007F4'")
+
+
+def test_copies_of_one_version_from_different_commits_are_not_one_room(built, tmp_path, monkeypatch):  # noqa: F811
+    """A copy installed from a branch keeps one version through many commits, and a room checked the version alone:
+    a host and a member a day of commits apart (new room calls, new things the host sends) were let in together.
+    Two that know their commits must now be on the same one; a release's copy knows none, and its version says it."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    collab.own_commit.cache_clear()
+    monkeypatch.setattr(collab, "own_commit", lambda: "aaaaaaaaaaaa")
+    with pytest.raises(NetworkError, match=r"commit aaaaaaaaaaaa\).*commit bbbbbbbbbbbb\)"):
+        collab.check_same((collab.__version__, "aaaaaaaaaaaa"), (collab.__version__, "bbbbbbbbbbbb"))
+    collab.check_same((collab.__version__, "aaaaaaaaaaaa"), (collab.__version__, ""))  # (a release's copy)
+    # a member on another commit, through the host's door
+    r = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "ada", "sha1": "x",
+                                                        "version": collab.__version__, "commit": "bbbbbbbbbbbb"})
+    assert r.status_code == 400 and "same version" in r.json()["error"]
+    g, gslug = _guest(tmp_path, "ada", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    assert gslug  # (the same commit on both sides: one room)
+
