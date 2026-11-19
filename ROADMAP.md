@@ -179,6 +179,17 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   GOT32, PLT32) against the program's GOT and its dynamic relocations, and a function that starts by finding the GOT
   gets -fPIC (glibc's atexit from libc_nonshared.a matches). Left: the 143 -fPIC functions of that 2008 program's
   libpng, tried with the library's own flags.
+- Programs two GCCs built: a 2009 arcade game's own code is Red Hat's GCC 4.3.2's, its prebuilt 3D engine and static
+  libraries (libjpeg, libpng, xvid, libmad, liba52) GCC 3.4.4's (gcc-3.4.4-linux: Slackware 10.2's GCC 3.4.4 as
+  released, C and C++, binutils 2.15.92 and glibc 2.3.5's headers; libjpeg 181 of 246 functions at -O2 -march=i686,
+  23 with 4.3.2). Its .comment has a note per object file in link order, paired with the symbol table's file
+  symbols (consoles/linux/objects.py): the GCC that linked the program (its crtbegin.o's) is the project's, and the
+  code the other built gets that one's range at import (a project imported before gets them as suggestions). Where
+  objects lie: their local symbols, and between two compilers' objects the padding each toolchain's assembler leaves
+  (`66 90` and `8d 76 00` from binutils 2.18, `89 f6` from 2.15); what neither says stays the project's compiler's.
+  A library's source builds with the compiler of the range its functions are in. The import screen leaves the
+  compiler to the program first (it always sent one, so a ROM game's program was never read). Left: the engine's
+  object files without local symbols or a padding mark at either end of a run.
 - Methods of classes in namespaces and of templates' instances aren't declared (the header is flat: a method defined
   from it would miss the namespace in its symbol); a header with namespaces for C++.
 - Debian's GCC 4.3.2 has no g++ yet.

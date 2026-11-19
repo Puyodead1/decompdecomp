@@ -1009,6 +1009,9 @@ def test_the_gcc_the_programs_comment_names_builds_it_whoever_built_that_gcc():
     # for weeks, its agents taking egcs's `leal 0(,%reg,2)` for "a different 2.95.3 build"
     info = {"compiler_guess": "GCC: (GNU) egcs-2.91.66 19990314/Linux (egcs-1.1.2 release)"}
     assert linux.default_compiler(info, "") == "egcs-1.1.2-linux" and "compiler_why" not in info
+    # GCC 3.4.4 as released, Slackware 10.2's: a 2009 game's prebuilt 3D engine and static libraries
+    assert linux.default_compiler({"compiler_guess": "GCC: (GNU) 3.4.4"}, "") == "gcc-3.4.4-linux"
+    assert linux.compiler_said("GCC: (GNU) 3.3.6") == "" and linux.compiler_said("NASM 0.98.35") == ""
 
 
 def test_an_export_relinks_with_data_sections_only_where_the_compiler_has_them():
@@ -1410,6 +1413,7 @@ def test_flags_a_debug_build_or_another_machine_used_are_tried():
     assert variants[0] == ["-O2"] and ["-O0", "-march=amdfam10"] in variants and ["-O0"] in variants
     tried = CompilerMixin.flag_variants(None, "gcc-4.3.2-redhat-linux", ["-O2"], linux.flag_extras)
     assert ["-O0"] in tried and ["-O2", "-march=amdfam10"] in tried
+    assert ["-O2", "-march=i686"] in tried  # (a 2009 game's libjpeg, GCC 3.4.4's)
 
 
 def test_the_exported_build_compares_a_scattered_constant_as_the_judge_does(tmp_path):
@@ -2277,3 +2281,96 @@ extern Vector3f gUp;
                      shapes=fc.global_layouts(texts))
     assert "long double fmin2() { return 0; }" in stubs and "unsigned pTex_mem[1024];" in stubs
     assert "pTex[0] = (unsigned)pTex_mem;" in stubs and "scrub();" in fc.HARNESS
+
+
+MIXED = ("gcc-4.3.2-redhat-linux", "gcc-3.4.4-linux")
+
+
+@pytest.fixture(scope="module")
+def demo_mixed(tmp_path_factory):
+    """Demo Quest as a program two GCCs built (projects/demo-linux/build.py mixed): its own code Red Hat's 4.3.2's,
+    which linked it with its crtbegin.o and crtend.o, its zlib a prebuilt library's of GCC 3.4.4, no debug
+    information. A 2009 arcade game is built so (its prebuilt 3D engine, libjpeg and libpng 3.4.4's)."""
+    import subprocess
+    import sys
+
+    from decompnet import toolchains
+
+    from .test_consoles import ROOT, ZLIB
+
+    if any(toolchains.installed(t) is None for t in MIXED) or not ZLIB.exists():
+        pytest.skip(f"needs {' and '.join(MIXED)} and zlib (projects/zlib-n64/prepare.py)")
+    folder = ROOT / "projects" / "demo-linux"
+    build = folder / "build-mixed"
+    if not (build / "demo.json").exists():
+        subprocess.run([sys.executable, str(folder / "build.py"), "mixed"], check=True)
+    return build / json.loads((build / "demo.json").read_text())["game"], tmp_path_factory
+
+
+def test_a_program_two_gccs_built_gets_each_ones_code_built_with_it(demo_mixed, monkeypatch):
+    """A 2009 Linux game's .comment names Red Hat's GCC 4.3.2 (42 object files) and GCC 3.4.4 (165: a prebuilt 3D
+    engine and static libraries). Its import took the list's first compiler, GCC 2.95.3: the import screen always
+    sent one, so the program was never read. Now the import reads it when the user leaves the choice to it: the GCC
+    that linked the program (its crtbegin.o's) is the project's, and the code the other built is that one's range,
+    by its object files (objects.py): zlib's, from its first static function on; never the game's own code."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.consoles.linux import objects
+    from decompnet.project import compiler_for
+
+    program, factory = demo_mixed
+    parts = objects.object_compilers(program.read_bytes())
+    assert [p[2] for p in parts] == ["GCC: (GNU) 3.4.4"]
+    work = factory.mktemp("mixed")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    cfg = net.cfg(net.project_row(slug))
+    assert cfg["compiler"]["toolchain"] == MIXED[0]
+    built = {name: compiler_for(cfg, net._function(name, slug)["vram"])["toolchain"]
+             for name in ("main", "calloc", "game_tick", "putShortMSB", "deflate", "scan_tree", "inflate", "zcalloc")}
+    assert {n for n, t in built.items() if t == MIXED[1]} == {"putShortMSB", "deflate", "scan_tree", "inflate",
+                                                             "zcalloc"}, built
+    # a compiler the user picks is the whole program's
+    other = RomNetwork(work / "picked.db", work / "picked")
+    picked = other.import_rom(program, confirmed=True, toolchain=MIXED[1], log=lambda *_: None)
+    assert not other.cfg(other.project_row(picked)).get("compiler_ranges")
+    # a project imported before the notes were read: what they say, as the autopilot's suggestions, once
+    suggested = []
+    monkeypatch.setattr(net, "suggest", lambda agent, slug, text, compiler="", ranges="", **_: suggested.append(
+        (compiler, ranges)) or "ok")
+    net._update_cfg(slug, lambda c: (c.pop("compiler_ranges", None), c.pop("object_reading", None),
+                                     c["compiler"].__setitem__("toolchain", "gcc-2.95.3-linux")))
+    linux = consoles.get("linux")
+    linux.suggest_object_compilers(net, slug)
+    assert suggested == [(MIXED[0], ""), (MIXED[1], f"0x{parts[0][0]:X}-0x{parts[0][1]:X}")]
+    linux.suggest_object_compilers(net, slug)
+    assert len(suggested) == 2
+
+
+def test_a_librarys_source_builds_with_the_compiler_of_the_code_it_is_in(demo_mixed):
+    """A 2009 Linux game's libjpeg is GCC 3.4.4's code (181 of its 246 functions come out byte for byte with it,
+    23 with the game's own 4.3.2): Match library sources built every library with the project's compiler. Now a
+    library builds with the compiler of the range its functions are in, from its first file whose functions are in
+    one, and its files before that which made nothing are tried again (zlib's adler32.c, before the code the
+    program's object files place)."""
+    import shutil
+
+    from decompnet.app.engine import RomNetwork
+
+    from .test_consoles import ROOT
+
+    program, factory = demo_mixed
+    work = factory.mktemp("mixedlibs")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    lib = Path(net._project(slug)["root"]) / "libs" / "zlib-1.1.4"
+    lib.mkdir(parents=True)
+    for folder in ("original", "sysinclude"):
+        for f in (ROOT / "projects" / "zlib-n64" / folder).glob("*.[ch]"):
+            shutil.copy(f, lib / f.name)
+    said = []
+    res = net.match_libraries(slug, log=said.append)
+    assert any("built with GCC 3.4.4" in line for line in said), said
+    assert res["found"] >= 56, res
+    for name in ("scan_tree", "adler32", "deflate"):
+        assert net._function(name, slug)["status"] == "asm", name
+    assert net._function("game_tick", slug)["status"] == "open"

@@ -450,3 +450,15 @@ def test_a_suggestion_shows_its_number():
         pytest.skip("needs node to run the GUI's scripts")
     subprocess.run([NODE, str(Path(__file__).with_name("gui_suggestions.js"))], check=True,
                    capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)
+
+
+def test_a_rom_games_import_lets_the_program_say_its_compiler():
+    """A 2009 Linux game whose .comment names Red Hat's GCC 4.3.2 and GCC 3.4.4 was imported with GCC 2.95.3: the
+    import screen's list of a ROM console's compilers always sent one, so Console.default_compiler never read the
+    program and no other compiler's code got its range. Its first choice now leaves it to the program, as a PC
+    game's import does."""
+    static = Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static"
+    js = (static / "js" / "home.js").read_text(encoding="utf-8")
+    setup = js.split("function setupCompilers(info)", 1)[1].split("\n}\n", 1)[0]
+    rom = setup.split('if (con.mode === "rom") {', 1)[1].split("    return;\n  }", 1)[0]
+    assert 'insertAdjacentHTML("afterbegin", `<option value="" selected>Let decompdecomp pick' in rom

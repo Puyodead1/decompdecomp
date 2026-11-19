@@ -5,6 +5,7 @@ program's PLT stubs, which its symbols name.
 
 Files:
 - split.py: the program's functions, globals and PLT imports, by its symbol table.
+- objects.py: which GCC built each part of a program several built, from its .comment's notes and its object files.
 - debuginfo.py: the STABS GCC 2.95 and egcs wrote with -g (source files, prototypes, locals, types), read by the PS2
   console's STABS reader.
 - drafts.py: Ghidra's machine drafts (m2c reads no x86) made C that GCC 2.95 compiles, for autopilot and redraft.
@@ -15,8 +16,11 @@ Files:
 The compilers are the distributions' own (toolchains.toml): gcc-2.95.3-linux, Slackware 8.0's GCC 2.95.3 and binutils
 with glibc 2.2.3's headers; gcc-4.3.2-linux, Debian 5.0's GCC 4.3.2 and binutils 2.18 with glibc 2.7's; and
 gcc-4.3.2-redhat-linux, Fedora 10's (Red Hat's 4.3.2-7, C and C++); egcs-1.1.2-linux, Slackware 7.0's egcs 1.1.2
-(egcs-2.91.66) and binutils 2.9.1 with glibc 2.1.2's headers; all run on the pinned 32-bit runtime. The program's
-.comment says which (default_compiler), and the import says when it names one there's none of."""
+(egcs-2.91.66) and binutils 2.9.1 with glibc 2.1.2's headers; gcc-3.4.4-linux, Slackware 10.2's GCC 3.4.4 (C and
+C++) and binutils 2.15.92 with glibc 2.3.5's; all run on the pinned 32-bit runtime. The program's .comment says which
+(default_compiler), and the import says when it names one there's none of. A program several GCCs built (its own
+code one's, a prebuilt library's another's) has a note per object file: objects.py says which built each part, and
+the import gives the others' code their ranges (after_import)."""
 
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
 LIBRARY_MARCHES = ("", "amdfam10", "k8", "core2", "pentium4", "i686")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
 PIC_PROLOGUE = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
+OBJECT_READING = 1  # the version of objects.py's reading a project's compiler ranges come from
 DEBUG_LINES = 1  # the version of what add_line_tables reads into a project imported before it
 
 
@@ -55,7 +60,9 @@ class Linux(Console):
                           "GCC: (Debian 4.3.2-1.1) 4.3.2"),
                  Compiler("gcc-4.3.2-redhat-linux", "GCC 4.3.2 (Red Hat, Fedora 10)",
                           "Linux programs of 2008-2009 built on Fedora or Red Hat (C and C++)",
-                          "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)"))
+                          "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)"),
+                 Compiler("gcc-3.4.4-linux", "GCC 3.4.4 (Slackware 10.2)",
+                          "Linux programs and prebuilt libraries of 2005-2006 (C and C++)", "GCC: (GNU) 3.4.4"))
     guides = ("linux",)  # (not the PC's x86 guide: its conventions are Visual C++'s)
     compiler_guide = "linux"  # (guides/linux.md: GCC 2.95's habits on i386, given every helper before its first claim)
     ram = (0x08048000, 0x10000000)
@@ -64,8 +71,9 @@ class Linux(Console):
     # (the export assembles nothing: export.py builds each function's C into a copy of the program)
     as_flags = ("--32",)
     image_ext = ".elf"
-    # search_flags: the build machine's processor (-march=native): a 2008 program's Lua was built for AMD's family 10h
-    flag_extras = ("-march=amdfam10", "-march=k8", "-march=core2")
+    # search_flags: the build machine's processor (-march=native): a 2008 program's Lua was built for AMD's family 10h,
+    # a 2009 game's libjpeg (GCC 3.4.4's) for the Pentium Pro and later (-march=i686: 181 of 246, 10 without it)
+    flag_extras = ("-march=amdfam10", "-march=k8", "-march=core2", "-march=i686")
     # cutting a function (split.split_function, at an instruction's start); the export (export.py)
     own_features = frozenset({BOUNDARIES, EXPORT})
     plain_build = True  # (`make` and `make asan`: NON_MATCHING)
@@ -75,20 +83,23 @@ class Linux(Console):
         "GCC: (Debian 4.3.2-1.1) 4.3.2", Ubuntu's "GCC: (Ubuntu 4.3.2-1ubuntu12) 4.3.2", a GCC built from its
         release "GCC: (GNU) 4.3.2" (an exact match took only the first). A version none of them is takes the first."""
         said = info.get("compiler_guess", "")
-        if (exact := next((c.id for c in self.compilers if c.guess == said), None)):
-            return exact
-        version = m.group(1) if (m := re.search(r"GCC: \([^)]*\) (\d+\.\d+(?:\.\d+)?)", said)) else None
-        vendor = "redhat-" if "Red Hat" in said else ""  # (Red Hat's GCC is patched its own way: its own build)
-        ids = {c.id for c in self.compilers}
-        for wanted in (f"gcc-{version}-{vendor}linux", f"gcc-{version}-linux"):
-            if version and wanted in ids:
-                return wanted
+        if (found := self.compiler_said(said)):
+            return found
         if said:  # (a sound program of egcs 1.1.2 was matched with GCC 2.95.3 for weeks: its `leal 0(,%reg,2)`, which
             # no C makes 2.95.3 write, read as "a different 2.95.3 build" by the agents. Say so at the import.)
             info["compiler_why"] = (f"the program's .comment says {said!r}, which no compiler decompdecomp has is: "
                                     f"{self.compilers[0].name} instead, whose code differs from it in places (no C "
                                     "makes it the game's there); ROADMAP.md, Linux, lists the compilers to come")
         return self.compilers[0].id
+
+    def compiler_said(self, said: str) -> str:
+        """The compiler a .comment note names ("GCC: (GNU) 3.4.4"), or "" when decompdecomp has none of its version."""
+        if (exact := next((c.id for c in self.compilers if c.guess == said), None)):
+            return exact
+        version = m.group(1) if (m := re.search(r"GCC: \([^)]*\) (\d+\.\d+(?:\.\d+)?)", said)) else None
+        vendor = "redhat-" if "Red Hat" in said else ""  # (Red Hat's GCC is patched its own way: its own build)
+        ids = {c.id for c in self.compilers}
+        return next((w for w in (f"gcc-{version}-{vendor}linux", f"gcc-{version}-linux") if version and w in ids), "")
 
     def library_flags(self, flags: list[str]) -> list[list[str]]:
         """A library's own build: an optimisation level, and the processor it was tuned for. A 2008 program's Lua and
@@ -134,7 +145,69 @@ class Linux(Console):
         return {m: d for m, d in zip(mangled, out) if d and d != m}
 
     def after_import(self, net, slug: str, *, chosen: bool, log=print) -> None:
+        """Unless the user picked a compiler: the stretches of code another GCC built than the one that linked the
+        program (objects.py: a 2009 game's prebuilt 3D engine and static libraries, GCC 3.4.4's) get it as their
+        range. Before -fPIC's ranges (add_got), which keep each function's own compiler."""
+        if not chosen:
+            cfg = net.cfg(net.project_row(slug))
+            for toolchain, spans in self._object_spans(cfg).items():
+                net.set_compiler_ranges(slug, spans, toolchain)
+                log(f"{len(spans)} stretches of the program's code are {self._name(toolchain)}'s, by its object "
+                    "files' notes: they build with it")
+        net._update_cfg(slug, lambda c: c.__setitem__("object_reading", OBJECT_READING))
         self.add_got(net, slug, log=log)
+
+    def _name(self, toolchain: str) -> str:
+        return next((c.name for c in self.compilers if c.id == toolchain), toolchain)
+
+    def _object_spans(self, cfg: dict, parts: list | None = None) -> dict[str, list[list[int]]]:
+        """{compiler: [[start, end], ...]} of the program's stretches another GCC built than the project's own, for
+        the GCCs decompdecomp has."""
+        out: dict[str, list[list[int]]] = {}
+        for start, end, said in cfg.get("rom", {}).get("compiler_parts", []) if parts is None else parts:
+            toolchain = self.compiler_said(said)
+            if toolchain and toolchain != cfg["compiler"]["toolchain"]:
+                out.setdefault(toolchain, []).append([start, end])
+        return out
+
+    def suggest_object_compilers(self, net, slug: str) -> None:
+        """A project imported before its object files' notes were read (objects.py): what they say, as the
+        autopilot's suggestions, range-checked like an agent's. The project's compiler ranges are its agents' and the
+        user's work: the notes don't overwrite them. Once per reading."""
+        from io import BytesIO
+
+        from elftools.elf.elffile import ELFFile
+
+        from ...project import compiler_for
+        from . import objects
+
+        proj = net.project_row(slug)
+        cfg = net.cfg(proj)
+        program = Path(proj["root"]) / cfg.get("rom", {}).get("program", "")
+        if cfg.get("object_reading", 0) >= OBJECT_READING or net._link(slug) or not program.is_file():
+            return  # (a room's guest: the host reads it; the program gone: it may come back)
+        data = program.read_bytes()
+        parts = objects.object_compilers(data)
+        agent, _ = net.local_agent("autopilot")
+        said = []
+        read = objects.read_objects(ELFFile(BytesIO(data)))
+        linked = self.compiler_said(objects.program_compiler(*read)) if read else ""
+        if parts and linked and linked != cfg["compiler"]["toolchain"]:
+            net.suggest(agent, slug, f"The program's notes say {self._name(linked)} linked it and built its own code: "
+                        "the project's compiler.", compiler=linked)
+            said.append(f"{self._name(linked)} for the program, suggested")
+        for toolchain, spans in self._object_spans(cfg, parts).items():
+            spans = [s for s in spans if any(compiler_for(cfg, r["vram"])["toolchain"] != toolchain for r in net.store.all(
+                "SELECT vram FROM functions WHERE project_id=? AND vram>=? AND vram<?", proj["id"], s[0], s[1]))]
+            if spans:
+                net.suggest(agent, slug, f"The program's object files' notes say {self._name(toolchain)} built these "
+                            "stretches of its code (a prebuilt library's, or the program's own).", compiler=toolchain,
+                            ranges=", ".join(f"0x{a:X}-0x{b:X}" for a, b in spans))
+                said.append(f"{self._name(toolchain)} for {len(spans)} stretches of its code, range-checked")
+        net._update_cfg(slug, lambda c: c.__setitem__("object_reading", OBJECT_READING))
+        if said:
+            with net.store.tx() as db:
+                net._event(db, proj["id"], None, "analysis", "the program's notes name its compilers: " + "; ".join(said))
 
     def add_got(self, net, slug: str, log=print) -> None:
         """Where the program's GOT is and what its entries hold (split.got_info), for the judge of -fPIC code: a
@@ -190,6 +263,7 @@ class Linux(Console):
         one imported before its STABS line tables were read gets those (add_line_tables), and its GOT (add_got)."""
         self.add_got(net, slug, log=log)
         self.add_line_tables(net, slug, log=log)
+        self.suggest_object_compilers(net, slug)
         proj = net.project_row(slug)
         if net.cfg(proj).get("demangled"):  # (done once: a C program's names stay as they are)
             return

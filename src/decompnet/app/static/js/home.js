@@ -464,7 +464,14 @@ function setupCompilers(info) {
     if (info.order.endsWith("disc image")) {
       $("compilerRow").hidden = true; note.hidden = false;
       note.textContent = "The compiler is picked from the disc's program, then tested on its code. You can change it later.";
-    } else fillCompilers(select, info.compiler === "IDO" ? "ido-7.1" : con.default_compiler, con.id);
+    } else {
+      fillCompilers(select, info.compiler === "IDO" ? "ido-7.1" : con.default_compiler, con.id);
+      // what the program says first (Console.default_compiler: a Linux program's .comment, an N64 game's code), as a
+      // PC game's import does: a list that always sent a compiler never read it, and a 2009 Linux game whose notes
+      // name Red Hat's GCC 4.3.2 and 3.4.4 got the list's first, GCC 2.95.3. The import then gives the code another
+      // compiler built its range (Console.after_import), which a compiler the user picks skips.
+      select.insertAdjacentHTML("afterbegin", `<option value="" selected>Let decompdecomp pick (from the program itself)</option>`);
+    }
     return;
   }
   // a project of the community's kind: the compiler versions its build knows (a compressed GameCube or Wii disc: both)

@@ -7,6 +7,9 @@ keeps its symbol table and debug information, as such games shipped.
     uv run python projects/demo-linux/build.py    ->  build/demoquest (+ build/demo.json for tests/test_consoles.py)
     uv run python projects/demo-linux/build.py gcc-4.3.2-linux   ->  build-gcc-4.3.2-linux/demoquest: the same game as
         a program of 2008 (Debian 5.0's GCC 4.3.2 at -O2 -g, DWARF), for tests/test_linux.py
+    uv run python projects/demo-linux/build.py mixed   ->  build-mixed/demoquest: a program two GCCs built, as a 2009
+        arcade game was: its own code Red Hat's GCC 4.3.2's, its zlib a prebuilt library's of GCC 3.4.4, at -O2
+        without debug information, linked by the 4.3.2's binutils with its crtbegin.o and crtend.o
 
 Needs the pinned gcc-2.95.3-linux toolchain and its 32-bit runtime; they install on first use (free software). The
 compiler runs in the app's sandbox, with that runtime, as every compile of the app does.
@@ -48,8 +51,12 @@ def write_key(build: Path, program: Path) -> None:
     (build / "demo.json").write_text(json.dumps({"game": program.name, "symbols": symbols}, indent=1), encoding="utf-8")
 
 
+MIXED = ("gcc-4.3.2-redhat-linux", "gcc-3.4.4-linux")  # (the program's own code's, its library's)
+
+
 def main(toolchain: str = TOOLCHAIN) -> None:
     build = BUILD if toolchain == TOOLCHAIN else HERE / f"build-{toolchain}"
+    mixed = toolchain == "mixed"
     missing = [str(p) for p in (DEMO / "main.c", DEMO / "libc.c", GAME / "game.c", GAME / "game.h") if not p.exists()]
     if missing:
         sys.exit("missing demo sources: " + ", ".join(missing))
@@ -63,15 +70,25 @@ def main(toolchain: str = TOOLCHAIN) -> None:
             if not (build / src.name).exists():
                 shutil.copy(src, build / src.name)
     toolchains.ensure("runtime-i386", log=print)
-    tc = toolchains.ensure(toolchain, log=print)
-    cfg = compiler_config(build, {"compiler": {"toolchain": toolchain, "flags": ["-O2", "-g"]}})
+    own, library = MIXED if mixed else (toolchain, toolchain)
+    tc = toolchains.ensure(own, log=print)
+    toolchains.ensure(library, log=print)
+    flags = ["-O2"] if mixed else ["-O2", "-g"]
+    cfgs = {t: compiler_config(build, {"compiler": {"toolchain": t, "flags": flags}}) for t in {own, library}}
     objs = []
     for stem in ("main", "libc", "game", *ZLIB_UNITS):
+        cfg = cfgs[library if stem in ZLIB_UNITS else own]
         argv = [a.replace("{src}", f"{stem}.c").replace("{obj}", f"{stem}.o").replace("{include}", ".") for a in cfg.cmd]
         run(cfg, argv, build)
         objs.append(f"{stem}.o")
-    # no C runtime: the demo's main is its entry, as the N64 and GBA builds' are; the symbol table and STABS stay
-    run(cfg, ["/bin/sh", "-c", f'LD_LIBRARY_PATH="{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" exec "{tc}/binutils/usr/bin/ld" '
+    cfg = cfgs[own]
+    # no C runtime: the demo's main is its entry, as the N64 and GBA builds' are; the symbol table and STABS stay.
+    # The mixed program has GCC's crtbegin.o and crtend.o around its objects, as every program GCC links has: they say
+    # which GCC linked it
+    crt = sorted(tc.glob("gcc/usr/lib/gcc/*/*/crtbegin.o")) if mixed else []
+    if crt:
+        objs = [str(crt[0]), *objs, str(crt[0].with_name("crtend.o"))]
+    run(cfg, ["/bin/sh", "-c", f'LD_LIBRARY_PATH="{tc}/lib:{tc}/binutils/usr/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" exec "{tc}/binutils/usr/bin/ld" '
                                f'-m elf_i386 -e main -o {PROGRAM} {" ".join(objs)}'], build)
     write_key(build, build / PROGRAM)
     print(f"built {build.name}/{PROGRAM} ({(build / PROGRAM).stat().st_size} bytes)")

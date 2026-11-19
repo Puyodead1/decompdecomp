@@ -198,11 +198,19 @@ def plt_stubs(elf) -> dict[str, int]:
 
 
 def compiler_of(data: bytes) -> str:
-    """What the program's .comment says built it ("GCC: (GNU) 2.95.3 20010315 (release)"): the most common."""
+    """What the program's .comment says built it ("GCC: (GNU) 2.95.3 20010315 (release)"): the GCC that linked it,
+    when its notes pair with its object files (objects.py: a 2009 game's own code is Red Hat's 4.3.2, which linked
+    it, and 165 of its 237 notes a prebuilt engine's and libraries' 3.4.4), else the most common."""
+    from . import objects
+
     try:
-        comment = ELFFile(BytesIO(data)).get_section_by_name(".comment")
+        elf = ELFFile(BytesIO(data))
+        comment = elf.get_section_by_name(".comment")
+        read = objects.read_objects(elf)
     except Exception:  # noqa: BLE001
         return ""
+    if read and (linked := objects.program_compiler(*read)):
+        return linked
     if comment is None:
         return ""
     said = [s.decode("latin-1") for s in comment.data().split(b"\0") if s]
@@ -210,9 +218,13 @@ def compiler_of(data: bytes) -> str:
 
 
 def info(data: bytes, name: str) -> dict:
+    from . import objects
+
     stem = Path(name or "program").stem or "program"
     return {"title": stem, "game_code": "", "region": "", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),
-            "compiler_guess": compiler_of(data)}
+            "compiler_guess": compiler_of(data),
+            # (another GCC's stretches: after_import gives them their ranges)
+            "compiler_parts": [list(part) for part in objects.object_compilers(data)]}
 
 
 # ----------------------------------------------------------------------------- a function's row, cut, found or joined

@@ -23,6 +23,7 @@ import dataclasses
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 
 from ...network import NetworkError
@@ -175,9 +176,10 @@ class LibraryMixin:
     def match_libraries(self, slug: str, log=print) -> dict:
         """Compile every library source file with the game's compiler and set aside, as the library's code, every
         open function it makes byte for byte at the game's address."""
+        from ... import consoles
         from ...compiler import compile_source
         from ...elfobj import _function_symbols
-        from ...project import compiler_config
+        from ...project import compiler_config, compiler_for
 
         proj = self._project(slug)
         if not self.is_rom(proj):
@@ -212,16 +214,26 @@ class LibraryMixin:
             # its folder was given as a system one too)
             others = [f for f in includes if str((root / f).resolve()) not in own]
             lib_found, explored = 0, 0
-            for source in files:
+            # the compiler of the game's code the library's functions are in: a compiler range's, where the game's
+            # libraries are another GCC's than its own code (a 2009 Linux game's libjpeg and libpng, GCC 3.4.4's:
+            # 181 of libjpeg's 246 functions with it, 23 with the game's 4.3.2), from the first file whose functions
+            # the game has
+            toolchain = cfg["compiler"]["toolchain"]
+            pending, empty, moved, seen = list(files), [], False, set()
+            while pending:
+                source = pending.pop(0)
+                once = source not in seen  # (a file tried again with the library's compiler counts once)
+                seen.add(source)
                 text = source.read_text(encoding="utf-8", errors="replace")
                 cpp = source.suffix != ".c"
                 # the flags that worked most first; once some have, a file stops after a few that bring nothing
                 order = sorted(wins, key=lambda i: (-wins[i], i))
                 if not any(wins.values()) and explored >= EXPLORED:
                     order = order[:1]
-                fruitless = 0
-                for i in order:
-                    settings = dict(cfg["compiler"], flags=variants[i])
+                fruitless, queue, file_new = 0, list(order), 0
+                while queue:
+                    i = queue.pop(0)
+                    settings = dict(cfg["compiler"], toolchain=toolchain, flags=variants[i])
                     # the file's own folder for its "local.h", then its library's, then the others': in that order
                     # (an earlier one's png.h was libpng's, and libpng's own files compiled to nothing)
                     first = list(dict.fromkeys([str(source.parent.resolve()), *own]))
@@ -229,13 +241,23 @@ class LibraryMixin:
                     config = dataclasses.replace(base, ro_paths=(*base.ro_paths, str(library.resolve())))
                     res = compile_source(config, "", text, trusted=True, language="c++" if cpp else "c")
                     if not res.ok:
-                        failed += i == order[0]
+                        failed += i == order[0] and once
                         break  # (a file that doesn't build doesn't build with other flags either)
-                    compiled += i == order[0]
                     wanted = [n for n in _function_symbols_of(res.obj, _function_symbols) if n in open_rows]
+                    theirs = Counter(compiler_for(cfg, open_rows[n]["vram"])["toolchain"] for n in wanted)
+                    if wanted and not moved and (other := theirs.most_common(1)[0][0]) != toolchain:
+                        # the library's compiler from now on; this file again with it, and the ones before that
+                        # found nothing (their functions where no range says which compiler built them)
+                        toolchain, moved = other, True
+                        queue.insert(0, i)
+                        pending, empty = [*empty, *pending], []
+                        log(f"{library.name}: built with {consoles.compiler_name(other)}, the compiler of the "
+                            "game's code it's in")
+                        continue
+                    compiled += i == order[0] and once
                     if not wanted:
                         break
-                    explored += i == order[0]
+                    explored += i == order[0] and once
                     new = 0
                     for name in wanted:
                         fn = open_rows[name]
@@ -248,9 +270,12 @@ class LibraryMixin:
                         new += 1
                     lib_found += new
                     wins[i] += new
+                    file_new += new
                     fruitless = 0 if new else fruitless + 1
                     if new == len(wanted) or (any(wins.values()) and fruitless >= FRUITLESS):
                         break
+                if not file_new and not moved:
+                    empty.append(source)
             found += lib_found
             best = [" ".join(variants[i]) for i in sorted(wins, key=lambda i: -wins[i]) if wins[i]][:2]
             log(f"{library.name}: {len(files)} source files, {lib_found:,} functions are its code"

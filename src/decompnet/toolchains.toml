@@ -251,6 +251,63 @@ subdir = "usr/include"
 into = "include"
 platforms = ["linux-x86_64"]
 
+["gcc-3.4.4-linux"]
+name = "GCC 3.4.4 for Linux (Slackware 10.2)"
+platform = "Linux"
+arch = "x86"
+license = "GPL-2.0"
+source = "Slackware 10.2's own packages: testing/gcc and gcc-g++ 3.4.4 (with libstdc++'s headers), d/binutils 2.15.92.0.2, l/glibc 2.3.5 and d/kernel-headers 2.4.31 (their headers)"
+description = "GCC 3.4.4 as released (C and C++) and the binutils Slackware 10.2 shipped, with glibc 2.3.5's headers: the compiler a program or library whose .comment says \"GCC: (GNU) 3.4.4\" was built with (Linux programs and prebuilt libraries of 2005-2006). Its 32-bit programs run on the pinned 32-bit runtime."
+requires = ["runtime-i386"]
+cmd = ["/bin/sh", "-c", 'tc=$1 src=$2 obj=$3; shift 3; g="$tc/gcc/usr/lib/gcc/i486-slackware-linux/3.4.4"; x=; case "$src" in *.cpp) x="-I$tc/include/c++ -I$tc/include/c++/i486-slackware-linux -I$tc/include/c++/backward";; esac; LD_LIBRARY_PATH="$tc/binutils/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$tc/gcc/usr/bin/gcc-3.4.4" -B"$tc/gcc/usr/libexec/gcc/i486-slackware-linux/3.4.4/" -B"$tc/binutils/usr/bin/" -nostdinc "$@" $x -I"$tc/include" -I"$g/include" -c "$src" -o "$obj"', "gcc", "{tc}", "{src}", "{obj}", "-I{include}", "{flags}"]
+flags = ["-O2"]
+system_headers = true
+cplusplus = true
+[["gcc-3.4.4-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-10.2/testing/packages/gcc-3.4.4/gcc-3.4.4-i486-1.tgz"
+sha256 = "43b6fe5d20b61430e7eb97a1d97ecf2e5661a561d0df868b37eac91c2b720f13"
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+# (C++: its compiler, beside cc1; the driver is gcc's, which compiles a .cpp with it)
+url = "https://slackware.uk/slackware/slackware-10.2/testing/packages/gcc-3.4.4/gcc-g++-3.4.4-i486-1.tgz"
+sha256 = "d08e7b935bc4396e5b8e0e12768006547af68c8ff9d145b88e42e41e1efcf3cc"
+keep = { "usr/libexec/gcc/i486-slackware-linux/3.4.4/cc1plus" = "usr/libexec/gcc/i486-slackware-linux/3.4.4/cc1plus" }
+into = "gcc"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+# (the C++ library's headers, for C++: the judge puts them first only for a .cpp)
+url = "https://slackware.uk/slackware/slackware-10.2/testing/packages/gcc-3.4.4/gcc-g++-3.4.4-i486-1.tgz"
+sha256 = "d08e7b935bc4396e5b8e0e12768006547af68c8ff9d145b88e42e41e1efcf3cc"
+keep = { "usr/include/c++/3.4.4" = "c++" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-10.2/slackware/d/binutils-2.15.92.0.2-i486-3.tgz"
+sha256 = "62e901eaced3c291c4a44c5c421d41911df3edcae6a9bdd93f83213afc5258f8"
+into = "binutils"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+url = "https://slackware.uk/slackware/slackware-10.2/slackware/l/glibc-2.3.5-i486-5.tgz"
+sha256 = "45e0f13152ca7766e18ab02839e38d6344bab9dcbfdf190a2aa2c4cac686c5c2"
+subdir = "usr/include"
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+# (the kernel's headers glibc's include; its install script links asm to asm-i386, which the installer doesn't run)
+url = "https://slackware.uk/slackware/slackware-10.2/slackware/d/kernel-headers-2.4.31-i386-1.tgz"
+sha256 = "6e4f37535f6dffd43e1050df8cd8f888bd5c18245953ba28708dc4078cdc3559"
+keep = { "usr/include/linux" = "linux", "usr/include/asm-i386" = "asm" }
+into = "include"
+platforms = ["linux-x86_64"]
+[["gcc-3.4.4-linux".parts]]
+# (its C runtime objects, crt1.o, crti.o, crtn.o and libc_nonshared.a: what a Linux export's build links a new program with)
+url = "https://slackware.uk/slackware/slackware-10.2/slackware/l/glibc-2.3.5-i486-5.tgz"
+sha256 = "45e0f13152ca7766e18ab02839e38d6344bab9dcbfdf190a2aa2c4cac686c5c2"
+subdir = "usr/lib"
+into = "crt"
+platforms = ["linux-x86_64"]
+
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"
