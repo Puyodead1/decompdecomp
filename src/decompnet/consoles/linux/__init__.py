@@ -36,7 +36,7 @@ ELF_MAGIC = b"\x7fELF"
 EM_386 = 3
 MAX_SIZE = 256 << 20
 LIBRARY_LEVELS = ("-O0", "-O2", "-O1", "-O3", "-Os")
-LIBRARY_MARCHES = ("", "amdfam10", "k8", "core2", "pentium4", "i686")  # (a build machine's -march=native)
+LIBRARY_MARCHES = ("", "i686", "amdfam10", "k8", "core2", "pentium4")  # (a build machine's -march=native)
 DEMANGLE_SECONDS = 300  # (one c++filt run for every name: 54,000 of a 2008 program's in a few seconds)
 PIC_PROLOGUE = re.compile(rb"\xe8\0\0\0\0[\x58-\x5f]\x81[\xc0-\xc7]")  # call +0; pop %reg; add $GOT, %reg
 OBJECT_READING = 1  # the version of objects.py's reading a project's compiler ranges come from
@@ -104,9 +104,12 @@ class Linux(Console):
     def library_flags(self, flags: list[str]) -> list[list[str]]:
         """A library's own build: an optimisation level, and the processor it was tuned for. A 2008 program's Lua and
         luabind were built -O0 for the build machine's AMD processor (-march=amdfam10: 71 of lapi.c's 74 functions,
-        none at the game's -O2), its TinyXML -O0 alone, its libogg and libpng -O2."""
+        none at the game's -O2), its TinyXML -O0 alone, its libogg and libpng -O2. The game's own level with each
+        processor first: a 2009 game's libjpeg and libpng are -O2 -march=i686 (171 and 223 functions; 20 and 31 at
+        -O2), and once -O2 alone had made a few small ones, each file stopped before reaching it (FRUITLESS)."""
         out = [list(flags)]
-        for level in LIBRARY_LEVELS:
+        own = [f for f in flags if f in LIBRARY_LEVELS]
+        for level in [*own, *(lv for lv in LIBRARY_LEVELS if lv not in own)]:
             for march in LIBRARY_MARCHES:
                 variant = [level, *([f"-march={march}"] if march else [])]
                 if variant not in out:
