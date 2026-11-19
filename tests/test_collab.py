@@ -1054,3 +1054,25 @@ def test_a_guests_deep_search_shares_what_it_finds_with_the_host(built, tmp_path
     searches = deep.Searches(g, __import__("decompnet.app.support", fromlist=["Jobs"]).Jobs())
     jid = searches.start(gslug, fn["name"], minutes=1, variants=1)
     assert jid
+
+
+def test_a_guests_work_selection_is_the_one_the_host_hands_out_by(built, tmp_path):  # noqa: F811
+    """A guest set its helper's work selection to "untried first", and the helper was handed a function five agents
+    had compiled 25 times: in a room the host hands out the functions, and a guest's claim never said its selection.
+    Now it does, and the host keeps it for that agent (its order, and its match percentage, tries and sizes)."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "sven", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    agent, _ = g.local_agent("codex-1")
+    smallest = host.store.one("SELECT f.* FROM functions f JOIN projects p ON p.id=f.project_id WHERE p.slug=? AND "
+                              "f.status='open' ORDER BY f.n_insns, f.id LIMIT 1", slug)
+    with host.store.tx() as db:  # (agents of the host's have compiled the smallest one already)
+        db.execute("UPDATE functions SET attempts=25 WHERE id=?", (smallest["id"],))
+    g.set_selection(gslug, agent.name, {"strategy": "untried"})
+    brief = g.claim(agent, gslug)
+    claimed = host.store.one("SELECT f.name, f.attempts FROM claims c JOIN functions f ON f.id=c.function_id")
+    assert claimed["name"] != smallest["name"] and claimed["attempts"] == 0, brief[:200]
+    assert host.selection(slug, "sven.codex-1") == {"strategy": "untried"}
+    g.release(agent, claimed["name"], "", gslug)
+    g.set_selection(gslug, agent.name, {})  # (cleared on the guest's app: cleared on the host's too)
+    g.claim(agent, gslug)
+    assert host.selection(slug, "sven.codex-1") == {}

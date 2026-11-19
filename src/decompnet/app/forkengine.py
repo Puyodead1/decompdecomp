@@ -3889,7 +3889,8 @@ class ForkEngine:
 
     def _claim_in_room(self, link, agent: Agent, slug: str, function: str | None, strategy: str) -> str:
         """A member of a room: the host hands out functions (nobody does one twice); the brief comes from this copy."""
-        name, why = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy)
+        name, why = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy,
+                               self.net.selection(slug, agent.name))
         if name is None:  # (the host's word: what's left and why, as its own agents hear it)
             return why or "Nothing left to claim in this room: every function with a source file matches or someone is on it. 🎉"
         try:

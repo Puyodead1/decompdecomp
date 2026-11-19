@@ -272,9 +272,11 @@ def test_a_guest_with_nothing_to_claim_says_what_the_host_says(connection, fork,
     assert link.claim(agent, None, "easiest") == (None, why["why"])
     if fork:
         engine = ForkEngine.__new__(ForkEngine)
+        engine.net = SimpleNamespace(selection=lambda slug, name: {})
         said = engine._claim_in_room(link, agent, "game", None, "easiest")
     else:
-        net = SimpleNamespace(fork_slug=lambda _: None, _link=lambda _: link)
+        net = SimpleNamespace(fork_slug=lambda _: None, _link=lambda _: link, selection=lambda slug, name: {},
+                              _project=lambda slug: {"slug": slug})
         said = judging.JudgeMixin.claim(net, agent, "game", None, "easiest")
     assert said == why["why"]
     why = {}  # (an older host)

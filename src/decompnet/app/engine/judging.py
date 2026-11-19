@@ -54,7 +54,7 @@ class JudgeMixin:
             return super().claim(agent, project, function, strategy)
         if function:
             function = self._function(function, project)["name"]
-        name, why = link.claim(agent, function, strategy)
+        name, why = link.claim(agent, function, strategy, self.selection(self._project(project)["slug"], agent.name))
         if name is None:  # (the host's word: what's left and why, as its own agents hear it)
             return why or "Nothing left to claim in this room — every open function is matched or someone is on it. 🎉"
         link.sync()

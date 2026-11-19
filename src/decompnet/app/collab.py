@@ -440,6 +440,14 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
+        if isinstance(d.get("selection"), dict):
+            # the member's work selection for this agent (its order, match percentage, tries, sizes), set on its own
+            # app: the host hands out the functions, so the host keeps it. A guest's "untried first" was never sent,
+            # and its agent got a function five agents had compiled 25 times
+            try:
+                net.set_selection(room.slug, agent.name, d["selection"])
+            except NetworkError:
+                pass  # (one this version can't read: the agent's own strategy, as before)
         fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
         if fn is None:  # what's left and why, as the host's own agents hear it (functions this agent said no C makes,
             # its own releases; the user told when only verdicts are left): a guest got a bare "nothing left"
@@ -794,10 +802,12 @@ class Link:
 
     # -- actions, called by RomNetwork for a linked project
 
-    def claim(self, agent: Agent, function: str | None, strategy: str) -> tuple[str | None, str]:
+    def claim(self, agent: Agent, function: str | None, strategy: str,
+              selection: dict | None = None) -> tuple[str | None, str]:
         """(the function the host handed out, or None; and then why: what the host says is left, "" from a host
-        that doesn't say)."""
-        said = self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy})
+        that doesn't say). `selection`: the agent's work selection on this computer, which the host applies."""
+        said = self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy,
+                                                   **({"selection": selection} if selection is not None else {})})
         return said["function"], ("" if said["function"] else str(said.get("why") or ""))
 
     def attempt(self, agent: Agent, function: str, source: str) -> dict:
