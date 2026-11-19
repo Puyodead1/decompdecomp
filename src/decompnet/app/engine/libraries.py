@@ -218,7 +218,9 @@ class LibraryMixin:
             # libraries are another GCC's than its own code (a 2009 Linux game's libjpeg and libpng, GCC 3.4.4's:
             # 181 of libjpeg's 246 functions with it, 23 with the game's 4.3.2), from the first file whose functions
             # the game has
-            toolchain = cfg["compiler"]["toolchain"]
+            toolchain = project_toolchain = cfg["compiler"]["toolchain"]
+            ranged = list(dict.fromkeys(r["toolchain"] for r in cfg.get("compiler_ranges") or []
+                                        if r.get("toolchain") and r["toolchain"] != project_toolchain))
             pending, empty, moved, seen = list(files), [], False, set()
             while pending:
                 source = pending.pop(0)
@@ -230,7 +232,7 @@ class LibraryMixin:
                 order = sorted(wins, key=lambda i: (-wins[i], i))
                 if not any(wins.values()) and explored >= EXPLORED:
                     order = order[:1]
-                fruitless, queue, file_new = 0, list(order), 0
+                fruitless, queue, file_new, untried = 0, list(order), 0, list(ranged)
                 while queue:
                     i = queue.pop(0)
                     settings = dict(cfg["compiler"], toolchain=toolchain, flags=variants[i])
@@ -241,10 +243,23 @@ class LibraryMixin:
                     config = dataclasses.replace(base, ro_paths=(*base.ro_paths, str(library.resolve())))
                     res = compile_source(config, "", text, trusted=True, language="c++" if cpp else "c")
                     if not res.ok:
+                        if not moved and untried:
+                            # a compiler of the game's ranges: the library's own flags can be ones only an older
+                            # GCC takes (libmad's -fforce-mem, xvid's -freduce-all-givs: GCC 3.4.4's, refused by
+                            # the game's own 4.3.2), and no file built to say which compiler its code is in
+                            toolchain = untried.pop(0)
+                            queue.insert(0, i)
+                            continue
+                        toolchain = toolchain if moved else project_toolchain
                         failed += i == order[0] and once
                         break  # (a file that doesn't build doesn't build with other flags either)
                     wanted = [n for n in _function_symbols_of(res.obj, _function_symbols) if n in open_rows]
                     theirs = Counter(compiler_for(cfg, open_rows[n]["vram"])["toolchain"] for n in wanted)
+                    if wanted and not moved and toolchain != project_toolchain:
+                        moved = True  # (built only with a range's compiler: the library's from now on)
+                        pending, empty = [*empty, *pending], []
+                        log(f"{library.name}: built with {consoles.compiler_name(toolchain)}, the compiler of the "
+                            "game's code it's in")
                     if wanted and not moved and (other := theirs.most_common(1)[0][0]) != toolchain:
                         # the library's compiler from now on; this file again with it, and the ones before that
                         # found nothing (their functions where no range says which compiler built them)

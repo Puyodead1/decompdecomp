@@ -2374,3 +2374,30 @@ def test_a_librarys_source_builds_with_the_compiler_of_the_code_it_is_in(demo_mi
     for name in ("scan_tree", "adler32", "deflate"):
         assert net._function(name, slug)["status"] == "asm", name
     assert net._function("game_tick", slug)["status"] == "open"
+
+
+def test_a_library_whose_own_flags_the_games_compiler_refuses_builds_with_its_ranges(demo_mixed):
+    """A 2009 Linux game's libmad and xvid have their configure's flags (decompdecomp-flags.txt): -fforce-mem and
+    -freduce-all-givs, which GCC 3.4.4 takes and the game's own 4.3.2 refuses. Every file failed with the project's
+    compiler before one could say its code is in a 3.4.4 range: none was tried. Now a file the project's compiler
+    won't build is tried with the compilers of the project's ranges (libmad 55 functions, xvid 68)."""
+    import shutil
+
+    from decompnet.app.engine import RomNetwork
+
+    from .test_consoles import ROOT
+
+    program, factory = demo_mixed
+    work = factory.mktemp("mixedflags")
+    net = RomNetwork(work / "app.db", work)
+    slug = net.import_rom(program, confirmed=True, log=lambda *_: None)
+    lib = Path(net._project(slug)["root"]) / "libs" / "zlib-1.1.4"
+    lib.mkdir(parents=True)
+    for folder in ("original", "sysinclude"):
+        for f in (ROOT / "projects" / "zlib-n64" / folder).glob("*.[ch]"):
+            shutil.copy(f, lib / f.name)
+    (lib / "decompdecomp-flags.txt").write_text("-O2 -fforce-mem\n")
+    said = []
+    res = net.match_libraries(slug, log=said.append)
+    assert any("built with GCC 3.4.4" in line for line in said), said
+    assert res["found"] >= 56, res
