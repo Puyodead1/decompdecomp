@@ -331,12 +331,12 @@ class Room:
         return {"e": last, "events": events, "behind": behind}
 
     def state(self, e: int, a: int, ctx_version: int, member: Agent, fresh: bool = False, compiler: str = "",
-              aside: str = "") -> dict:
-        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler` and `aside`:
-        digests of the room's compiler settings and set-aside functions as the guest has them; either is sent again
-        when it changed."""
+              aside: str = "", readable: str = "") -> dict:
+        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler`, `aside` and
+        `readable`: digests of the room's compiler settings, set-aside functions and readable functions as the guest
+        has them; each is sent again when it changed."""
         if self.fork:
-            return self._fork_state(e, member, fresh)
+            return self._fork_state(e, member, fresh, readable)
         pid = self.proj["id"]
         net = self.net
         with net.store.tx() as db:
@@ -383,10 +383,20 @@ class Room:
             out["set_aside"] = {"digest": digest, "functions": [
                 [r["vram"], {k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_WHY}]
                 for r in rows]}
+        # what's readable: each newly polished function's C (its event), and the list whenever it changed (polished
+        # again later, or made readable before the guest came)
+        polished = {ev["detail"] for ev in events if ev["kind"] == "readable"}
+        rows = net.store.all("SELECT name, vram, matched_source FROM functions WHERE project_id=? AND status='matched' "
+                             "AND readable=1 ORDER BY vram", pid)
+        if (digest := _digest([r["vram"] for r in rows])) != readable:
+            out["readable"] = {"digest": digest, "vrams": [r["vram"] for r in rows]}
+        if polished or "readable" in out:
+            out["readable_c"] = [[r["vram"], r["matched_source"]] for r in rows
+                                 if r["name"] in polished or ((first or not readable) and r["matched_source"])]
         out["members"] = self.members()
         return out
 
-    def _fork_state(self, e: int, member: Agent, fresh: bool = False) -> dict:
+    def _fork_state(self, e: int, member: Agent, fresh: bool = False, readable: str = "") -> dict:
         """A git project's room: events, matches (by name), claims and notes; the tree itself travels as bundles
         (GET /collab/bundle) when `head` moves."""
         pid, net = self.proj["id"], self.net
@@ -409,6 +419,10 @@ class Room:
         out["head"] = forkroom.head(Path(self.proj["root"]))
         out["branch"] = forkroom.branch(Path(self.proj["root"]))
         out["members"] = self.members()
+        names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=? AND status='matched' "
+                                                  "AND readable=1 ORDER BY name", pid)]
+        if (digest := _digest(names)) != readable:  # (the readable C itself comes with the host's commits)
+            out["readable"] = {"digest": digest, "names": names}
         return out
 
 
@@ -474,7 +488,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def state(room, member, q):
         return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member,
-                          q.get("fresh") == "1", str(q.get("k") or ""), str(q.get("s") or ""))
+                          q.get("fresh") == "1", str(q.get("k") or ""), str(q.get("s") or ""), str(q.get("r") or ""))
 
     def suggest(room, member, d):
         """A member's agent's suggestion: the host's compiler settings are the room's, so it's the host's to check."""
@@ -491,6 +505,25 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         if fn["id"] != need["id"] and need["status"] == "open":
             net.wait_for(agent, fn, need)
         return {"ok": True}
+
+    def readable(room, member, d):
+        """A member's agent polishing: the host hands out what to polish (functions, then files to tidy and review),
+        judges each rewrite on its copy and keeps it for the room, as its own agents'. A guest's was its own copy's
+        alone: none of its readable C reached the room, and two agents could polish one function."""
+        agent = room.agent_for(member, d.get("agent"))
+        polish, what = net.readability, d.get("what")
+        if what == "claim":
+            text = polish.claim(agent, room.slug)
+        elif what == "submit":
+            text = polish.submit(agent, room.slug, str(d.get("function", "")), str(d.get("source", "")))
+        elif what == "tidy_done":
+            text = polish.tidy_done(agent, room.slug, str(d.get("unit", "")), str(d.get("summary", "")))
+        elif what == "review_done":
+            text = polish.review_done(agent, room.slug, str(d.get("unit", "")), str(d.get("findings", "")),
+                                      bool(d.get("fixed")))
+        else:
+            raise NetworkError("polishing: claim, submit, tidy_done or review_done")
+        return {"text": text}
 
     def knowledge(room, member, d):
         """What agents learn about the game, the room's: kept by the host. A member's agents propose and back it
@@ -661,6 +694,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/suggest", endpoint(suggest), methods=["POST"]),
         Route("/collab/wait", endpoint(wait), methods=["POST"]),
         Route("/collab/knowledge", endpoint(knowledge), methods=["POST"]),
+        Route("/collab/readable", endpoint(readable), methods=["POST"]),
         Route("/collab/context", endpoint(context), methods=["POST"]),
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
@@ -817,7 +851,7 @@ class Link:
             self.project_id = None
         info = json.loads(proj["config"]).get("link") or {}
         # kept with the link: from 0 after every restart, the room's whole history came again, twice in the feed
-        self.cursor = {"e": 0, "a": 0, "v": 0, "k": "", "s": ""} | (info.get("cursor") or {})
+        self.cursor = {"e": 0, "a": 0, "v": 0, "k": "", "s": "", "r": ""} | (info.get("cursor") or {})
         self.saved = dict(self.cursor)
         self.claims: list[dict] = []
         self.members: list[dict] = []
@@ -990,6 +1024,11 @@ class Link:
         if st.get("set_aside"):
             net.apply_remote_set_aside(slug, st["set_aside"]["functions"])
             self.cursor["s"] = st["set_aside"]["digest"]
+        if st.get("readable_c") or st.get("readable"):
+            net.apply_remote_readable(slug, st.get("readable_c") or [],
+                                      (st.get("readable") or {}).get("vrams"))
+            if st.get("readable"):
+                self.cursor["r"] = st["readable"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
@@ -1010,6 +1049,9 @@ class Link:
                               "readable") \
                     and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
+        if st.get("readable"):
+            net.apply_remote_readable_named(slug, st["readable"]["names"])
+            self.cursor["r"] = st["readable"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"] = st.get("e", self.cursor["e"])

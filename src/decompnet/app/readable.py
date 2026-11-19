@@ -536,6 +536,8 @@ class Readability:
     def tidy_done(self, agent: Agent, slug: str, unit: str, summary: str) -> str:
         """An agent's tidy of a file, done: recorded with what it changed (its edits were kept by edit_file only while
         every match held, so the file still matches)."""
+        if (link := self.net._link(slug)) is not None:
+            return link.call("/collab/readable", agent, what="tidy_done", unit=unit, summary=summary)
         proj = self.net._project(slug)
         if not summary.strip():
             raise NetworkError("say what you changed in the summary, in a sentence or two")
@@ -611,6 +613,9 @@ class Readability:
     def review_done(self, agent: Agent, slug: str, unit: str, findings: str, fixed: bool) -> str:
         """An agent's review of a tidied file: what it found and whether it fixed anything. A file whose review fixed
         something is reviewed again (REVIEWS), preferably by another helper; one whose review found it holds is done."""
+        if (link := self.net._link(slug)) is not None:
+            return link.call("/collab/readable", agent, what="review_done", unit=unit, findings=findings,
+                             fixed=bool(fixed))
         proj = self.net._project(slug)
         if not findings.strip():
             raise NetworkError("say what you found in findings: what was wrong and what you fixed, or that it holds")
@@ -662,6 +667,8 @@ class Readability:
 
     def claim(self, agent: Agent, slug: str) -> str:
         """The next matched function that isn't readable yet, held for this agent, with what it needs to know."""
+        if (link := self.net._link(slug)) is not None:  # (a room's: the host hands polishing out, as functions)
+            return link.call("/collab/readable", agent, what="claim")
         proj = self.net._project(slug)
         fork = not self.net.is_rom(proj)
         now = time.time()
@@ -867,6 +874,10 @@ class Readability:
 
     def submit(self, agent: Agent, slug: str, function: str, source: str) -> str:
         """An agent's readable rewrite of a matched function: kept only when it still matches byte for byte."""
+        if (link := self.net._link(slug)) is not None:
+            # a room's: judged on the host's copy and kept there, for the room (it was this copy's alone, and lost)
+            return link.call("/collab/readable", agent, what="submit", function=self.net._function(function, slug)["name"],
+                             source=source)
         with self.net.progress.judging(slug):
             return self._submit(agent, slug, function, source)
 

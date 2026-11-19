@@ -158,6 +158,32 @@ class RoomMixin:
                     meta = {k: v for k, v in meta.items() if k not in SET_ASIDE_WHY}
                     db.execute("UPDATE functions SET status='open', meta=? WHERE id=?", (json.dumps(meta), r["id"]))
 
+    def apply_remote_readable(self, slug: str, sources: list, readable: list | None) -> None:
+        """The host's polishing: each newly readable function's C ([vram, C]), and which matched functions are
+        readable (`readable`, all of them; None when unchanged)."""
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            for vram, source in sources:
+                if source:
+                    db.execute("UPDATE functions SET matched_source=?, best_source=?, readable=1 WHERE project_id=? "
+                               "AND vram=? AND status='matched'", (source, source, proj["id"], int(vram)))
+            if readable is not None:
+                keep = {int(v) for v in readable}
+                for r in db.execute("SELECT id, vram, readable FROM functions WHERE project_id=? AND status='matched'",
+                                    (proj["id"],)).fetchall():
+                    if bool(r["readable"]) != (r["vram"] in keep):
+                        db.execute("UPDATE functions SET readable=? WHERE id=?", (int(r["vram"] in keep), r["id"]))
+
+    def apply_remote_readable_named(self, slug: str, names: list) -> None:
+        """A git project's room: which matched functions are readable (their C comes with the host's commits)."""
+        proj = self._project(slug)
+        keep = set(names)
+        with self.store.tx() as db:
+            for r in db.execute("SELECT id, name, readable FROM functions WHERE project_id=? AND status='matched'",
+                                (proj["id"],)).fetchall():
+                if bool(r["readable"]) != (r["name"] in keep):
+                    db.execute("UPDATE functions SET readable=? WHERE id=?", (int(r["name"] in keep), r["id"]))
+
     def apply_remote_best(self, slug: str, vram: int, score: int, source: str) -> None:
         proj = self._project(slug)
         with self.store.tx() as db:

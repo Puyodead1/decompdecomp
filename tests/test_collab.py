@@ -1144,3 +1144,31 @@ def test_copies_of_one_version_from_different_commits_are_not_one_room(built, tm
     g, gslug = _guest(tmp_path, "ada", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
     assert gslug  # (the same commit on both sides: one room)
 
+
+
+def test_a_guests_polishing_is_the_rooms(built, tmp_path):  # noqa: F811
+    """A guest's helpers polished on the guest's own copy: they took matched functions without the host (two agents
+    could polish one), and their readable C was judged and kept there alone, never reaching the room; the host's
+    polished C never reached guests either (a function's C travelled once, when it matched). Now the host hands
+    polishing out, judges a guest's rewrite on its copy and keeps it, and guests get every readable function's C."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "noa", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    agent, _ = g.local_agent("claude-1")
+    assert g.split_function(agent, gslug, "func_800007C4", "0x800007D0").startswith("✅")
+    g.claim(agent, gslug, "func_800007D0")
+    assert g.compile_and_diff(agent, "func_800007D0", CLAMP, gslug).startswith("✅ MATCH")
+    brief = g.readability.claim(agent, gslug)
+    assert "MAKE READABLE: func_800007D0" in brief
+    assert host.store.one("SELECT a.name FROM claims c JOIN agents a ON a.id=c.agent_id")["name"] == "noa.claude-1"
+    readable = "/* Clamps a value to [low, high]. */\n" + CLAMP.replace("v", "value").replace("lo", "low").replace("hi", "high")
+    said = g.readability.submit(agent, gslug, "func_800007D0", readable)
+    assert said.startswith("✅"), said
+    assert host._function("func_800007D0", slug)["readable"] == 1
+    g.links[gslug].sync()
+    mine = g._function("func_800007D0", gslug)
+    assert mine["readable"] == 1 and "Clamps a value" in mine["matched_source"]
+    # the host's own polishing reaches the guest too, and taken back (polished again later) it's taken back here
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET readable=0 WHERE name='func_800007D0'")
+    g.links[gslug].sync()
+    assert g._function("func_800007D0", gslug)["readable"] == 0
