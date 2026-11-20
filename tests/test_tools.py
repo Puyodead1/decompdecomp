@@ -91,3 +91,29 @@ def test_a_rom_project_without_engine_joins_names_the_engine(tmp_path, monkeypat
                       {"function": "a", "with_function": "b", "reason": "a has no epilogue"})
     assert text.startswith("error: join_functions isn't offered in Nintendo 64 projects")
     assert "the ROM engine can't join functions" in text and "Traceback" not in text
+
+
+def test_every_mcp_tool_reaches_its_handler_with_its_own_arguments(tmp_path, monkeypatch):
+    """sdk_inline's `name` collided with the tool runner's own parameter, so every agent's call failed before it ran
+    (a GameCube game's main waited on it): each tool, called through MCP with every parameter it has, gets there."""
+    import anyio
+
+    net = RomNetwork(tmp_path / "test.db", tmp_path)
+    reached = []
+    monkeypatch.setattr(tools, "_invoke", lambda net, agent, slug, name, args: reached.append((name, args)) or "ok")
+    mcp = tools.build_mcp(net, lambda ctx: (None, "slug"))
+    dummy = {"string": "x", "integer": 1, "number": 1.0, "boolean": True, "array": [], "object": {}}
+
+    async def each():
+        for tool in await mcp.list_tools():
+            props = tool.input_schema.get("properties", {})
+            args = {k: dummy.get(v.get("type"), "x") for k, v in props.items()}
+            reached.clear()
+            await mcp.call_tool(tool.name, args)
+            assert [name for name, _ in reached] == [tool.name]  # (some map aliases: read_file's offset)
+
+    anyio.run(each)
+    reached.clear()
+    sdk = {"name": "OSInitFastCast", "path": "src/main.c"}
+    anyio.run(lambda: mcp.call_tool("sdk_inline", sdk))
+    assert reached == [("sdk_inline", sdk)]

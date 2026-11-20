@@ -531,7 +531,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     mcp = MCPServer(name="decomp", title="decompdecomp", instructions=INSTRUCTIONS, version=__version__)
     heavy_limiter = anyio.CapacityLimiter(16)
 
-    async def run(ctx: Context, name: str, **args) -> str:
+    async def run(ctx: Context, name: str, /, **args) -> str:  # (positional: sdk_inline has its own `name`)
         try:
             agent, slug = agent_of(ctx)
         except NetworkError as e:
