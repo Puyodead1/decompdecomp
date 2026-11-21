@@ -21,7 +21,7 @@ const ctx = vm.createContext({
   refreshFn:async()=>{throw Error('A different function must not refresh');}, refreshMap:async()=>{},
   api:async()=>({state:'done',id:'old-job',result:{tested:30}}), sleep:async()=>{}, JOB_POLL_MS:500,
 });
-vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/decompnet/app/static/js/deep-permuter.js'),'utf8'),ctx);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/decompnet/app/static/js/deep-search.js'),'utf8'),ctx);
 ctx.renderDeepSearch();
 assert.equal(el('deepResults').hidden,true);
 assert.equal(el('deepStart').disabled,false);

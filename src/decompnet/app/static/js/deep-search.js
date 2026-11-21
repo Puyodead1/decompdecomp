@@ -55,7 +55,7 @@ function renderDeepSearch() {
   const p = job.progress || {};
   const result = job.result || {};
   const best = result.best_score ?? p.best_score;
-  const status = job.stopping ? "Stopping search…" : job.state === "starting" ? "Starting search…" : job.state === "running" ? "Searching for a closer match" : job.state === "cancelled" ? "Stopped · improvements saved" : job.state === "error" ? "Search could not finish" : result.matched ? "Byte-identical match found" : `Finished · ${(result.reason || "search complete").toLowerCase()}`;
+  const status = job.stopping ? "Stopping search…" : job.state === "starting" ? "Starting search…" : job.state === "running" ? "Searching for a closer match" : job.state === "cancelled" ? "Stopped · improvements saved" : job.state === "error" ? "Search could not finish" : result.matched ? "Byte-identical match found" : `Finished · ${result.said || (result.reason || "search complete").toLowerCase()}`;
   $("deepStatus").textContent = status;
   $("deepResults").dataset.state = job.state;
   const tested = result.tested ?? p.tested ?? 0;
@@ -101,7 +101,7 @@ async function reconnectDeepSearch(name) {
   const slug = S.slug, key = deepKey(slug, name);
   if (deepActive(deepRuns.get(key))) return;
   try {
-    const { job, last } = await api(`/api/deep-permuter?slug=${encodeURIComponent(slug)}&name=${encodeURIComponent(name)}`);
+    const { job, last } = await api(`/api/deep?slug=${encodeURIComponent(slug)}&name=${encodeURIComponent(name)}`);
     if (last) deepRuns.set(key, last);
     if (S.slug === slug && S.fn === name) renderDeepSearch();
     if (job) followDeepSearch(job, slug, name);
@@ -114,7 +114,7 @@ $("deepStart").onclick = async () => {
   deepRuns.set(key, { state: "starting", log: [], progress: {} });
   renderDeepSearch();
   try {
-    const { job } = await api("/api/deep-permuter", { method: "POST", body: {
+    const { job } = await api("/api/deep", { method: "POST", body: {
       slug, name, minutes: Number($("deepMinutes").value), variants: Number($("deepVariants").value),
     } });
     followDeepSearch(job, slug, name);

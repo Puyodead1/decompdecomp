@@ -1015,14 +1015,14 @@ def test_a_guests_deep_search_shares_what_it_finds_with_the_host(built, tmp_path
     while the host's agent holds the function), and a better score reaches the host as an agent's does."""
     import time
 
-    from decompnet.app import deep, deep_permuter
+    from decompnet.app import deep
     from decompnet.app.permute import Permuter
 
     host, slug, room, code, client = _host(built, tmp_path)
     g, gslug = _guest(tmp_path, "kim", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
     agent, _ = g.local_agent("claude-1")
     assert g.split_function(agent, gslug, "func_800007C4", "0x800007D0").startswith("✅")
-    searcher, _ = g.local_agent(deep_permuter.AGENT)
+    searcher, _ = g.local_agent("permuter")
     perm = Permuter(g)
     proj = g.project_row(gslug)
     # a better score: the host keeps it as the function's best, without a compile there
@@ -1048,9 +1048,8 @@ def test_a_guests_deep_search_shares_what_it_finds_with_the_host(built, tmp_path
     assert g._function("func_800007D0", gslug)["status"] == "matched"
     assert not host.store.one("SELECT 1 FROM claims c JOIN functions f ON f.id=c.function_id WHERE f.name=?",
                               "func_800007D0")
-    # both searches start on a guest's function
+    # a search starts on a guest's function
     fn = g._function("func_800007F4", gslug)
-    deep_permuter.validate(g, gslug, fn["name"], 1, 10)
     searches = deep.Searches(g, __import__("decompnet.app.support", fromlist=["Jobs"]).Jobs())
     jid = searches.start(gslug, fn["name"], minutes=1, variants=1)
     assert jid

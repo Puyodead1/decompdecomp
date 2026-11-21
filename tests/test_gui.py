@@ -13,10 +13,10 @@ NODE = shutil.which("node")
 GUI_TIMEOUT_SECONDS = 60
 
 
-def test_deep_permuter_results_and_navigation():
+def test_deep_search_results_and_navigation():
     if NODE is None:
         pytest.skip("needs node to run the GUI's scripts")
-    subprocess.run([NODE, str(Path(__file__).with_name("gui_deep_permuter.js"))], check=True,
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_deep_search.js"))], check=True,
                    capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)
 
 

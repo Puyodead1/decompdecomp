@@ -186,3 +186,17 @@ def test_a_searchs_turns_are_the_permuters_length_so_agents_get_the_file_between
     batches(monkeypatch, ["far"], ["closest"])
     result = Scripted(Net(), {"closest": 0}, minutes=30, variants=1000).run("game", "f")
     assert result["matched"] and seconds and max(seconds) <= permute.SECONDS
+
+
+def test_a_search_tries_local_rewrites_of_the_best_c_first(monkeypatch):
+    """The Deep permuter's first pass, taken in when it and Deep search became one: a few targeted rewrites of the
+    best C (declaration order, a temporary...) before the permuter's random ones, kept when they score better."""
+    net = Net()
+    monkeypatch.setattr(deep.permuter_local, "variants", lambda source, name: [("swap", "rewrite"), ("temp", "worse")])
+    batches(monkeypatch, ["far"], ["same"])
+    shown = []
+    search = Scripted(net, {"rewrite": 25, "same": 0}, minutes=5, variants=1000, progress=shown.append)
+    result = search.run("game", "f")
+    assert result["matched"] and result["tested"] == 4
+    assert [h["score"] for h in shown[-1]["history"]] == [40, 25, 0]  # (the tab's chart: start, rewrite, match)
+    assert shown[-1]["starting_score"] == 40 and shown[-1]["variant_limit"] == 1000

@@ -20,7 +20,7 @@ import threading
 import time
 
 from ..network import NetworkError
-from . import workers
+from . import permuter_local, workers
 from .permute import SECONDS, Permuter, State
 
 MINUTES = (1, 120)  # how long a search may run
@@ -61,6 +61,7 @@ class Search(Permuter):
         self._shown = 0.0
         self.start_score = self.best = None
         self.reason = ""
+        self.history: list[dict] = []  # (each better score, for the tab's chart: {"tested", "score"})
 
     # a search takes no claim and counts no turn: it works beside whoever holds the function
     def _hold(self, agent, fn) -> bool:
@@ -96,6 +97,7 @@ class Search(Permuter):
         score = self._judge(agent, proj, fn, source, best, fork)
         if score is not None and (self.best is None or score < self.best):
             self.best = score
+            self.history.append({"tested": self.tested, "score": score})
         self._show()
         return score
 
@@ -114,9 +116,30 @@ class Search(Permuter):
         now = time.monotonic()
         if force or now - self._shown >= PROGRESS_SECONDS:
             self._shown = now
+            elapsed = round(now - self.started)
             self.publish({"tested": self.tested, "start_score": self.start_score, "best_score": self.best,
-                          "improved": self.st.improved, "seconds": round(now - self.started),
-                          "minutes": self.minutes, "max_variants": self.max_variants})
+                          "improved": self.st.improved, "seconds": elapsed,
+                          "minutes": self.minutes, "max_variants": self.max_variants,
+                          # (the function page's Deep search tab reads these names)
+                          "starting_score": self.start_score, "variant_limit": self.max_variants, "elapsed": elapsed,
+                          "seconds_left": max(0, round(self.deadline - now)),
+                          "history": [{"tested": 0, "score": self.start_score}, *self.history][-200:]})
+
+    def _rewrites(self, agent, proj, fn, log) -> None:
+        """Local rewrites of the best C first (permuter_local: declaration order, a temporary taken out or put in,
+        operands swapped...), each judged like a variant: a few targeted tries that sometimes settle what random
+        permutation takes long to find (the Deep permuter's first pass, from #244, which this search took in)."""
+        fork = self.net.fork_slug(proj["slug"])
+        best = fn["best_score"]
+        for family, candidate in permuter_local.variants(fn["best_source"], fn["name"]):
+            score = self._score(agent, proj, fn, candidate, best, fork)
+            if score is None and self.reason:
+                return
+            if score is not None and score < best:
+                best = score
+                log(f"Local rewrite {family}: {score}")
+            if score == 0:
+                return
 
     def run(self, slug: str, name: str, log=lambda line: None) -> dict:
         agent, _ = self.net.local_agent("permuter")
@@ -127,6 +150,7 @@ class Search(Permuter):
         log(f"{fn['name']}: from {fn['best_score']} ({_percent(fn['best_score'], n_insns)}), for up to "
             f"{self.minutes} min or {self.max_variants:,} variants")
         self._show(force=True)
+        self._rewrites(agent, proj, fn, log)
         rounds = 0
         while not self.reason:
             fn = self.net.store.one("SELECT * FROM functions WHERE id=?", fn["id"])
@@ -155,7 +179,8 @@ class Search(Permuter):
         row = self.net.store.one("SELECT status, best_score FROM functions WHERE id=?", fn["id"])
         matched = row is not None and row["status"] == "matched"
         best = 0 if matched else row["best_score"] if row is not None else self.best
-        result = {"function": fn["name"], "reason": "matched" if matched else self.reason, "matched": matched,
+        reason = "matched" if matched else self.reason
+        result = {"function": fn["name"], "reason": reason, "said": REASONS.get(reason, reason), "matched": matched,
                   "tested": self.tested, "start_score": self.start_score, "best_score": best,
                   "improved": self.st.improved, "seconds": round(time.monotonic() - self.started),
                   "n_insns": n_insns, "finished_at": time.time()}
@@ -205,7 +230,14 @@ class Searches:
     def __init__(self, net, jobs):
         self.net, self.jobs = net, jobs
         self.running: dict[tuple[str, str], str] = {}  # (slug, function) -> job id
+        self.last: dict[tuple[str, str], str] = {}  # (slug, function) -> its latest search's job id
         self._lock = threading.Lock()
+
+    def last_for(self, slug: str, name: str) -> dict | None:
+        """The latest search's job on a function this run of the app made (running or not), for its page."""
+        with self._lock:
+            jid = self.last.get((slug, name))
+        return self.jobs.jobs.get(jid) if jid else None
 
     def job_for(self, slug: str, name: str) -> str | None:
         with self._lock:
@@ -239,5 +271,5 @@ class Searches:
                 search = Search(self.net, minutes, variants, cancelled=log.cancelled, progress=log.progress)
                 return search.run(slug, fn["name"], log)
 
-            jid = self.running[key] = self.jobs.start("deep-search", run, cancel_message=STOPPED)
+            jid = self.running[key] = self.last[key] = self.jobs.start("deep-search", run, cancel_message=STOPPED)
         return jid

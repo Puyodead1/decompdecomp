@@ -85,9 +85,8 @@ NOTES_FOUND = 20  # search_notes' answer at most
 # Opus helper claimed at once. After that the function still comes to it last.
 SELF_RELEASE_WINDOW = RELEASE_COOLDOWN
 MACHINE_AGENTS = ("autopilot", "permuter", "deep-permuter")  # decompdecomp's own workers: their claims never mean "given up on"
-# (the deep permuter, the user's long search of one function, is a worker of its own, not "permuter": sharing that
-# identity let it renew or let go of the automatic permuter's claim on the same function, and a claim by one looked
-# like its own to the other, #244)
+# ("deep-permuter": the Deep permuter's, #244, before it and Deep search became one (app/deep.py, which takes no
+# claim at all); kept so its records still read as the app's own)
 MACHINE_AGENT_IDS = f"SELECT id FROM agents WHERE name IN ({', '.join('?' * len(MACHINE_AGENTS))})"
 # "No C makes this" (release_function's not_c): on a DS game five to seven agents in turn took each piece of another
 # function, found it couldn't be C and gave it back, saying so in a note that changed nothing. Once this many agents,
