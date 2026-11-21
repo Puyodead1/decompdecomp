@@ -124,6 +124,11 @@ def test_a_search_of_a_projects_function_judges_its_variants(monkeypatch):
         def tree_wanted(self, proj):
             return False
 
+
+        def unit_wanted(self, proj, unit):
+
+            return False
+
     class ForkNet(Net):
         forks = Forks()
 
@@ -158,6 +163,11 @@ def test_a_search_waits_out_a_change_of_the_whole_tree_instead_of_ending(monkeyp
 
         def tree_wanted(self, proj):
             return len(turns) <= 2
+
+
+        def unit_wanted(self, proj, unit):
+
+            return False
 
     class ForkNet(Net):
         forks = Forks()

@@ -132,6 +132,11 @@ def test_a_projects_turn_judges_its_variants_in_one_run_of_tries(monkeypatch):
         def tree_wanted(self, proj):
             return False
 
+
+        def unit_wanted(self, proj, unit):
+
+            return False
+
     class ForkNet(FakeNet):
         forks = Forks()
 
@@ -203,6 +208,11 @@ def test_a_turn_ends_when_something_waits_for_the_tree_alone(monkeypatch):
         def tree_wanted(self, proj):
             return tree.wanted
 
+
+        def unit_wanted(self, proj, unit):
+
+            return False
+
     class ForkNet(FakeNet):
         forks = Forks()
 
@@ -230,6 +240,63 @@ def test_a_turn_ends_when_something_waits_for_the_tree_alone(monkeypatch):
     p._permute(AGENT, net.project_row("game"), net.function(), State())
     assert p.judged == ["first"] and took.wait(5)
 
+
+def test_a_turn_ends_when_someone_waits_for_its_file(monkeypatch):
+    """A deep search's minute-long turns on a GameCube game's file of 200 functions held up agents' edits there and
+    the room's confirmations, and a room guest's requests gave up at 60 s as if the host had gone: a turn ends as
+    soon as another thread waits for the function's own file."""
+    from contextlib import contextmanager
+
+    from decompnet.app.forkengine import _UnitLock
+
+    unit = _UnitLock()
+
+    class Forks:
+        @contextmanager
+        def trial_run(self, proj, name):
+            with unit:
+                with unit:  # (this thread taking it again never counts as someone waiting)
+                    assert not unit.wanted
+                yield
+
+        def permuter_header(self, fork, name):
+            return HEADER
+
+        def permuter_name(self, fork, name, source):
+            return name
+
+        def tree_wanted(self, proj):
+            return False
+
+        def unit_wanted(self, proj, name):
+            return unit.wanted
+
+    class ForkNet(FakeNet):
+        forks = Forks()
+
+        def fork_slug(self, slug):
+            return slug
+
+    took = threading.Event()
+
+    def edit():
+        with unit:
+            took.set()
+
+    class Judging(ScriptedPermuter):
+        def _score(self, agent, proj, fn, source, best, fork):
+            if source == "first":  # an agent's edit of the file comes during the turn
+                threading.Thread(target=edit, daemon=True).start()
+                while not unit.wanted:
+                    time.sleep(0.01)
+            return super()._score(agent, proj, fn, source, best, fork)
+
+    net = ForkNet()
+    batches(monkeypatch, ["first", "second", "third"], ["fourth"])
+    p = Judging(net, {})
+    p.seconds = 600
+    p._permute(AGENT, net.project_row("game"), net.function(), State())
+    assert p.judged == ["first"] and took.wait(5) and p.ended == "yielded"
 
 def test_decomp_permuter_looks_a_function_up_by_the_name_its_c_has(monkeypatch):
     """A PC or Xbox game's function is its mangled symbol, which no C spells: every turn ended with "Function

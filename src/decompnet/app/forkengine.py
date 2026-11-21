@@ -156,6 +156,45 @@ def scaled(fuzzy: float | None, n_insns: int) -> int:
     return 0 if fuzzy >= 100 else max(1, round((1 - fuzzy / 100) * n_insns * 100))
 
 
+class _UnitLock:
+    """A source file's lock (re-entrant, like threading.RLock) that says when another thread waits for it: a
+    permuter turn holding the file for a minute lets go early then. A deep search's turns on a GameCube game's file of
+    200 functions held up the agents' edits and the room's confirmations in that file, and a room guest's requests
+    gave up at 60 s, as if the host had gone."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._count = threading.Lock()
+        self._waiting = 0
+
+    @property
+    def wanted(self) -> bool:
+        return self._waiting > 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(False):  # (free, or this thread's already: never counted as waiting)
+            return True
+        if not blocking:
+            return False
+        with self._count:
+            self._waiting += 1
+        try:
+            return self._lock.acquire(True, timeout)
+        finally:
+            with self._count:
+                self._waiting -= 1
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
 class _TreeLock:
     """Work on different source files runs side by side; a change any file may depend on (a header) runs alone.
     A thread that holds it exclusively may take it again either way."""
@@ -695,7 +734,7 @@ class ForkEngine:
     def __init__(self, net):
         self.net = net
         self._trees: dict[int, _TreeLock] = defaultdict(_TreeLock)  # project id -> its source tree's lock
-        self._unit_locks: dict[tuple[int, str], threading.RLock] = defaultdict(threading.RLock)
+        self._unit_locks: dict[tuple[int, str], _UnitLock] = defaultdict(_UnitLock)
         self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
         self._unit_builds: dict[int, _UnitBuilds] = defaultdict(_UnitBuilds)  # project id -> its units' builds
         self._git_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
@@ -764,7 +803,11 @@ class ForkEngine:
         with self._mlock:
             return self._trees[proj["id"]]
 
-    def _unit_lock(self, proj, unit: str) -> threading.RLock:
+    def unit_wanted(self, proj, unit: str) -> bool:
+        """Whether another thread waits for a unit's source file (_UnitLock.wanted): a permuter turn holding it ends."""
+        return self._unit_lock(proj, unit).wanted
+
+    def _unit_lock(self, proj, unit: str) -> _UnitLock:
         with self._mlock:
             return self._unit_locks[(proj["id"], unit)]
 

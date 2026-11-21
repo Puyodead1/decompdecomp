@@ -356,7 +356,10 @@ class Permuter:
             # an edit of a finished file) waits for the turn to end, with every agent's compile waiting behind it: on
             # a GameCube game with 600 s turns, agents' compiles went through once every ten minutes. Such a wait
             # ends the turn.
-            yielding = (lambda: self.net.forks.tree_wanted(proj)) if fork else (lambda: False)
+            # The same for the function's own file: an agent's edit or compile there, or a room guest's match the host
+            # confirms, waited out a deep search's minute-long turns (the guest's request gave up at 60 s)
+            yielding = ((lambda: self.net.forks.tree_wanted(proj) or self.net.forks.unit_wanted(proj, fn["unit"]))
+                        if fork else (lambda: False))
             why = ""
             while time.monotonic() < deadline and best > 0 and not st.stop.is_set() and not yielding():
                 if gen is not None:
