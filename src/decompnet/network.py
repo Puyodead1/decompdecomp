@@ -59,7 +59,9 @@ COPY = "copy_mark IS NOT NULL"  # (meta's copy_of, as store.py's triggers copy i
 # Set aside, for any reason (an SQL condition on `functions`): no C makes it (status asm: hand-written assembly, a
 # piece of a function, agents' verdict), it isn't the game's own (GAME_CODE), or it's a copy (COPY). Every count
 # takes it off the total and off what matched, so a matched library function doesn't count either.
-SET_ASIDE = f"(status = 'asm' OR NOT ({GAME_CODE}) OR {COPY})"
+# A function the user marked good enough (Network.mark_good_enough) is out of the agents' way like one set aside,
+# but its code is still the game's to match: it stays on the total, unmatched.
+SET_ASIDE = f"((status = 'asm' AND enough_mark IS NULL) OR NOT ({GAME_CODE}) OR {COPY})"
 # The counts a project's page and the project list show (functions, matched, bytes, set aside), as SQL columns
 PROGRESS_COLUMNS = (
     "COUNT(*) AS total, SUM(status='matched' AND NOT {a}) AS matched, SUM(size) AS bytes, "
@@ -411,7 +413,7 @@ def set_aside(fn) -> dict:
         return {}
     why = meta.get("asm_code") or (f"the same code as {meta['asm_twin']}, a matched assembly function"
                                    if meta.get("asm_twin") else "hand-written assembly")
-    return {"set_aside": why, "not_c": "not_c" in meta}
+    return {"set_aside": why, "not_c": "not_c" in meta, "good_enough": "good_enough" in meta}
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -1371,11 +1373,32 @@ class Network:
             db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'", (json.dumps(meta), fn["id"]))
             self._event(db, fn["project_id"], None, "reopen", f"{fn['name']}: open again (pieces were joined to it)")
 
+    def mark_good_enough(self, function: str, project: str | None = None) -> None:
+        """The user marks an open function good enough: its best C is close, and what's left isn't worth agents' time
+        (a GameCube game's dozens of functions at 99% and more, a register or two apart after a dozen agents each).
+        Agents, autopilot, the permuter and drafts leave it alone like one set aside; it isn't a match, and its code
+        stays on the total, unmatched. Its best C stays where it is (a project's file holds it); "Give it back to the
+        agents" undoes it."""
+        fn = self._function(function, project)
+        if fn["status"] != "open":
+            raise NetworkError(f"{fn['name']} isn't open (it's {fn['status']}): only an open function can be marked")
+        if fn["best_score"] is None or not fn["best_source"]:
+            raise NetworkError(f"{fn['name']} has no attempt yet: there's no C to call good enough")
+        pct = _percent(fn)
+        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items() if k != "reopened"}
+        meta["good_enough"] = {"score": fn["best_score"], "t": time.time()}
+        meta["asm_code"] = f"good enough: you marked its best C ({pct:.1f}%) as close enough, so agents leave it alone"
+        with self.store.tx() as db:
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", (json.dumps(meta), fn["id"]))
+            self._event(db, fn["project_id"], None, "not_c", f"{fn['name']}: good enough at {pct:.1f}% (you marked it)")
+
     def reopen(self, function: str, project: str | None = None) -> None:
         """The user gives a set-aside function back to the agents (they think C makes it after all): the agents'
-        verdicts on it are forgotten, and no check sets it aside again."""
+        verdicts on it are forgotten, and no check sets it aside again. A good-enough one too."""
         fn = self._function(function, project)
-        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items() if k not in ("not_c", "asm_code", "asm_twin")}
+        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items()
+                if k not in ("not_c", "asm_code", "asm_twin", "good_enough")}
         with self.store.tx() as db:
             db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
                        (json.dumps({**meta, "reopened": True}), fn["id"]))

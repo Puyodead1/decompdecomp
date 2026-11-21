@@ -263,6 +263,7 @@ class GuiMixin:
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
                  "not_c": r["status"] == "asm" and '"not_c"' in (r["meta"] or ""),
+                 "good_enough": r["status"] == "asm" and '"good_enough"' in (r["meta"] or ""),
                  "polished": r["status"] == "matched" and bool(r["readable"]),
                  # a C++ function's name as written (its symbol stays `name`, what the judge links by); every row
                  # has the field, as /api/map takes its columns from the first row (a C++ program's list failed: 500)

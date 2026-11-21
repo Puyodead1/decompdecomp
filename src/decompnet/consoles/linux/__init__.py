@@ -257,8 +257,8 @@ class Linux(Console):
         with net.store.tx() as db:
             for r in rows:
                 meta = json.loads(r["meta"] or "{}")
-                if r["status"] != "asm" or meta.get("set_aside"):
-                    continue
+                if r["status"] != "asm" or meta.get("set_aside") or meta.get("good_enough"):
+                    continue  # (one the user marked good enough stays theirs)
                 meta = {k: v for k, v in meta.items() if k not in ("not_c", "asm_code", "asm_twin")}
                 reopened += db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
                                        (json.dumps(meta), r["id"])).rowcount

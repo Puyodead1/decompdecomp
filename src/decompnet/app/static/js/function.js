@@ -34,7 +34,7 @@ function fnBadge(d = S.fnDetail) {
   const working = S.claims.find((c) => c.name === d.name);
   const st = $("fnStatus");
   st.className = "badge " + (d.status === "matched" ? "matched" : d.not_c ? "not-c" : working ? "working" : "");
-  st.textContent = d.status === "matched" ? "matched" : d.status === "asm" ? (d.not_c ? "not C" : "set aside")
+  st.textContent = d.status === "matched" ? "matched" : d.status === "asm" ? (d.good_enough ? "good enough" : d.not_c ? "not C" : "set aside")
     : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}`
     : noBest((d.scores || []).length);
 }
@@ -77,6 +77,16 @@ async function refreshFn(first) {
     $("fnName").title = fnLabel(d.name) !== d.name ? d.name : "";
     fnBadge(d);
     $("fnSetAside").hidden = d.status !== "open";
+    $("fnGoodEnough").hidden = d.status !== "open" || d.best == null;
+    $("fnGoodEnough").onclick = async () => {
+      $("fnActionsMenu").open = false;
+      try {
+        await api("/api/good_enough", { method: "POST", body: { slug: S.slug, name: d.name } });
+        toast(`<code>${esc(fnLabel(d.name))}</code> is good enough: agents leave it alone. It stays unmatched in the progress.`);
+        await refreshFn(false);
+        await refreshMap(true);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
     $("fnActionsMenu").hidden = d.status !== "open";
     $("fnCompare").hidden = d.status !== "open";
     if (S.compareFor !== d.name) { $("fnCompareBox").hidden = true; $("fnCompareOut").innerHTML = ""; }
@@ -114,7 +124,8 @@ async function refreshFn(first) {
       } catch (e) { toast(esc(e.message), "err"); }
     };
     $("fnAside").hidden = !d.set_aside;
-    $("fnAsideWhy").textContent = d.set_aside ? `Set aside, agents aren't handed it: ${d.set_aside}.` : "";
+    $("fnAsideWhy").textContent = !d.set_aside ? "" : d.good_enough ? `Good enough, agents leave it alone: ${d.set_aside.replace(/^good enough: /, "")}.`
+      : `Set aside, agents aren't handed it: ${d.set_aside}.`;
     $("fnReopen").onclick = async () => {
       try {
         await api("/api/reopen", { method: "POST", body: { slug: S.slug, name: d.name } });
@@ -396,7 +407,7 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? (polished(f) ? `<span class="st matched polished" title="matched, and polished: real names, types and a comment">polished</span>` : `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>`) : st === "asm" ? (f.not_c ? `<span class="st not-c" title="agents agreed no C makes it: set aside">not C</span>` : `<span class="st" title="no C compiles to it (hand-written assembly, or a piece of another function): set aside">set aside</span>`) : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? (polished(f) ? `<span class="st matched polished" title="matched, and polished: real names, types and a comment">polished</span>` : `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>`) : st === "asm" ? (f.good_enough ? `<span class="st" title="you marked its best C good enough: agents leave it alone, and it stays unmatched">good enough</span>` : f.not_c ? `<span class="st not-c" title="agents agreed no C makes it: set aside">not C</span>` : `<span class="st" title="no C compiles to it (hand-written assembly, or a piece of another function): set aside">set aside</span>`) : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
     const on = starred(f), open = st !== "matched" && st !== "asm";
     const starCell = !star ? "" : `<td class="star-col">${open || on ? `<button type="button" class="star-btn${on ? " on" : ""}" data-star="${esc(f.name)}" aria-pressed="${on}" aria-label="${on ? "Agents take it first: click to stop" : "Agents take it first"}" title="${on ? "Agents take it first (click to stop)" : "Agents take it first"}">${on ? "★" : "☆"}</button>` : ""}</td>`;

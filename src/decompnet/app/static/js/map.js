@@ -228,7 +228,7 @@ $("map").addEventListener("mousemove", (ev) => {
   const f = S.map[i];
   const p = pctOf(f.best, f.insns);
   const status = f.status === "matched" ? `matched${f.matched_by ? " by " + esc(f.matched_by) : ""}`
-    : f.status === "asm" ? (f.not_c ? "not C" : "set aside") : f.status === "working" ? `${esc(f.agent)} is on it`
+    : f.status === "asm" ? (f.good_enough ? "good enough" : f.not_c ? "not C" : "set aside") : f.status === "working" ? `${esc(f.agent)} is on it`
     : f.best != null ? `best ${pctText(p)}` : noBest(f.attempts || 0);
   const where = S.ov && S.ov.kind === "fork" ? esc(f.unit || "") : hex8(f.vram);
   const cc = f.cc ? `<br>looks built by ${esc(f.cc)}${f.ccx ? ", not its compiler today" : ""}` : "";

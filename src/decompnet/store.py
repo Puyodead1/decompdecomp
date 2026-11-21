@@ -123,6 +123,7 @@ MIGRATIONS = [
     ("functions", "last_checked", "REAL"),                    # latest attempt, including failed compiles
     ("functions", "last_improved", "REAL"),                   # latest compiled attempt that improved the score
     ("functions", "copy_mark", "TEXT"),                        # meta's copy_of (network.COPY)
+    ("functions", "enough_mark", "TEXT"),                      # meta's good_enough (network.SET_ASIDE)
 ]
 
 # What the counts ask of each function's meta, copied into columns of their own: an index can hold a column, and
@@ -131,7 +132,8 @@ MIGRATIONS = [
 # JSON (none is written so): no mark, as before a project's set-aside list.
 MARKS = ("aside_mark=CASE WHEN json_valid(NEW.meta) THEN json_extract(NEW.meta, '$.set_aside') END, "
          "gone_mark=CASE WHEN json_valid(NEW.meta) THEN json_extract(NEW.meta, '$.gone') END, "
-         "copy_mark=CASE WHEN json_valid(NEW.meta) THEN json_extract(NEW.meta, '$.copy_of') END")
+         "copy_mark=CASE WHEN json_valid(NEW.meta) THEN json_extract(NEW.meta, '$.copy_of') END, "
+         "enough_mark=CASE WHEN json_valid(NEW.meta) THEN json_extract(NEW.meta, '$.good_enough.t') END")
 MARK_TRIGGERS = f"""
 CREATE TRIGGER IF NOT EXISTS functions_marks_insert AFTER INSERT ON functions WHEN NEW.meta IS NOT NULL
 BEGIN UPDATE functions SET {MARKS} WHERE id=NEW.id; END;
@@ -299,7 +301,7 @@ class Store:
         self.conn.executescript(DIRTY_TRIGGERS)
         self.conn.executescript(TALLY_TRIGGERS)
         self.conn.executescript(MARK_TRIGGERS)
-        if added & {"aside_mark", "copy_mark"}:  # once: the marks of every function there is
+        if added & {"aside_mark", "copy_mark", "enough_mark"}:  # once: the marks of every function there is
             self.conn.execute(f"UPDATE functions SET {MARKS.replace('NEW.', '')} WHERE meta IS NOT NULL")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_agent_time ON attempts(agent_id, created_at)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")
@@ -322,11 +324,12 @@ class Store:
         # (with the set-aside and gone marks, whether it's polished and who matched it: the sidebar's and the project's
         # counts read every function's whole row without them, 58 ms for a 28,900-function game; now 7)
         # (and the copy mark: a V.Flash game's modules' copies of its engine count once, network.COPY)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_tallies ON functions(project_id, status, size, "
+        # (and the good-enough mark: such a function is out of the agents' way, never off the total)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_totals ON functions(project_id, status, size, "
                           "attempts, best_score, matched_at, readable, matched_agent_id, aside_mark, gone_mark, "
-                          "copy_mark)")
-        # (the second: this index on json_extract; the last: it without the copy mark)
-        for old in ("idx_functions_progress", "idx_functions_counts", "idx_functions_tally"):
+                          "copy_mark, enough_mark)")
+        # (the second: this index on json_extract; the last two: it without the copy mark, without the good-enough one)
+        for old in ("idx_functions_progress", "idx_functions_counts", "idx_functions_tally", "idx_functions_tallies"):
             self.conn.execute(f"DROP INDEX IF EXISTS {old}")
         # agents created before `origin` existed were all minted by the operator on the CLI
         self.conn.execute("UPDATE agents SET trusted = 1, origin = 'cli' WHERE origin IS NULL")

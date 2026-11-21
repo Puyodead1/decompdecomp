@@ -321,6 +321,11 @@ def register(app: App) -> None:
         net.set_aside_by_you(str(data.get("name", "")), slug, str(data.get("why", "")))
         return {"ok": True}
 
+    def p_good_enough(slug, request, data):
+        """You mark a function good enough: agents leave it alone, unmatched (Network.mark_good_enough)."""
+        net.mark_good_enough(str(data.get("name", "")), slug)
+        return {"ok": True}
+
     def p_plain(slug, request, data):
         """You choose C close to a function no C matches yet for the export's plain build (Network.set_plain), or
         none again (`clear`)."""
@@ -459,7 +464,7 @@ def register(app: App) -> None:
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
-        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/plain": (p_plain, ["POST"]),
+        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/good_enough": (p_good_enough, ["POST"]), "/api/plain": (p_plain, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]), "/api/file": (p_file, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/deep-permuter": (p_deep_permuter, ["GET", "POST"]),

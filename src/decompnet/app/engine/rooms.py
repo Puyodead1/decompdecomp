@@ -13,7 +13,7 @@ from ...network import NetworkError
 from ...rom.symbols import AUTO_NAME, Symbol
 
 # what says why a function is set aside (network.set_aside): what a room's host sends with each
-SET_ASIDE_WHY = ("asm_code", "asm_twin", "not_c", "library", "set_aside")
+SET_ASIDE_WHY = ("asm_code", "asm_twin", "not_c", "library", "set_aside", "good_enough")
 
 
 class RoomMixin:

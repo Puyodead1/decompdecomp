@@ -173,3 +173,33 @@ def test_a_helpers_selection_is_kept_with_it_and_pauses_it_when_nothing_is_left(
     assert m.set_selection(sid, {}) == {} and net.selection("game", s.agent_name) == {}
     with pytest.raises(NetworkError):
         m.start("claude", "game", 1, {"model": "opus", "selection": {"max_tries": -1}})
+
+
+def test_a_function_marked_good_enough_is_left_alone_and_stays_unmatched(tmp_path):
+    """A GameCube game's dozens of functions at 99% and more, a register or two apart after a dozen agents each: the
+    user marks one good enough, agents leave it (named, it's refused like one set aside), its best C is kept, and the
+    progress still counts it unmatched; "Give it back to the agents" undoes it."""
+    net = _game(tmp_path, functions=3)
+    _scores(net, f0=5)  # f0 99.5%
+    pid = net.project_row("game")["id"]
+
+    def counts():
+        r = net.store.one(f"SELECT {network.PROGRESS_COLUMNS} FROM functions WHERE project_id=?", pid)
+        return r["total"], r["matched"], r["set_aside"]
+
+    before = counts()
+    with pytest.raises(NetworkError, match="no attempt yet"):
+        net.mark_good_enough("f1", "game")
+    net.mark_good_enough("f0", "game")
+    fn = net._function("f0", "game")
+    assert fn["status"] == "asm" and fn["best_source"] == "int f;"
+    assert network.set_aside(fn)["good_enough"] and "good enough" in network.set_aside(fn)["set_aside"]
+    assert counts() == before  # (on the total, unmatched: not set aside)
+    agent, _ = net.local_agent("claude-opus-1")
+    assert {net.claim_row(agent, "game")["name"]} <= {"f1", "f2"}
+    with pytest.raises(NetworkError):
+        net.claim_row(net.local_agent("claude-opus-2")[0], "game", "f0")
+    net.reopen("f0", "game")
+    fn = net._function("f0", "game")
+    assert fn["status"] == "open" and "good_enough" not in json.loads(fn["meta"])
+    assert counts() == before
