@@ -590,8 +590,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | least_tried | hardest | random"),
                              count=it("up to 6 small functions at once"))),
         "get_function": ("Show any function by name or address. A long function's assembly comes in parts of 400 "
-                         "lines: part 2, 3, ... shows the next.",
-                         s(function=st("name or address", True), part=it("which part of a long function's assembly"))),
+                         "lines: part 2, 3, ... shows the next. show=\"asm\" or \"best\": its assembly or its best "
+                         "attempt alone (what a long brief points to).",
+                         s(function=st("name or address", True), part=it("which part of a long function's assembly"),
+                           show=st('"asm" or "best": that part alone'))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
@@ -685,8 +687,14 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "search_code": ("Regex search over the project's C/C++ sources and headers.",
                         s(pattern=st("regular expression", True), glob=st("optional file glob"))),
         "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
-                      "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),
-                                                       new=st("replacement", True), message=st("why", True))),
+                      "Undone if any match breaks. `more`: further edits of the same file made with it (a prototype "
+                      "and its definition together).",
+                      s(path=st("file", True), old=st("text to replace, or empty", True),
+                        new=st("replacement", True), message=st("why", True),
+                        more={"type": "array", "description": "further {old, new} edits of the same file",
+                              "items": {"type": "object", "properties": {"old": {"type": "string"},
+                                                                         "new": {"type": "string"}},
+                                        "required": ["old", "new"]}})),
         "sdk_inline": ("Put the SDK's own inline function `name` (OSInitFastCast...) in source file `path`, from the "
                        "user's SDK copy, above the first function calling it: for SDK code no C writes (an asm "
                        "block). Call it in your C; never write assembly.",

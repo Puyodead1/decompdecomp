@@ -107,7 +107,9 @@ def test_every_mcp_tool_reaches_its_handler_with_its_own_arguments(tmp_path, mon
     async def each():
         for tool in await mcp.list_tools():
             props = tool.input_schema.get("properties", {})
-            args = {k: dummy.get(v.get("type"), "x") for k, v in props.items()}
+            kind = lambda v: v.get("type") or next((a.get("type") for a in v.get("anyOf", [])  # noqa: E731
+                                                    if a.get("type") != "null"), None)
+            args = {k: dummy.get(kind(v), "x") for k, v in props.items()}
             reached.clear()
             await mcp.call_tool(tool.name, args)
             assert [name for name, _ in reached] == [tool.name]  # (some map aliases: read_file's offset)

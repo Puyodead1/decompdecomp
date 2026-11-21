@@ -47,6 +47,8 @@ from ..forks.objdiff import MappingConflict, ObjdiffError
 from ..forks.project import EDITABLE, GAME, PROGRAM, SCOPES, STATE, ForkError, ForkProject, project_macro
 from ..hostenv import NO_WINDOW
 from ..network import (
+    ASM_PAGE,
+    BRIEF_CHARS,
     COPY,
     GAME_CODE,
     IN_BUILD,
@@ -57,6 +59,7 @@ from ..network import (
     Network,
     NetworkError,
     asm_page,
+    fit_brief,
     model_of,
     move_on_brief,
     set_aside,
@@ -3528,44 +3531,58 @@ class ForkEngine:
             src_text = p.read_text(errors="replace", encoding="utf-8") if p.exists() else None
         else:
             lines.append("this unit has no source file yet, so it can't be decompiled from here")
+        asm_block: list[str] = []
+        diff_block: list[str] = []
+        diff_rows = 0
+        source_block: list[str] = []
+        best_block: list[str] = []
+        said = ""
         try:
             d = fp.diff(unit, meta.get("symbol") or fn["name"])
             pct = ("not in your build yet" if d.match_percent is None else
                    d.why_not() if d.literals else
                    f"{percent_text(d.match_percent)} match")
             asm, said = asm_page(d.target_asm().splitlines(), 1, fn["name"])
-            lines += [f"current state: {pct}", "", "### Target assembly", *([said] if said else []), "```asm", *asm,
-                      "```"]
+            lines.append(f"current state: {pct}")
+            asm_block = ["", "### Target assembly", *([said] if said else []), "```asm", *asm, "```"]
             if cfg.get("origin") == "scratch":
                 lines += self._data_used(proj, d.refs)
             if d.literals:
                 lines += ["", d.literals_note()]
             elif d.match_percent is not None and not d.matched:
                 d.rows = with_constant_values(d.rows, consoles.get(cfg.get("platform")), fp)
-                lines += ["", "### Diff against the current build", d.render()]
+                diff_block = ["", "### Diff against the current build", d.render()]
+                diff_rows = len(d.rows)
+                if agent is not None:  # (last_diff shows it, where a long brief leaves it out)
+                    self.net.keep_diff(agent.id, fn["id"], d.rows, objdiff.LEGEND)
         except (ObjdiffError, ForkError) as e:
             lines.append(f"(objdiff couldn't diff this function: {e})")
         _, span = self._find(src_text, self._names(meta, fn)) if src_text else (None, None)
+        shown_source = (1 + src_text.count("\n", 0, span[0]), src_text.count("\n", 0, span[1]) + 1) if span else None
+        hidden_lines: list[str] = []
         if span:
-            lines += ["", "### Current source", "```c", src_text[span[0]:span[1]].strip(), "```"]
+            source_block = ["", "### Current source", "```c", src_text[span[0]:span[1]].strip(), "```"]
             if hidden := self._hidden(fp, src_text, span[0]):
-                lines.append(f"⚠️ It's inside `{hidden[1]}` (line {hidden[0]} of {unit.source}), which the build leaves "
-                             "out: the state above is not this code's. compile_and_diff compiles yours where the build "
-                             "sees it, without that copy; kept, the function is visible from then on.")
+                hidden_lines = [f"⚠️ It's inside `{hidden[1]}` (line {hidden[0]} of {unit.source}), which the build "
+                                "leaves out: the state above is not this code's. compile_and_diff compiles yours where "
+                                "the build sees it, without that copy; kept, the function is visible from then on."]
         else:
-            lines += ["", f"### Not in {unit.source or 'the source'} yet: compile_and_diff adds it at the end."]
+            source_block = ["", f"### Not in {unit.source or 'the source'} yet: compile_and_diff adds it at the end."]
         if fn["best_source"] and fn["status"] != "matched":
-            lines += ["", f"### Best attempt so far (score {fn['best_score']})", "```c", fn["best_source"].strip(), "```"]
+            best_block = ["", f"### Best attempt so far (score {fn['best_score']})", "```c", fn["best_source"].strip(),
+                          "```"]
         elif fn["status"] != "matched" and (span is None or csource.is_stub(src_text[span[0]:span[1]])):
             seed = self._draft(proj, fp, cfg, fn, unit)
             made = self._compilable(proj, fp, cfg, fn, unit) if seed else None
             if made is not None:  # (as the headers are now: it follows them, and redraft adds an agent's)
-                lines += ["", "### Machine draft (Ghidra's, made to compile here; often wrong in types and details; "
-                              "redraft(function, context) makes it again with your declarations)", "```cpp",
-                          (made[0] + "\n" if made[0] else "") + made[1].strip(), "```"]
+                best_block = ["", "### Machine draft (Ghidra's, made to compile here; often wrong in types and details; "
+                                  "redraft(function, context) makes it again with your declarations)", "```cpp",
+                              (made[0] + "\n" if made[0] else "") + made[1].strip(), "```"]
             elif seed:
-                lines += ["", "### Machine draft: a starting point, often wrong in types and details", "```c",
-                          self._method_draft(fp, cfg, fn, seed).strip(), "```"]
+                best_block = ["", "### Machine draft: a starting point, often wrong in types and details", "```c",
+                              self._method_draft(fp, cfg, fn, seed).strip(), "```"]
+        head = lines
+        lines = []
         lines += self._class_brief(fp, cfg, fn) + self._struct_brief(fp, cfg, fn)
         lines += self._debug_brief(fp, cfg, fn)
         lines += self._ltcg_brief(fp, meta, fn, unit)
@@ -3601,10 +3618,30 @@ class ForkEngine:
         notes = self.net.notes_for_brief(fn, best_text, show=6, when=False)
         if notes:
             lines += ["", "### Notes", *notes]
-        lines += ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
-                      "with any #include \"...\", prototypes or #pragma lines it needs. Structs, globals and helper "
-                      "functions go in with edit_file."]
-        return "\n".join(lines)
+        tail = ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
+                    "with any #include \"...\", prototypes or #pragma lines it needs. Structs, globals and helper "
+                    "functions go in with edit_file."]
+        whole = [*head, *asm_block, *diff_block, *source_block, *hidden_lines, *best_block, *lines, *tail]
+        if sum(len(line) + 1 for line in whole) <= BRIEF_CHARS:
+            return "\n".join(whole)
+        # too long to be read (a 1,422-instruction function's: 62,000 characters): the best attempt and the notes
+        # first, and the diff, the file's copy and the assembly behind the calls that show them, in that order
+        name = fn["name"]
+        why = "left out here: this brief would be too long to read"
+        best_pointer = ["", f"### Best attempt so far: score {fn['best_score']}, {len(fn['best_source'] or '')} "
+                            f"characters: get_function(\"{name}\", show=\"best\") shows it — start from it ({why})"]
+        asm_pointer = ["", f"### Target assembly: get_function(\"{name}\", show=\"asm\") shows it, {ASM_PAGE} lines "
+                           f"at a time ({why})"]
+        source_pointer = (["", f"### Current source: lines {shown_source[0]}-{shown_source[1]} of {unit.source}: "
+                               f"read_file(\"{unit.source}\", start={shown_source[0]}, "
+                               f"count={shown_source[1] - shown_source[0] + 1}) shows it ({why})"]
+                          if shown_source else None)
+        diff_pointer = ["", f"### Diff against the current build: {diff_rows} rows; last_diff(\"{name}\") shows "
+                            f"every differing one ({why})"]
+        return "\n".join(fit_brief([
+            (head, None), (best_block, best_pointer if fn["best_source"] and fn["status"] != "matched" else None),
+            (hidden_lines, None), (lines, None), (asm_block, asm_pointer), (source_block, source_pointer),
+            (diff_block, diff_pointer if diff_block else None), (tail, None)], BRIEF_CHARS))
 
     def _twin_brief(self, proj, fn) -> list[str]:
         """For a brief: the matched function with the same code (relocations aside), and its code made into this
@@ -3878,14 +3915,43 @@ class ForkEngine:
         still = self.net.still_holding(agent, function)
         fn = self.net.claim_row(agent, slug, function, strategy)
         if fn is not None and still:
-            return still + self.brief(fn, agent, "CLAIMED")
+            said = self._best_in_file(agent, slug, fn)
+            return still + (said + "\n\n" if said else "") + self.brief(self._fn(slug, fn["name"]), agent, "CLAIMED")
         if fn is None:
             left = (self.get(slug)[2].get("uncovered") or {}).get("functions")
             return (self.net.nothing_to_claim(agent, self.net._project(slug), " with a source file")
                     + (f"\n{left} more functions are in code no source file covers yet. The user can give them files "
                        "(the project's overview in decompdecomp: Give them source files); then there's more to claim."
                        if left else ""))
-        return self.brief(fn, agent, "CLAIMED")
+        said = self._best_in_file(agent, slug, fn)
+        return (said + "\n\n" if said else "") + self.brief(self._fn(slug, fn["name"]), agent, "CLAIMED")
+
+    def _best_in_file(self, agent: Agent, slug: str, fn) -> str:
+        """Put an open function's best attempt in its source file when the file holds another version: the permuter,
+        a deep search and autopilot's drafts record a better attempt without writing it there, and on a GameCube game
+        the file kept a 95.8% version under a 98.5% best, which two agents then worked from. "" once it's there (or
+        nothing needs doing), else what stopped it, for the agent."""
+        if fn["status"] != "open" or not fn["best_source"] or slug in self.net.links:
+            return ""
+        _, fp, _ = self.get(slug)
+        meta, unit = self._meta(fn), fp.unit(fn["unit"])
+        if not unit.source or not (fp.root / unit.source).is_file():
+            return ""
+        names = self._names(meta, fn)
+        _, span = self._find(text := self._settled_text(slug, fp.root / unit.source), names)
+        _, best_span = self._find(fn["best_source"], names)
+        best_code = fn["best_source"][best_span[0]:best_span[1]] if best_span else fn["best_source"]
+        if span and text[span[0]:span[1]].strip() == best_code.strip():
+            return ""
+        try:
+            res = self.attempt(agent, slug, fn["name"], fn["best_source"])
+        except NetworkError as e:
+            res = {"text": str(e)}
+        if res.get("matched") or (res.get("score") is not None and res["score"] <= (fn["best_score"] or 0)):
+            return ""
+        why = (res.get("text") or "").strip().splitlines()[0][:300] if res.get("text") else "it didn't build"
+        return (f"⚠️ The best attempt (score {fn['best_score']}) isn't what {unit.source} holds, and putting it there "
+                f"didn't work: {why}. The file's version is another one: start from the best attempt below.")
 
     def _claim_in_room(self, link, agent: Agent, slug: str, function: str | None, strategy: str) -> str:
         """A member of a room: the host hands out functions (nobody does one twice); the brief comes from this copy."""
@@ -5065,15 +5131,10 @@ class ForkEngine:
         fn = self._fn(slug, function)
         if (link := self.net.links.get(slug)) is not None:
             link.call("/collab/release", agent, function=fn["name"], notes=notes, not_c=not_c)
-        latest = self.net.store.one("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 1",
-                                    fn["id"], agent.id)
-        if (fn["best_source"] and fn["status"] != "matched" and latest and latest["score"] is not None
-                and fn["best_score"] is not None and latest["score"] > fn["best_score"]):
-            try:  # leave the file at its best state for the next agent
-                self.attempt(agent, slug, function, fn["best_source"])
-            except NetworkError:
-                pass
-        return Network.release(self.net, agent, function, notes, slug, not_c)
+        # leave the file at its best state for the next agent; what stopped that is said, never swallowed (the
+        # next claim tries again, and tells its agent)
+        said = "" if link is not None else self._best_in_file(agent, slug, fn)
+        return Network.release(self.net, agent, function, notes, slug, not_c) + (f"\n{said}" if said else "")
 
     def release_exempt(self, slug: str, fn) -> str | None:
         """Why compiling can't help with this function (release_function lets such a release through at once), or
@@ -5103,6 +5164,18 @@ class ForkEngine:
                 "a standard convention change nothing (the judge writes the original's references in their place).",
                 *found]
 
+    def _settled_text(self, slug: str, p: Path) -> str:
+        """A source file as it stands between compiles: each compile writes its try into the file, builds it and puts
+        the file back under the unit's lock, and a read meanwhile showed another agent's try, whose text the reader's
+        edit_file then couldn't find (two agents on a GameCube game's 1,422-instruction function, edit after edit)."""
+        proj, fp, _ = self.get(slug)
+        rel = Path(os.path.relpath(p, fp.root)).as_posix()
+        names = [u.name for u in fp.units_for(rel)]
+        if not names:
+            return p.read_text(errors="replace", encoding="utf-8")
+        with self._tree(proj).shared(), self._units_locked(proj, names):
+            return p.read_text(errors="replace", encoding="utf-8")
+
     def read_file(self, slug: str, path: str, start: int = 1, count: int = 200) -> str:
         _, fp, _ = self.get(slug)
         p = fp.root if path.strip().strip("/") in ("", ".") else fp.safe_path(path)
@@ -5119,7 +5192,7 @@ class ForkEngine:
             head = f.read(8192)
         if b"\0" in head or p.stat().st_size > 4 * 1024 * 1024:
             raise NetworkError(f"{path} isn't a source or text file")  # never the user's game data
-        lines = p.read_text(errors="replace", encoding="utf-8").splitlines()
+        lines = self._settled_text(slug, p).splitlines()
         start = max(1, int(start))
         chunk = lines[start - 1:start - 1 + max(1, min(int(count), 600))]
         out = [f"{path} (lines {start}-{start + len(chunk) - 1} of {len(lines)})"]
@@ -5272,28 +5345,36 @@ class ForkEngine:
         return "\n".join(hits) or "no matches"
 
     def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str = "",
-                  sdk: bool = False) -> str:
+                  sdk: bool = False, more: list | None = None) -> str:
         """`sdk`: the edit is the app's, an SDK inline function taken from the user's copy (sdk_inline), which may
-        be assembly as the SDK's header has it; an agent's edit never is."""
+        be assembly as the SDK's header has it; an agent's edit never is. `more`: further {"old", "new"} edits of the
+        same file, made with the first one and built and kept or undone with it: a function's return type changes in
+        its prototype and its definition together (a GameCube game's two, 2,000 lines apart: either alone doesn't
+        compile, so no edit could make the change)."""
+        more = [(str(e.get("old", "")), str(e.get("new", ""))) for e in more or [] if isinstance(e, dict)]
+        if any(not o for o, _ in more):
+            raise NetworkError("each further edit needs its old text: appending is the first edit's (old empty)")
         # without a message the commit says what changed where: agents left it out hundreds of times a night, and
         # each refusal cost a turn
         message = message.strip() or f"Edit {Path(path).as_posix()}"
         if (link := self.net.links.get(slug)) is not None:  # the host makes and checks it; this copy follows
-            text = link.call("/collab/edit", agent, path=path, old=old, new=new, message=message)
+            text = link.call("/collab/edit", agent, path=path, old=old, new=new, message=message,
+                             more=[{"old": o, "new": n} for o, n in more])
             if text.startswith(("✅", "⚠️")):
                 link.sync()
             return text
         proj, fp, cfg = self.get(slug)
         p = fp.safe_path(path, write=True)
         self.net.bump_generation(proj["id"])  # (a header or shared file: compiles may come out differently now)
-        if not sdk and _CHEAT.search(_strip_comments(new)):
+        if not sdk and any(_CHEAT.search(_strip_comments(n)) for n in [new, *(n for _, n in more)]):
             raise NetworkError("inline assembly, asm functions and asm includes aren't allowed (an SDK inline "
                                "function that is assembly, like OSInitFastCast: sdk_inline puts in the SDK's own)")
         rel = Path(os.path.relpath(p, fp.root)).as_posix()
         units = [u for u in fp.units_for(rel) if u.base is not None]
+        edits = [(old, new), *more]
         if units:  # a unit's own source file: only that unit can change
-            return self._edit_source(agent, proj, fp, p, rel, units, old, new, message)
-        return self._edit_shared(agent, proj, fp, slug, p, rel, old, new, message)
+            return self._edit_source(agent, proj, fp, p, rel, units, edits, message)
+        return self._edit_shared(agent, proj, fp, slug, p, rel, edits, message)
 
     def sdk_inline(self, agent: Agent, slug: str, name: str, path: str) -> str:
         """The SDK's own inline function `name`, from the user's copy of their console's kit (kits/inlines.py), put
@@ -5341,20 +5422,25 @@ class ForkEngine:
                               f"Add the SDK's {name}\n\nFrom {header} in the user's own copy of the SDK.", sdk=True)
 
     @staticmethod
-    def _edited(p: Path, path: str, old: str, new: str) -> tuple[bool, str, str]:
+    def _edited(p: Path, path: str, edits: list[tuple[str, str]]) -> tuple[bool, str, str]:
+        """The file before and after its edits, made in order (each `old` found once in the text the ones before
+        it left)."""
         existed = p.exists()
-        text = p.read_text(errors="replace", encoding="utf-8") if existed else ""
-        if old:
-            return existed, text, replace_once(text, old, new, path)
-        return existed, text, text.rstrip("\n") + ("\n" if text else "") + new.strip("\n") + "\n"
+        text = updated = p.read_text(errors="replace", encoding="utf-8") if existed else ""
+        for old, new in edits:
+            if old:
+                updated = replace_once(updated, old, new, path)
+            else:
+                updated = updated.rstrip("\n") + ("\n" if updated else "") + new.strip("\n") + "\n"
+        return existed, text, updated
 
-    def _edit_source(self, agent: Agent, proj, fp: ForkProject, p: Path, rel: str, units: list, old: str, new: str,
-                     message: str) -> str:
+    def _edit_source(self, agent: Agent, proj, fp: ForkProject, p: Path, rel: str, units: list,
+                     edits: list[tuple[str, str]], message: str) -> str:
         """Edit a unit's source file: rebuild and measure just that unit, keep everything that matched before."""
         linked = any(u.complete for u in units) and fp.linkable()
         with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), \
                 self._units_locked(proj, [u.name for u in units]):
-            existed, text, updated = self._edited(p, rel, old, new)
+            existed, text, updated = self._edited(p, rel, edits)
             bases = {u.name: self._baseline(proj, fp, u, text) for u in units}
             p.parent.mkdir(parents=True, exist_ok=True)
             _rewrite(p, updated)
@@ -5410,11 +5496,11 @@ class ForkEngine:
         done = "".join(self._file_done(proj["slug"], proj, fp, u, after[u.name] or {}, agent) for u in units[:1])
         return f"✅ {rel} updated; every matched function still matches.{done}"
 
-    def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str, old: str, new: str,
-                     message: str) -> str:
+    def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str,
+                     edits: list[tuple[str, str]], message: str) -> str:
         """Edit a header (or any file several units may use): rebuild and measure the whole project."""
         with self._tree(proj).exclusive():
-            existed, text, updated = self._edited(p, rel, old, new)
+            existed, text, updated = self._edited(p, rel, edits)
             failed_before: list[str] = []
             self._build_all(proj, fp, failed=failed_before)  # what already doesn't build, so it isn't blamed on the edit
             game_ok = fp.linkable() and fp.verify()[0]

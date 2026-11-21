@@ -349,3 +349,13 @@ def test_a_moved_instruction_marks_one_row_not_every_row_with_its_text():
     rows = scoring.diff(fn("nanbq"), fn("pbqqanapa")).rows
     extra_pops = [m for m, t, c in rows if c == "pop ebx" and not t]
     assert sorted(extra_pops) == [">", "o"]
+
+
+def test_fit_brief_puts_the_last_bulky_blocks_behind_their_pointers_first():
+    from decompnet.network import fit_brief
+
+    blocks = [(["head"], None), (["best " * 50], ["best: see it"]), (["asm " * 50], ["asm: see it"]),
+              (["diff " * 50], ["diff: see it"]), (["tail"], None)]
+    assert fit_brief(blocks, 10_000) == ["head", "best " * 50, "asm " * 50, "diff " * 50, "tail"]
+    assert fit_brief(blocks, 520) == ["head", "best " * 50, "asm " * 50, "diff: see it", "tail"]
+    assert fit_brief(blocks, 10) == ["head", "best: see it", "asm: see it", "diff: see it", "tail"]

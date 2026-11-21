@@ -1813,3 +1813,91 @@ def test_a_cut_keeps_the_files_order_and_leaves_a_prototype_for_what_went():
     # the old file: what went leaves its prototype where it stood
     assert "void a(void *p);" in old and "void b(void *p);" in old and "Thing_Init(p, 0)" not in old
     assert old.index("char *strstr(const char *s, const char *t) {") < old.index("void a(void *p);")
+
+
+@needs_tools
+def test_the_best_attempt_goes_in_the_file_and_what_stops_it_is_said(fork):
+    """A GameCube game's file kept a 95.8% version under a 98.5% best (the permuter, deep searches and drafts record
+    a better attempt without writing it there; release put it back only now and then, and swallowed what stopped it),
+    and two agents worked from the file's: a claim puts the best in the file, or says why it couldn't."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    good = _ref("entity_default_hp")
+    worse = good.replace("return 50;", "return 51;").replace("return 10;", "return 11;")
+    near = good.replace("return 50;", "return 51;")
+    net.claim(agent, slug, "entity_default_hp")
+    assert net.attempt(agent, "entity_default_hp", worse, slug)["score"]
+    beside = net.forks.attempt(agent, slug, "entity_default_hp", near, keep=False)  # (a draft's: not in the file)
+    assert beside["score"] and "return 51;\n" in (root / "src" / "game.c").read_text().split("entity_default_hp")[-1]
+    assert "return 11;" in (root / "src" / "game.c").read_text()
+    brief = net.claim(agent, slug, "entity_default_hp")
+    assert "⚠️" not in brief.split("##")[0]
+    text = (root / "src" / "game.c").read_text()
+    assert "return 11;" not in text and near.strip() in text
+    with net.store.tx() as db:  # a best that no longer builds here: said, and the file keeps its version
+        db.execute("UPDATE functions SET best_source=?, best_score=1 WHERE name='entity_default_hp'",
+                   ("s32 entity_default_hp(s16 type) { return no_such_thing; }",))
+    brief = net.claim(agent, slug, "entity_default_hp")
+    assert "⚠️ The best attempt (score 1) isn't what src/game.c holds" in brief
+    assert near.strip() in (root / "src" / "game.c").read_text()
+
+
+@needs_tools
+def test_edit_file_makes_several_edits_together(fork):
+    """A GameCube game's function returned its result in a prototype and a definition 2,000 lines apart, each
+    alone a build error: edit_file's further edits are made, built and kept or undone with the first."""
+    net, slug, agent = fork
+    path = Path(net.project_row(slug)["root"]) / "src" / "game.c"
+    define = ('#include "game.h"\n', '#include "game.h"\n#define DEMO_ABS(x) ((x) < 0 ? -(x) : (x))\n')
+    use = ("    return v < 0 ? -v : v;", "    return DEMO_ABS(v);")
+    alone = net.forks.edit_file(agent, slug, "src/game.c", *use, "use alone")
+    assert alone.startswith("❌") and "DEMO_ABS" not in path.read_text()
+    both = net.forks.edit_file(agent, slug, "src/game.c", *define, "abs", more=[{"old": use[0], "new": use[1]}])
+    assert both.startswith("✅"), both
+    assert "#define DEMO_ABS" in path.read_text() and "return DEMO_ABS(v);" in path.read_text()
+    with pytest.raises(NetworkError, match="old text"):
+        net.forks.edit_file(agent, slug, "src/game.c", *define, "x", more=[{"old": "", "new": "int y;"}])
+
+
+@needs_tools
+def test_read_file_waits_out_a_try_in_the_file(fork):
+    """Each compile writes its try into the source file and puts the file back under the unit's lock; a read
+    meanwhile showed another agent's try, and the reader's edit_file then couldn't find its text."""
+    import threading
+    import time
+
+    net, slug, agent = fork
+    proj = net.project_row(slug)
+    path = Path(proj["root"]) / "src" / "game.c"
+    unit = next(u.name for u in ForkProject(Path(proj["root"])).units_for("src/game.c"))
+    settled = path.read_text()
+    got = []
+    with net.forks._units_locked(proj, [unit]):
+        path.write_text(settled + "\n/* another agent's try */\n")
+        reader = threading.Thread(target=lambda: got.append(net.forks.read_file(slug, "src/game.c", 1, 600)))
+        reader.start()
+        time.sleep(0.3)
+        assert reader.is_alive()  # (waiting for the try to finish)
+        path.write_text(settled)
+    reader.join(10)
+    assert got and "another agent's try" not in got[0]
+
+
+@needs_tools
+def test_a_brief_too_long_to_read_points_to_its_parts(fork, monkeypatch):
+    """A 1,422-instruction function's brief of 62,000 characters reached two agents as nothing they could read:
+    over the limit, the best attempt and the notes stay, and the diff, the file's copy and the assembly give way
+    to the calls that show them."""
+    from decompnet.app import forkengine
+
+    net, slug, agent = fork
+    net.claim(agent, slug, "entity_default_hp")
+    whole = net.get_function("entity_default_hp", slug, agent)
+    monkeypatch.setattr(forkengine, "BRIEF_CHARS", len(whole) - 200)
+    short = net.get_function("entity_default_hp", slug, agent)
+    assert len(short) < len(whole) and "### Best attempt so far" in short
+    assert 'last_diff("entity_default_hp")' in short or 'show="asm"' in short or 'read_file("src/game.c"' in short
+    assert net.get_function("entity_default_hp", slug, agent, show="best").startswith("## entity_default_hp: best")
+    assert "```asm" in net.get_function("entity_default_hp", slug, agent, show="asm")
+    with pytest.raises(NetworkError, match="show is"):
+        net.get_function("entity_default_hp", slug, agent, show="everything")

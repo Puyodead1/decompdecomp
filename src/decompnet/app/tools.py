@@ -321,7 +321,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
         _claim(net, agent, slug, function, strategy, count),
-    "get_function": lambda net, agent, slug, function, part=1: net.get_function(function, slug, agent, int(part or 1)),
+    "get_function": lambda net, agent, slug, function, part=1, show="":
+        net.get_function(function, slug, agent, int(part or 1), str(show or "")),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "last_diff": lambda net, agent, slug, function, context=2, start=0: net.last_diff(agent, function, slug, context,
                                                                                     start),
@@ -365,8 +366,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "read_file": lambda net, agent, slug, path, start=1, count=200:
         net.forks.read_file(_fork(net, slug, "read_file"), path, start, count),
     "search_code": lambda net, agent, slug, pattern, glob="": net.forks.search(_fork(net, slug, "search_code"), pattern, glob),
-    "edit_file": lambda net, agent, slug, path, old, new, message="":
-        net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
+    "edit_file": lambda net, agent, slug, path, old, new, message="", more=None:
+        net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message, more=more),
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "sdk_inline": lambda net, agent, slug, name, path:
         net.forks.sdk_inline(agent, _fork(net, slug, "sdk_inline"), name, path),
@@ -569,15 +570,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "claim_function", function=function, strategy=strategy, count=count)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def get_function(ctx: Context, function: str, part: int = 1) -> str:
+    async def get_function(ctx: Context, function: str, part: int = 1, show: str = "") -> str:
         """Show any function (by name or address): assembly, status, best attempt, notes. Read matched
         functions to learn how this codebase is written.
 
         Args:
             function: name or address
             part: a long function's assembly comes in parts of 400 lines; part 2, 3, ... shows the next ones
+            show: "asm" (its assembly, by part) or "best" (its best attempt) alone: what a long brief points to
         """
-        return await run(ctx, "get_function", function=function, part=part)
+        return await run(ctx, "get_function", function=function, part=part, show=show)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
@@ -835,12 +837,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "search_code", pattern=pattern, glob=glob)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def edit_file(ctx: Context, path: str, old: str, new: str, message: str = "") -> str:
+    async def edit_file(ctx: Context, path: str, old: str, new: str, message: str = "",
+                        more: list[dict[str, str]] | None = None) -> str:
         """Forks only: change a C/C++ source or header file. Replace `old` (exactly once) with `new`, or
         append `new` when old is "". The project is rebuilt and measured; the edit is undone if any matched
         function stops matching. Use it for structs, prototypes, globals and helpers. `message`: what the
-        change is, for its commit."""
-        return await run(ctx, "edit_file", path=path, old=old, new=new, message=message)
+        change is, for its commit. `more`: further [{"old": ..., "new": ...}] edits of the same file, made
+        together with the first and kept or undone with it: what only compiles changed in several places at
+        once (a function's return type in its prototype and its definition)."""
+        return await run(ctx, "edit_file", path=path, old=old, new=new, message=message, more=more)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def sdk_inline(ctx: Context, name: str, path: str) -> str:

@@ -440,6 +440,11 @@ def stall_budget_text() -> str:
 
 
 ASM_PAGE = 400  # assembly lines get_function shows at once
+# A brief longer than this isn't read: an agent's CLI keeps a long tool answer out of its view (Claude Code: in a
+# file it never opened), and a GameCube game's 1,422-instruction function's brief of 62,000 characters (its assembly,
+# its diff, the file's source and the best attempt, 22,000 each) left two agents with neither the target nor the
+# best attempt. fit_brief puts the bulkiest parts behind the calls that show them until it's this long.
+BRIEF_CHARS = 30000
 CONTEXT_PAGE = 1000  # header lines get_context shows at once
 # characters of matching declarations get_context(search=...) returns: Claude Code saves a longer answer (61,739
 # characters for a Linux game's `TObject`) to a file, which a helper without a shell can't read
@@ -527,6 +532,20 @@ def asm_page(asm: list[str], part: int, function: str) -> tuple[list[str], str]:
             f"{min(len(asm), first + 2 * ASM_PAGE)}" if part < parts else "this is the last part")
     return shown, (f"assembly part {part} of {parts} (lines {first + 1}-{first + len(shown)} of {len(asm)}, shown in "
                    f"parts so none of it is cut off): {more}")
+
+
+def fit_brief(blocks: list[tuple[list[str], list[str] | None]], limit: int = BRIEF_CHARS) -> list[str]:
+    """A brief's lines from its blocks, each (its lines, the line or two that point to it instead, or None: kept
+    whatever its length). Over `limit`, the blocks with a pointer give way to it, last first, so list them least
+    needed last."""
+    shown = [lines for lines, _ in blocks]
+    size = lambda: sum(len(line) + 1 for part in shown for line in part)  # noqa: E731
+    for i in reversed(range(len(blocks))):
+        if size() <= limit:
+            break
+        if blocks[i][1] is not None:
+            shown[i] = blocks[i][1]
+    return [line for part in shown for line in part]
 
 
 def move_on_brief(fn, after: int | None = None) -> str:
@@ -1433,10 +1452,19 @@ class Network:
         return self.release_stopped(ids, why)
 
     def get_function(self, function: str, project: str | None = None, agent: Agent | None = None,
-                     part: int = 1) -> str:
+                     part: int = 1, show: str = "") -> str:
+        """`show`: "asm" (its assembly, `part` by part) or "best" (its best attempt) alone, the parts a long brief
+        points to (fit_brief); else the brief, or a later `part` of the assembly."""
         fn = self._function(function, project)
-        if part > 1:
-            return self._asm_part(fn, part)
+        if show not in ("", "asm", "best"):
+            raise NetworkError('show is "asm" (its assembly) or "best" (its best attempt), or left out for the whole')
+        if show == "best":
+            if not fn["best_source"]:
+                return f"{fn['name']} has no attempt yet."
+            return "\n".join([f"## {fn['name']}: best attempt so far (score {fn['best_score']})", "```c",
+                              fn["best_source"].strip(), "```"])
+        if part > 1 or show == "asm":
+            return self._asm_part(fn, max(1, part))
         return self._brief(fn, agent, header="VIEW")
 
     def _asm_part(self, fn, part: int) -> str:
@@ -1525,11 +1553,13 @@ class Network:
         else:
             lines += asm
         lines += self._extra_brief(fn, proj)
+        best: list[str] = []
         if fn["status"] != "matched":
             if fn["best_source"]:
-                lines += ["", f"### Best attempt so far: score {fn['best_score']} by "
-                              f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
-                              f"start from this", "```c", fn["best_source"].strip(), "```"]
+                best = ["", f"### Best attempt so far: score {fn['best_score']} by "
+                            f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
+                            f"start from this", "```c", fn["best_source"].strip(), "```"]
+                lines += ["<best>"]
             elif fn["seed"]:
                 maker = "Ghidra" if "by Ghidra" in fn["seed"][:80] else "m2c"
                 lines += ["", f"### Machine draft ({maker}): its control flow and arithmetic are usually right, its "
@@ -1541,11 +1571,16 @@ class Network:
         lines += self.dependency_brief(fn)
         if fn["unit"] and fn["unit"] in self._unit_contexts(proj["id"]):
             lines.insert(2, f"source unit {fn['unit']}: call get_context with function=\"{fn['name']}\" for its header")
-        if said:
-            lines += asm
-        if header == "CLAIMED":
-            lines += ["", self._next_step(proj, ctx)]
-        return "\n".join(lines)
+        tail = ["", self._next_step(proj, ctx)] if header == "CLAIMED" else []
+        at = lines.index("<best>") if "<best>" in lines else len(lines)
+        asm_pointer = ["", f"### Target assembly: get_function(\"{fn['name']}\", show=\"asm\") shows it, "
+                           f"{ASM_PAGE} lines at a time (left out here: this brief would be too long to read)"]
+        best_pointer = ["", f"### Best attempt so far: score {fn['best_score']}, {len(fn['best_source'] or '')} "
+                            f"characters: get_function(\"{fn['name']}\", show=\"best\") shows it — start from it"]
+        # (a long function's assembly last, the first to give way; then the best attempt, behind its own call)
+        blocks = [(lines[:at], None), (best, best_pointer), (lines[at + 1:], None),
+                  *([(asm, asm_pointer)] if said else []), (tail, None)]
+        return "\n".join(fit_brief(blocks, BRIEF_CHARS))
 
     def notes_for_brief(self, fn, best_text: str = "", show: int | None = None, when: bool = True) -> list[str]:
         """A function's notes for its brief (brief_notes), with when its best score was first reached."""

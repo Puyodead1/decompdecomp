@@ -621,7 +621,8 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
             raise NetworkError("this room's project has no files to edit")
         agent = room.agent_for(member, d.get("agent"))
         return {"text": net.forks.edit_file(agent, room.slug, str(d.get("path", "")), str(d.get("old", "")),
-                                            str(d.get("new", "")), str(d.get("message", "")))}
+                                            str(d.get("new", "")), str(d.get("message", "")),
+                                            more=d.get("more") if isinstance(d.get("more"), list) else None)}
 
     def try_compiler(room, member, d):
         """A member's agent's try_compiler, on the host's copy: its build is the room's."""
