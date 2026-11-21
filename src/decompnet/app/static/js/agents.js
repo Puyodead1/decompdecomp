@@ -187,6 +187,7 @@ const STRATEGY_NAMES = [
   ["easiest", "Smallest first", "Small functions first, what nobody gave up on before what others did."],
   ["finish", "Files closest to done", "Among functions of about the same size, those of the files with the fewest left: a file is linked into the game once all of it matches."],
   ["closest", "Nearest matches", "Functions with the best scores for their size first."],
+  ["furthest", "Furthest from matching", "The lowest scores for their size first, then functions nobody has compiled yet. With \"match below\" it leaves the near misses to others."],
   ["untried", "Untried first", "Functions nobody has tried yet, small first, then what nobody gave up on; the rest after them."],
   ["least_tried", "Least tried", "The fewest compiles first, then the fewest give-ups, then small first."],
   ["oldest_checked", "Longest unchecked", "Never compiled first, then the longest since anyone compiled C for it."],

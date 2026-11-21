@@ -177,6 +177,9 @@ STRATEGIES = {
                        "g.project_id=f.project_id AND g.unit=f.unit AND g.status='open') ASC, f.n_insns ASC",
     # near-misses, the ones given up on least first (else every agent resumes the same stuck one)
     "closest": "f.best_score IS NULL, f.abandons ASC, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
+    # the opposite: the lowest scores for their size first, those nobody has compiled after them, the ones given up on
+    # least first among equals (a helper set below 99% to leave a Linux game's near misses to the others)
+    "furthest": "f.best_score IS NULL, CAST(f.best_score AS REAL) / (f.n_insns * 100) DESC, f.abandons ASC",
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
     # the functions agents have tried least, small first: a helper set to sweep what nobody has looked at

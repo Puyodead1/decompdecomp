@@ -44,6 +44,21 @@ def test_the_queue_takes_only_what_the_selection_does(tmp_path):
     assert net.claim_row(other, "game", "f1")["name"] == "f1"  # another helper's choices are its own
 
 
+def test_furthest_takes_the_lowest_scores_first_and_with_match_below_skips_near_misses(tmp_path):
+    """A helper set to leave a Linux game's 99% functions to the others and work the far ones: the lowest score for
+    its size first, functions nobody has compiled after those, and below 99% the near miss never."""
+    net = _game(tmp_path, functions=4)
+    _scores(net, f0=5, f1=900, f2=400)  # f0 99.5%, f1 10%, f2 60%; f3 untried
+    agent, _ = net.local_agent("claude-opus-1")
+    net.set_selection("game", agent.name, {"strategy": "furthest", "match_below": 99})
+    taken = []
+    for _ in range(3):
+        fn = net.claim_row(agent, "game")
+        taken.append(fn["name"])
+        net.release(agent, fn["name"], "next", "game", True)  # (not C: out of the way)
+    assert taken == ["f1", "f2", "f3"]
+    assert net.claim_row(agent, "game") is None  # (f0 at 99.5% is left to the others)
+
 def test_a_selection_takes_functions_of_so_many_instructions(tmp_path):
     """A strong model on the big functions, a cheap one on the small: a GameCube game's 8 Haiku agents all worked
     the small end, and nobody the big."""
