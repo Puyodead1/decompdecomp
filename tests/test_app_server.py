@@ -573,8 +573,9 @@ def test_api_models_are_discovered_and_started_only_on_their_saved_endpoint(tmp_
     assert "secret-one" not in json.dumps(saved) and "secret-two" not in json.dumps(saved)
 
 
-def test_an_endpoint_lists_at_most_100_models(tmp_path, monkeypatch):
-    """An OpenAI-compatible server may list hundreds of models; the launcher's picker shows this many at most."""
+def test_an_endpoint_lists_its_chat_models_up_to_the_limit(tmp_path, monkeypatch):
+    """An OpenAI-compatible server may list hundreds of models, image, speech and embedding ones among them (a cloud
+    subscription's 104 held 37): the launcher's picker shows the ones a helper can use, this many at most."""
     from decompnet.app import support
     from decompnet.app.routes import setup
 
@@ -593,7 +594,9 @@ def test_an_endpoint_lists_at_most_100_models(tmp_path, monkeypatch):
             pass
 
         def json(self):
-            return {"data": [{"id": f"model-{i}"} for i in range(setup.MAX_ENDPOINT_MODELS + 1)]}
+            return {"data": [{"id": "qwen-image-2.0"}, {"id": "text-embedding-v4"}, {"id": "qwen3-tts-flash"},
+                             {"id": "qwen3.5-omni-plus-realtime"}, {"id": "qwen-mt-plus"}, {"id": "wan2.7-image"}]
+                    + [{"id": f"model-{i}"} for i in range(setup.MAX_ENDPOINT_MODELS + 1)]}
 
     monkeypatch.setattr(setup.httpx, "get", lambda url, **kwargs: Response())
     client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),

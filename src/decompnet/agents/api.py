@@ -382,6 +382,18 @@ def is_anthropic(options: dict) -> bool:
     return options.get("provider") == "anthropic"
 
 
+# Models an endpoint lists that can't do a helper's work (no chat with tool calls): images and video, speech in or
+# out, realtime and live translation, embeddings, rerankers, moderation, OCR, machine translation. A cloud
+# subscription's list through one OpenAI-compatible address held 104 models, 37 of them these.
+NOT_CHAT = re.compile(r"image|embed|rerank|realtime|livetranslate|audio|asr|tts|whisper|transcri|speech|dall-e|"
+                      r"sora|moderation|ocr|tingwu|^wan\d|(^|[-/])mt-|(^|/)z-image", re.I)
+
+
+def chat_models(models: list[dict]) -> list[dict]:
+    """The models of an endpoint's list a helper can work with (NOT_CHAT names the others)."""
+    return [m for m in models if not NOT_CHAT.search(str(m.get("id", "")))]
+
+
 def key_headers(options: dict) -> dict:
     """An OpenAI-compatible endpoint's key, as its requests carry it."""
     return {"Authorization": f"Bearer {options['api_key']}"} if options.get("api_key") else {}

@@ -22,7 +22,7 @@ from .. import agents, permute
 from ..support import session_options, spread_sessions
 from . import App
 
-MAX_ENDPOINT_MODELS = 100  # an endpoint may list hundreds; the launcher shows this many at most
+MAX_ENDPOINT_MODELS = 500  # an endpoint may list hundreds (OpenRouter: 300 and more); the launcher shows this many
 
 
 def register(app: App) -> None:
@@ -116,7 +116,7 @@ def register(app: App) -> None:
         if api_agent.is_anthropic(entry):  # (its own API: its key goes in its own header, its list is paged)
             try:
                 models = await call(lambda: api_agent.anthropic_models(entry))
-                return JSONResponse({"models": models[:MAX_ENDPOINT_MODELS]})
+                return JSONResponse({"models": api_agent.chat_models(models)[:MAX_ENDPOINT_MODELS]})
             except Exception:  # (the SDK's errors: a wrong key, no connection)
                 return JSONResponse({"models": [], "unavailable": True})
         headers = api_agent.key_headers(entry)
@@ -130,7 +130,7 @@ def register(app: App) -> None:
                 rows = []
             models = [{"id": str(row["id"]), "name": str(row.get("name") or row["id"])}
                       for row in rows if isinstance(row, dict) and row.get("id")]
-            return JSONResponse({"models": models[:MAX_ENDPOINT_MODELS]})
+            return JSONResponse({"models": api_agent.chat_models(models)[:MAX_ENDPOINT_MODELS]})
         except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
             return JSONResponse({"models": [], "unavailable": True})
 
