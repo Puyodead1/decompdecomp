@@ -656,7 +656,7 @@ function hostOf(url) { return String(url || "").replace(/^\w+:\/\//, "").split("
 function endpointFields(e, compact = false) {
   const presets = S.st.api_presets, prov = presets[e.provider] ? e.provider : "custom";
   return `<label class="field"><span>Provider</span><select data-f="prov">${Object.entries(presets).map(([k, p]) => `<option value="${k}" ${k === prov ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-    <label class="field"><span>Model</span><input data-f="model" class="mono" value="${esc(e.model || presets[prov].model)}"></label>
+    <label class="field"><span>Default model</span><input data-f="model" class="mono" placeholder="optional: pick one each start" value="${esc(e.model || presets[prov].model)}"></label>
     <label class="field wide"><span>API address</span><input data-f="base" class="mono" value="${esc(e.base_url || presets[prov].base_url)}" placeholder="http://gpu-box:8080/v1"></label>
     <label class="field wide"><span>API key (stored only on this computer, sent only to this address)</span><input data-f="key" type="password" placeholder="${e.has_key ? esc(e.api_key) : "paste your key (none for local models)"}" autocomplete="off"></label>
     ${compact ? "" : `<label class="field"><span>Name</span><input data-f="name" value="${esc(e.id ? e.name : "")}" placeholder="${esc(e.id ? e.name : "e.g. gpu-box")}"></label>

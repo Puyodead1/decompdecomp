@@ -273,10 +273,10 @@ class Settings:
                                      else "the session limit is a number, like 1") from None
         current = self.endpoint(str(data.get("id") or ""))
         preset = API_PRESETS.get(str(data.get("provider") or (current or {}).get("provider") or "custom"), {})
-        for k in ("base_url", "model"):  # "Add" on an empty form added an endpoint that failed only when started
-            if k in data and not str(data[k] or "").strip() and not preset.get(k):
-                raise ValueError("Give the endpoint's API address and model, like https://api.deepseek.com/v1 and "
-                                 "deepseek-chat.")
+        # "Add" on an empty form added an endpoint that failed only when started. Its model is only the launcher's
+        # default: an address with dozens (a cloud subscription's 68) is one endpoint, its model picked at each start
+        if "base_url" in data and not str(data["base_url"] or "").strip() and not preset.get("base_url"):
+            raise ValueError("Give the endpoint's API address, like https://api.deepseek.com/v1.")
         if current is None:  # ids are never reused: a session resumed later can't end up on another machine
             ids = {e["id"] for e in self.endpoints()}
             n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
@@ -354,8 +354,10 @@ def spread_sessions(settings: Settings, manager, picked: list[str], count: int, 
         entry = endpoint_entry(first | typed)
         if first and entry["base_url"].rstrip("/") != first["base_url"].rstrip("/"):
             entry.pop("api_key", None)
-        if not entry.get("base_url") or not entry.get("model"):
-            raise ValueError("add an API endpoint first (Agents & models): its address and model")
+        if not entry.get("base_url"):
+            raise ValueError("add an API endpoint first (Agents & models): its address")
+        if not entry.get("model"):
+            raise ValueError(f"{entry['name']} has no default model: choose one in the launcher's Model menu")
         return [(entry, count)]
     eps = [settings.endpoint(e) for e in picked]
     if any(e is None for e in eps):

@@ -204,6 +204,8 @@ def register(app: App) -> None:
                     ids = []
                     for entry, n in plan:
                         entry_options = options | session_options(entry)
+                        if not given.get("model") and not entry.get("model"):
+                            raise ValueError(f"{entry['name']} has no default model: choose one in the Model menu")
                         if given.get("model"):
                             chosen = str(given["model"])
                             entry_options["model"] = chosen
@@ -324,11 +326,14 @@ def register(app: App) -> None:
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)
-        if isinstance(data.get("api"), dict):  # (before 0.10.1: the one endpoint there was) the first one
-            first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
-            settings.save_endpoint(data["api"] | {"id": first})
-        if isinstance(data.get("endpoint"), dict):
-            saved = settings.save_endpoint(data["endpoint"])
+        try:  # (what's missing from an endpoint is the user's to fix: said, not a 500)
+            if isinstance(data.get("api"), dict):  # (before 0.10.1: the one endpoint there was) the first one
+                first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
+                settings.save_endpoint(data["api"] | {"id": first})
+            saved = settings.save_endpoint(data["endpoint"]) if isinstance(data.get("endpoint"), dict) else None
+        except ValueError as e:
+            return fail(e)
+        if saved is not None:
             threading.Thread(target=settings.learn_efforts, args=(saved["id"],), daemon=True,
                              name="endpoint-efforts").start()
         if data.get("remove_endpoint"):

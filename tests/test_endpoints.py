@@ -65,12 +65,16 @@ def test_endpoints_are_added_changed_and_removed(tmp_path):
         s.save_endpoint({"id": "e1", "context_tokens": "lots"})
     with pytest.raises(ValueError):  # a new one that doesn't validate isn't half made
         s.save_endpoint({"model": "x", "max_sessions": "two"})
-    with pytest.raises(ValueError, match="API address and model"):  # "Add" on the empty form
+    with pytest.raises(ValueError, match="API address"):  # "Add" on the empty form
         s.save_endpoint({"provider": "custom", "base_url": "", "model": "", "api_key": ""})
     assert len(s.endpoints()) == 2
+    # a cloud subscription's 68 models behind one address: its model is picked at each start, none needed here
+    many = s.save_endpoint({"provider": "custom", "base_url": "https://cloud.test/v1", "model": ""})
+    assert many["model"] == "" and len(s.endpoints()) == 3
+    s.remove_endpoint(many["id"])
     s.remove_endpoint("e1")
     assert [e["id"] for e in s.endpoints()] == ["e2"]
-    assert s.save_endpoint({"model": "m"})["id"] == "e3"  # never reused: a resumed session can't change machines
+    assert s.save_endpoint({"model": "m"})["id"] == "e4"  # never reused: a resumed session can't change machines
 
 
 def fake_manager(*running: tuple[str, str]):

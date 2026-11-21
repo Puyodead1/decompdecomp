@@ -1281,3 +1281,16 @@ def test_start_all_starts_every_stopped_or_paused_helper_on_the_project(app, mon
     assert response.status_code == 200
     assert response.json()["started"] == 2 and "another game" in response.json()["skipped"][0]
     assert sorted(started) == ["paused-here", "stopped-here"]
+
+
+def test_an_endpoint_without_a_model_saves_and_a_missing_address_is_said(app):
+    """Adding a cloud subscription's endpoint (68 models behind one address) with no model gave a 500: its model is
+    only the launcher's default, and what's missing (the address) comes back as a sentence, not an error page."""
+    client, _, _ = app
+    write = {"X-Decomp": "1"}
+    saved = client.post("/api/settings", json={"endpoint": {"provider": "custom", "base_url": "https://cloud.test/v1",
+                                                             "model": ""}}, headers=write)
+    assert saved.status_code == 200 and any(e["base_url"] == "https://cloud.test/v1" for e in saved.json()["endpoints"])
+    bad = client.post("/api/settings", json={"endpoint": {"provider": "custom", "base_url": "", "model": ""}},
+                      headers=write)
+    assert bad.status_code == 400 and "API address" in bad.text
