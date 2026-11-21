@@ -73,7 +73,8 @@ async function refreshFn(first) {
     $("fnAddr").textContent = S.ov.kind === "fork"
       ? `${d.unit} · ${d.insns} instructions${d.match_percent != null ? ` · ${d.match_percent >= 100 ? "100" : (Math.floor(d.match_percent * 10) / 10).toFixed(1)}% now` : ""}`
       : `${hex8(d.vram)} · ROM 0x${d.rom_offset.toString(16).toUpperCase()} · ${d.insns} instructions`;
-    $("fnName").textContent = d.name;
+    $("fnName").textContent = fnLabel(d.name);
+    $("fnName").title = fnLabel(d.name) !== d.name ? d.name : "";
     fnBadge(d);
     $("fnSetAside").hidden = d.status !== "open";
     $("fnActionsMenu").hidden = d.status !== "open";
@@ -87,7 +88,7 @@ async function refreshFn(first) {
       if (why === null) return;
       try {
         await api("/api/setaside", { method: "POST", body: { slug: S.slug, name: d.name, why } });
-        toast(`<code>${esc(d.name)}</code> is set aside: agents aren't handed it.`);
+        toast(`<code>${esc(fnLabel(d.name))}</code> is set aside: agents aren't handed it.`);
         await refreshFn(false);
         await refreshMap(true);
       } catch (e) { toast(esc(e.message), "err"); }
@@ -99,7 +100,7 @@ async function refreshFn(first) {
       if (!confirm(`Use the C in the editor for ${d.name} in the export's plain build? The matching build keeps the game's code, and agents can still match it.`)) return;
       try {
         const r = await api("/api/plain", { method: "POST", body: { slug: S.slug, name: d.name, source } });
-        toast(`The plain build uses this C for <code>${esc(d.name)}</code> (${esc(pctText(pctOf(r.score, d.insns)))} of the game's code).`);
+        toast(`The plain build uses this C for <code>${esc(fnLabel(d.name))}</code> (${esc(pctText(pctOf(r.score, d.insns)))} of the game's code).`);
         await refreshFn(false);
       } catch (e) { toast(esc(e.message), "err"); }
     };
@@ -108,7 +109,7 @@ async function refreshFn(first) {
     $("fnPlainClear").onclick = async () => {
       try {
         await api("/api/plain", { method: "POST", body: { slug: S.slug, name: d.name, clear: true } });
-        toast(`<code>${esc(d.name)}</code>: every build uses its assembly again.`);
+        toast(`<code>${esc(fnLabel(d.name))}</code>: every build uses its assembly again.`);
         await refreshFn(false);
       } catch (e) { toast(esc(e.message), "err"); }
     };
@@ -117,7 +118,7 @@ async function refreshFn(first) {
     $("fnReopen").onclick = async () => {
       try {
         await api("/api/reopen", { method: "POST", body: { slug: S.slug, name: d.name } });
-        toast(`<code>${esc(d.name)}</code> is open again: agents can take it.`);
+        toast(`<code>${esc(fnLabel(d.name))}</code> is open again: agents can take it.`);
         await refreshFn(false);
         await refreshMap(true);
       } catch (e) { toast(esc(e.message), "err"); }

@@ -43,6 +43,19 @@ window.addEventListener("pywebviewready", () => {
    presses one of its buttons swallows the click (Dismiss on a suggestion did nothing while 8 agents worked). */
 const setHtml = (el, html) => { if (el._html !== html) { el.innerHTML = html; el._html = html; } };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/* A function as the window names it: a C++ one by its name as written (`zl::List<float>::allocate(int)`), from the
+   open project's list, never its symbol (`_ZN2zl4ListIfE8allocateEi`, what the judge links by; kept for links and
+   as the hover title). `label`: the name the server sent for one of another project (notifications). */
+function fnLabel(name, label) {
+  if (label) return label;
+  const i = S.byName && S.byName.get(name);
+  return (i != null && S.map[i] && S.map[i].cxx) || name;
+}
+/* fnLabel, escaped, with the symbol as its title when they differ (for a title="" attribute's place). */
+function fnTitled(name, label) {
+  const shown = fnLabel(name, label);
+  return shown === name ? esc(name) : `<span title="${esc(name)}">${esc(shown)}</span>`;
+}
 // (an address above 4 GB, a 64-bit PC game's, keeps its digits: 0x140001000)
 const hex8 = (n) => "0x" + (n > 0xffffffff ? n.toString(16) : (n >>> 0).toString(16)).toUpperCase().padStart(8, "0");
 /* A time as the user's own clock shows it (7:49:12 PM, or 19:49:12 where that's the custom); hhmm without seconds. */

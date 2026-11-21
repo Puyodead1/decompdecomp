@@ -107,7 +107,7 @@ function renderSteering(ov) {
   const sg = (ov.suggestions || []).filter((s) => !s.toolchain), bd = ov.boundaries || [];
   $("suggestPanel").hidden = !sg.length && !bd.length;
   setHtml($("suggestList"), bd.map((r) => `<div class="note">${saidHead("where a function ends", [r.agent], r.t, true)}
-    <b class="mono">${esc(r.function)}</b> ends at <span class="mono">${hex8(r.end)}</span>: the ${r.cut} bytes after it aren't code. ${esc(r.reason)}
+    <b class="mono">${fnTitled(r.function)}</b> ends at <span class="mono">${hex8(r.end)}</span>: the ${r.cut} bytes after it aren't code. ${esc(r.reason)}
     <p class="small muted mono">after ${hex8(r.end)}: ${esc(r.rest)}</p>
     <div class="row"><button class="primary small-btn" type="button" data-bapply="${r.id}">Cut it there</button><button class="ghost small-btn" type="button" data-bdismiss="${r.id}">Dismiss</button></div></div>`).join("") + sg.map(suggestionHtml).join(""));
   if (S.tab === "settings") renderCompilerWaiting(ov);
@@ -733,7 +733,7 @@ async function renderFound() {
     const home = l.home ? `<a class="link small" href="${esc(l.home)}" target="_blank" rel="noopener">home page</a>` : "";
     return `<li><details><summary><b>${esc(l.name)}</b>${l.version ? ` ${esc(l.version)}` : ""} <span class="muted small">${esc(kind[l.kind] || l.kind)}${l.linked ? " · loaded from its own file: the decomp includes its header" : ""}${fns.length ? ` · ${plural(fns.length, "function")}, ${aside} set aside` : l.linked ? "" : " · its text"}</span></summary>
       <div class="found-detail small"><p class="muted">${(l.evidence || []).map(esc).join("<br>")}</p>
-      ${fns.length ? `<ul class="found-fns">${fns.slice(0, 50).map((f) => `<li><code>${esc(f.name)}</code> <span class="muted">${esc(f.status)}: ${esc(f.why)}</span></li>`).join("")}</ul>` : ""}
+      ${fns.length ? `<ul class="found-fns">${fns.slice(0, 50).map((f) => `<li><code>${fnTitled(f.name)}</code> <span class="muted">${esc(f.status)}: ${esc(f.why)}</span></li>`).join("")}</ul>` : ""}
       <div class="row">${setAside}${where}${home}</div></div></details></li>`;
   }).join("")}</ul>` : `<p class="muted small">${r.t ? "None of the libraries decompdecomp knows, nor any in your signature files." : "Find libraries looks now; Check again does too."}</p>`;
   const notices = r.notices || [], paths = r.paths || [], links = r.links || [];
@@ -875,7 +875,7 @@ $("compilerAnswer").addEventListener("click", e => {
 });
 
 function compilerFunctionLinks(functions) {
-  return (functions || []).map(f => `<button class="link mono" type="button" data-compiler-function="${esc(f.name)}" title="${esc(f.status || "")}">${esc(f.name)}</button>`).join("");
+  return (functions || []).map(f => `<button class="link mono" type="button" data-compiler-function="${esc(f.name)}" title="${esc([fnLabel(f.name) !== f.name ? f.name : "", f.status || ""].filter(Boolean).join(" · "))}">${esc(fnLabel(f.name))}</button>`).join("");
 }
 let compilerPartsAnswer = null;
 let compilerPartsSlug = null;
@@ -910,7 +910,7 @@ async function compareProfileWithDefault(button) {
 function profileFailureGroups(failures) {
   const groups = new Map();
   const titles = {no_source: 'No saved C', verification: 'Verification or compiler error'};
-  const link = name => `<button type="button" class="link mono" data-profile-function="${esc(name)}">${esc(name)}</button>`;
+  const link = name => `<button type="button" class="link mono" data-profile-function="${esc(name)}">${fnTitled(name)}</button>`;
   for (const failure of failures || []) {
     const key = failure.category || failure.reason || 'Verification failed';
     if (!groups.has(key)) groups.set(key, []);
@@ -1211,7 +1211,7 @@ function renderCompilerResults() {
       const alternatives = (r.ranked || []).filter(p => p.percent != null && (!r.profile || p.toolchain !== r.profile[0] || JSON.stringify(p.flags) !== JSON.stringify(r.profile[1]))).slice(0, 12);
       const apply = p => `<button class="ghost small-btn" type="button" data-apply-function="${esc(r.function)}" data-apply-toolchain="${esc(p.toolchain)}" data-apply-flags="${esc(JSON.stringify(p.flags))}"${r.stale || r.applied ? " disabled" : ""}>Apply these settings</button>`;
       const winner = (r.ranked || []).find(p => r.profile && p.toolchain === r.profile[0] && JSON.stringify(p.flags) === JSON.stringify(r.profile[1]));
-      return `<details class="compiler-result" data-function="${esc(r.function)}"${openFunctions.has(r.function) ? " open" : ""}><summary><button class="compiler-function-link" type="button" data-open-compiler-function="${esc(r.function)}" title="Open function ${esc(r.function)}">${esc(r.function)}</button> · ${score(r.before)} → ${score(r.best)}${delta}${r.exact ? " · byte identical" : ""}</summary>
+      return `<details class="compiler-result" data-function="${esc(r.function)}"${openFunctions.has(r.function) ? " open" : ""}><summary><button class="compiler-function-link" type="button" data-open-compiler-function="${esc(r.function)}" title="Open function ${esc(r.function)}">${esc(fnLabel(r.function))}</button> · ${score(r.before)} → ${score(r.best)}${delta}${r.exact ? " · byte identical" : ""}</summary>
         <div class="compiler-result-detail"><p><b>Score:</b> ${score(r.before)} → ${score(r.best)}${delta}${r.exact ? ' <span class="compiler-exact-badge">Byte identical</span>' : ""}</p>
         <p><b>Previous settings:</b> <code>${profile(r.before_profile)}</code></p>
         <p><b>Best tested settings:</b> <code>${profile(r.profile || r.before_profile)}</code></p>

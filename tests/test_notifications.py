@@ -88,3 +88,36 @@ def test_the_compiler_answer_checks_by_itself(tmp_path, monkeypatch):
     net.surveys["game"] = {"state": "running"}
     net.compiler_answer("game")
     assert surveys == ["game"]  # (one survey at a time)
+
+
+def test_a_cpp_function_is_named_as_written_in_the_window(tmp_path):
+    """A Linux game's functions read `_ZN2zl4ListIfE8allocateEi` all over the window: a match's notification and the
+    Background work page carry its C++ name (the import's, in its meta), the symbol staying the link."""
+    import json
+
+    from decompnet.app import monitor
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    tiny_game(net, "a")
+    pid = net.project_row("a")["id"]
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET meta=? WHERE project_id=? AND name='func_0'",
+                   (json.dumps({"demangled": "zl::List<float>::allocate(int)"}), pid))
+    start = net.events_after(None)["last"]
+    net.record_event("a", "match", "func_0")
+    net.record_event("a", "match", "func_1")
+    news = net.events_after(start)["events"]
+    assert [(e["detail"], e.get("label")) for e in news] == [("func_0", "zl::List<float>::allocate(int)"),
+                                                            ("func_1", None)]
+    assert net.recent_events()[1]["label"] == "zl::List<float>::allocate(int)"
+    assert net.cxx_names("a", ["func_0", "func_1", "nope"]) == {"func_0": "zl::List<float>::allocate(int)"}
+    assert net.cxx_names("gone", ["func_0"]) == {}
+
+    class Search:
+        running = {("a", "func_0"): "j1"}
+
+    class Jobs:
+        jobs = {"j1": {"state": "running", "kind": "deep", "t": 0, "log": []}}
+
+    (job,) = monitor.snapshot(net, Jobs(), Search())["jobs"]
+    assert (job["function"], job["function_label"]) == ("func_0", "zl::List<float>::allocate(int)")

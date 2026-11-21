@@ -232,7 +232,7 @@ $("map").addEventListener("mousemove", (ev) => {
     : f.best != null ? `best ${pctText(p)}` : noBest(f.attempts || 0);
   const where = S.ov && S.ov.kind === "fork" ? esc(f.unit || "") : hex8(f.vram);
   const cc = f.cc ? `<br>looks built by ${esc(f.cc)}${f.ccx ? ", not its compiler today" : ""}` : "";
-  tip.innerHTML = `<b>${esc(f.name)}</b><br>${where} · ${f.insns} instructions<br>${status}${cc}`;
+  tip.innerHTML = `<b>${esc(f.cxx || f.name)}</b>${f.cxx ? `<br><span class="mono small">${esc(f.name)}</span>` : ""}<br>${where} · ${f.insns} instructions<br>${status}${cc}`;
   tip.hidden = false;
   const wrap = $("mapWrap").getBoundingClientRect();
   let left = ev.clientX - wrap.left + 14, top = ev.clientY - wrap.top + 14;

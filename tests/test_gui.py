@@ -462,3 +462,12 @@ def test_a_rom_games_import_lets_the_program_say_its_compiler():
     setup = js.split("function setupCompilers(info)", 1)[1].split("\n}\n", 1)[0]
     rom = setup.split('if (con.mode === "rom") {', 1)[1].split("    return;\n  }", 1)[0]
     assert 'insertAdjacentHTML("afterbegin", `<option value="" selected>Let decompdecomp pick' in rom
+
+
+def test_a_cpp_function_is_named_as_written():
+    """A Linux game's functions read `_ZN2zl4ListIfE8allocateEi` all over the window: they're named as written, their
+    symbol kept for links and as the hover title (tests/gui_cxx_names.js)."""
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, "--test", str(Path(__file__).with_name("gui_cxx_names.js"))], check=True,
+                   capture_output=True, text=True, encoding='utf-8', timeout=GUI_TIMEOUT_SECONDS)

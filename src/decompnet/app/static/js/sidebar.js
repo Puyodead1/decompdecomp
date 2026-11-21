@@ -169,9 +169,9 @@ const MORE = { match: ["more match", "more matches"], link: ["more file linked",
 /* A line in words: the newest event of the burst, "+N more" for the rest (everything from the server is escaped). */
 function noteHtml(g) {
   const ev = g.events[g.events.length - 1], who = esc(ev.agent || "an agent"), d = ev.detail || "";
-  const fn = (name) => `<button type="button" class="fn" data-slug="${esc(g.slug)}" data-fn="${esc(name)}">${esc(name)}</button>`;
+  const fn = (name, label) => `<button type="button" class="fn" data-slug="${esc(g.slug)}" data-fn="${esc(name)}"${label ? ` title="${esc(name)}"` : ""}>${esc(label || name)}</button>`;
   const what = {
-    match: () => `${who} matched ${fn(d)}`,
+    match: () => `${who} matched ${fn(d, ev.label)}`,
     link: () => `${esc(d)} is linked: the game builds from its C`,
     autopilot: () => `Autopilot: ${esc(d)}`,
     compiler: () => `Compiler: ${esc(d)}`,
@@ -191,7 +191,7 @@ function noteHtml(g) {
 }
 function noteLine(g, tag = "li") {
   const all = g.kind === "match" && g.events.length > 1
-    ? `<details class="n-all"><summary>Which ones</summary><span>${g.events.map((e) => `<button type="button" class="fn" data-slug="${esc(g.slug)}" data-fn="${esc(e.detail)}">${esc(e.detail)}</button>`).join(" ")}</span></details>` : "";
+    ? `<details class="n-all"><summary>Which ones</summary><span>${g.events.map((e) => `<button type="button" class="fn" data-slug="${esc(g.slug)}" data-fn="${esc(e.detail)}"${e.label ? ` title="${esc(e.detail)}"` : ""}>${esc(e.label || e.detail)}</button>`).join(" ")}</span></details>` : "";
   return `<${tag} class="note-line${g.kind === "paused" ? " bad" : ""}"><span class="swatch pc-${colourOf(g.slug)}" aria-hidden="true"></span>
     <span class="n-body"><span class="n-head"><a href="#/p/${esc(g.slug)}">${esc(g.project)}</a><time>${hhmm(g.t)}</time></span>
     <span class="n-text">${noteHtml(g)}</span>${tag === "li" ? all : ""}</span></${tag}>`;

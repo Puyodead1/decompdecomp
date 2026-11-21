@@ -27,7 +27,8 @@ function renderNow(claims) {
     const sc = S.scores.get(c.name) || [];
     const p = pctOf(c.best_score, c.n_insns);
     const [sym, unit] = c.name.split(/@(.*)/s);  // a fork's symbol@file: the symbol first, the file after it
-    return `<div class="job" data-fn="${esc(c.name)}" role="button" tabindex="0" aria-label="${esc(c.name)}, ${esc(c.agent)} works on it"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(sym)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span>${whoHtml(c.agent, "job-who")}</div>
+    const shown = fnLabel(c.name) !== c.name ? fnLabel(c.name) : sym;
+    return `<div class="job" data-fn="${esc(c.name)}" role="button" tabindex="0" aria-label="${esc(shown)}, ${esc(c.agent)} works on it"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(shown)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span>${whoHtml(c.agent, "job-who")}</div>
       ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? reading(c) : pctText(p)}</b></div></div>`;
   }).join("");
   box.querySelectorAll(".job").forEach((j) => { j.onclick = () => openFn(j.dataset.fn); });
@@ -760,7 +761,10 @@ function renderRoomAgents() {
 
 /* ------------------------------------------------------------------ feeds */
 // a button, so the keyboard reaches every function named on the page
-function fnLink(name) { return `<button type="button" class="fn" data-fn="${esc(name)}">${esc(name)}</button>`; }
+function fnLink(name) {
+  const shown = fnLabel(name);
+  return `<button type="button" class="fn" data-fn="${esc(name)}"${shown !== name ? ` title="${esc(name)}"` : ""}>${esc(shown)}</button>`;
+}
 function eventHtml(ev) {
   const who = whoHtml(ev.agent);
   const d = ev.detail || "";

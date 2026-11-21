@@ -33,6 +33,7 @@ def snapshot(net, jobs=None, searches=None) -> dict:
     with their progress), "workers": the shared workers' queue, "size": how many workers}."""
     pool = workers.pool()
     queue = {(r["project"], r["kind"]): r for r in pool.snapshot()}
+    cxx = getattr(net, "cxx_names", lambda slug, names: {})
     parts = []
     for kind, label, attr in PARTS:
         part = getattr(net, attr, None)
@@ -43,7 +44,9 @@ def snapshot(net, jobs=None, searches=None) -> dict:
             if (q := queue.get((slug, kind))) is not None:
                 row.update(queued=q["queued"], running=q["running"])
             current = getattr(job, "current", "") or ""
-            row["detail"] = current if isinstance(current, str) else ", ".join(current)
+            current = [current] if isinstance(current, str) else list(current)
+            shown = cxx(slug, current) if current else {}  # (a C++ function by its name as written)
+            row["detail"] = ", ".join(shown.get(c, c) for c in current if c)
             parts.append(row)
     deep_jobs = {jid: key for key, jid in (searches.running.items() if searches is not None else [])}
     running = []
@@ -53,6 +56,7 @@ def snapshot(net, jobs=None, searches=None) -> dict:
         key = deep_jobs.get(jid)
         running.append({"id": jid, "kind": job["kind"], "label": JOB_KINDS.get(job["kind"], job["kind"]),
                         "project": key[0] if key else "", "function": key[1] if key else "",
+                        "function_label": (cxx(key[0], [key[1]]).get(key[1], key[1]) if key else ""),
                         "seconds": round(time.time() - job["t"]), "progress": job.get("progress"),
                         "last": job["log"][-1] if job.get("log") else ""})
     return {"parts": sorted(parts, key=lambda r: (r["project"], r["kind"])), "jobs": running,

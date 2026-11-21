@@ -23,7 +23,7 @@ console.log('compiler groups passed');
 const elements = new Map();
 ctx.$ = id => { if (!elements.has(id)) elements.set(id, {value:id === 'compilerGroup' ? 'settings' : 'most-ranges', querySelectorAll:()=>[]}); return elements.get(id); };
 ctx.S = {slug:'demo', ov:{}};
-ctx.esc = String; ctx.hexShort = String; ctx.hex8 = String;
+ctx.esc = String; ctx.hexShort = String; ctx.hex8 = String; ctx.fnLabel = (name) => name; ctx.fnTitled = String;
 ctx.plural = (n, word) => `${n} ${word}`;
 ctx.PART_STATE = {'':['waiting','']};
 ctx.setHtml = (el, html) => { el.innerHTML = html; };

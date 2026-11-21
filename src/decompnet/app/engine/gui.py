@@ -437,6 +437,35 @@ class GuiMixin:
         return {"events": [dict(e) for e in reversed(events)], "attempts": [dict(t) for t in reversed(attempts)],
                 "cut": len(attempts) == LIVE_ATTEMPTS, "claims": claims, "overview": self.overview(slug)}
 
+    def cxx_names(self, slug: str, names) -> dict[str, str]:
+        """The C++ names (as written, its parameters included) of a project's functions among `names`, by symbol:
+        what the window shows for `_ZN2zl4ListIfE8allocateEi` and the like. Those without one aren't in it."""
+        names = sorted({n for n in names if n})
+        row = self.store.one("SELECT id FROM projects WHERE slug=?", slug) if names else None
+        if row is None:
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(names), 500):
+            chunk = names[i:i + 500]
+            for r in self.store.all(f"SELECT name, meta FROM functions WHERE project_id=? AND name IN "
+                                    f"({', '.join('?' * len(chunk))}) AND meta LIKE '%\"demangled\"%'", row["id"], *chunk):
+                if (cxx := json.loads(r["meta"]).get("demangled")):
+                    out[r["name"]] = cxx
+        return out
+
+    def _labelled(self, rows) -> list[dict]:
+        """Notification rows, a match's with its function's C++ name (`label`) where it has one."""
+        rows = [dict(r) for r in rows]
+        by_slug: dict[str, set] = {}
+        for r in rows:
+            if r["kind"] == "match":
+                by_slug.setdefault(r["slug"], set()).add(r["detail"])
+        names = {slug: self.cxx_names(slug, found) for slug, found in by_slug.items()}
+        for r in rows:
+            if (label := names.get(r["slug"], {}).get(r["detail"])):
+                r["label"] = label
+        return rows
+
     def events_after(self, after: int | None, limit: int = EVENTS_PER_ASK) -> dict:
         """The notification centre's feed, for every project at once: what happened after event `after`, oldest
         first. With no `after` (the app's window just opened): nothing, only where the feed starts, so nothing that
@@ -447,11 +476,11 @@ class GuiMixin:
             return {"last": last, "events": []}
         # (up to `last` only: an event written meanwhile comes with the next ask, not twice)
         rows = self.store.all(f"{EVENT_ROWS} AND e.id>? AND e.id<=? ORDER BY e.id LIMIT ?", after, last, limit)
-        return {"last": rows[-1]["id"] if len(rows) == limit else last, "events": [dict(r) for r in rows]}
+        return {"last": rows[-1]["id"] if len(rows) == limit else last, "events": self._labelled(rows)}
 
     def recent_events(self, limit: int = EVENTS_PER_ASK) -> list[dict]:
         """The notification centre's history: the latest notable events of every project, newest first."""
-        return [dict(r) for r in self.store.all(f"{EVENT_ROWS} ORDER BY e.id DESC LIMIT ?", limit)]
+        return self._labelled(self.store.all(f"{EVENT_ROWS} ORDER BY e.id DESC LIMIT ?", limit))
 
     def record_event(self, slug: str, kind: str, detail: str, agent_name: str = "") -> None:
         """Something that happened outside the judge (a helper paused on an error), in the project's feed and the

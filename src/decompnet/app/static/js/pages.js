@@ -172,7 +172,7 @@ async function renderWork(stop = null) {
   const jobs = w.jobs.map((j) => {
     const pr = j.progress;
     const what = j.kind === "deep-search" && pr ? `${Number(pr.tested).toLocaleString()} variants, best ${pr.best_score} from ${pr.start_score}` : esc(j.last || "");
-    return `<li><b>${esc(j.label)}</b>${j.function ? ` · <span class="mono">${esc(j.function)}</span>` : ""}${j.project ? ` · <a href="#/p/${esc(j.project)}">${proj(j.project)}</a>` : ""}
+    return `<li><b>${esc(j.label)}</b>${j.function ? ` · <span class="mono"${j.function_label && j.function_label !== j.function ? ` title="${esc(j.function)}"` : ""}>${esc(j.function_label || j.function)}</span>` : ""}${j.project ? ` · <a href="#/p/${esc(j.project)}">${proj(j.project)}</a>` : ""}
       <span class="muted small">${mins(j.seconds)}${what ? ` · ${what}` : ""}</span>
       <button class="ghost small-btn" data-stop-kind="job" data-stop-key="${esc(j.id)}" type="button">Stop</button></li>`;
   });
