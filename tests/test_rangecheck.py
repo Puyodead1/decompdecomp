@@ -122,7 +122,8 @@ class FakeNet:
     def _short(self, label):
         return label[0]
 
-    def set_compiler_ranges(self, slug, ranges, toolchain, flags):
+    def set_compiler_ranges(self, slug, ranges, toolchain, flags, split=False):
+        assert split  # (a check's evidence is about its range: the ranges it overlaps keep their other parts)
         self.applied.append((ranges, toolchain))
 
 
@@ -452,3 +453,64 @@ def test_auto_adjust_is_a_setting_of_each_project(tmp_path):
     assert net.auto_adjusts(net._project("rr5")) and net.auto_adjusts(net._project("gta"))
     net.set_auto_adjust("rr5", False)
     assert not net.auto_adjusts(net._project("rr5")) and net.auto_adjusts(net._project("gta"))
+
+
+def _ranged_game(tmp_path, monkeypatch):
+    """A ROM project on GCC with one CodeWarrior range, 0x1000-0x2000, and a matched function at each end of it; the
+    judge of matched functions records what it was asked."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    cfg = {"kind": "rom", "platform": "ps2", "compiler": {"toolchain": GCC[0], "flags": GCC[1]},
+           "compiler_ranges": [{"start": 0x1000, "end": 0x2000, "toolchain": CW[0], "flags": CW[1]}]}
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("game", "Game", "", "mips", 0, str(tmp_path), json.dumps(cfg))).lastrowid
+        for name, vram in (("near", 0x1100), ("far", 0x1800)):
+            db.execute("INSERT INTO functions(project_id,name,vram,size,n_insns,status,unit) VALUES(?,?,?,?,?,?,?)",
+                       (pid, name, vram, 16, 4, "matched", "a"))
+    asked = []
+    monkeypatch.setattr(net, "regression_test", lambda proj, header, only=None, header_for=None:
+                        asked.extend(f["name"] for f in only or []) or [])
+    return net, asked
+
+
+def test_a_suggested_range_keeps_the_parts_of_the_range_it_overlaps(tmp_path, monkeypatch):
+    """A Linux game's 3.4.4 library range (and a GCC 4.3.2 range of 20 functions) went whole when a range of a few of
+    their functions was applied, the matches left over back on the project's compiler unchecked: a suggestion's range
+    keeps the rest of the one it overlaps, and the Settings page's replace checks what it hands back."""
+    net, asked = _ranged_game(tmp_path, monkeypatch)
+    net.set_compiler_ranges("game", [[0x1000, 0x1400]], "ee-gcc-2.96", ["-O2"], split=True)
+    ranges = [(r["start"], r["end"], r["toolchain"]) for r in net.cfg(net.project_row("game"))["compiler_ranges"]]
+    assert ranges == [(0x1000, 0x1400, "ee-gcc-2.96"), (0x1400, 0x2000, CW[0])] and asked == ["near"]
+    asked.clear()
+    net.set_compiler_ranges("game", [[0x1300, 0x1500]], "ee-gcc-2.96", ["-O2"])  # (the page: replaces both)
+    assert [(r["start"], r["end"]) for r in net.cfg(net.project_row("game"))["compiler_ranges"]] == [(0x1300, 0x1500)]
+    assert sorted(asked) == ["far", "near"]  # (on the project's compiler now: checked too)
+
+
+def test_a_suggestion_for_a_function_in_a_range_is_about_that_range(tmp_path, monkeypatch):
+    """A Linux game's agent suggested GCC 3.4.4 -march=i686 with no range, from a function in the 3.4.4 library range,
+    and the whole game went to it, its own code GCC 4.3.2's: the suggestion is a range check on that range."""
+    net, asked = _ranged_game(tmp_path, monkeypatch)
+    monkeypatch.setattr(net, "_check_compiler", lambda *a: "checked: near's C matches the game byte for byte with it")
+    proposed = []
+    monkeypatch.setattr(net.rangechecks, "propose", lambda proj, s, function, tc, flags, spans, source:
+                        proposed.append(spans) or "Range check started.")
+    agent = net.local_agent("claude-sonnet-1")[0]
+    net.suggest(agent, "game", "these need -O3", compiler=CW[0], flags="-O3", function="near")
+    assert proposed == [[[0x1000, 0x2000]]]
+    assert net.cfg(net.project_row("game"))["compiler"]["toolchain"] == GCC[0]
+
+
+def test_a_switch_the_check_puts_back_is_not_in_the_history(tmp_path, monkeypatch):
+    """Two whole-game switches a Linux game's check put back read as made in its history."""
+    net, asked = _ranged_game(tmp_path, monkeypatch)
+    monkeypatch.setattr(net, "regression_test", lambda *a, **k: [("near", "compiles but no longer matches")])
+    import pytest
+
+    from decompnet.network import NetworkError
+    with pytest.raises(NetworkError, match="wouldn't match"):
+        net.set_compiler("game", CW[0], CW[1], guard=True)
+    assert net.cfg(net.project_row("game"))["compiler"]["toolchain"] == GCC[0]
+    assert not net.store.all("SELECT * FROM events WHERE kind='compiler'")

@@ -524,6 +524,12 @@ class CompilerMixin:
                 raise NetworkError("a fork builds with its project's own compilers: suggest the change in words only")
             tc = self._toolchain_named(cfg, compiler)
             flag_list = flags.split() or consoles.default_flags(cfg, tc)
+            if not spans and function:
+                # a function in a range another compiler builds speaks for that range, never the whole game: a Linux
+                # game's GCC 3.4.4 library function matched with -march=i686, and the game's own code, GCC 4.3.2's,
+                # went to 3.4.4 with it
+                at = self._function(function, slug)["vram"] or -1
+                spans = [[r["start"], r["end"]] for r in cfg.get("compiler_ranges", []) if r["start"] <= at < r["end"]]
             if not spans and (tc, flag_list) == (cfg["compiler"]["toolchain"], cfg["compiler"]["flags"]):
                 raise NetworkError("that's already the project's compiler and flags")
             if function:
@@ -828,7 +834,9 @@ class CompilerMixin:
         if apply and hit["toolchain"] and hit.get("ranges") and self.fork_slug(slug):  # (its files: each if it holds)
             self.forks.set_compiler_ranges(slug, hit["ranges"], hit["toolchain"])
         elif apply and hit["toolchain"] and hit.get("ranges"):
-            self.set_compiler_ranges(slug, hit["ranges"], hit["toolchain"], hit["flags"])
+            # (its ranges are what its evidence says, not the ranges around them: a Linux game's 3.4.4 library
+            # range went whole when a range of 4 of its functions was applied)
+            self.set_compiler_ranges(slug, hit["ranges"], hit["toolchain"], hit["flags"], split=True)
         elif apply and hit["toolchain"]:
             self.set_compiler(slug, hit["toolchain"], hit["flags"], guard=guard)
         self._update_cfg(slug, lambda cfg: next(s for s in cfg["suggestions"] if s["id"] == sid).__setitem__(
@@ -849,8 +857,9 @@ class CompilerMixin:
 
         `split`: a range these overlap keeps its parts outside them, at its own compiler, instead of going whole. One
         function's applied comparison result (#241) took a whole range from the functions around it otherwise, matched
-        ones too, and with no check, since only the functions inside the new ranges are checked. The page and the
-        suggestions name a whole range to replace or remove, so they keep the replacing."""
+        ones too. The page names a whole range to replace or remove, so it keeps the replacing (what the replaced
+        range covered beyond the new ones is checked too); a suggestion's ranges and a range check's are evidence
+        about those addresses only, so they split."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         if self._link(slug) is not None:  # (rooms: the host's settings are the room's, sent to its guests)
@@ -870,20 +879,26 @@ class CompilerMixin:
                 parts = [piece for s, e in parts for piece in ((s, min(e, a)), (max(s, b), e)) if piece[0] < piece[1]]
             return [{**r, "start": s, "end": e} for s, e in parts]
 
+        dropped: list[tuple[int, int]] = []  # (what a replaced range covered outside these: the project's again)
+
         def change(cfg):
             if split:
                 keep = [part for r in cfg.get("compiler_ranges", []) for part in outside(r)]
             else:
                 keep = [r for r in cfg.get("compiler_ranges", [])
                         if all(r["end"] <= a or r["start"] >= b for a, b in ranges)]
+                dropped[:] = [(p["start"], p["end"]) for r in cfg.get("compiler_ranges", []) if r not in keep
+                              for p in outside(r)]
             if toolchain:
                 keep += [{"start": a, "end": b, "toolchain": toolchain, "flags": flags} for a, b in ranges]
             cfg["compiler_ranges"] = sorted(keep, key=lambda r: r["start"])
         self._update_cfg(slug, change)
         proj = self._project(slug)
-        # functions already matched in those ranges must still match with it (auto-adjust runs unattended)
+        # functions already matched in those ranges must still match with it (auto-adjust runs unattended), and those
+        # in what a replaced range covered beyond them: a GCC 4.3.2 range of 6 functions replaced a confirmed one of 20,
+        # and the 14 matched functions left over went back to the project's compiler unchecked
         inside = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
-                  if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
+                  if any(a <= (f["vram"] or -1) < b for a, b in [*ranges, *dropped])]
         broken = self.regression_test(proj, None, only=inside,
                                       header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if inside else []
         reopened = []
@@ -995,8 +1010,6 @@ class CompilerMixin:
                            "timeout": 20}
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
-            self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
         matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' ORDER BY vram", proj["id"])
         sample = matched[::max(1, len(matched) // 40)][:40]
         broken = self.regression_test(self._project(slug), None, only=sample,
@@ -1005,4 +1018,7 @@ class CompilerMixin:
             self._update_cfg(slug, lambda c: c.__setitem__("compiler", before))
             raise NetworkError(f"{len(broken)} matched function(s) wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])})")
+        with self.store.tx() as db:  # (only a switch that stuck: two put back by the check above read as made)
+            db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
+            self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
         self._judge_again_later(self._project(slug))

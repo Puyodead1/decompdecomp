@@ -464,7 +464,8 @@ class RangeChecks:
             applied = ""
             if self.net.auto_adjusts(proj):
                 try:
-                    self.net.set_compiler_ranges(proj["slug"], [[start, end]], c["toolchain"], c["flags"])
+                    # (the parts of ranges it overlaps keep theirs: a confirmed range replaced whole lost 14 matches)
+                    self.net.set_compiler_ranges(proj["slug"], [[start, end]], c["toolchain"], c["flags"], split=True)
                     applied = " (applied)"
                 except NetworkError as e:
                     applied = f" (not applied: {e})"
