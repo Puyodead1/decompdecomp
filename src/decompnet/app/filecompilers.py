@@ -314,6 +314,9 @@ class FileCompilers:
             spans = [[s, e] for s, e, src, _ in self._files(slug) if src == source]
         if not spans and tc == console.file_compiler(fp, ""):
             raise NetworkError("that's already the project's compiler")
+        if spans and (hit := self._range_files(self._files(slug), spans)) and all(c == tc for _, c in hit):
+            raise NetworkError(f"{', '.join(src for src, _ in hit[:4])} build{'s' if len(hit) == 1 else ''} with {tc} "
+                               "already")
         found: list[dict] = []
 
         def change(cfg):
@@ -404,6 +407,43 @@ class FileCompilers:
             self._save(slug, c, "stopped: the user answered the suggestion")
             n += 1
         return n
+
+    def _range_files(self, files: list[tuple[int, int, str, str]], spans: list) -> list[tuple[str, str]]:
+        """(source, its compiler) of each file whose code is in `spans` (ForkEngine.set_compiler_ranges' files)."""
+        return [(src, c) for s, e, src, c in files if any(a < e and s < b for a, b in spans)]
+
+    def settle(self, slug: str) -> int:
+        """Mark applied each open suggestion whose files all build with its compiler already: an agent's try_compiler
+        or the user's Settings switched them one by one (a GameCube game's DBG files went to GC/1.2.5n the minute
+        their suggestion was filed, and it waited in Waiting for you for days, its Apply a no-op). Returns how many."""
+        try:
+            proj = self.net.project_row(slug)
+        except NetworkError:
+            return 0
+        waiting = [s for s in self.net.cfg(proj).get("suggestions", [])
+                   if s["status"] == "open" and s.get("toolchain") and s.get("ranges")]
+        if not waiting:
+            return 0
+        files = self._files(slug)
+        done = {}
+        for s in waiting:
+            hit = self._range_files(files, s["ranges"])
+            if hit and all(c == s["toolchain"] for _, c in hit):
+                done[s["id"]] = (f"already in effect: {', '.join(src for src, _ in hit[:4])}"
+                                 f"{f' and {len(hit) - 4} more' if len(hit) > 4 else ''} build with "
+                                 f"{consoles.compiler_name(s['toolchain'])}")
+        if not done:
+            return 0
+
+        for sid in done:  # (its check first: ending it says "stopped" on the suggestion)
+            self.withdraw(slug, sid)
+
+        def change(cfg):
+            for s in cfg.get("suggestions", []):
+                if s["id"] in done and s["status"] == "open":
+                    s["status"], s["check"] = "applied", done[s["id"]]
+        self.net._update_cfg(slug, change)
+        return len(done)
 
     def working(self, slug: str) -> bool:
         """Whether this project's checks are being weighed now."""
@@ -669,3 +709,4 @@ class FileCompilers:
                 self.net._update_cfg(slug, lambda cfg, cid=c["id"]: next(
                     x for x in cfg["file_checks"] if x["id"] == cid)["evidence"].__setitem__(source, "confirmed"))
                 self.recheck(slug, c["id"])
+        self.settle(slug)

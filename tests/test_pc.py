@@ -3504,6 +3504,25 @@ def test_a_dismissed_suggestion_stops_its_file_check(tmp_path, monkeypatch):
     assert net.cfg(net.project_row("p"))["file_checks"][0]["status"] == "withdrawn"
 
 
+def test_a_suggestion_whose_files_build_with_its_compiler_already_is_applied(tmp_path, monkeypatch):
+    """A GameCube game's DBG files went to GC/1.2.5n by try_compiler the minute their suggestion was filed, and it
+    waited in Waiting for you for days, its Apply a no-op: once every file in its ranges builds with its compiler, it's
+    applied (its check ended), and one for files that already do isn't filed."""
+    net, root, switched = _file_compiler_project(tmp_path, monkeypatch, _only_with("00401020"))
+    agent = net.local_agent("claude-sonnet-5-5-1")[0]
+    net.suggest(agent, "p", "7.1 built these", compiler="MSVC/7.1", ranges="0x401020-0x401030")
+    assert net.filecompilers.settle("p") == 0  # (its file is still 6.0's)
+    scratch_pe.compilers_file(root, "game").write_text(json.dumps({"src/auto/text_00401020.cpp": "7.1"}))
+    assert net.filecompilers.settle("p") == 1
+    cfg = net.cfg(net.project_row("p"))
+    assert cfg["suggestions"][0]["status"] == "applied"
+    assert cfg["suggestions"][0]["check"].startswith("already in effect: src/auto/text_00401020.cpp build")
+    assert cfg["file_checks"][0]["status"] == "withdrawn" and cfg["priority"] == []
+    assert not net.overview("p")["suggestions"] and not switched
+    with pytest.raises(NetworkError, match=r"src/auto/text_00401020.cpp builds with MSVC/7.1 already"):
+        net.suggest(agent, "p", "7.1 built it", compiler="MSVC/7.1", ranges="0x401020-0x401030")
+
+
 def test_a_file_check_left_checking_does_not_spin_after_a_restart(tmp_path, monkeypatch):
     """#260: a PC project's check saved as "checking" by an older version kept the Settings panel saying "checking…"
     after a restart. A fresh network over the same database answers that it isn't checking, and saves it as waiting

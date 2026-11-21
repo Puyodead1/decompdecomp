@@ -121,6 +121,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 # #260: after a restart no check is being weighed, so one saved as "checking" waits instead of spinning
                 net.rangechecks.normalise(row["slug"])
                 net.filecompilers.normalise(row["slug"])
+                if net.filecompilers.applies(row["slug"]):
+                    net.filecompilers.settle(row["slug"])  # (switched file by file before this version)
                 if net.is_rom(row):
                     net.rangechecks.reopen(row["slug"])
                 net.readability.reopen_untyped(row["slug"], log=jobs.logger.info)

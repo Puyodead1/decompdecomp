@@ -5780,6 +5780,7 @@ class ForkEngine:
                 scores = after[u.name] or {n: None for n in before[u.name]}
                 self._keep_scores(proj, u, text, scores)
                 self._apply_scores(proj, u.name, scores, text=text)
+        self.net.filecompilers.settle(slug)  # (a suggestion for the files this one finishes is applied)
 
     def _best_diff(self, proj, fp: ForkProject, fn) -> dict:
         """objdiff's diff of a function's best attempt: written into its file like a try, built, and undone, so
