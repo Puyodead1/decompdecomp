@@ -336,12 +336,15 @@ class FileCompilers:
         origin = self._file_of(slug, spans[0][0])
         if function:
             origin = self.net.forks._meta(self.net.forks._fn(slug, function)).get("source") or origin
-        return "Suggested. " + self.propose(slug, s, tc, spans, origin)
+        return "Suggested. " + self.propose(slug, s, tc, spans, origin, function)
 
-    def propose(self, slug: str, suggestion: dict, compiler: str, spans: list[list[int]], origin: str | None) -> str:
-        """Test a suggested compiler for files on their neighbours before it applies."""
+    def propose(self, slug: str, suggestion: dict, compiler: str, spans: list[list[int]], origin: str | None,
+                function: str | None = None) -> str:
+        """Test a suggested compiler for files on their neighbours before it applies. `function`: the one whose C
+        matched with it, if one was named (its verdict's note goes to it)."""
         check = {"id": 0, "suggestion": suggestion["id"], "toolchain": compiler, "origin": origin, "spans": spans,
-                 "status": "checking", "evidence": {}, "tasks": [], "range": None, "t": time.time()}
+                 "status": "checking", "evidence": {}, "tasks": [], "range": None, "t": time.time(),
+                 **({"function": self.net.forks._fn(slug, function)["name"]} if function else {})}
         found: list[dict] = []
 
         def add(cfg):
@@ -382,7 +385,10 @@ class FileCompilers:
             with_it, with_other = self.net.forks.file_scores(slug, source, other)
         if any((pct or 0) >= 100 and (with_it.get(n) or 0) < 100 for n, pct in with_other.items()):
             return "refuted"
-        if any((pct or 0) >= 100 and (with_other.get(n) or 0) < 100 for n, pct in with_it.items()):
+        if names := sorted(n for n, pct in with_it.items() if (pct or 0) >= 100 and (with_other.get(n) or 0) < 100):
+            # (which functions: a quirk's note goes to them, not to the file's first open one)
+            self.net._update_cfg(slug, lambda cfg: cfg.setdefault("file_matched_with", {}).setdefault(
+                source, {}).__setitem__(compiler, names))
             return "confirmed"
         return "neutral" if any((pct or 0) >= 100 for pct in with_other.values()) else "unknown"
 
@@ -618,12 +624,22 @@ class FileCompilers:
         else:
             text = "a quirk: the files on both sides are built by their own compilers, as they are"
             if c["origin"]:
-                fn = next((f for f in self._rows_by_file(proj).get(c["origin"], ()) if f["status"] == "open"), None)
-                if fn is not None:
-                    self.net.add_note(self.net.local_agent("autopilot")[0], slug,
-                                      f"Range check #{c['id']}: C in {c['origin']} matches with {compiler}, but the "
-                                      "files around it need their own compilers. Look for C that matches with this "
-                                      "file's compiler.", fn["name"])
+                # the note goes to the functions whose C matched with it (the one named, or the survey's), never
+                # just the file's first open one: a GameCube game's Render_DrawAlphaGroup heard of a match that was
+                # __THPSetupBuffers', a function set aside as assembly whose C matched with GC/1.2.5n
+                cfg = self.net.cfg(proj)
+                survey = (cfg.get("file_survey") or {}).get("confirmed") or {}
+                matched = ({c["function"]} if c.get("function") else
+                           {n for n, t in survey.items() if t == c["toolchain"]}
+                           | set((cfg.get("file_matched_with") or {}).get(c["origin"], {}).get(c["toolchain"], [])))
+                for fn in self._rows_by_file(proj).get(c["origin"], ()):
+                    if {fn["name"], self.net.forks._meta(fn).get("symbol")} & matched and fn["status"] == "open":
+                        self.net.add_note(self.net.local_agent("autopilot")[0], slug,
+                                          f"Range check #{c['id']}: this function's C matches with {compiler}, but "
+                                          f"the files around {c['origin']} need their own compilers. Look for C that "
+                                          "matches with this file's compiler; or, if it belongs with code the game "
+                                          "linked from elsewhere (an SDK or library file between the game's), "
+                                          "split_file can give it and its kind a file of their own.", fn["name"])
             self._save(slug, c, text, "dismissed")
         for vram in c["tasks"]:
             source = next((s for s0, _, s, _ in self._files(slug) if s0 == vram), None)

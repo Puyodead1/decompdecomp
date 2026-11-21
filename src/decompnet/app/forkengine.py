@@ -615,15 +615,20 @@ def _file_scope_lines(text: str) -> list[str]:
     return out
 
 
+_CLOSING = re.compile(r"^#\s*pragma\s+(pop\b|\w+\s+reset\b)")
+
+
 def _pragmas_around(text: str, lo: int, hi: int) -> tuple[int, int]:
     """Widen a definition's span over the #pragma lines right above and below it (its wrapper), and the comment
     between them and the definition (a polish puts one there: stopping at it left the file's #pragma push behind, never
-    popped, when the next rewrite came without the comment)."""
+    popped, when the next rewrite came without the comment). Above, a pop or reset ends the function before; below,
+    only pops and resets right after it are its own: the next function's push, past a blank line, went with a
+    GameCube game's SetGVol, and its pop left alone broke the file's build."""
     start = above = csource.comment_above(text, lo)
     while start > 0:
         prev = text.rfind("\n", 0, start - 1) + 1
         line = text[prev:start].strip()
-        if not _PRAGMA.match(line):
+        if not _PRAGMA.match(line) or _CLOSING.match(line):
             break
         start = prev
     start = start if start < above else lo
@@ -632,9 +637,10 @@ def _pragmas_around(text: str, lo: int, hi: int) -> tuple[int, int]:
         nl = text.find("\n", end)
         nl = len(text) if nl < 0 else nl
         line = text[end:nl].strip()
-        if line and not _PRAGMA.match(line):
-            break
-        if not line and end != hi:
+        if not line and end == hi and hi and text[hi - 1] != "\n":
+            end = nl + 1 if nl < len(text) else nl  # (the rest of the definition's own last line)
+            continue
+        if not _CLOSING.match(line):
             break
         end = nl + 1 if nl < len(text) else nl
     return start, end

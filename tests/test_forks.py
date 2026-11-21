@@ -142,6 +142,22 @@ def test_a_wrapper_is_taken_with_the_comment_inside_it():
     assert _pragmas_around(plain, lo, hi)[0] == lo  # no wrapper: the comment isn't taken
 
 
+
+def test_a_wrapper_is_its_own_pragmas_not_its_neighbours():
+    """A GameCube game's SetGVol, sent in a wrapper of its own, took the next function's `#pragma push` and its
+    setting (past a blank line) with it, and that function's pop, left alone, broke the build: a pop or reset above
+    ends the function before, and below only the pops and resets right after the definition are its own."""
+    from decompnet.app.forkengine import _pragmas_around
+
+    text = ("#pragma push\n#pragma opt 1\nint g(void) { return 0; }\n#pragma pop\n\n"
+            "int f(void) { return 1; }\n\n#pragma push\n#pragma opt 1\nint h(void) { return 2; }\n#pragma pop\n")
+    lo, hi = csource.find(text, "f")
+    assert text[slice(*_pragmas_around(text, lo, hi))] == "int f(void) { return 1; }\n"
+    tight = "int g;\n#pragma pop\n#pragma push\n#pragma opt 2\nint f(void) { return 1; }\n#pragma pop\n#pragma push\nint h;\n"
+    lo, hi = csource.find(tight, "f")
+    taken = tight[slice(*_pragmas_around(tight, lo, hi))]
+    assert taken == "#pragma push\n#pragma opt 2\nint f(void) { return 1; }\n#pragma pop\n"
+
 @needs_tools
 def test_fork_state_after_setup(fork):
     net, slug, agent = fork

@@ -3466,6 +3466,24 @@ def test_a_suggested_file_compiler_both_neighbours_refute_is_a_quirk(tmp_path, m
     assert "Range check #1" in note["text"] and "matches with Visual C++ 7.1" in note["text"]
 
 
+def test_a_quirks_note_goes_to_the_function_whose_c_matched(tmp_path, monkeypatch):
+    """A GameCube game's Render_DrawAlphaGroup was told its file's C matched with GC/1.2.5n: the match was
+    __THPSetupBuffers', and the note went to the file's first open function. It goes to the function that matched
+    (here the file's own, found by weighing it), and to none other."""
+    refutes = lambda name: {(name, "MSVC/7.1"): ({f"_func_{name}": 100.0}, {})}  # noqa: E731
+    scores = {**_only_with("00401020"), **refutes("00401010"), **refutes("00401030")}
+    net, root, switched = _file_compiler_project(tmp_path, monkeypatch, scores)
+    agent = net.local_agent("claude-sonnet-5-5-1")[0]
+    net.suggest(agent, "p", "7.1 built these", compiler="MSVC/7.1", ranges="0x401020-0x401030")
+    (check,) = net.cfg(net.project_row("p"))["file_checks"]
+    assert check["status"] == "quirk"
+    noted = net.store.all("SELECT f.name FROM notes n JOIN functions f ON f.id=n.function_id "
+                          "WHERE n.text LIKE 'Range check #1%'")
+    assert [r["name"] for r in noted] == ["_func_00401020"]
+    assert net.cfg(net.project_row("p"))["file_matched_with"]["src/auto/text_00401020.cpp"]["MSVC/7.1"] == [
+        "_func_00401020"]
+
+
 def test_a_neighbouring_file_nobody_can_tell_yet_goes_to_an_agent(tmp_path, monkeypatch):
     """Where no file settles a check, the nearest file without evidence is the next agent's task (first in line, a
     note saying to try_compiler); a try_compiler that switches it confirms the check."""

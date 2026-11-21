@@ -443,8 +443,9 @@ ASM_PAGE = 400  # assembly lines get_function shows at once
 # A brief longer than this isn't read: an agent's CLI keeps a long tool answer out of its view (Claude Code: in a
 # file it never opened), and a GameCube game's 1,422-instruction function's brief of 62,000 characters (its assembly,
 # its diff, the file's source and the best attempt, 22,000 each) left two agents with neither the target nor the
-# best attempt. fit_brief puts the bulkiest parts behind the calls that show them until it's this long.
-BRIEF_CHARS = 30000
+# best attempt (Antigravity's cut a 40KB one too). fit_brief puts the bulkiest parts behind the calls that show them
+# until it's this long.
+BRIEF_CHARS = 24000
 CONTEXT_PAGE = 1000  # header lines get_context shows at once
 # characters of matching declarations get_context(search=...) returns: Claude Code saves a longer answer (61,739
 # characters for a Linux game's `TObject`) to a file, which a helper without a shell can't read
