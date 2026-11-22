@@ -595,8 +595,13 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                          s(function=st("name or address", True), part=it("which part of a long function's assembly"),
                            show=st('"asm" or "best": that part alone'))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
-                             "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
-                             s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
+                             "Score 0 = matched. Several functions: names comma-separated, all definitions in source. "
+                             "`edits` instead of source: changes to your last C of one function.",
+                             s(function=st("function name, or several: a, b, c", True), source=st("C source"),
+                               edits={"type": "array", "description": "{old, new} changes to your last C of this function",
+                                      "items": {"type": "object", "properties": {"old": {"type": "string"},
+                                                                                 "new": {"type": "string"}},
+                                                "required": ["old", "new"]}})),
         "last_diff": ("Every differing row of your last compile_and_diff of a function (its result cuts long diffs). "
                       "Costs no compile. A long diff comes 400 rows at a time.",
                       s(function=st("function", True), context=it("equal rows around each difference"),
@@ -726,8 +731,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
     }
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
-                                    "with objdiff. 100% / score 0 = matched.",
-                                    s(function=st("function name", True), source=st("the function definition", True)))
+                                    "with objdiff. 100% / score 0 = matched. `edits` instead of source: changes to your "
+                                    "last C of the function.",
+                                    s(function=st("function name", True), source=st("the function definition"),
+                                      edits=defs["compile_and_diff"][1]["properties"]["edits"]))
     names = set(tools.tool_names(fork) if names is None else names)
     return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}}
             for n, (d, p) in defs.items() if n in names]

@@ -119,3 +119,37 @@ def test_every_mcp_tool_reaches_its_handler_with_its_own_arguments(tmp_path, mon
     sdk = {"name": "OSInitFastCast", "path": "src/main.c"}
     anyio.run(lambda: mcp.call_tool("sdk_inline", sdk))
     assert reached == [("sdk_inline", sdk)]
+
+
+def test_compile_and_diff_takes_edits_to_the_agents_last_c(tmp_path):
+    """A GameCube game's 1,318-instruction function cost its agents 23,000 characters of C a compile, to change a
+    line or two: `edits` change the C of the agent's last compile of the function (its best attempt before that)."""
+    import shutil
+    import sys
+    from pathlib import Path
+
+    from decompnet.network import NetworkError
+
+    from .handmade import import_project
+    from .solutions import WRONG_CLAMP
+
+    if sys.platform != "linux" or shutil.which("gcc") is None:
+        pytest.skip("projects/demo needs a Linux gcc (x86-64 ELF)")
+    net = RomNetwork(tmp_path / "t.db", tmp_path)
+    import_project(net.store, Path(__file__).resolve().parent.parent / "projects" / "demo", log=lambda *_: None)
+    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    agent, _ = net.local_agent("claude-1")
+    with pytest.raises(NetworkError, match="no C to edit yet"):
+        tools._compile(net, agent, slug, "clamp_s32", "", [{"old": "a", "new": "b"}])
+    assert not tools._compile(net, agent, slug, "clamp_s32", WRONG_CLAMP).startswith("✅")
+    fixed = [{"old": "if (v > hi) return hi;\n    if ((u32)v < (u32)lo) return lo;",
+              "new": "if (v < lo) return lo;\n    if (v > hi) return hi;"}]  # (the demo's own solution)
+    out = tools._compile(net, agent, slug, "clamp_s32", "", fixed)
+    assert out.startswith("(compiled your last compile of clamp_s32 with 1 edit)") and "MATCH" in out
+    assert net._function("clamp_s32", slug)["status"] == "matched"
+    with pytest.raises(NetworkError, match="isn't in your last compile of clamp_s32"):
+        tools._compile(net, agent, slug, "clamp_s32", "", [{"old": "no such line;", "new": "x"}])
+    with pytest.raises(NetworkError, match="not both"):
+        tools._compile(net, agent, slug, "clamp_s32", WRONG_CLAMP, fixed)
+    with pytest.raises(NetworkError, match="name one function"):
+        tools._compile(net, agent, slug, "clamp_s32, abs_s32", "", fixed)

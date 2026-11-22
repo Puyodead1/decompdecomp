@@ -13,6 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__, agents, arch, consoles
 from ..network import CLAIM_ORDERS, Agent, NetworkError
+from ..textedit import replace_once
 from .engine import RomNetwork
 
 # The guides every console shares (app/guide/); each console's own are in its package (consoles/<id>/guides/)
@@ -63,6 +64,7 @@ one claim; one function back is normal.)
 3. Write the C functions (same names as the assembly) and judge them: compile_and_diff(function="a, b, c",
    source=all the definitions) for a batch, one name for one. Read the diff: '<' '>' missing/extra
    instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure first, registers last.
+   A few lines of your last try changed: edits=[{{"old": ..., "new": ...}}] instead of the whole source.
    The workflow and {compiler_guide} guides are below. find_similar(function) shows look-alike functions;
    a matched one is the best starting point.
 4. Score 0 = matched and saved. Before moving on, share what you learned: edit_context for prototypes and
@@ -154,7 +156,8 @@ neighbours may come along in one claim; one function back is normal.)
 3. compile_and_diff(function, source) with the complete definition (plus any #include "...", prototypes
    or #pragma lines it needs); several at once: function="a, b, c" with all definitions in source. Each
    goes into the source file in place of the old one, the file is built with the project's compiler and
-   diffed. Fix structure first (control flow, calls), then types and expressions, registers last.
+   diffed. Fix structure first (control flow, calls), then types and expressions, registers last. To change
+   a few lines of your last try of a big function, send edits=[{{"old": ..., "new": ...}}] instead of source.
 4. 100% = matched, committed to git. Helper functions, structs, shared prototypes and globals you need go
    in with edit_file (a header or the top of the source file), never inside compile_and_diff's source
    (it refuses them); an edit that breaks any match is undone. Found a
@@ -299,9 +302,38 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
         return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
 
 
-def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: str) -> str:
-    """compile_and_diff; several names ("a, b, c") judge several definitions sent together."""
+def _edited_source(net: RomNetwork, agent: Agent, slug: str, function: str, edits: list) -> tuple[str, str]:
+    """(the C, what it was made from) for compile_and_diff's `edits`: each {"old", "new"} made in turn on the C of the
+    agent's last compile of the function, or on its best attempt before it compiled one. A GameCube game's
+    1,318-instruction function cost its agents 23,000 characters of C a compile, to change a line or two."""
+    fn = net._function(net.resolve_function(agent, slug, function), slug)
+    last = net.store.one("SELECT source FROM attempts WHERE function_id=? AND agent_id=? AND source IS NOT NULL "
+                         "AND source != '' ORDER BY id DESC LIMIT 1", fn["id"], agent.id)
+    base, what = ((last["source"], f"your last compile of {fn['name']}") if last else
+                  (fn["best_source"], f"{fn['name']}'s best attempt") if fn["best_source"] else (None, ""))
+    if base is None:
+        raise NetworkError(f"{fn['name']} has no C to edit yet: send its whole definition as `source` first")
+    for e in edits:
+        if not isinstance(e, dict) or not str(e.get("old", "")).strip():
+            raise NetworkError('each edit is {"old": text of the C to replace, copied as it is, "new": its replacement}')
+        base = replace_once(base, str(e["old"]), str(e.get("new", "")), what)
+    return base, what
+
+
+def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: str, edits=None) -> str:
+    """compile_and_diff; several names ("a, b, c") judge several definitions sent together. `edits`: changes to the
+    agent's last C for one function (_edited_source), in place of the whole of it."""
     names = [n.strip() for n in function.split(",") if n.strip()]
+    if edits:
+        if source.strip():
+            raise NetworkError("send either `source` (the whole definition) or `edits` (changes to your last C), not both")
+        if len(names) != 1:
+            raise NetworkError("`edits` change one function's C: name one function")
+        source, what = _edited_source(net, agent, slug, names[0], list(edits))
+        return f"(compiled {what} with {len(edits)} edit{'s' * (len(edits) != 1)})\n" + net.compile_and_diff(
+            agent, names[0], source, slug)
+    if not source.strip():
+        raise NetworkError("send the function's definition as `source`, or `edits` to change your last C of it")
     if len(names) <= 1:
         return net.compile_and_diff(agent, names[0] if names else function, source, slug)
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
@@ -323,7 +355,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         _claim(net, agent, slug, function, strategy, count),
     "get_function": lambda net, agent, slug, function, part=1, show="":
         net.get_function(function, slug, agent, int(part or 1), str(show or "")),
-    "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
+    "compile_and_diff": lambda net, agent, slug, function, source="", edits=None:
+        _compile(net, agent, slug, function, source, edits),
     "last_diff": lambda net, agent, slug, function, context=2, start=0: net.last_diff(agent, function, slug, context,
                                                                                     start),
     "release_function": lambda net, agent, slug, function, notes, needs="", not_c=False:
@@ -583,15 +616,19 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "get_function", function=function, part=part, show=show)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
+    async def compile_and_diff(ctx: Context, function: str, source: str = "",
+                               edits: list[dict[str, str]] | None = None) -> str:
         """Compile your code for `function` and diff it against the original; score 0 = byte-identical.
 
         ROM projects: compiled with the game's compiler (context.h included), linked at the function's
         address and compared with the ROM. Forks: send the complete definition (plus any #include "...",
         prototypes, externs or #pragma lines it needs); it replaces the function in its source file, which is
         built with the project's build system and diffed with objdiff. Several functions ("a, b, c"): send all
-        their definitions in one source; each is judged on its own."""
-        return await run(ctx, "compile_and_diff", function=function, source=source)
+        their definitions in one source; each is judged on its own.
+        `edits` instead of `source`: [{"old": ..., "new": ...}] changes to the C of your last compile of this
+        function (or its best attempt, before your first), made in turn and compiled: for a big function, a few
+        lines changed cost a few lines sent, not the whole definition again."""
+        return await run(ctx, "compile_and_diff", function=function, source=source, edits=edits)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def last_diff(ctx: Context, function: str, context: int = 2, start: int = 0) -> str:
