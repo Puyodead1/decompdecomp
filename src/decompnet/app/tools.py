@@ -564,6 +564,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     """MCP server for CLI agents. `agent_of` maps a request to (agent, project slug)."""
     mcp = MCPServer(name="decomp", title="decompdecomp", instructions=INSTRUCTIONS, version=__version__)
     heavy_limiter = anyio.CapacityLimiter(16)
+    # the rest on threads of their own too: on anyio's default ones, calls waiting for a project's lock (a room's
+    # rebuild) took every thread a room's requests needed, and its guest saw the host as gone (collab.host_app)
+    light_limiter = anyio.CapacityLimiter(64)
 
     async def run(ctx: Context, name: str, /, **args) -> str:  # (positional: sdk_inline has its own `name`)
         try:
@@ -571,7 +574,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
-            limiter = heavy_limiter if name in HEAVY_TOOLS else None
+            limiter = heavy_limiter if name in HEAVY_TOOLS else light_limiter
             return await anyio.to_thread.run_sync(lambda: _invoke(net, agent, slug, name, args), limiter=limiter)
         except NetworkError as e:
             raise ToolError(str(e)) from None

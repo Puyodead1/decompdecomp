@@ -281,7 +281,9 @@ class Room:
         self._members = (0.0, [])
         return token, name
 
-    def member(self, request: Request) -> Agent:
+    def member(self, request: Request, counted: bool = True) -> Agent:
+        """The member asking. `counted`: their request counts toward "slow down"; the heartbeat doesn't, since a
+        refused one shows the host as gone to everyone in the room."""
         check_same((__version__, own_commit()), (request.headers.get(VERSION_HEADER), request.headers.get(COMMIT_HEADER)))
         token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         try:
@@ -293,6 +295,8 @@ class Room:
             raise NetworkError(WAITING)
         if row["origin"] != self.origin or row["owner"] is not None:
             raise NetworkError(NOT_MEMBER)
+        if not counted:
+            return agent
         hits = self._hits[agent.name]
         now = time.time()
         hits.append(now)
@@ -449,15 +453,27 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
             raise NetworkError("invalid request")
         return data
 
-    def endpoint(fn, auth: bool = True):
-        async def handler(request: Request):
-            import anyio
+    import anyio
 
+    # A GameCube room went "waiting for the host" whenever its guest's polishing helpers ran, and came back when
+    # they stopped, with nothing in the host's log. Every room request and every one of the host's own helpers' tool
+    # calls shared anyio's default 40 threads; each polishing rewrite rebuilt the whole project under its lock, and
+    # the calls waiting for that lock held all 40, so the guest's heartbeat (whoami) queued past its 10 seconds. The
+    # room's work has threads of its own now, and who's asking is checked on a few nothing slow ever holds.
+    checks = anyio.CapacityLimiter(8)  # (room.member: a token and a row; and whoami)
+    work = anyio.CapacityLimiter(40)
+
+    def endpoint(fn, auth: bool = True, quick: bool = False):
+        """`quick`: the answer is as cheap as the check (whoami), so it is made with it, never behind the room's
+        work."""
+        async def handler(request: Request):
             try:
                 room = room_for(request)
                 data = await body(request) if request.method == "POST" else dict(request.query_params)
-                member = await anyio.to_thread.run_sync(room.member, request) if auth else None
-                result = await anyio.to_thread.run_sync(lambda: fn(room, member, data))
+                member = (await anyio.to_thread.run_sync(room.member, request, not quick, limiter=checks)
+                          if auth else None)
+                result = (fn(room, member, data) if quick else
+                          await anyio.to_thread.run_sync(lambda: fn(room, member, data), limiter=work))
                 return JSONResponse(result)
             except NetworkError as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
@@ -655,15 +671,14 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     async def get_bundle(request: Request):
         """The host's commits a member doesn't have yet (a git bundle: tracked files only, never the game)."""
-        import anyio
-
         try:
             room = room_for(request)
-            await anyio.to_thread.run_sync(room.member, request)
+            await anyio.to_thread.run_sync(room.member, request, limiter=checks)
             if not room.fork:
                 raise NetworkError("this room's project isn't a git tree")
             data = await anyio.to_thread.run_sync(lambda: forkroom.bundle(Path(room.proj["root"]),
-                                                                           request.query_params.get("have", "")))
+                                                                           request.query_params.get("have", "")),
+                                                  limiter=work)
         except NetworkError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return Response(data, media_type="application/octet-stream", status_code=200 if data else 204)
@@ -687,7 +702,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/hello", endpoint(hello, auth=False)),
         Route("/collab/join", endpoint(join, auth=False), methods=["POST"]),
         Route("/collab/state", endpoint(state)),
-        Route("/collab/whoami", endpoint(whoami)),
+        Route("/collab/whoami", endpoint(whoami, quick=True)),
         Route("/collab/claim", endpoint(claim), methods=["POST"]),
         Route("/collab/attempt", endpoint(attempt), methods=["POST"]),
         Route("/collab/best", endpoint(best), methods=["POST"]),

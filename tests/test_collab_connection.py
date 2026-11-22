@@ -281,3 +281,59 @@ def test_a_guest_with_nothing_to_claim_says_what_the_host_says(connection, fork,
     assert said == why["why"]
     why = {}  # (an older host)
     assert link.claim(agent, None, "easiest") == (None, "")
+
+
+def test_the_host_answers_a_heartbeat_while_its_threads_are_busy():
+    """A GameCube room went "waiting for the host" whenever its guest's polishing helpers ran, and came back when they
+    stopped: their requests and the host's own helpers' tool calls, all waiting for the project's rebuild, held every
+    one of the host's shared threads, so the guest's heartbeat (whoami) found none within its 10 seconds."""
+    import anyio
+    from starlette.testclient import TestClient
+
+    gate = threading.Event()
+
+    class Busy:
+        slug = "room"
+
+        def member(self, request, counted=True):
+            return SimpleNamespace(name="alex")
+
+        def state(self, *args):  # a request that waits for the host's rebuild
+            gate.wait(30)
+            return {}
+
+    with TestClient(collab.host_app(SimpleNamespace(), {"room": Busy()}), base_url="https://host.example") as client:
+        waiting = [threading.Thread(target=client.get, args=("/collab/state?room=room",)) for _ in range(60)]
+        try:
+            for _ in range(60):  # the host's own helpers' tool calls, on the shared threads
+                client.portal.start_task_soon(anyio.to_thread.run_sync, gate.wait, 30)
+            for t in waiting:  # and the guest's helpers' requests
+                t.start()
+            time.sleep(0.5)
+            answered = []
+            beat = threading.Thread(target=lambda: answered.append(client.get("/collab/whoami?room=room")))
+            beat.start()
+            beat.join(collab.HEARTBEAT_TIMEOUT)
+            assert answered and answered[0].json() == {"name": "alex", "room": "room"}
+        finally:
+            gate.set()
+            for t in waiting:
+                t.join(timeout=30)
+
+
+def test_a_busy_member_is_told_to_slow_down_but_still_sees_the_host():
+    """A member over the room's 900 requests a minute is told "slow down"; their heartbeat isn't, or the host would
+    look gone to them while it was only refusing their helpers' flood."""
+    from collections import defaultdict, deque
+
+    room = collab.Room.__new__(collab.Room)
+    room.slug, room._hits = "o", defaultdict(lambda: deque(maxlen=900))
+    room.net = SimpleNamespace(authenticate=lambda token: SimpleNamespace(id=1, name="alex"),
+                               store=SimpleNamespace(one=lambda *a: {"origin": "collab:o", "owner": None}))
+    request = SimpleNamespace(headers={collab.VERSION_HEADER: collab.__version__,
+                                       collab.COMMIT_HEADER: collab.own_commit() or "", "authorization": "Bearer t"})
+    for _ in range(899):
+        room.member(request)
+    with pytest.raises(NetworkError, match="slow down"):
+        room.member(request)
+    assert room.member(request, counted=False).name == "alex"
