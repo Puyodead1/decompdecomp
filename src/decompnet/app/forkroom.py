@@ -33,16 +33,20 @@ MAX_BUNDLE = 512 * 1024 * 1024
 
 # git's words for an index another program has open right now (an editor's git, antivirus, a status run beside it)
 _INDEX_BUSY = re.compile(r"could not write index|index\.lock|unable to write new index", re.I)
+# a file something has open on Windows (a build reading it, an agent's editor): only safe to try again for a command
+# that can start over, like reset --hard
+_FILE_BUSY = re.compile(_INDEX_BUSY.pattern + r"|unable to unlink|resource busy|permission denied|could not reset index",
+                        re.I)
 INDEX_TRIES, INDEX_WAIT = 8, 0.5
 
 
-def _git(root: Path, *args: str, check: bool = True, timeout: float = 600) -> str:
+def _git(root: Path, *args: str, check: bool = True, timeout: float = 600, busy: re.Pattern = _INDEX_BUSY) -> str:
     """git in a room's tree. An index that's busy for a moment is waited out: on a Windows member's computer "git
     stash failed: could not write index" ended following the host, and the agent's claims with it."""
     for attempt in range(INDEX_TRIES):
         res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, text=True,
                              encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
-        if res.returncode == 0 or not _INDEX_BUSY.search(res.stderr or "") or attempt == INDEX_TRIES - 1:
+        if res.returncode == 0 or not busy.search(res.stderr or "") or attempt == INDEX_TRIES - 1:
             break
         time.sleep(INDEX_WAIT * (attempt + 1))
     if check and res.returncode != 0:
@@ -177,10 +181,21 @@ def pull(root: Path, data: bytes, ref: str) -> str:
     the host changed the same lines; the member's own commits are dropped: the host has them (it confirmed and
     committed every match the member sent), or they didn't hold up there. Returns the new head."""
     tip = fetch_bundle(root, data, ref)
-    dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
-    if dirty:
-        _git(root, "stash", "push", "-q", "-m", "decompdecomp: work in progress before following the room")
-    _git(root, "reset", "-q", "--hard", tip)
+    # Saved without touching the files, then the files reset: `git stash push` did both, and on a Windows member a
+    # file held open stopped it part way ("unable to unlink old 'src/...c'"), the other files already reset and their
+    # work only in a stash entry the next try never popped.
+    saved = _git(root, "stash", "create", "decompdecomp: work in progress before following the room")
+    if saved:
+        _git(root, "stash", "store", "-q", "-m", "decompdecomp: work in progress before following the room", saved)
+    try:
+        _git(root, "reset", "-q", "--hard", tip, busy=_FILE_BUSY)
+    except NetworkError:
+        if saved:  # (git moves HEAD only once every file is reset: the files that were go back as they were)
+            if changed := [f for f in _git(root, "diff", "--name-only", saved, check=False).splitlines() if f]:
+                _git(root, "checkout", saved, "--", *changed, check=False)
+            _git(root, "stash", "drop", "-q", check=False)
+        raise
+    dirty = bool(saved)
     if dirty and subprocess.run(["git", "-c", "safe.directory=*", "stash", "pop", "-q"], cwd=root,
                                 capture_output=True, creationflags=NO_WINDOW).returncode != 0:
         _git(root, "reset", "-q", "--hard", tip)  # the host changed the same lines: the host's version stays

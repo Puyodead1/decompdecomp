@@ -1,6 +1,7 @@
 """Room presence continues while receiving work is slow, without requiring a game or compiler."""
 
 import json
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -337,3 +338,46 @@ def test_a_busy_member_is_told_to_slow_down_but_still_sees_the_host():
     with pytest.raises(NetworkError, match="slow down"):
         room.member(request)
     assert room.member(request, counted=False).name == "alex"
+
+
+def test_a_file_held_open_while_following_the_host_keeps_the_members_work(tmp_path, monkeypatch):
+    """A Windows member's "git stash failed: unable to unlink old 'src/...c': Device or resource busy": the stash had
+    reset the other files already, their work only in a stash entry the next try never popped. Now the work is
+    saved without touching the files, and a reset that stops part way puts it back for the next try."""
+    from decompnet.app import forkroom
+
+    def _git(root, *args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    host, member = tmp_path / "host", tmp_path / "member"
+    host.mkdir()
+    _git(host, "init", "-q", "-b", "main")
+    for name in ("a.c", "b.c", "c.c"):
+        (host / name).write_text(f"int {name[0]};\n")
+    _git(host, "add", ".")
+    _git(host, "-c", "user.name=h", "-c", "user.email=h@example.com", "commit", "-q", "-m", "start")
+    subprocess.run(["git", "clone", "-q", str(host), str(member)], check=True)
+    (host / "c.c").write_text("int c = 1;\n")  # the host's next commit
+    _git(host, "-c", "user.name=h", "-c", "user.email=h@example.com", "commit", "-q", "-am", "host's")
+    (member / "a.c").write_text("int a = 2; /* an agent's attempt */\n")
+    (member / "b.c").write_text("int b = 3; /* another's, in a file held open */\n")
+    before = _git(member, "rev-parse", "HEAD")
+
+    real = forkroom._git
+
+    def held(root, *args, **kwargs):
+        if args[:2] == ("reset", "-q"):  # git resets a.c, then can't remove b.c
+            real(root, "checkout", "HEAD", "--", "a.c")
+            raise NetworkError("git reset failed: error: unable to unlink old 'b.c': Device or resource busy")
+        return real(root, *args, **kwargs)
+    monkeypatch.setattr(forkroom, "_git", held)
+    data = forkroom.bundle(host)
+    with pytest.raises(NetworkError, match="unable to unlink"):
+        forkroom.pull(member, data, "main")
+    assert (member / "a.c").read_text() == "int a = 2; /* an agent's attempt */\n"  # put back
+    assert _git(member, "rev-parse", "HEAD") == before and not _git(member, "stash", "list")
+    monkeypatch.setattr(forkroom, "_git", real)  # the file let go: the next try follows the host, work kept
+    tip = forkroom.pull(member, data, "main")
+    assert tip == _git(host, "rev-parse", "HEAD") and (member / "c.c").read_text() == "int c = 1;\n"
+    assert "agent's attempt" in (member / "a.c").read_text() and "held open" in (member / "b.c").read_text()
+    assert not _git(member, "stash", "list")
