@@ -70,3 +70,50 @@ def test_a_log_that_cant_be_rolled_over_keeps_every_line(tmp_path, monkeypatch):
     finally:
         log.removeHandler(handler)
         handler.close()
+
+
+def test_the_log_keeps_requests_failures_but_not_every_request(tmp_path):
+    """A room's guest logged every request to the host (a sync every two seconds, a heartbeat every five) and every
+    connection Windows reset: 85% of a log that filled its 5 MB in two days."""
+    path = tmp_path / "logs" / "decomp.log"
+    file_log(path)
+    logging.getLogger("httpx").info('HTTP Request: GET https://host.example/collab/whoami "HTTP/1.1 200 OK"')
+    logging.getLogger("httpx").warning("a request's own warning")
+    try:
+        raise ConnectionResetError(10054, "An existing connection was forcibly closed by the remote host")
+    except ConnectionResetError:
+        logging.getLogger("asyncio").error("Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)",
+                                           exc_info=True)
+    try:
+        raise ValueError("a real one")
+    except ValueError:
+        logging.getLogger("asyncio").error("Exception in callback something else", exc_info=True)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    text = path.read_text()
+    assert "collab/whoami" not in text and "a request's own warning" in text
+    assert "_call_connection_lost" not in text and "a real one" in text
+
+
+def test_a_file_held_for_a_moment_is_still_replaced(tmp_path, monkeypatch):
+    """A Windows guest's compiler survey of a GameCube project died of "Access is denied" replacing configure.py, a
+    file something else had open for a moment: the replace waits that out."""
+    import os
+
+    from decompnet import hostenv
+
+    tmp, path = tmp_path / "configure.tmp", tmp_path / "configure.py"
+    tmp.write_text("new")
+    path.write_text("old")
+    real, refused = os.replace, []
+
+    def held(src, dst):
+        if len(refused) < 3:
+            refused.append(dst)
+            raise PermissionError(5, "Access is denied")
+        real(src, dst)
+    monkeypatch.setattr(hostenv.os, "replace", held)
+    monkeypatch.setattr(hostenv.sys, "platform", "win32")
+    monkeypatch.setattr(hostenv.time, "sleep", lambda s: None)
+    hostenv.replace_file(tmp, path)
+    assert path.read_text() == "new" and len(refused) == 3

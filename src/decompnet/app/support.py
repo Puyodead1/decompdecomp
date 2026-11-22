@@ -60,6 +60,14 @@ class LogFile(logging.handlers.RotatingFileHandler):
             self.stream.write(f"(the log couldn't be started afresh, so it goes on here: {e})\n")
 
 
+def _not_a_reset(record: logging.LogRecord) -> bool:
+    """False for asyncio's report of a connection the other end reset on Windows (its proactor shutting the socket
+    down after the fact): harmless, and a guest's log had 360 of them, ten lines each."""
+    kind = record.exc_info[0] if record.exc_info else None
+    return not (kind is not None and issubclass(kind, ConnectionResetError)
+                and "_call_connection_lost" in record.getMessage())
+
+
 def file_log(path: Path) -> logging.Logger:
     """decompdecomp's log (logs/decomp.log in its data folder), always on: every job and what it said, decompdecomp's
     own debug messages, the web server's and the libraries' warnings, and every uncaught error in any thread with its
@@ -77,6 +85,11 @@ def file_log(path: Path) -> logging.Logger:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s %(threadName)s] %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.INFO)  # the libraries' debug chatter (httpx, mcp) would bury the app's own
+    # and some of their INFO too: a room's guest wrote a line for every request to the host (its sync every two
+    # seconds, its heartbeat every five), 85% of a log that filled its 5 MB in two days. Failed requests are the
+    # app's own warnings ("room ... heartbeat failed: ...").
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").addFilter(_not_a_reset)
     logger.setLevel(logging.DEBUG)
     logger.propagate = True
 
