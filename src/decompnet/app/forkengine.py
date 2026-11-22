@@ -2672,9 +2672,15 @@ class ForkEngine:
         if not (re.fullmatch(r"[A-Za-z_]\w*", new) or thunk) or not _OLD_SYMBOL.fullmatch(old) or old == new:
             raise NetworkError("rename_symbol takes two different C names (or, for a CodeWarrior this-adjust thunk, "
                                "@N@<mangled member name>): old and new")
+        if (link := self.net.links.get(slug)) is not None:  # the host renames and checks it; this copy follows
+            # a GameCube room's guest polishing a function was refused here ("the host's project is the one to rename
+            # in"), so `unk0`/`unk18` fields the readability check asks to name could never be named, and the helper
+            # gave the function up. ROM rooms always sent it to the host (RomNetwork.rename_symbol).
+            text = link.call("/collab/rename", agent, old=old, new=new, message=message)
+            if text.startswith("✅"):
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
-        if slug in self.net.links:
-            raise NetworkError("in a room, the host's project is the one to rename in: say it in a note")
         console = consoles.get(cfg.get("platform"))
         if thunk and not console.thunk_names:
             raise NetworkError("this project's compiler has no @N@ thunk names: give the function a C name")

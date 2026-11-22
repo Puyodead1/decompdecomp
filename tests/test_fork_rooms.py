@@ -247,3 +247,17 @@ def test_a_function_the_host_hands_out_is_open_in_the_members_copy_too(room):
         db.execute("UPDATE functions SET status='matched' WHERE name=? AND project_id=?", (fn, guest.project_row(gslug)["id"]))
     brief = guest.forks.claim(agent, gslug, fn)
     assert "CLAIMED" in brief and guest._function(fn, gslug)["status"] == "open"
+
+
+def test_a_members_rename_is_made_on_the_host_and_the_room_follows(room):
+    """A GameCube room's guest polishing a function had every rename_symbol refused ("the host's project is the one
+    to rename in"), so the `unk0`/`unk18` names the readability check asks for could never be given, and the helper
+    gave the function up. The host renames it now, with its own checks, and the guest's copy follows its commit."""
+    host, slug, guest, gslug, client, link, said = room
+    agent, _ = guest.local_agent("claude-polish")
+    fn, _ = _work("rng_next")
+    out = guest.forks.rename_symbol(agent, gslug, fn, "Rng_Next")
+    assert out.startswith("✅"), out
+    hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
+    assert _git(hroot, "log", "-1", "--format=%s") == f"Rename {fn} to Rng_Next"  # made and committed there
+    assert _git(groot, "rev-parse", "HEAD") == _git(hroot, "rev-parse", "HEAD")  # and the guest's copy has it
