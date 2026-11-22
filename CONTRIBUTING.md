@@ -328,6 +328,7 @@ connector, `agents/__init__.py`.
 | `agents/kimi.py` | Kimi Code | npm CLI, stdin prompt bridge and private settings |
 | `agents/zcode.py` | ZCode CLI | `zcode --output-format stream-json`, its own settings file for the app's MCP server, the prompt in an attached file |
 | `agents/ohmy.py` | Oh My Pi | `omp -p --mode json`, a settings overlay that keeps the user's own MCP servers out and the session's `.mcp.json` in |
+| `agents/commandcode.py` | Command Code | npm CLI, `command-code -p --output-format json` with a private home: "dont-ask" permissions allowing only the app's MCP server; its models from `--list-models` |
 | `agents/api.py` | API helper | No program: the app's own loop for any OpenAI-compatible API, and the saved endpoints' presets |
 
 Around them:

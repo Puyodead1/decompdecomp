@@ -1,5 +1,6 @@
 """The connector: how decompdecomp talks to a helper agent. Every agent the app can start is a module in this folder
-(agents/claude.py, codex.py, cursor.py, kimi.py, antigravity.py, opencode.py, zcode.py, ohmy.py, api.py) that makes
+(agents/claude.py, codex.py, cursor.py, kimi.py, antigravity.py, opencode.py, zcode.py, ohmy.py, commandcode.py,
+api.py) that makes
 an `Agent` below and fills in its parts; the list at the end of this file registers them. The rest of the app (the
 helpers' manager in
 app/agents.py, the routes, the GUI) asks the agent of a helper, `agents.get(kind)`, and never compares agent names.
@@ -358,6 +359,7 @@ def _registry() -> list[Agent]:
     from .api import API
     from .claude import CLAUDE
     from .codex import CODEX
+    from .commandcode import COMMANDCODE
     from .cursor import CURSOR
     from .kimi import KIMI
     from .ohmy import OMP
@@ -365,7 +367,7 @@ def _registry() -> list[Agent]:
     from .zcode import ZCODE
 
     # the order the Agents page lists them in (the launcher puts the recommended one first)
-    return [CLAUDE, CODEX, CURSOR, KIMI, ANTIGRAVITY, OPENCODE, ZCODE, OMP, API]
+    return [CLAUDE, CODEX, CURSOR, KIMI, ANTIGRAVITY, OPENCODE, ZCODE, OMP, COMMANDCODE, API]
 
 
 AGENTS: list[Agent] = _registry()

@@ -11,7 +11,7 @@
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS%20Intel%20%2F%20Apple%20Silicon-15140f?style=flat-square">
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-15140f?style=flat-square">
   <a href="https://discord.gg/hhEm3zZagB"><img alt="Discord" src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white"></a>
-  <img alt="Agents: Claude Code, Codex, Cursor, Kimi, opencode, Antigravity, ZCode, Oh My Pi, any API model" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20Cursor%20%C2%B7%20Kimi%20%C2%B7%20opencode%20%C2%B7%20Antigravity%20%C2%B7%20ZCode%20%C2%B7%20Oh%20My%20Pi%20%C2%B7%20API%20models-157a49?style=flat-square">
+  <img alt="Agents: Claude Code, Codex, Cursor, Kimi, opencode, Antigravity, ZCode, Oh My Pi, Command Code, any API model" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20Cursor%20%C2%B7%20Kimi%20%C2%B7%20opencode%20%C2%B7%20Antigravity%20%C2%B7%20ZCode%20%C2%B7%20Oh%20My%20Pi%20%C2%B7%20Command%20Code%20%C2%B7%20API%20models-157a49?style=flat-square">
 </p>
 
 decompdecomp is an app that decompiles games you own. Helper agents write C or C++, the game's original compiler builds it, and a function is matched only when
@@ -100,7 +100,7 @@ Type `decomp`, or open decompdecomp from your apps menu. It opens in its own win
 1. **Open a game.** Pick a ROM, a disc image or a program file of a game that you own. To try the app first, open Demo Quest 64. For an N64, PlayStation or
    PlayStation 2 game, the app offers to install that console's compilers first. Tick the box only if you accept the proprietary ones.
 2. **Start helper agents.** Click **Start agents**. Choose any API model (DeepSeek, OpenRouter, OpenAI, or a local model), or a CLI helper agent: Claude Code,
-   Codex, Cursor Agent, Kimi Code, opencode, Antigravity CLI, ZCode CLI or Oh My Pi. Run several; they work on different functions at the same time.
+   Codex, Cursor Agent, Kimi Code, opencode, Antigravity CLI, ZCode CLI, Oh My Pi or Command Code. Run several; they work on different functions at the same time.
 3. **Watch the map.** Each square is a function and turns green when it matches. The autopilot matches the easy functions at no cost before any helper agent
    starts. For a difficult function with saved C, open its **Deep permuter** tab. Give a time and variant limit. It
    tries local rewrites with the same compiler and byte check, saves each better result, and uses no AI tokens.

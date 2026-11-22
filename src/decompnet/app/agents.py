@@ -155,7 +155,8 @@ SPIN_MATCHES = 3
 # what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login"; Oh My Pi:
 # "No default model selected. Use /login, ..." on stderr, and a failed request's "401 Incorrect API key provided: ..."
 # as the errorMessage of a stdout message_end, so the words are matched wherever a CLI says them)
-_SIGNED_OUT = re.compile(r"not logged in|run /login|use /login|run ['\"]?(?:agent|kimi) login|no model configured|"
+_SIGNED_OUT = re.compile(r"not logged in|not signed in|run /login|use /login|"
+                         r"run ['\"`]?(?:agent|kimi|cmd|command-code) login|no model configured|"
                          r"no api key found|incorrect api key|"
                          r"authentication required|invalid api key|not authenticated|please (?:log|sign) ?in|"
                          r"auth(?:entication)? method", re.I)
@@ -173,7 +174,7 @@ AUTH_WAIT = 60  # seconds before the first try again, doubling
 # "insufficient_quota", Anthropic: "credit balance is too low", OpenCode: "quota exceeded"): trying again can't help
 # until it's topped up
 _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
-                        r"credit balance is too low|payment required|out of credits?", re.I)
+                        r"credit balance is too low|payment required|out of credits?|credits[ _-]exhausted", re.I)
 # and when it's asked too much at once (HTTP 429): it works again in a while
 THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency[ _-]?limit|\b429\b|overloaded", re.I)
 # and when a subscription's allowance is used up for now (Claude Code: "usage limit reached", "You've hit your

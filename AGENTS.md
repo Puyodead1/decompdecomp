@@ -126,7 +126,8 @@ pass `tests/test_consoles.py`, add a ROADMAP.md column) and adding a compiler to
 
 The helper agents the app starts work the same way. Each agent is a module in `src/decompnet/agents/`: `claude.py`
 (Claude Code), `codex.py`, `antigravity.py` (Antigravity CLI), `opencode.py`, `cursor.py`, `kimi.py`, `zcode.py` (ZCode
-CLI), `ohmy.py` (Oh My Pi), and `api.py` (the API helper: the app's own loop for any OpenAI-compatible API).
+CLI), `ohmy.py` (Oh My Pi), `commandcode.py` (Command Code), and `api.py` (the API helper: the app's own loop for any
+OpenAI-compatible API).
 `agents/__init__.py` is the connector: the `Agent` class (every fact and part, one line each) and the list of agents.
 What's the same for every agent (starting, restarting, waiting out usage limits, the records, ending their processes)
 is in `app/agents.py`. The rest of the app asks `agents.get(kind)` and never compares agent names: an agent-specific
