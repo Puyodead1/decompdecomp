@@ -521,15 +521,45 @@ def _observed(agent: Agent, slug: str, name: str, args: dict, said: str) -> None
             pass
 
 
+# A polishing helper that couldn't make a function readable went and decompiled others: a GameCube room's Haiku
+# helpers on "make matched code readable" claimed open functions and compiled them (claim_function and
+# compile_and_diff are every helper's core tools, and a compile of an open function claims it for a try).
+DECOMPILING = {"claim_function", "compile_and_diff", "redraft"}
+POLISH_ONLY = ("you're polishing matched code, not decompiling: {what}. claim_readable() gives you your next "
+               "function; when it has none, or you've done your count, stop.")
+
+
+def _polishing_only(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> None:
+    """Refuse a polishing helper's step into decompiling (DECOMPILING), in every mode and console."""
+    from .tool_policy import polishing
+    if name not in DECOMPILING or not polishing(net, slug, agent):
+        return
+    if name == "claim_function":
+        raise NetworkError(POLISH_ONLY.format(what="claim_function takes up a function nobody has matched"))
+    for function in str(args.get("function") or "").split(","):
+        if not (function := function.strip()):
+            continue
+        try:
+            status = net._function(function, slug)["status"]
+        except NetworkError:
+            continue  # (the tool itself says what's wrong with the name)
+        if status != "matched":
+            raise NetworkError(POLISH_ONLY.format(what=f"{function} isn't matched yet, so it isn't yours to work on"))
+
+
 def _invoke(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str:
     """Every helper sees pulled changes before acting; only tools that write work need a second synchronization."""
     if name not in project_tools(net, slug, include_disabled=True):
         raise NetworkError(_unoffered(net, slug, name))
+    if name == "claim_function":  # (off a polishing helper's list: its own sentence, before "disabled")
+        _polishing_only(net, agent, slug, name, args)
     from .tool_policy import record
     record(net, agent, slug, name)  # (a tool turned off in Agents & models is refused here, with its own message)
     try:
         net.progress.sync(slug, force=True)
-        result = HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
+        named = _named(net, agent, slug, args)
+        _polishing_only(net, agent, slug, name, named)
+        result = HANDLERS[name](net, agent, slug, **named)
         if name not in READ_ONLY:
             net.progress.sync(slug, force=True)
     except Exception as e:

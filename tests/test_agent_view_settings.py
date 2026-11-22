@@ -171,3 +171,27 @@ def test_the_prompt_leaves_out_a_tool_this_helper_has_turned_off(tmp_path, monke
     assert tools.WORK_STRUCTS in manager._prompt(session)
     manager.set_tool(session.id, 'guess_struct', False)
     assert tools.WORK_STRUCTS not in manager._prompt(session)
+
+
+def test_a_polishing_helper_cannot_go_decompiling(tmp_path, monkeypatch):
+    """A GameCube room's Haiku helpers on "make matched code readable" claimed open functions and compiled them
+    (claim_function and compile_and_diff are every helper's core tools): polishing helpers polish, and are told so."""
+    net, _ = _game(tmp_path, [('f', 10, 'open'), ('g', 10, 'matched')])
+    polisher, _ = net.local_agent('claude-polish')
+    decompiler, _ = net.local_agent('claude-1')
+    manager = Manager(net, tmp_path, 'http://localhost/mcp')
+    manager._record('game', 'claude', polisher.name, 'Polisher', {'task': 'readable'})
+    manager._record('game', 'claude', decompiler.name, 'Decompiler', {})
+    try:
+        assert 'claim_function' not in tools.project_tools(net, 'game', polisher)
+        assert 'claim_function' in tools.project_tools(net, 'game', decompiler)
+        assert 'claim_readable' in tools.project_tools(net, 'game', polisher)
+        with pytest.raises(NetworkError, match='polishing matched code.*claim_readable'):
+            tools._invoke(net, polisher, 'game', 'claim_function', {'function': 'f'})
+        with pytest.raises(NetworkError, match="f isn't matched yet"):
+            tools._invoke(net, polisher, 'game', 'compile_and_diff', {'function': 'f', 'source': 'void f(void) {}'})
+        monkeypatch.setitem(tools.HANDLERS, 'compile_and_diff', lambda *args, **kwargs: 'compiled')
+        assert tools._invoke(net, polisher, 'game', 'compile_and_diff', {'function': 'g', 'source': ''}) == 'compiled'
+        assert tools._invoke(net, decompiler, 'game', 'compile_and_diff', {'function': 'f', 'source': ''}) == 'compiled'
+    finally:
+        manager.shutdown()

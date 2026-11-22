@@ -66,17 +66,35 @@ def disabled(net):
     return set(json.loads(row['value'])) if row else set()
 
 
+def _options(net, slug, agent):
+    """The helper's options (task, disabled_tools), {} for an agent no helper of this app runs."""
+    try:
+        row = net.store.one('SELECT options FROM helpers WHERE project=? AND name=?', slug, agent.name)
+    except sqlite3.OperationalError:
+        row = None  # an engine without a helper manager (a test, a command) has no helpers table yet
+    return json.loads(row['options'] or '{}') if row else {}
+
+
+def polishing(net, slug, agent) -> bool:
+    """The helper was started to make matched code readable (task=readable), not to decompile."""
+    return bool(agent) and _options(net, slug, agent).get('task') == 'readable'
+
+
+# claim_readable hands a polishing helper its functions: claim_function isn't on its list (tools._invoke refuses it,
+# and the other ways to take up an open function, with a sentence that sends it back)
+POLISHING_HIDDEN = {'claim_function'}
+
+
 def visible(net, slug, names, agent=None):
     ensure(net)
     blocked = disabled(net)
+    hidden = set()
     if agent:
-        try:
-            row = net.store.one('SELECT options FROM helpers WHERE project=? AND name=?', slug, agent.name)
-        except sqlite3.OperationalError:
-            row = None  # an engine without a helper manager (a test, a command) has no helpers table yet
-        if row:
-            blocked.update(json.loads(row['options'] or '{}').get('disabled_tools', []))
-    return [name for name in names if name in REQUIRED or name not in blocked]
+        options = _options(net, slug, agent)
+        blocked.update(options.get('disabled_tools', []))
+        if options.get('task') == 'readable':
+            hidden = POLISHING_HIDDEN
+    return [name for name in names if name not in hidden and (name in REQUIRED or name not in blocked)]
 
 
 def set_global(net, name, enabled):
