@@ -52,7 +52,7 @@ from pathlib import Path
 import capstone
 from capstone import x86
 
-from decompnet.hostenv import NO_WINDOW
+from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import arch, kits, toolchains
 from ...arch import x86 as x86_arch
@@ -2852,7 +2852,7 @@ def file_compilers(root: Path, version: str) -> dict[str, str]:
 def _write_compilers(path: Path, found: dict[str, str]) -> None:
     tmp = path.with_suffix(".tmp")  # a build reading it meanwhile sees the old map or the new one, never half
     tmp.write_text(json.dumps(dict(sorted(found.items())), indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def set_file_compiler(root: Path, version: str, source: str, compiler: str, default: str) -> None:

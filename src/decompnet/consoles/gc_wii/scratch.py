@@ -34,7 +34,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from decompnet.hostenv import NO_WINDOW
+from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import toolchains
 from ...forks import dtksplits
@@ -383,7 +383,7 @@ def _write(path: Path, text: str) -> None:
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(text)
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def configured_compiler(root: Path) -> str | None:

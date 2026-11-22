@@ -31,7 +31,7 @@ from pathlib import Path
 import capstone
 from capstone import x86
 
-from decompnet.hostenv import NO_WINDOW
+from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ...forks.project import ForkError
 
@@ -184,7 +184,7 @@ def write_atomic(path: Path, text: str) -> None:
     """Write beside the file and rename: the app and agents can act on the same project at once."""
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def game_info(path: Path) -> dict:

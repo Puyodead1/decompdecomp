@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ... import toolchains
 from ...forks.project import ForkError, ForkProject
-from ...hostenv import NO_WINDOW
+from ...hostenv import NO_WINDOW, replace_file
 
 DS_DEFAULT = "2.0/sp1p5"
 UNIT_BYTES = 0x1000
@@ -196,7 +196,7 @@ def set_file_compiler(root: Path, version: str, source: str, compiler: str, defa
     path = compilers_file(root, version)
     tmp = path.with_suffix(".tmp")  # a build reading it meanwhile sees the old map or the new one, never half
     tmp.write_text(json.dumps(dict(sorted(found.items())), indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 _DELINK_FILE = re.compile(r"^(\S+):[ \t]*$", re.M)
@@ -224,7 +224,7 @@ def set_own_compiler(root: Path, manifest: dict, compiler: str, sources: list[st
     path = compilers_file(root, version)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({s: v for s, v in sorted(has.items()) if v != new}, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
     cfg = root / "tools" / "configure.py"
     cfg.write_text(re.sub(r'^MWCC_VERSION = "[^"]*"', f'MWCC_VERSION = "{new}"', cfg.read_text(encoding="utf-8"),
                           count=1, flags=re.M), encoding="utf-8")

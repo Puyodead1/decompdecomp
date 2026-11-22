@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 KERNEL_RELEASE = Path("/proc/sys/kernel/osrelease")  # "...-microsoft-standard-WSL2" inside WSL
@@ -15,6 +16,21 @@ KERNEL_RELEASE = Path("/proc/sys/kernel/osrelease")  # "...-microsoft-standard-W
 WSL_DISTRO, WSL_USER = "decomp-wtf", "decomp"
 OLD_VERSION_SPEC = "decompnet @ https://github.com/n-delic/decompdecomp/archive/refs/tags/v1.0.2-alpha.tar.gz"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # background tools must not flash consoles on Windows
+REPLACE_TRIES = 20  # 2 seconds, a tenth at a time
+
+
+def replace_file(tmp: Path, path: Path) -> None:
+    """os.replace, waiting out a moment's hold on Windows: a file another program has open (a build reading
+    configure.py, a virus scanner looking at it) can't be replaced there, and a Windows guest's compiler survey of a
+    GameCube project died of "Access is denied" on configure.py. A hold that outlasts the wait still raises."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == REPLACE_TRIES - 1:
+                raise
+            time.sleep(0.1)
 
 
 def console_python(exe: str | None = None) -> str:

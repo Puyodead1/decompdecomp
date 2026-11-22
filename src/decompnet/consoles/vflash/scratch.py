@@ -22,7 +22,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import os
 import re
 import shutil
 import struct
@@ -31,7 +30,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from decompnet.hostenv import NO_WINDOW
+from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import toolchains
 from ...forks.project import ForkError, ForkProject
@@ -781,7 +780,7 @@ def rename(root: Path, version: str, old: str, new: str) -> dict[Path, str]:
     names[at] = new
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(dict(sorted(names.items())), indent=1) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    replace_file(tmp, path)
     return {path: before}
 
 
