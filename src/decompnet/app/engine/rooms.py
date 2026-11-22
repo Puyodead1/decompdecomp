@@ -140,21 +140,22 @@ class RoomMixin:
         with self.store.tx() as db:
             self._event(db, self._project(slug)["id"], None, "compiler", "the room's compiler settings, from its host")
 
-    def apply_remote_set_aside(self, slug: str, items: list) -> None:
-        """The host's set-aside functions ([vram, the meta that says why]): set aside here too, and those the host has
-        opened again open here. Only matches and the layout came before: a guest's list and progress still showed
-        open what the host had set aside as a library's or assembly."""
+    def apply_remote_set_aside(self, slug: str, items: list, key: str = "vram") -> None:
+        """The host's set-aside functions ([vram, the meta that says why]; [name, why] in a project room, `key`
+        "name", whose functions are known by name): set aside here too, and those the host has opened again open
+        here. Only matches and the layout came before: a guest's list and progress still showed open what the host
+        had set aside as a library's or assembly."""
         proj = self._project(slug)
-        aside = {int(vram): why for vram, why in items}
+        aside = {(int(k) if key == "vram" else str(k)): why for k, why in items}
         with self.store.tx() as db:
-            for r in db.execute("SELECT id, vram, status, meta FROM functions WHERE project_id=? AND status IN "
+            for r in db.execute("SELECT id, name, vram, status, meta FROM functions WHERE project_id=? AND status IN "
                                 "('open', 'asm')", (proj["id"],)).fetchall():
                 meta = json.loads(r["meta"] or "{}")
-                if r["vram"] in aside and r["status"] == "open":
-                    meta.update(aside[r["vram"]] or {})
+                if r[key] in aside and r["status"] == "open":
+                    meta.update(aside[r[key]] or {})
                     db.execute("UPDATE functions SET status='asm', meta=? WHERE id=?", (json.dumps(meta), r["id"]))
                     db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
-                elif r["vram"] not in aside and r["status"] == "asm":
+                elif r[key] not in aside and r["status"] == "asm":
                     meta = {k: v for k, v in meta.items() if k not in SET_ASIDE_WHY}
                     db.execute("UPDATE functions SET status='open', meta=? WHERE id=?", (json.dumps(meta), r["id"]))
 

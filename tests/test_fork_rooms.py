@@ -261,3 +261,22 @@ def test_a_members_rename_is_made_on_the_host_and_the_room_follows(room):
     hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
     assert _git(hroot, "log", "-1", "--format=%s") == f"Rename {fn} to Rng_Next"  # made and committed there
     assert _git(groot, "rev-parse", "HEAD") == _git(hroot, "rev-parse", "HEAD")  # and the guest's copy has it
+
+
+def test_what_the_host_sets_aside_is_set_aside_in_the_members_copy(room):
+    """A project room never sent its set-aside functions: a GameCube room's guest counted the host's assembly and
+    "no C makes this" functions as open code, its progress well below the host's, and offered them to its agents."""
+    host, slug, guest, gslug, client, link, said = room
+    fn, _ = _work("lerp")
+    hid = host._function(fn, slug)["id"]
+    status = guest._function(fn, gslug)["status"]
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET status='asm', meta=json_set(COALESCE(meta,'{}'), '$.not_c', 'agreed') "
+                   "WHERE id=?", (hid,))
+    guest.links[gslug].sync()
+    assert guest._function(fn, gslug)["status"] == "asm"
+    assert guest.overview(gslug)["set_aside"] == host.overview(slug)["set_aside"]
+    with host.store.tx() as db:  # the host gives it back to the agents: so does the member's copy
+        db.execute("UPDATE functions SET status=?, meta=json_remove(meta, '$.not_c') WHERE id=?", (status, hid))
+    guest.links[gslug].sync()
+    assert guest._function(fn, gslug)["status"] == status

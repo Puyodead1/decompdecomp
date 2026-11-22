@@ -340,7 +340,7 @@ class Room:
         `readable`: digests of the room's compiler settings, set-aside functions and readable functions as the guest
         has them; each is sent again when it changed."""
         if self.fork:
-            return self._fork_state(e, member, fresh, readable)
+            return self._fork_state(e, member, fresh, readable, aside)
         pid = self.proj["id"]
         net = self.net
         with net.store.tx() as db:
@@ -380,13 +380,7 @@ class Room:
         settings = {"compiler": cfg["compiler"], "compiler_ranges": cfg.get("compiler_ranges") or []}
         if (digest := _digest(settings)) != compiler:
             out["compiler"] = settings | {"digest": digest}
-        rows = net.store.all("SELECT vram, meta FROM functions WHERE project_id=? AND status='asm' ORDER BY vram", pid)
-        if (digest := _digest([r["vram"] for r in rows])) != aside:
-            from .engine.rooms import SET_ASIDE_WHY
-
-            out["set_aside"] = {"digest": digest, "functions": [
-                [r["vram"], {k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_WHY}]
-                for r in rows]}
+        out.update(self._set_aside(aside))
         # what's readable: each newly polished function's C (its event), and the list whenever it changed (polished
         # again later, or made readable before the guest came)
         polished = {ev["detail"] for ev in events if ev["kind"] == "readable"}
@@ -400,7 +394,20 @@ class Room:
         out["members"] = self.members()
         return out
 
-    def _fork_state(self, e: int, member: Agent, fresh: bool = False, readable: str = "") -> dict:
+    def _set_aside(self, aside: str) -> dict:
+        """{"set_aside": the host's set-aside functions, each with why} when the guest's digest (`aside`) differs:
+        by vram in a ROM room, by name in a project room (a GameCube game's REL modules share addresses)."""
+        from .engine.rooms import SET_ASIDE_WHY
+
+        key = "name" if self.fork else "vram"
+        rows = self.net.store.all(f"SELECT {key} AS k, meta FROM functions WHERE project_id=? AND status='asm' "
+                                  f"ORDER BY {key}", self.proj["id"])
+        if (digest := _digest([r["k"] for r in rows])) == aside:
+            return {}
+        return {"set_aside": {"digest": digest, "functions": [
+            [r["k"], {k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_WHY}] for r in rows]}}
+
+    def _fork_state(self, e: int, member: Agent, fresh: bool = False, readable: str = "", aside: str = "") -> dict:
         """A git project's room: events, matches (by name), claims and notes; the tree itself travels as bundles
         (GET /collab/bundle) when `head` moves."""
         pid, net = self.proj["id"], self.net
@@ -427,6 +434,9 @@ class Room:
                                                   "AND readable=1 ORDER BY name", pid)]
         if (digest := _digest(names)) != readable:  # (the readable C itself comes with the host's commits)
             out["readable"] = {"digest": digest, "names": names}
+        # what the host set aside (assembly, a library's code, what agents agreed no C makes): never sent, a GameCube
+        # room's guest counted it as open code, and its progress read well below the host's
+        out.update(self._set_aside(aside))
         return out
 
 
@@ -1068,6 +1078,9 @@ class Link:
         if st.get("readable"):
             net.apply_remote_readable_named(slug, st["readable"]["names"])
             self.cursor["r"] = st["readable"]["digest"]
+        if st.get("set_aside"):
+            net.apply_remote_set_aside(slug, st["set_aside"]["functions"], key="name")
+            self.cursor["s"] = st["set_aside"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"] = st.get("e", self.cursor["e"])
