@@ -162,11 +162,15 @@ def test_the_hosts_version_wins_where_both_changed_the_same_lines(room):
     hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
     rel = "include/common.h"
     (groot / rel).write_text((groot / rel).read_text() + "\n#define MEMBER_ONLY 1\n")  # unsaved work here
+    # another file's work in progress, which the host didn't touch: one file's conflict dropped every file's work
+    other = next(f for f in _git(groot, "ls-files", "src").splitlines() if f.endswith(".c"))
+    (groot / other).write_text((groot / other).read_text() + "\n/* an agent's attempt in progress */\n")
     hagent, _ = host.local_agent("claude-host3")
     assert host.forks.edit_file(hagent, slug, rel, "", "#define HOST_SIDE 2", "a constant").startswith("✅")
     guest.links[gslug].sync()
     text = (groot / rel).read_text()
     assert "HOST_SIDE" in text and "MEMBER_ONLY" not in text and "<<<<<<<" not in text
+    assert "an agent's attempt in progress" in (groot / other).read_text()
     assert _git(groot, "rev-parse", "HEAD") == _git(hroot, "rev-parse", "HEAD")
     assert not _git(groot, "stash", "list")  # nothing left behind
 

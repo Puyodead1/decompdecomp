@@ -5,6 +5,7 @@ the host, and the host's events (matches, notes, the header, the layout) arrive 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import time
@@ -17,14 +18,21 @@ SET_ASIDE_WHY = ("asm_code", "asm_twin", "not_c", "library", "set_aside", "good_
 
 
 class RoomMixin:
-    def link_project(self, slug: str, info: dict, client=None, start: bool = True):
+    def link_project(self, slug: str, info: dict, client=None, start: bool = True, moved: bool = False):
+        """`moved`: the same room at a new address (the host knows this member's token there), so the saved work
+        waiting for it goes there too: with a quick tunnel the address is new every time the host starts, and the
+        queue was dropped as another room's."""
         from ..collab import Link
 
         proj = self._project(slug)
         cfg = json.loads(proj["config"])  # a copy of its own: changed below
         old_link = cfg.get("link") or {}
-        same_room = old_link.get("room") == info.get("room") and (
-            str(old_link.get("url") or "").rstrip("/") == str(info.get("url") or "").rstrip("/"))
+        same_room = old_link.get("room") == info.get("room") and (moved or (
+            str(old_link.get("url") or "").rstrip("/") == str(info.get("url") or "").rstrip("/")))
+        if moved:
+            with self.store.tx() as db:
+                db.execute("UPDATE saved_progress SET url=? WHERE project_id=? AND room=?",
+                           (str(info.get("url") or "").rstrip("/"), proj["id"], info.get("room")))
         queued = old_link.get("saved_progress") if same_room else None
         info = dict(info)
         info.pop("saved_progress", None)
@@ -34,6 +42,8 @@ class RoomMixin:
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         link = Link(self, slug, info["url"], info["room"], info["token"], info["member"], client=client)
+        if (old := self.links.get(slug)) is not None:  # (a new link for it: the old one stops asking the host)
+            old.stop()
         self.links[slug] = link
         if start:
             link.run()
@@ -43,7 +53,22 @@ class RoomMixin:
         for p in self.store.all("SELECT slug, config FROM projects"):
             info = json.loads(p["config"]).get("link")
             if info and p["slug"] not in self.links:
+                if not all(info.get(k) for k in ("url", "room", "token", "member")):
+                    # (what a room left mid-sync could leave: never a reason the app doesn't start)
+                    logging.getLogger("decompdecomp").warning("%s: its room link is incomplete; not reconnecting",
+                                                              p["slug"])
+                    continue
                 self.link_project(p["slug"], info)
+
+    def remove_project(self, slug: str) -> int:
+        """A project deleted while in a room leaves it: its link kept asking the host (who showed the member online,
+        its agents' claims held) and, joined again under the same name, wrote the old room's work into the new copy.
+        One it shares closes (its guests are told "this room is closed")."""
+        if slug in self.links:
+            self.unlink(slug)
+        if (room := self.rooms.pop(slug, None)) is not None:
+            room.close()
+        return super().remove_project(slug)
 
     def unlink(self, slug: str) -> None:
         link = self.links.pop(slug, None)
@@ -97,6 +122,48 @@ class RoomMixin:
             db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
                        "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
             db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+
+    def apply_remote_match_named_source(self, slug: str, name: str, source: str, agent_name: str) -> None:
+        """A ROM room's match by name (overlays share addresses: by vram, a twin got the other's C), with the host's
+        C: a function matched here already takes it too (the host polished or tidied it since)."""
+        proj = self._project(slug)
+        aid = self._remote_agent(agent_name)
+        with self.store.tx() as db:
+            row = db.execute("SELECT id, status, matched_source FROM functions WHERE project_id=? AND name=?",
+                             (proj["id"], name)).fetchone()
+            if row is None:
+                return
+            if row["status"] == "matched":
+                if row["matched_source"] != source:
+                    db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
+                               (source, source, row["id"]))
+                return
+            db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
+                       "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+
+    def reopen_remote(self, slug: str, names: list[str]) -> None:
+        """Functions matched here that the room's host has open: it opened them again (Check again, a compiler
+        change), or never confirmed this copy's match. Their C stays as the best attempt. A guest kept them matched:
+        its progress read higher than the room's, and the host handing one out failed the claim here."""
+        if not names:
+            return
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            for name in names:
+                db.execute("UPDATE functions SET status='open', best_source=matched_source, best_score=NULL, "
+                           "best_agent_id=matched_agent_id, matched_source=NULL, matched_agent_id=NULL, "
+                           "matched_at=NULL, readable=0 WHERE project_id=? AND name=? AND status='matched'",
+                           (proj["id"], name))
+
+    def apply_remote_best_named(self, slug: str, name: str, score: int, source: str) -> None:
+        """A room's best attempt, by name (overlays share addresses)."""
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET best_score=?, best_source=?, "
+                       "last_improved=CASE WHEN ? < COALESCE(n_insns,0)*100 THEN ? ELSE last_improved END "
+                       "WHERE project_id=? AND name=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
+                       (score, source, score, time.time(), proj["id"], name, score))
 
     def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
         """A git project's room: who matched a function (the code itself arrives with the host's commits)."""
@@ -272,6 +339,9 @@ class RoomMixin:
                 # The address belongs to another overlay's function (or a renamed one): never guess which to split.
                 continue
             owners = [r for r in local.values() if r["vram"] < f["vram"] < r["vram"] + r["size"]]
+            if not owners:  # a function the host added past another's end (split_function outside it)
+                self._mirror_added(proj, console, f, local, by_vram, free_name)
+                continue
             if len(owners) != 1 or owners[0]["status"] == "matched":
                 continue
             owner = owners[0]
@@ -322,6 +392,24 @@ class RoomMixin:
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, sym["name"], sym["address"], sym["size"], sym["kind"]))
             rename(row, sym["name"])
+
+    def _mirror_added(self, proj, console, f: dict, local: dict, by_vram: dict, free_name) -> None:
+        """The host's function that no function here holds, read from this copy's own ROM as the host's split did
+        (EditingMixin._add_function). Skipped, the host handed it out and the claim failed here: "no function"."""
+        before = [r for r in local.values() if r["vram"] < f["vram"]]
+        if not before:
+            return
+        prev = max(before, key=lambda r: r["vram"] + r["size"])
+        rom, _ = self._rom(proj)
+        new = console.function_at(rom, f["vram"], f["vram"] + f["size"], f["name"])
+        if new is None:
+            return
+        free_name(f["name"], None)
+        self._add_function(proj, prev, new, self.symbols(proj["id"]), None, f["name"], event=False)
+        row = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", proj["id"], f["name"])
+        if row is not None:
+            local[row["id"]] = dict(row)
+            by_vram.setdefault(row["vram"], []).append(local[row["id"]])
 
     def _rename_in_code(self, pid: int, moves: dict[str, str]) -> None:
         """Rewrite every matched and best source, and every header, from the names functions had to the names they

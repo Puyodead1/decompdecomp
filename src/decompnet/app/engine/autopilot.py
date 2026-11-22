@@ -12,6 +12,7 @@ import time
 from ... import scoring, seeds, toolchains
 from ...network import Agent, NetworkError
 from ...project import compiler_for, unknown_compiler_message
+from ..collab import Refused
 
 # Autopilots that compile at once, across every project: importing a hundred games started a hundred, three compiles
 # each, all fighting for the same cores. The others wait their turn ("queued"), first come first served.
@@ -189,11 +190,35 @@ class AutopilotMixin:
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
-            return {"matched": d.bytes_match, "score": d.score}
+            matched = self._keep_try(proj, fn, agent, d, source, ctx["version"])
+            return {"matched": matched, "score": d.score}
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
+
+    def _keep_try(self, proj, fn, agent, d, source: str, version: int) -> bool:
+        """Record a draft's result; whether it matched. In a room a match is the host's to confirm (it builds it on
+        its copy and keeps it for everyone; this copy follows): a guest's autopilot matched in the guest's copy
+        alone, the room's function stayed open and the host's agents did it again."""
+        link = self._link(proj["slug"])
+        if link is None or not d.bytes_match:
+            self._record(fn, agent, d.score, source, version, matched=d.bytes_match)
+            if link is not None and (fn["best_score"] is None or d.score < fn["best_score"]):  # (as a guest's
+                # agents' better attempts reach the host)
+                threading.Thread(target=self._report, args=(link, agent, fn["name"], source, d.score),
+                                 daemon=True).start()
+            return d.bytes_match
+        try:
+            if link.attempt(agent, fn["name"], source).get("matched"):
+                self._record(fn, agent, d.score, source, version, matched=True)
+                return True
+            link.call("/collab/release", agent, function=fn["name"], notes="")
+        except Refused as e:
+            logging.getLogger("decompdecomp").info("autopilot: %s: the room's host didn't take the match: %s",
+                                                   fn["name"], e)
+        except NetworkError:
+            link.keep_for_later(fn["name"], source)  # (sent when the host is back)
+        return False
 
     def _autopilot_one(self, agent, proj, fid: int) -> str:
         """match | near | far | fail | skip, for one function's draft. A draft autopilot already judged with the same
@@ -239,8 +264,9 @@ class AutopilotMixin:
                 d = scoring.diff(self._target_obj(fn, proj), cand)
                 if verdict is not None:
                     d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-                self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
-                return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+                if self._keep_try(proj, fn, agent, d, source, ctx["version"]):
+                    return "match"
+                return "near" if d.percent >= 90 else "far"
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))

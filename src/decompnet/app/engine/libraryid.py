@@ -543,7 +543,7 @@ class LibraryIdMixin:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
             if "set aside as" in text:
-                link.sync()  # (the host committed it: this copy follows)
+                text += link.follow()  # (the host committed it: this copy follows)
             return text
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         with self.store.tx() as db:

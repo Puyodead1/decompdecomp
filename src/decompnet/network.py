@@ -93,6 +93,7 @@ MACHINE_AGENT_IDS = f"SELECT id FROM agents WHERE name IN ({', '.join('?' * len(
 # of this many models (one model's blind spot isn't proof), say so, it's set aside: no one is handed it again, and
 # the user can give it back (reopen).
 NOT_C_AGENTS, NOT_C_MODELS = 3, 2
+SEEN_EVERY = 5  # seconds between writes of an agent's last_seen (online means seen in the last 30)
 LAST_DIFF_PAGE = 400  # rows of a diff last_diff shows at once (Network.last_diff)
 # The same verdict in agents' notes, from before release_function took one (Network.not_c_from_notes): words that say
 # no C at all makes the code. Not a note about compiler flags: "flag-blocked" code may match with other flags.
@@ -397,7 +398,11 @@ class Agent:
 
 
 def model_of(name: str) -> str:
-    """An agent's model: its name less its number (claude-sonnet-5-5-1: claude-sonnet-5-5)."""
+    """An agent's model: its name less its number (claude-sonnet-5-5-1: claude-sonnet-5-5), and less the room member
+    whose agent it is (alex.claude-sonnet-5-5-1, collab.Room.agent_for). With the member's name, one model on the
+    host's computer and a member's counted as two, and two of its agents set a function aside as no C makes it."""
+    name = re.sub(r"^[A-Za-z0-9_-]{1,24}\.(?=[A-Za-z])", "", name)  # (a member's name has no dot; a model's version,
+    # m3.1 or 5.5, has a digit after its dot)
     return re.sub(r"-+\d+$", "", name)  # (some names have two dashes: opencode-minimax-m3.1-flash-free--1)
 
 
@@ -653,11 +658,14 @@ class Network:
         """The agent a token belongs to (helpers get theirs from the app when it starts them)."""
         if not token:
             raise NetworkError("missing token: connect an agent in Agents & models to work on a project")
-        row = self.store.one("SELECT id,name,owner,trusted FROM agents WHERE token_hash=?", hash_token(token))
+        row = self.store.one("SELECT id,name,owner,trusted,last_seen FROM agents WHERE token_hash=?", hash_token(token))
         if row is None:
             raise NetworkError("invalid API token")
-        with self.store.tx() as db:
-            db.execute("UPDATE agents SET last_seen=? WHERE id=?", (time.time(), row["id"]))
+        now = time.time()
+        if row["last_seen"] is None or now - row["last_seen"] >= SEEN_EVERY:  # (every request of every helper and
+            # room member took the write lock for this; a busy room's heartbeats queued behind a long import)
+            with self.store.tx() as db:
+                db.execute("UPDATE agents SET last_seen=? WHERE id=?", (now, row["id"]))
         return Agent(row["id"], row["name"], row["owner"], bool(row["trusted"]))
 
     # ---------------------------------------------------------------- helpers

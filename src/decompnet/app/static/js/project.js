@@ -263,6 +263,7 @@ const ROOM_PILL = {
   syncing: () => ["work", "Getting the host's work"],
   connected: (r) => ["on", `In a room as ${r.member}`],
   offline: () => ["err", "Room offline"],
+  stuck: () => ["err", "Not following the host"],  // the host answers; taking in its work fails here (room.error)
 };
 
 /* A guest's project is covered until the host's work is here: while it waits to be let in, then while it gets what
@@ -531,7 +532,7 @@ function renderGuest(box, room) {
   const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
       <span>${m.agents && m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched || 0} matched${m.working && m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div></div>`).join("");
   $("dialogTitle").textContent = waiting ? "Waiting for the host to let you in" : room.state === "out" ? "Not in the room"
-    : room.connected ? "In a team room" : "The room is offline";
+    : room.connected ? "In a team room" : room.state === "stuck" ? "The host's work isn't coming in" : "The room is offline";
   setHtml(box, `<p class="muted">${waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
       : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>

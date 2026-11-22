@@ -206,7 +206,12 @@ class FileCompilers:
     # ------------------------------------------------------------------ the survey
 
     def start_survey(self, slug: str, limit: int = SURVEY_FILES) -> dict:
-        """The survey in the background (one per project)."""
+        """The survey in the background (one per project). Not on a room's guest: the host's compilers are the room's,
+        and a guest's survey suggested and applied its own, committed in its tree (the next pull dropped them) while
+        its matches stayed in its copy alone."""
+        if slug in self.net.links:
+            return {"state": "the room's host surveys the compilers (this copy follows its)", "tried": 0,
+                    "confirmed": 0, "suggested": [], "error": None}
         state = self.surveys.get(slug)
         if state and state["state"] == "running":
             return state
@@ -484,6 +489,8 @@ class FileCompilers:
     def recheck(self, slug: str, cid: int | None = None) -> int:
         """Weigh a check (or every open one) again, in the background, once the checks of answered suggestions have
         ended (withdraw). Returns how many."""
+        if slug in self.net.links:  # (the host's range checks are the room's, as its compilers)
+            return 0
         self.withdraw(slug)
         checks = [c for c in (self.net.cfg(self.net.project_row(slug)).get("file_checks") or [])
                   if c["status"] in OPEN and (cid is None or c["id"] == cid)]

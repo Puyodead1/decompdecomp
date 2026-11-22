@@ -69,8 +69,10 @@ def test_presence_continues_during_slow_sync(connection, fork):
         link.refused, link.error = True, collab.WAITING
         assert link.status()["state"] == "waiting"
         assert link.error == collab.WAITING
-        link.refused, link.synced = False, False
+        link.refused, link.synced, link.error = False, False, ""
         assert link.status()["state"] == "syncing"  # a heartbeat doesn't mean the work has arrived
+        link.error = "git reset failed: unable to unlink old 'src/a.c'"
+        assert link.status()["state"] == "stuck"  # the host answers, but following it fails here: not "In a room"
     finally:
         link.stop()
         release.set()
@@ -132,15 +134,16 @@ def test_join_shares_only_stronger_saved_rom_progress():
 
         def _req(self, method, route, params):
             assert method == "GET" and route == "/collab/state" and params["fresh"] == 1
+            assert params["m"] == "" and params["l"] == "" and params["a"] == 0  # (all of it, whatever this copy has)
             return {
-                "matched": [{"vram": 0x1000, "name": "already_matched"}],
-                "functions": [
+                "matched_set": {"digest": "d", "items": [["already_matched", "0123456789abcdef"]]},
+                "layout": {"digest": "l", "symbols": [], "functions": [
                     {"vram": 0x1000, "size": 4, "name": "already_matched"},
                     {"vram": 0x2000, "size": 4, "name": "saved_match"},
                     {"vram": 0x3000, "size": 4, "name": "better_attempt"},
                     {"vram": 0x4000, "size": 4, "name": "worse_attempt"},
-                ],
-                "best": [{"vram": 0x4000, "score": 3}],
+                ]},
+                "best": [{"name": "worse_attempt", "score": 3, "source": "host's"}],
             }
 
         def attempt(self, agent, function, source):

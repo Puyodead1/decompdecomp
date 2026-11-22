@@ -176,11 +176,17 @@ def clone(dest: Path, info: dict, get_bundle, log=print) -> None:
         _git(dest, "submodule", "update", "--init", "--depth", "1", timeout=3600)
 
 
-def pull(root: Path, data: bytes, ref: str) -> str:
+def has_commit(root: Path, sha: str) -> bool:
+    return bool(sha) and subprocess.run(["git", "-c", "safe.directory=*", "cat-file", "-e", f"{sha}^{{commit}}"],
+                                        cwd=root, capture_output=True, creationflags=NO_WINDOW).returncode == 0
+
+
+def pull(root: Path, data: bytes, ref: str, tip: str = "") -> str:
     """Move the member's tree to the host's head. Work in progress in files (an agent's latest attempt) is kept unless
-    the host changed the same lines; the member's own commits are dropped: the host has them (it confirmed and
-    committed every match the member sent), or they didn't hold up there. Returns the new head."""
-    tip = fetch_bundle(root, data, ref)
+    the host changed the same lines (then the host's version of that file stays, the others keep theirs); the member's own commits are dropped: the host has them (it confirmed and
+    committed every match the member sent), or they didn't hold up there. Returns the new head. Without a bundle
+    (the host's head is a commit this tree already has: the public decomp it started from) the tree moves to `tip`."""
+    tip = fetch_bundle(root, data, ref) if data else tip
     # Saved without touching the files, then the files reset: `git stash push` did both, and on a Windows member a
     # file held open stopped it part way ("unable to unlink old 'src/...c'"), the other files already reset and their
     # work only in a stash entry the next try never popped.
@@ -198,7 +204,13 @@ def pull(root: Path, data: bytes, ref: str) -> str:
     dirty = bool(saved)
     if dirty and subprocess.run(["git", "-c", "safe.directory=*", "stash", "pop", "-q"], cwd=root,
                                 capture_output=True, creationflags=NO_WINDOW).returncode != 0:
-        _git(root, "reset", "-q", "--hard", tip)  # the host changed the same lines: the host's version stays
+        # the host changed the same lines: the host's version of those files stays, and every other file's work comes
+        # back (the whole stash was dropped: one file's conflict lost every agent's work in progress)
+        _git(root, "reset", "-q", "--hard", tip, busy=_FILE_BUSY)
+        mine = _git(root, "diff", "--name-only", "--diff-filter=d", f"{saved}^1", saved, check=False).splitlines()
+        theirs = set(_git(root, "diff", "--name-only", f"{saved}^1", tip, check=False).splitlines())
+        if keep := sorted(f for f in mine if f and f not in theirs):
+            _git(root, "checkout", saved, "--", *keep, check=False)
         _git(root, "stash", "drop", "-q", check=False)
     return tip
 
@@ -224,7 +236,8 @@ def register_member(net, slug: str, root: Path, info: dict, host_title: str) -> 
 def save_head(net, slug: str, tip: str) -> None:
     proj = net.project_row(slug)
     cfg = json.loads(proj["config"])
-    if (cfg.get("link") or {}).get("head") != tip:
-        cfg.setdefault("link", {})["head"] = tip
+    # (left the room while following it: nothing to keep. A link of only `head` came back, and the next start failed)
+    if "link" in cfg and cfg["link"].get("head") != tip:
+        cfg["link"]["head"] = tip
         with net.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))

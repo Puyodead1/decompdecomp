@@ -5,6 +5,7 @@ its members, joining a friend's room, reconnecting and leaving.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import threading
@@ -94,8 +95,8 @@ def register(app: App) -> None:
         if c.get("open") and c.get("mode") == "address" and c.get("address"):
             try:
                 open_room(p["slug"], "address", c["address"], int(c.get("port") or 6481), keep=True)
-            except (NetworkError, OSError):
-                pass
+            except (NetworkError, OSError) as e:  # (the port taken, the address gone: the host opens it again by hand)
+                logging.getLogger("decompdecomp").warning("%s: the room didn't open again: %s", p["slug"], e)
 
     @mcp.custom_route("/api/collab", methods=["GET"])
     async def api_collab(request: Request) -> Response:

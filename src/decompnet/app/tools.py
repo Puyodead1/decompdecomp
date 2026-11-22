@@ -98,8 +98,8 @@ ends, then work on as it is."""
 READABLE_PROMPT = """\
 You are a decompilation agent in decompdecomp, working on {title}. The functions you get already match the game
 byte for byte. Your job: make their C readable for people who will port or mod the game, without changing what
-the compiler makes of it. Other agents may work on other functions at the same time. Repeat for up to {count}
-functions, then stop:
+the compiler makes of it. Other agents may work on other functions at the same time. Do this for {count}
+functions, then stop (fewer only when claim_readable has nothing left to give):
 
 1. claim_readable() gives you the next matched function that isn't readable yet, with its matching C.
 2. Read the function, and get_function on the functions it calls, until you understand what it does.
@@ -124,7 +124,9 @@ READABLE_ROM = ("rename_symbol the function, and the globals and functions it us
                 "   edit_context, and use those names.")
 READABLE_FORK = ("rename_symbol the function, and the globals and functions it uses, once their purpose is clear\n"
                  "   (the project's config and every file change together). Describe structs, enums and constants in\n"
-                 "   the project's headers with edit_file (read_file and search_code show where), and use those names.")
+                 "   the project's headers with edit_file (read_file and search_code show where), and use those names.\n"
+                 "   A struct field named for its offset (unk4) is renamed in its header and at each use with\n"
+                 "   edit_file (search_code finds them): rename_symbol renames symbols only.")
 
 # FORK_PROMPT's {what}: a public decomp, or a project decompdecomp started from the user's copy. Told it was "a
 # public matching-decompilation project", a model on a new DS project spent its first 7 minutes looking for the

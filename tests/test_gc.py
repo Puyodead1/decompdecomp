@@ -157,6 +157,21 @@ def test_code_without_a_file_gets_one(gc):
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=?", pid)["n"] == total
 
 
+def test_start_up_code_no_file_can_hold_is_set_aside(gc):
+    """A GameCube game's __start, memset, TRK_memset (dtk's auto_00_..._init) and __init_cpp_exceptions showed "to
+    do" at 98.9%: no source file covers them and start_files gives none to code outside .text, so no agent was
+    ever handed them, and they counted against the game forever. They're set aside now, as assembly is."""
+    net, slug = gc
+    pid = net.project_row(slug)["id"]
+    rows = net.store.all("SELECT name, status, unit, meta FROM functions WHERE project_id=? AND unit LIKE '%\\_init' "
+                         "ESCAPE '\\'", pid)
+    assert rows, "the demo has start-up code in .init"
+    for r in rows:
+        assert r["status"] == "asm" and json.loads(r["meta"])["no_file"], dict(r)
+    assert not net.store.one("SELECT 1 FROM functions WHERE project_id=? AND status='nosource'", pid)
+    assert "start-up code" in json.loads(rows[0]["meta"])["asm_code"]
+
+
 def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_cut(gc, monkeypatch):
     """A GameCube game's one stretch of 16,695 functions got one file, and every claim and compile then read all of
     them (minutes each, with 8 agents: they timed out). A stretch gets files of FILE_FUNCTIONS functions; a file an

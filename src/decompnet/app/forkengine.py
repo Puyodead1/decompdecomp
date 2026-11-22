@@ -25,7 +25,7 @@ from bisect import bisect_left
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from elftools.common.exceptions import ELFError
 
@@ -67,6 +67,8 @@ from ..network import (
 from ..rom import RomError
 from ..scoring import percent_text
 from ..textedit import replace_once
+from .collab import Refused
+from .engine.compilers import ROOM_COMPILER
 
 _REPO = re.compile(r"^(https://(github\.com|gitlab\.com|codeberg\.org|git\.[\w.-]+)/[\w.-]+/[\w.-]+?)(\.git)?/?$")
 # A match has to come from C/C++: no inline assembly, asm functions, asm includes or embedded binaries.
@@ -730,6 +732,15 @@ def _closer(rows: dict, before: dict, after: dict) -> float | None:
     return gain if gain >= CLOSER and sum(d > 0 for d in steps) * 2 > len(steps) else None
 
 
+def progress_moved(before: dict | None, now: dict) -> str | None:
+    """The feed's line for a sync, or None when the share of code that matches is what it was: a room's member
+    measures after each of the host's commits, and its feed was "sync 89.51% of code matches" every few seconds,
+    burying what its agents did."""
+    said = f"{float(now.get('matched_code_percent', 0)):.2f}% of code matches"
+    was = (before or {}).get("matched_code_percent")
+    return None if was is not None and f"{float(was):.2f}% of code matches" == said else said
+
+
 class ForkEngine:
     def __init__(self, net):
         self.net = net
@@ -1014,6 +1025,13 @@ class ForkEngine:
 
     def _save_cfg(self, proj, cfg: dict) -> None:
         with self.net.store.tx() as db:
+            # the room link is the database's as it is now, not as this copy of the settings read it: a sync that
+            # began before the user left the room wrote the link back, and the app joined the room again at start
+            now = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            if "link" in now:
+                cfg["link"] = now["link"]
+            else:
+                cfg.pop("link", None)
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
 
     @staticmethod
@@ -1445,6 +1463,10 @@ class ForkEngine:
         static_calls = console.static_callees(fp, version)  # (and who calls those)
         joinable = console.joinable_register_args(fp, version)  # (or its callers are one file over: join_files)
         copies = _copies(fp) if fp.scope == GAME else {}  # (and every copy counts too)
+        try:  # code no source file can be given (start_files): listed as to do, never handed out, counted forever
+            fileless = set(self.code_without_files(slug, rep, never_only=True)["never"])
+        except NetworkError:  # (not a dtk project: its code has files, or the console says what it sets aside)
+            fileless = set()
         counts: dict[str, int] = defaultdict(int)
         for _, f in rows:
             counts[f["name"]] += 1
@@ -1496,7 +1518,8 @@ class ForkEngine:
                     was = self._meta(old)
                     kept = _KEPT_KEYS if old["size"] == size else ("reopened",)
                     meta.update({k: v for k, v in was.items() if k in kept
-                                 and not (k == "asm_code" and was.get("set_aside"))})  # (set aside: decided below)
+                                 and not (k == "asm_code" and (was.get("set_aside") or was.get("no_file")))})
+                    # (set aside, or no file could hold it: decided below, again each time)
                 if sym in registers:  # (claimed last, and its brief says why)
                     meta["register_arg"] = registers[sym]
                 if sym in statics:
@@ -1513,6 +1536,14 @@ class ForkEngine:
                 if sym in copies:  # the same code as another program's: counted once, matched by twins
                     meta["copy_of"] = copies[sym]
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
+                if status == "nosource" and uname in fileless and not meta.get("reopened"):
+                    # a GameCube game's __start, memset and TRK_memset (.init) and __init_cpp_exceptions: the
+                    # runtime's start-up code, which no source file of the project covers or can be given
+                    meta["asm_code"] = (
+                        "code outside .text no source file covers (the runtime's start-up code)" if u.auto else
+                        "in an object the project's config lists no source file for (the runtime's, as a rule)")
+                    meta["no_file"] = True
+                    status = "asm"
                 if status == "open" and any(meta.get(k) for k in _ASM_KEYS):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
                 score = None if fuzzy is None else scaled(fuzzy, n)
@@ -1566,7 +1597,8 @@ class ForkEngine:
                             db.execute(f"DELETE FROM {table} WHERE function_id=?", (fid,))
                         db.execute("DELETE FROM functions WHERE id=?", (fid,))
             m = objdiff.game_measures(rep, set(aside) | set(copies))  # % of the game's own code, each copy once
-            self.net._event(db, proj["id"], None, "sync", f"{float(m.get('matched_code_percent', 0)):.2f}% of code matches")
+            if said := progress_moved(cfg.get("measures"), m):
+                self.net._event(db, proj["id"], None, "sync", said)
         log(f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
             f"{float(m.get('matched_code_percent', 0)):.2f}% of code")
         cfg["measures"] = m
@@ -1806,9 +1838,11 @@ class ForkEngine:
         start = syms[first[1]][1] - first[0]
         return start, start + sec["sh_size"]
 
-    def code_without_files(self, slug: str, rep: dict | None = None) -> dict:
+    def code_without_files(self, slug: str, rep: dict | None = None, never_only: bool = False) -> dict:
         """What start_files would do: {"create": [source paths of listed files that don't exist],
-        "split": [(module, source path, start, end, functions)]}."""
+        "split": [(module, source path, start, end, functions)]}, and "never": the units without a source file it
+        can't give one (code outside .text, dtk's auto_..._init: the runtime's start-up code; an object the config
+        doesn't list as a file), whose functions sync sets aside."""
         proj, fp, cfg = self.get(slug)
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
@@ -1820,18 +1854,26 @@ class ForkEngine:
         rep_fns = {u["name"]: len(u.get("functions", [])) for u in rep.get("units", [])}
         cpp = {u["name"] for u in rep.get("units", [])  # code with C++ names goes in a C++ file
                if any((f.get("metadata") or {}).get("demangled_name") not in (None, f["name"]) for f in u.get("functions", []))}
-        create, split, taken = [], [], set()
+        create, split, taken, never = [], [], set(), []
         listed = fp.link_states()
+        parsed: dict[str, list] = {}  # module -> its splits' files (read once, not once per unit)
         for u in fp.units():
             module, _, rest = u.name.partition("/")
             if u.source or module not in mods:
                 continue
             if not u.auto:
-                for f in dtksplits.Splits.parse(mods[module].splits.read_text(encoding="utf-8")).files:
-                    if str(Path(f.name).with_suffix("")) == rest and f"{src}/{f.name}" in listed:
-                        create.append(f"{src}/{f.name}")
+                if module not in parsed:
+                    parsed[module] = dtksplits.Splits.parse(mods[module].splits.read_text(encoding="utf-8")).files
+                made = [f"{src}/{f.name}" for f in parsed[module]  # (a unit name has /: on Windows Path said game\player)
+                        if str(PurePosixPath(f.name).with_suffix("")) == rest and f"{src}/{f.name}" in listed]
+                create += made
+                if not made:
+                    never.append(u.name)
                 continue
-            if not rest.endswith("_text") or not rep_fns.get(u.name, 1):
+            if not rest.endswith("_text"):
+                never.append(u.name)
+                continue
+            if never_only or not rep_fns.get(u.name, 1):  # (sync asks only what can't have a file: no objects read)
                 continue
             extent = self._text_extent(u, dtksplits.symbols(mods[module].symbols))
             if extent is None:
@@ -1847,7 +1889,7 @@ class ForkEngine:
                 taken.add(name)
                 n = sum(1 for a in starts if lo <= a < hi) if len(cuts) > 2 else rep_fns.get(u.name, 0)
                 split.append((module, name, lo, hi, n))
-        return {"create": sorted(set(create)), "split": sorted(split)}
+        return {"create": sorted(set(create)), "split": sorted(split), "never": sorted(never)}
 
     def start_files(self, slug: str, log=print, agent: Agent | None = None) -> dict:
         """Give all code a source file: create files configure.py lists, split off a file for every stretch of
@@ -2053,7 +2095,7 @@ class ForkEngine:
         if agent is not None and (link := self.net.links.get(slug)) is not None:  # the host splits it; this copy follows
             text = link.call("/collab/split_file", agent, path=path, at=at, new_name=new_name, data=data)
             if text.startswith("✅"):
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         if (console := consoles.get(cfg.get("platform"))).splits_sources:
@@ -2415,7 +2457,7 @@ class ForkEngine:
         if agent is not None and (link := self.net.links.get(slug)) is not None:  # the host joins them; this copy follows
             text = link.call("/collab/join_files", agent, path=path, with_path=with_path)
             if text.startswith("✅"):
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
@@ -2678,7 +2720,7 @@ class ForkEngine:
             # gave the function up. ROM rooms always sent it to the host (RomNetwork.rename_symbol).
             text = link.call("/collab/rename", agent, old=old, new=new, message=message)
             if text.startswith("✅"):
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
@@ -4073,21 +4115,27 @@ class ForkEngine:
         if keep:  # (an agent's own work: its work selection's max tries)
             self.net.check_tries(agent, self._fn(slug, function))
         held = None if keep or background else self._hold_for_try(slug, function, agent)
+        link = self.net.links.get(slug)
+        before = self._fn(slug, function)["best_score"] if link is not None else None
         try:
             res = self._attempt(agent, slug, function, source, keep, prelude, quiet, comment, background)
         finally:
             if held is not None:
                 with self.net.store.tx() as db:
                     db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (held, agent.id))
-        link = self.net.links.get(slug)
         if link is None or res["score"] is None:
             return res
         name = self._fn(slug, function)["name"]
         if res["matched"]:  # the host builds it in its own tree, against its own copy, and commits it for everyone
-            try:
-                verdict = link.attempt(agent, name, source)
+            try:  # (with the declarations autopilot's draft needs: without them the host's build failed it)
+                verdict = link.attempt(agent, name, source, prelude=prelude)
+            except Refused as e:
+                res["text"] += f"\n⚠️ The room's host didn't take this match: {e}"
+                return res
             except NetworkError as e:
-                res["text"] += f"\n⚠️ Not shared with the room yet: {e}"
+                link.keep_for_later(name, prelude + source if prelude else source)
+                res["text"] += (f"\n⚠️ Not shared with the room yet ({e}): it is sent again when the host is back. "
+                                "Carry on with another function.")
                 return res
             if verdict.get("matched"):
                 res["text"] += "\nShared with the room: the host confirmed the match."
@@ -4096,8 +4144,8 @@ class ForkEngine:
                 res["text"] += ("\n⚠️ The room's host could not confirm this match in its tree (score "
                                 f"{verdict.get('score')}): it may have changed since; this copy follows the host's.")
         else:
-            fn = self._fn(slug, function)
-            if fn["best_score"] is None or res["score"] <= fn["best_score"]:
+            # (better than before this try: every variant that tied the best was sent, a deep search's by the hundred)
+            if before is None or res["score"] < before:
                 threading.Thread(target=self._report_best, args=(link, agent, name, source, res["score"]), daemon=True).start()
         return res
 
@@ -4436,7 +4484,7 @@ class ForkEngine:
             text = link.call("/collab/try_compiler", agent, function=function, compiler=compiler, flags=flags,
                              source=source)
             if "from now on" in text:
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
@@ -5046,7 +5094,7 @@ class ForkEngine:
             text = link.call("/collab/join_functions", agent, function=self._fn(slug, function)["name"],
                              with_function=self._fn(slug, with_function)["name"], reason=reason)
             if text.startswith("With yours"):  # (joined there: this copy follows)
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         a, b = self._fn(slug, function), self._fn(slug, with_function)
@@ -5416,7 +5464,7 @@ class ForkEngine:
             text = link.call("/collab/edit", agent, path=path, old=old, new=new, message=message,
                              more=[{"old": o, "new": n} for o, n in more])
             if text.startswith(("✅", "⚠️")):
-                link.sync()
+                text += link.follow()
             return text
         proj, fp, cfg = self.get(slug)
         p = fp.safe_path(path, write=True)
@@ -5440,7 +5488,7 @@ class ForkEngine:
         if (link := self.net.links.get(slug)) is not None:  # (the host's SDK copy; this copy follows its commit)
             text = link.call("/collab/sdk_inline", agent, name=name, path=path)
             if text.startswith(("✅", "⚠️")):
-                link.sync()
+                text += link.follow()
             return text
         from .. import kits
         from ..kits import inlines
@@ -5771,6 +5819,8 @@ class ForkEngine:
         """The Settings panel's "only for these address ranges", where each source file has a compiler: the files
         whose code is in them get `compiler` (None: the project's own again), each only when its matches hold, or
         whatever they cost when the user says so (`force`)."""
+        if slug in self.net.links:  # (committed in this tree, the next pull dropped it; its matches stayed here)
+            raise NetworkError(ROOM_COMPILER)
         _, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         own = console.file_compiler(fp, "")
@@ -5796,6 +5846,8 @@ class ForkEngine:
         """The Settings panel's compiler for the whole game, where each source file has one: every file switches,
         one at a time and only when its matches hold (a minute or two: it's a job), and then it's the project's
         own, the files that stayed keeping theirs."""
+        if slug in self.net.links:  # (committed in this tree, the next pull dropped it; its matches stayed here)
+            raise NetworkError(ROOM_COMPILER)
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         if console.file_compiler(fp, "") is None:
@@ -5860,6 +5912,8 @@ class ForkEngine:
         now is a match like any other. `force`: kept anyway, the user having been told which matches it costs (an
         agent's try_compiler put a 2003 game's file on Visual C++ 8.0 for a line 7.0 couldn't read, and the user
         couldn't take it back): those are open again, their C kept as their best."""
+        if slug in self.net.links:  # (committed in this tree, the next pull dropped it; its matches stayed here)
+            raise NetworkError(ROOM_COMPILER)
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         own = console.file_compiler(fp, source)

@@ -119,7 +119,11 @@ def test_project_mode_games_are_polished_too_through_their_own_files(tmp_path, m
     assert "readable now" in said and net.store.one("SELECT readable FROM functions")["readable"] == 1
     assert len(tried) == 2
     assert "claim_readable" in tools.tool_names(fork=True) and "make_readable" in tools.tool_names(fork=True)
-    assert "edit_file" in tools.READABLE_PROMPT.format(title="T", count=1, names=tools.READABLE_FORK)
+    said = tools.READABLE_PROMPT.format(title="T", count=8, names=tools.READABLE_FORK)
+    assert "edit_file" in said
+    # (told "up to 8", a GameCube game's polishing helper made one function readable and stopped; told nothing of
+    # fields, it left card->unk4 to the user, as rename_symbol refused it)
+    assert "up to 8" not in said and "for 8" in said and "unk4" in said
 
 
 def test_the_function_list_tells_polished_functions_and_helpers_say_they_polish(tmp_path):

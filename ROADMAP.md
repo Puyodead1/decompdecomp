@@ -1392,6 +1392,17 @@ generated source) counts as not building: `ninja -t query` says what each failed
 has no such query, so only the failed target itself is counted, and an edit that breaks such a step there can still
 be kept as breaking nothing. Make's own dry run (`make -n -W <file>`) or its database (`make -p`) could say the same.
 
+### What a project room's member can't ask the host for yet
+
+A member of a project room (GameCube/Wii, PC, DS, V.Flash) sends its agents' edits, splits, joins, renames, compiler
+tries and boundary reports to the host, which makes them and commits; the member follows the host's tree. Three
+tools are refused on a member instead ("in a room, the host's project decides..."), so its agents can only leave a
+note: a file's language (`set_file_language`), a template instance's name (`name_instance`) and a flag search
+(`search_flags`). Each wants a `/collab/...` route the host runs on its copy, as `/collab/try_compiler` does.
+In ROM and project rooms alike, a compiler range an agent suggests is checked (`app/rangecheck.py`) and kept on the
+host, but the range checks' results and the judge's compiler survey aren't shown on a member's screen: the member's
+Compilers panel says the host decides, with nothing of what the host found.
+
 ### A list of open rooms (to investigate)
 
 Asked for by a user: a page where you see the rooms running now and join one. Hosts would still host their own

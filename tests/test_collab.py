@@ -58,7 +58,7 @@ def test_state_carries_work_never_rom_data(room):
     text = json.dumps(st)
     assert "glabel" not in text and "target" not in st
     assert not re.search(r"/\* [0-9A-F]+ [0-9A-F]{8} [0-9A-F]{8} \*/", text)  # no disassembly lines
-    assert st["functions"] and st["members"][0]["name"] == "alex"
+    assert st["layout"]["functions"] and st["members"][0]["name"] == "alex"
     assert client.get(f"/collab/state?room={slug}", headers={"authorization": "Bearer dn_nope"}).status_code == 400
 
 
@@ -337,7 +337,10 @@ def test_link_refresh_keeps_saved_progress_only_in_the_same_room(monkeypatch):
 
     class StubLink:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
 
     monkeypatch.setattr(collab, "Link", StubLink)
     net = Net()
@@ -962,7 +965,7 @@ def test_a_members_agents_with_long_names_stay_apart_on_the_host():
     from decompnet.app.collab import MEMBER_LABEL, member_label
 
     a, b = member_label("opencode-deepseek-v4.1-flash-high-3"), member_label("opencode-deepseek-v4.1-flash-high-4")
-    assert a != b and a == "opencode-deepseek-v41-flash-high-3"
+    assert a != b and a == "opencode-deepseek-v4.1-flash-high-3"  # (the dot stays: the model is the host's m4.1)
     assert member_label("claude-1") == "claude-1" and member_label("") == "agent"
     long = [member_label("x" * 60 + str(n)) for n in (1, 2)]
     assert long[0] != long[1] and all(len(x) == MEMBER_LABEL for x in long)

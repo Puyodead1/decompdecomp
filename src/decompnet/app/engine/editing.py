@@ -22,7 +22,7 @@ class EditMixin:
             name = self._function(function, project)["name"]
             text = link.call("/collab/split", agent, function=name, at=at, new_name=new_name)
             if text.startswith("✅"):
-                link.sync()
+                text += link.follow()
             return text
         fn = self._function(function, project)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -63,8 +63,10 @@ class EditMixin:
         return (f"✅ split: {fn['name']} is now {console.function_insns(head)} instructions; {new_name} at "
                 f"0x{addr:08X} has {console.function_insns(tail)}. {cont}")
 
-    def _add_function(self, proj, prev, new, syms: SymbolTable, agent_id: int | None, new_name: str) -> str:
-        """Add a function the splitter missed after `prev`; it starts at its own address and mode."""
+    def _add_function(self, proj, prev, new, syms: SymbolTable, agent_id: int | None, new_name: str,
+                      event: bool = True) -> str:
+        """Add a function the splitter missed after `prev`; it starts at its own address and mode. `event`: False
+        for a room's guest following its host (the host's event says it)."""
         console = self.console(proj)
         syms.add(Symbol(new_name, new.vram, new.size, "func"))
         target = self._make_target(proj, new, syms)
@@ -77,7 +79,8 @@ class EditMixin:
                         console.function_status(new), json.dumps(meta) if meta else None))
             db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                        (proj["id"], new_name, new.vram, new.size, "func"))
-            self._event(db, proj["id"], agent_id, "split", f"{prev['name']} / {new_name}")
+            if event:
+                self._event(db, proj["id"], agent_id, "split", f"{prev['name']} / {new_name}")
         self._xrefs.pop(proj["id"], None)
         self._ops.pop(proj["id"], None)
         return f"✅ new function {new_name} at 0x{new.vram:08X}, {new.size} bytes."
@@ -151,7 +154,7 @@ class EditMixin:
             text = link.call("/collab/boundary", agent, function=self._function(function, slug)["name"], end=str(end),
                              reason=reason)
             if text.startswith("With yours"):  # (cut there: this copy follows)
-                link.sync()
+                text += link.follow()
             return text
         if (fork := self.fork_slug(slug)):
             return self.forks.report_boundary(agent, fork, function, end, reason)
@@ -216,7 +219,7 @@ class EditMixin:
         if link is not None:
             text = link.call("/collab/rename", agent, old=old, new=new, message=message)
             if text.startswith("✅"):
-                link.sync()
+                text += link.follow()
             return text
         return self.rename_symbols(agent, project, [(old, new)], message)
 
@@ -316,7 +319,7 @@ class EditMixin:
             return super().edit_context(agent, project, old, new, message, function)
         text = link.call("/collab/context", agent, old=old, new=new, message=message, function=function)
         if text.startswith("✅"):
-            link.sync()
+            text += link.follow()
         return text
 
     def add_note(self, agent: Agent, project: str | None, text: str, function: str | None = None) -> str:

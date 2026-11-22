@@ -14,6 +14,7 @@ tree as the room's truth: see forkroom.py.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -21,6 +22,7 @@ import logging
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -45,12 +47,22 @@ TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 # what the host answers someone it hasn't let in; the guest's screen says which (gui.py: the room's state)
 WAITING = "waiting for the host to let you in"
 NOT_MEMBER = "not a member of this room"
+ROOM_CLOSED = "this room is closed"
+SAME_VERSION = "everyone in a room runs the same version"
 EVENTS_PAGE = 500  # events per answer; a guest that's behind asks again at once
+MATCHED_PAGE = 200  # matched functions' C per /collab/matched answer
 LET_IN_WAIT = 30 * 60  # longest a git project's join waits to be let in: it needs the host's files before anything
 LET_IN_EVERY = 3  # seconds between its looks
 ROOM_QUIET = 15  # seconds without an answer from the host before the guest's screen says it's away
 HEARTBEAT_EVERY = 5  # independent of importing matches or rebuilding a source project
 HEARTBEAT_TIMEOUT = 10
+# A member's request is answered within ANSWER_WITHIN seconds; work that takes longer (a GameCube file rebuilt and
+# checked behind 20 agents' turns on its lock) goes on at the host as a job the member asks after. Held open, the
+# answer passed the member's 60 seconds and a tunnel's 100: "the room's host isn't reachable right now" for every
+# make_readable and edit_file, the host doing it anyway, and the agents trying again until they gave up.
+ANSWER_WITHIN = 20
+JOB_WAIT = 3600  # how long a member waits for one job before it gives up on it
+JOB_KEEP = 900  # how long the host keeps a finished job's answer nobody came for
 logger = logging.getLogger("decompdecomp")
 
 
@@ -104,15 +116,16 @@ def check_same(host: tuple[str | None, str | None], member: tuple[str | None, st
 def same_version(host: str | None, member: str | None) -> str:
     """Why a room refused: the host and the member run different versions (or commits of one)."""
     return (f"this room's host runs decompdecomp {host or 'an older version'} and this computer "
-            f"{member or 'an older version'}: everyone in a room runs the same version. Update the one that's behind, "
-            "then join again")
+            f"{member or 'an older version'}: {SAME_VERSION}. Update the one that's behind; the room carries on once "
+            "both run the same")
 
 
 MEMBER_LABEL = 48  # characters of a member's agent's name kept on the host; a longer one ends in a digest of all of it
 
 
 def member_label(label: str) -> str:
-    label = re.sub(r"[^A-Za-z0-9_-]", "", str(label or "agent")) or "agent"
+    # (dots stay: opencode-minimax-m3.1 became m31 here, another model than the host's own m3.1, network.model_of)
+    label = re.sub(r"[^A-Za-z0-9_.-]", "", str(label or "agent")).lstrip(".") or "agent"
     if len(label) <= MEMBER_LABEL:
         return label
     return label[:MEMBER_LABEL - 7] + "-" + hashlib.sha1(label.encode()).hexdigest()[:6]
@@ -335,44 +348,35 @@ class Room:
         return {"e": last, "events": events, "behind": behind}
 
     def state(self, e: int, a: int, ctx_version: int, member: Agent, fresh: bool = False, compiler: str = "",
-              aside: str = "", readable: str = "") -> dict:
-        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler`, `aside` and
-        `readable`: digests of the room's compiler settings, set-aside functions and readable functions as the guest
-        has them; each is sent again when it changed."""
+              aside: str = "", readable: str = "", matched: str = "", layout: str = "", n: int = 0) -> dict:
+        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler`, `aside`,
+        `readable` and `layout`: digests of the room's compiler settings, set-aside functions, readable functions and
+        function layout as the guest last had them; `matched`: the digest of the guest's own matched functions; `n`:
+        the newest note it has. Each is sent again when it changed.
+
+        The guest's copy follows these, not the events: a match was sent only with its "match" event, so one renamed
+        before the guest read the event (a guest catching up after a while away), one the host opened again (Check
+        again, a compiler change) or polished C tidied later never reached it, nor did notes (they have no event) or
+        a boundary cut (its event wasn't one of the layout's)."""
         if self.fork:
-            return self._fork_state(e, member, fresh, readable, aside)
+            return self._fork_state(e, a, member, fresh, readable, aside, n)
         pid = self.proj["id"]
         net = self.net
         with net.store.tx() as db:
             net._expire_claims(db)
         out: dict = self._events(e, fresh)
-        events = out["events"]
-        kinds = {ev["kind"] for ev in events}
-        names = {ev["detail"] for ev in events if ev["kind"] in ("match",)}
-        first = e == 0
-        if first or names:
-            rows = net.store.all("SELECT f.name, f.vram, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
-                                 "ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched'", pid)
-            out["matched"] = [dict(r) for r in rows if first or r["name"] in names]
-        best = net.store.all("SELECT f.name, f.vram, f.best_score, f.best_source, MAX(t.id) AS last FROM attempts t "
-                             "JOIN functions f ON f.id=t.function_id WHERE f.project_id=? AND t.id>? AND f.status='open' "
-                             "AND f.best_source IS NOT NULL GROUP BY f.id", pid, a)
-        out["best"] = [{"name": r["name"], "vram": r["vram"], "score": r["best_score"], "source": r["best_source"]} for r in best]
-        last = net.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?", pid)
-        out["a"] = max(a, last["m"] or 0)
-        if first or kinds & {"rename", "split"}:
-            out["symbols"] = net.layout_symbols(pid)
-        if first or fresh or kinds & {"rename", "split"}:
-            # fresh: a guest sharing saved work asks for the layout without the room's whole history
-            out["functions"] = [dict(r) for r in net.store.all(
-                "SELECT name, vram, size FROM functions WHERE project_id=? ORDER BY vram", pid)]
+        if (digest := _digest(items := matched_items(net.store, pid))) != matched:
+            out["matched_set"] = {"digest": digest, "items": items}
+        out.update(self._best(a))
+        functions = [dict(r) for r in net.store.all(
+            "SELECT name, vram, size FROM functions WHERE project_id=? ORDER BY vram, name", pid)]
+        symbols = sorted(net.layout_symbols(pid), key=lambda s: (s["address"], s["name"]))
+        if (digest := _digest([functions, symbols])) != layout:
+            out["layout"] = {"digest": digest, "functions": functions, "symbols": symbols}
         ctx = net._context(pid)
         if ctx["version"] != ctx_version:
             out["context"] = {"version": ctx["version"], "header": ctx["header"]}
-        if first or kinds & {"note"}:
-            out["notes"] = [dict(r) for r in net.store.all(
-                "SELECT n.id, n.text, n.created_at, f.vram, a.name AS agent FROM notes n LEFT JOIN functions f ON f.id=n.function_id "
-                "LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? ORDER BY n.id", pid)]
+        out.update(self._notes(n))
         out["claims"] = [dict(r) for r in net.store.all(
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
             "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
@@ -381,33 +385,54 @@ class Room:
         if (digest := _digest(settings)) != compiler:
             out["compiler"] = settings | {"digest": digest}
         out.update(self._set_aside(aside))
-        # what's readable: each newly polished function's C (its event), and the list whenever it changed (polished
-        # again later, or made readable before the guest came)
-        polished = {ev["detail"] for ev in events if ev["kind"] == "readable"}
-        rows = net.store.all("SELECT name, vram, matched_source FROM functions WHERE project_id=? AND status='matched' "
-                             "AND readable=1 ORDER BY vram", pid)
-        if (digest := _digest([r["vram"] for r in rows])) != readable:
-            out["readable"] = {"digest": digest, "vrams": [r["vram"] for r in rows]}
-        if polished or "readable" in out:
-            out["readable_c"] = [[r["vram"], r["matched_source"]] for r in rows
-                                 if r["name"] in polished or ((first or not readable) and r["matched_source"])]
+        out.update(self._readable(readable))  # (their C is the matched C, in `matched_set`)
         out["members"] = self.members()
         return out
 
+    def _best(self, a: int) -> dict:
+        """Open functions' best attempts made since the guest's cursor `a`, by name (overlays share addresses). The
+        cursor is read first: an attempt committed between the two reads was skipped for good."""
+        pid, store = self.proj["id"], self.net.store
+        last = store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id "
+                         "WHERE f.project_id=?", pid)["m"] or 0
+        rows = store.all("SELECT f.name, f.best_score, f.best_source FROM attempts t JOIN functions f "
+                         "ON f.id=t.function_id WHERE f.project_id=? AND t.id>? AND t.id<=? AND f.status='open' "
+                         "AND f.best_source IS NOT NULL AND f.best_score IS NOT NULL GROUP BY f.id", pid, a, last)
+        return {"a": max(a, last),
+                "best": [{"name": r["name"], "score": r["best_score"], "source": r["best_source"]} for r in rows]}
+
+    def _notes(self, n: int) -> dict:
+        """Notes newer than the guest's newest (`n`). They were sent only with a "note" event, which nothing makes:
+        a guest got the notes there were when it joined, and none after."""
+        rows = self.net.store.all(
+            "SELECT n.id, n.text, n.created_at, f.name AS function, a.name AS agent FROM notes n LEFT JOIN functions f "
+            "ON f.id=n.function_id LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? AND n.id>? ORDER BY n.id",
+            self.proj["id"], n)
+        return {"notes": [dict(r) for r in rows], "n": rows[-1]["id"] if rows else n}
+
+    def _readable(self, readable: str) -> dict:
+        names = [r["name"] for r in self.net.store.all(
+            "SELECT name FROM functions WHERE project_id=? AND status='matched' AND readable=1 ORDER BY name",
+            self.proj["id"])]
+        if (digest := _digest(names)) == readable:
+            return {}
+        return {"readable": {"digest": digest, "names": names}}
+
     def _set_aside(self, aside: str) -> dict:
-        """{"set_aside": the host's set-aside functions, each with why} when the guest's digest (`aside`) differs:
-        by vram in a ROM room, by name in a project room (a GameCube game's REL modules share addresses)."""
+        """{"set_aside": the host's set-aside functions, each with why} when the guest's digest (`aside`) differs. By
+        name: overlays share addresses (a GameCube game's REL modules, an N64 game's overlays), and by vram an open
+        twin was set aside on the guest."""
         from .engine.rooms import SET_ASIDE_WHY
 
-        key = "name" if self.fork else "vram"
-        rows = self.net.store.all(f"SELECT {key} AS k, meta FROM functions WHERE project_id=? AND status='asm' "
-                                  f"ORDER BY {key}", self.proj["id"])
+        rows = self.net.store.all("SELECT name AS k, meta FROM functions WHERE project_id=? AND status='asm' "
+                                  "ORDER BY name", self.proj["id"])
         if (digest := _digest([r["k"] for r in rows])) == aside:
             return {}
         return {"set_aside": {"digest": digest, "functions": [
             [r["k"], {k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_WHY}] for r in rows]}}
 
-    def _fork_state(self, e: int, member: Agent, fresh: bool = False, readable: str = "", aside: str = "") -> dict:
+    def _fork_state(self, e: int, a: int, member: Agent, fresh: bool = False, readable: str = "", aside: str = "",
+                    n: int = 0) -> dict:
         """A git project's room: events, matches (by name), claims and notes; the tree itself travels as bundles
         (GET /collab/bundle) when `head` moves."""
         pid, net = self.proj["id"], self.net
@@ -420,20 +445,17 @@ class Room:
             rows = net.store.all("SELECT f.name, a.name AS agent FROM functions f LEFT JOIN agents a ON a.id=f.matched_agent_id "
                                  "WHERE f.project_id=? AND f.status='matched'", pid)
             out["matched"] = [dict(r) for r in rows if e == 0 or fresh or r["name"] in names]
-        if e == 0 or any(ev["kind"] == "note" for ev in events):
-            out["notes"] = [dict(r) for r in net.store.all(
-                "SELECT n.id, n.text, n.created_at, f.name AS function, a.name AS agent FROM notes n LEFT JOIN functions f "
-                "ON f.id=n.function_id LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? ORDER BY n.id", pid)]
+        out.update(self._notes(n))
+        # best attempts aren't committed, so no bundle carried them: a member's agent started from nothing on a
+        # function another member's had at 98%
+        out.update(self._best(a))
         out["claims"] = [dict(r) for r in net.store.all(
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
             "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
         out["head"] = forkroom.head(Path(self.proj["root"]))
         out["branch"] = forkroom.branch(Path(self.proj["root"]))
         out["members"] = self.members()
-        names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=? AND status='matched' "
-                                                  "AND readable=1 ORDER BY name", pid)]
-        if (digest := _digest(names)) != readable:  # (the readable C itself comes with the host's commits)
-            out["readable"] = {"digest": digest, "names": names}
+        out.update(self._readable(readable))  # (the readable C itself comes with the host's commits)
         # what the host set aside (assembly, a library's code, what agents agreed no C makes): never sent, a GameCube
         # room's guest counted it as open code, and its progress read well below the host's
         out.update(self._set_aside(aside))
@@ -449,14 +471,19 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
             slug = next(iter(rooms))
         room = rooms.get(slug)
         if room is None:
-            raise NetworkError("this room is closed")
+            raise NetworkError(ROOM_CLOSED)
         return room
 
     async def body(request: Request) -> dict:
-        if int(request.headers.get("content-length") or 0) > MAX_BODY:
-            raise NetworkError("request too large")
+        # read up to the limit, whatever Content-Length says: a chunked request has none, and the whole of it was
+        # buffered and parsed before anyone asked who sent it
+        data = bytearray()
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > MAX_BODY:
+                raise NetworkError("request too large")
         try:
-            data = await request.json()
+            data = json.loads(data or b"{}")
         except ValueError:
             raise NetworkError("invalid request") from None
         if not isinstance(data, dict):
@@ -472,8 +499,55 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
     # room's work has threads of its own now, and who's asking is checked on a few nothing slow ever holds.
     checks = anyio.CapacityLimiter(8)  # (room.member: a token and a row; and whoami)
     work = anyio.CapacityLimiter(40)
+    # a member's better attempts, sent in the background as they come: each is recorded under the project's lock,
+    # which a polishing rebuild holds for a while, and enough of them waiting held all 40 of `work` and the room's
+    # state, claims and matches queued past the guests' timeout
+    reports = anyio.CapacityLimiter(4)
 
-    def endpoint(fn, auth: bool = True, quick: bool = False):
+    jobs: dict[str, tuple[str, asyncio.Future, float]] = {}  # job id -> (the member's name, its work, when it ended)
+
+    def answer(task: asyncio.Future) -> JSONResponse:
+        e = task.exception()
+        if e is None:
+            return JSONResponse(task.result())
+        if isinstance(e, NetworkError):
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if isinstance(e, (TypeError, ValueError, sqlite3.InterfaceError, sqlite3.ProgrammingError)):
+            # a value of the wrong kind (a list for a name, a word for a score): the member's request, not the
+            # host, is wrong, and "host answered 500" said neither
+            return JSONResponse({"error": f"invalid request: {e}"}, status_code=400)
+        logger.error("room request failed", exc_info=e)
+        return JSONResponse({"error": "the host's app failed doing this; its log says why"}, status_code=500)
+
+    async def within(task: asyncio.Future, member, key: str = "", what: str = "") -> JSONResponse:
+        """The answer when the work ends within ANSWER_WITHIN seconds; otherwise a job to ask after (202). The work
+        goes on either way: a member that stopped waiting doesn't undo what the host did."""
+        try:
+            await asyncio.wait_for(asyncio.shield(task), ANSWER_WITHIN)
+        except asyncio.TimeoutError:
+            if not key:  # (the log says which requests take long: a room's host logged no times, nor nginx)
+                key = secrets.token_urlsafe(12)
+                began = time.monotonic() - ANSWER_WITHIN  # (it began that long ago)
+                logger.info("%s: %s took over %ss; answered when it ends", member.name if member else "a member",
+                            what, ANSWER_WITHIN)
+                task.add_done_callback(lambda _t: logger.info("%s: %s ended after %.0fs", member.name if member else
+                                                               "a member", what, time.monotonic() - began))
+            jobs[key] = (member.name if member else "", task, 0.0)
+            return JSONResponse({"job": key}, status_code=202)
+        except Exception:  # noqa: BLE001 (its exception is the answer)
+            pass
+        jobs.pop(key, None)
+        return answer(task)
+
+    def forget_old_jobs() -> None:
+        now = time.time()
+        for k, (who, task, ended) in list(jobs.items()):
+            if task.done() and not ended:
+                jobs[k] = (who, task, now)
+            elif ended and now - ended > JOB_KEEP:
+                jobs.pop(k, None)
+
+    def endpoint(fn, auth: bool = True, quick: bool = False, limiter=None):
         """`quick`: the answer is as cheap as the check (whoami), so it is made with it, never behind the room's
         work."""
         async def handler(request: Request):
@@ -482,12 +556,31 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
                 data = await body(request) if request.method == "POST" else dict(request.query_params)
                 member = (await anyio.to_thread.run_sync(room.member, request, not quick, limiter=checks)
                           if auth else None)
-                result = (fn(room, member, data) if quick else
-                          await anyio.to_thread.run_sync(lambda: fn(room, member, data), limiter=work))
-                return JSONResponse(result)
+                if quick:
+                    return JSONResponse(fn(room, member, data))
             except NetworkError as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
+            except (TypeError, ValueError, sqlite3.InterfaceError, sqlite3.ProgrammingError) as e:
+                return JSONResponse({"error": f"invalid request: {e}"}, status_code=400)
+            forget_old_jobs()
+            task = asyncio.ensure_future(anyio.to_thread.run_sync(lambda: fn(room, member, data),
+                                                                  limiter=limiter or work))
+            return await within(task, member, what=request.url.path)
         return handler
+
+    async def job(request: Request):
+        """A member asking after its job: the answer once the work ends, or 202 again after ANSWER_WITHIN."""
+        try:
+            room = room_for(request)
+            member = await anyio.to_thread.run_sync(room.member, request, False, limiter=checks)
+        except NetworkError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        key = request.query_params.get("id", "")
+        held = jobs.get(key)
+        if held is None or held[0] != member.name:
+            return JSONResponse({"error": "the host has no such job (it restarted, or answered it already): see "
+                                          "whether it was done, and ask again if not"}, status_code=400)
+        return await within(held[1], member, key)
 
     def hello(room, member, q):
         if not room.invite_ok(q.get("invite", "")):
@@ -513,8 +606,21 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"name": member.name, "room": room.slug}
 
     def state(room, member, q):
-        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member,
-                          q.get("fresh") == "1", str(q.get("k") or ""), str(q.get("s") or ""), str(q.get("r") or ""))
+        return room.state(_count(q.get("e")), _count(q.get("a")), _count(q.get("v")), member,
+                          q.get("fresh") == "1", str(q.get("k") or ""), str(q.get("s") or ""), str(q.get("r") or ""),
+                          str(q.get("m") or ""), str(q.get("l") or ""), _count(q.get("n")))
+
+    def matched(room, member, d):
+        """The matching C of the functions a guest asked for by name (what `matched_set` says it lacks or has
+        otherwise), a few hundred at a time."""
+        names = d.get("names")
+        if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
+            raise NetworkError("invalid request: names is a list of function names")
+        rows = net.store.all(
+            "SELECT f.name, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
+            "ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched' AND f.name IN "
+            f"({','.join('?' * len(names[:MATCHED_PAGE]))})", room.proj["id"], *names[:MATCHED_PAGE]) if names else []
+        return {"functions": [dict(r) for r in rows]}
 
     def suggest(room, member, d):
         """A member's agent's suggestion: the host's compiler settings are the room's, so it's the host's to check."""
@@ -581,7 +687,11 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        res = net.attempt(agent, str(d.get("function", "")), str(d.get("source", "")), room.slug)
+        if room.fork and d.get("prelude"):  # (autopilot's draft: the declarations it needs, after the includes)
+            res = net.forks.attempt(agent, room.slug, str(d.get("function", "")), str(d.get("source", "")),
+                                    prelude=str(d["prelude"]))
+        else:
+            res = net.attempt(agent, str(d.get("function", "")), str(d.get("source", "")), room.slug)
         return {"score": res["score"], "matched": res["matched"]}
 
     def best(room, member, d):
@@ -713,9 +823,11 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/join", endpoint(join, auth=False), methods=["POST"]),
         Route("/collab/state", endpoint(state)),
         Route("/collab/whoami", endpoint(whoami, quick=True)),
+        Route("/collab/job", job),
+        Route("/collab/matched", endpoint(matched), methods=["POST"]),
         Route("/collab/claim", endpoint(claim), methods=["POST"]),
         Route("/collab/attempt", endpoint(attempt), methods=["POST"]),
-        Route("/collab/best", endpoint(best), methods=["POST"]),
+        Route("/collab/best", endpoint(best, limiter=reports), methods=["POST"]),
         Route("/collab/release", endpoint(release), methods=["POST"]),
         Route("/collab/suggest", endpoint(suggest), methods=["POST"]),
         Route("/collab/wait", endpoint(wait), methods=["POST"]),
@@ -789,6 +901,11 @@ def parse_invite(link: str) -> tuple[str, str]:
 
 class Refused(NetworkError):
     """The host answered, and said no: not let in yet, taken out of the room, a claim someone else has."""
+
+    @property
+    def room_wide(self) -> bool:
+        """No to anything this member asks (not let in, out, the room closed), not to this one request."""
+        return str(self) in (WAITING, NOT_MEMBER, ROOM_CLOSED) or str(self).startswith("no project ")
 
 
 def _saved_progress_rows(candidates: list[dict], best_comparable: bool):
@@ -877,7 +994,7 @@ class Link:
             self.project_id = None
         info = json.loads(proj["config"]).get("link") or {}
         # kept with the link: from 0 after every restart, the room's whole history came again, twice in the feed
-        self.cursor = {"e": 0, "a": 0, "v": 0, "k": "", "s": "", "r": ""} | (info.get("cursor") or {})
+        self.cursor = {"e": 0, "a": 0, "v": 0, "k": "", "s": "", "r": "", "l": "", "n": 0} | (info.get("cursor") or {})
         self.saved = dict(self.cursor)
         self.claims: list[dict] = []
         self.members: list[dict] = []
@@ -908,10 +1025,45 @@ class Link:
             self.error = f"can't reach the host ({type(e).__name__})"
             raise NetworkError(f"the room's host isn't reachable right now: {self.error}") from None
         out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code == 202 and isinstance(out, dict) and out.get("job"):
+            r, out = self._wait_for_job(out["job"])
         if r.status_code != 200:
-            raise Refused(out.get("error") or f"host answered {r.status_code}")
+            said = out.get("error") if isinstance(out, dict) else None
+            if not said or r.status_code >= 500 or said == "slow down" or SAME_VERSION in said:
+                # not the host saying no: a tunnel's error page, the host's own failure, too many requests at once,
+                # or one side updated before the other. Each passes by itself; as a refusal it covered the project
+                # with "You're not in this room" and dropped the saved work being sent.
+                self.error = said or f"the host couldn't answer ({r.status_code})"
+                raise NetworkError(f"the room's host couldn't answer right now: {self.error}")
+            raise Refused(said)
         self.error, self.last_ok = "", time.time()
         return out
+
+    def _wait_for_job(self, key: str):
+        """Ask after work the host goes on with (host_app's jobs) until it ends. A moment the host can't be reached
+        doesn't end it: the work goes on there."""
+        until, misses = time.time() + JOB_WAIT, 0
+        while not self._stop.is_set():
+            try:
+                r = self.client.get(f"{self.url}/collab/job", params={"id": key, "room": self.room},
+                                    headers=_auth(self.token, self.room))
+            except httpx.HTTPError as e:
+                misses += 1
+                if misses > 5 or time.time() > until:
+                    self.error = f"can't reach the host ({type(e).__name__})"
+                    raise NetworkError("the room's host isn't reachable right now, and it may have done this: see "
+                                       f"whether it was done before asking again ({self.error})") from None
+                self._stop.wait(min(30, 2 ** misses))
+                continue
+            misses = 0
+            out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if r.status_code != 202:
+                return r, out
+            if time.time() > until:
+                raise NetworkError("the room's host is still working on this after an hour: see whether it was done "
+                                   "before asking again")
+            self.last_ok = time.time()  # (the host answers: busy, not away)
+        raise NetworkError("left the room while the host worked on this")
 
     def _raw(self, path: str, params: dict) -> bytes:
         headers = _auth(self.token, self.room)
@@ -939,18 +1091,33 @@ class Link:
                                                    **({"selection": selection} if selection is not None else {})})
         return said["function"], ("" if said["function"] else str(said.get("why") or ""))
 
-    def attempt(self, agent: Agent, function: str, source: str) -> dict:
-        return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source})
+    def attempt(self, agent: Agent, function: str, source: str, prelude: str = "") -> dict:
+        return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source,
+                                                     **({"prelude": prelude} if prelude else {})})
 
     def call(self, route: str, agent: Agent, /, **data) -> str:
         return self._req("POST", route, {"agent": agent.name, **data}).get("text", "")
+
+    def follow(self) -> str:
+        """After the host did what an agent here asked (✅): this copy follows it now, or at the next sync. A pull
+        that failed here (a file held open on Windows, the host gone a moment) turned the host's ✅ into an error,
+        and the agent did it again on top of the host's change."""
+        try:
+            self.sync()
+        except NetworkError as e:
+            logger.info("%s: following the host failed: %s", self.slug, e)
+            return f"\n(This copy follows the host's change at the next sync: {e})"
+        return ""
 
     # -- mirroring the host's work into the local project
 
     def sync(self) -> None:
         with self._lock:
+            ask = self.cursor | ({"fresh": 1} if not self.cursor["e"] else {})
+            if not self.fork:  # (what this copy has matched: the host sends its own list when they differ)
+                ask["m"] = _digest(matched_items(self.net.store, self._pid()))
             try:  # never synced: from the newest event, without the room's history (Room._events)
-                st = self._req("GET", "/collab/state", self.cursor | ({"fresh": 1} if not self.cursor["e"] else {}))
+                st = self._req("GET", "/collab/state", ask)
             except Refused as e:  # not let in yet, or out: the screen says which (status)
                 self.error, self.refused = str(e), True
                 raise
@@ -972,6 +1139,18 @@ class Link:
                 # every candidate was sent, refused or skipped; a transport failure raised above and kept the rest
                 self.saved_progress = None
                 self._save_saved_progress()
+
+    def keep_for_later(self, name: str, source: str) -> None:
+        """A match the host couldn't take just now (away, restarting for an update): queued with the saved work, sent
+        again at the next sync that reaches it. It was this copy's alone: the room's function stayed open and another
+        member's agent did it again."""
+        row = self.net.store.one("SELECT vram, size FROM functions WHERE project_id=? AND name=?", self._pid(), name)
+        candidate = {"name": name, "vram": row["vram"] if row else None, "size": row["size"] if row else None,
+                     "status": "matched", "matched_source": source, "best_score": None, "best_source": None}
+        with self._saved_progress_lock:
+            candidates, best_comparable = self.saved_progress or ([], False)
+            self.saved_progress = ([c for c in candidates if c["name"] != name] + [candidate], best_comparable)
+            self._save_saved_progress()
 
     def _save_saved_progress(self) -> None:
         """Keep queued work in its own small table, not in projects.config (parsed on every project access): a guest
@@ -1012,14 +1191,20 @@ class Link:
             with self.net.store.tx() as db:
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
 
+    def _pid(self) -> int:
+        return self.project_id if self.project_id is not None else self.net.project_row(self.slug)["id"]
+
     def status(self) -> dict:
         """What the guest's screen says: waiting to be let in, out of the room, getting the host's work (how far),
-        in the room, or the host is away."""
+        in the room, the host is away, or the host answers but its work doesn't come (`stuck`: following it fails
+        here, `error` says why; the header said "In a room" while helpers waited on it)."""
         last_contact = max(self.last_ok, self.last_contact)
         if self.refused:  # (out: declined, taken out, or the room closed; `error` says which)
             state = "waiting" if self.error == WAITING else "out"
         elif (self.error and not last_contact) or (last_contact and time.time() - last_contact >= ROOM_QUIET):
             state = "offline"  # (never answered yet and no error: just started, getting the host's work)
+        elif self.error:
+            state = "stuck"
         else:
             state = "connected" if self.synced else "syncing"
         return {"state": state, "received": self.received, "behind": self.behind}
@@ -1028,36 +1213,58 @@ class Link:
         if self.fork:
             return self._apply_fork(st)
         net, slug = self.net, self.slug
-        proj = net.project_row(slug)
-        pid = proj["id"]
+        pid = self._pid()
         mine = f"{self.member}."
-        if st.get("symbols") is not None or st.get("functions") is not None:
-            net.apply_remote_layout(slug, st.get("functions") or [], st.get("symbols") or [])
+        if st.get("layout"):  # (first: what follows names the host's functions)
+            net.apply_remote_layout(slug, st["layout"]["functions"], st["layout"]["symbols"])
+            self.cursor["l"] = st["layout"]["digest"]
         if st.get("context"):
             net.apply_remote_context(slug, st["context"]["header"], st["context"]["version"])
             self.cursor["v"] = st["context"]["version"]
-        _in_batches(net, st.get("matched") or [], lambda m: net.apply_remote_match(
-            slug, m["vram"], m["matched_source"], m["agent"] or "host"))
-        _in_batches(net, st.get("best") or [], lambda b: net.apply_remote_best(slug, b["vram"], b["score"], b["source"]))
-        _in_batches(net, st.get("notes") or [], lambda n: net.apply_remote_note(
-            slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"]))
-        for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "collab", "polish", "readable") and not (ev["agent"] or "").startswith(mine):
-                net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
+        if st.get("matched_set"):
+            self._follow_matches(st["matched_set"]["items"])
+        _in_batches(net, st.get("best") or [], lambda b: net.apply_remote_best_named(
+            slug, b["name"], b["score"], b["source"]))
+        self._apply_notes(st)
+        self._feed(pid, st, ("match", "claim", "release", "context", "rename", "split", "collab", "polish",
+                             "readable", "reopen", "boundary"))
         if st.get("compiler"):
             net.apply_remote_compiler(slug, st["compiler"])
             self.cursor["k"] = st["compiler"]["digest"]
         if st.get("set_aside"):
-            net.apply_remote_set_aside(slug, st["set_aside"]["functions"])
+            net.apply_remote_set_aside(slug, st["set_aside"]["functions"], key="name")
             self.cursor["s"] = st["set_aside"]["digest"]
-        if st.get("readable_c") or st.get("readable"):
-            net.apply_remote_readable(slug, st.get("readable_c") or [],
-                                      (st.get("readable") or {}).get("vrams"))
-            if st.get("readable"):
-                self.cursor["r"] = st["readable"]["digest"]
+        if st.get("readable"):
+            net.apply_remote_readable_named(slug, st["readable"]["names"])
+            self.cursor["r"] = st["readable"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
+
+    def _follow_matches(self, items: list) -> None:
+        """This copy's matches become the host's: what the host doesn't have matched opens again here (it reopened
+        it, or never confirmed this copy's), and what it has, or has with other C, comes from it."""
+        net, slug, pid = self.net, self.slug, self._pid()
+        host = {name: mark for name, mark in items}
+        local = dict(matched_items(net.store, pid))
+        net.reopen_remote(slug, [name for name in local if name not in host])
+        want = [name for name, mark in host.items() if local.get(name) != mark]
+        for at in range(0, len(want), MATCHED_PAGE):
+            rows = self._req("POST", "/collab/matched", {"names": want[at:at + MATCHED_PAGE]}).get("functions") or []
+            _in_batches(net, rows, lambda r: net.apply_remote_match_named_source(
+                slug, r["name"], r["matched_source"] or "", r["agent"] or "host"))
+
+    def _apply_notes(self, st: dict) -> None:
+        net, slug = self.net, self.slug
+        _in_batches(net, st.get("notes") or [], lambda n: net.apply_remote_note_named(
+            slug, n["function"], n["text"], n["agent"] or "host", n["created_at"]))
+        self.cursor["n"] = st.get("n", self.cursor["n"])
+
+    def _feed(self, pid: int, st: dict, kinds: tuple) -> None:
+        mine = f"{self.member}."
+        for ev in st.get("events") or []:
+            if ev["kind"] in kinds and not (ev["agent"] or "").startswith(mine):
+                self.net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
 
     def _apply_fork(self, st: dict) -> None:
         """A git project's room: follow the host's commits, then mirror matches, notes, events, claims."""
@@ -1068,13 +1275,11 @@ class Link:
             self.pull(st.get("branch") or "")
         for m in st.get("matched") or []:
             net.apply_remote_match_named(slug, m["name"], m["agent"] or "host")
-        for n in st.get("notes") or []:
-            net.apply_remote_note_named(slug, n["function"], n["text"], n["agent"] or "host", n["created_at"])
-        for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "source", "split", "collab", "link", "polish",
-                              "readable") \
-                    and not (ev["agent"] or "").startswith(mine):
-                net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
+        self._apply_notes(st)
+        _in_batches(net, st.get("best") or [], lambda b: net.apply_remote_best_named(
+            slug, b["name"], b["score"], b["source"]))
+        self._feed(pid, st, ("match", "claim", "release", "context", "source", "split", "collab", "link", "polish",
+                             "readable", "reopen"))
         if st.get("readable"):
             net.apply_remote_readable_named(slug, st["readable"]["names"])
             self.cursor["r"] = st["readable"]["digest"]
@@ -1083,7 +1288,7 @@ class Link:
             self.cursor["s"] = st["set_aside"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
-        self.cursor["e"] = st.get("e", self.cursor["e"])
+        self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
 
     def pull(self, ref: str) -> bool:
         """Bring the host's new commits into this tree (while no agent here is building in it), rebuild what
@@ -1091,17 +1296,19 @@ class Link:
         forks = self.net.forks
         proj, fp, _ = forks.get(self.slug)
         data = self._raw("/collab/bundle", {"have": self.head})
-        if data:
+        tip = "" if data else self._req("GET", "/collab/state", {"e": self.cursor["e"]}).get("head") or self.head
+        # no bundle: nothing new, or the host's head is a commit this tree has (the public decomp both started from,
+        # with nothing on top yet at the host). Only `head` moved there, and the tree stayed on this member's commits.
+        moved = bool(data) or (tip != forkroom.head(fp.root) and forkroom.has_commit(fp.root, tip))
+        if moved:
             with forks._tree(proj).exclusive():
-                tip = forkroom.pull(fp.root, data, ref or forkroom.branch(fp.root))
+                tip = forkroom.pull(fp.root, data, ref or forkroom.branch(fp.root), tip=tip)
                 forks._build_all(proj, fp)
-        else:
-            tip = self._req("GET", "/collab/state", {"e": self.cursor["e"]}).get("head") or self.head
         self.head = tip
         forkroom.save_head(self.net, self.slug, tip)
-        if data:
+        if moved:
             forks.sync(self.slug, log=lambda *_: None)
-        return bool(data)
+        return moved
 
     def run(self, every: float = 2.0) -> None:
         def heartbeat():
@@ -1134,11 +1341,15 @@ class Link:
                     self.sync()
                 except NetworkError as e:
                     current = str(e)
+                    if not self.refused:  # (a pull that failed said nothing: the screen said "In a room")
+                        self.error = self.error or current
+                    self.behind = 0  # (catching up: the next page at once, but not the same failure, at once, forever)
                     if current != problem:
                         logger.warning("room %s sync failed: %s; retrying", self.slug, current)
                     problem = current
                 except Exception as e:  # keep syncing; show the problem in the GUI
                     self.error = f"{type(e).__name__}: {e}"
+                    self.behind = 0
                     if self.error != problem:
                         logger.exception("room %s couldn't apply the host's work; retrying", self.slug)
                     problem = self.error
@@ -1208,11 +1419,13 @@ def _share_saved_progress(net, slug: str, link: Link, candidates: list[dict], *,
     for the next sync."""
     if not candidates:
         return
-    state = link._req("GET", "/collab/state", link.cursor | {"fresh": 1})
-    matched_names = {row["name"] for row in state.get("matched", [])}
-    matched_vrams = {row["vram"] for row in state.get("matched", [])}
-    host_functions = {row["vram"]: row for row in state.get("functions", [])}
-    host_best = {row["vram"]: row["score"] for row in state.get("best", [])}
+    # (the whole layout, matches and best attempts, whatever this copy had of them: "l", "m" and "a" say nothing)
+    state = link._req("GET", "/collab/state", link.cursor | {"fresh": 1, "l": "", "m": "", "a": 0})
+    matched_names = ({name for name, _ in state["matched_set"]["items"]} if state.get("matched_set")
+                     else {row["name"] for row in state.get("matched", [])})
+    layout = (state.get("layout") or {}).get("functions") or state.get("functions") or []
+    host_functions = {row["name"]: row for row in layout}  # (by name: overlays share addresses)
+    host_best = {row["name"]: row["score"] for row in state.get("best", [])}
     local_names = set()
     if fork:
         proj = net.project_row(slug)
@@ -1235,19 +1448,19 @@ def _share_saved_progress(net, slug: str, link: Link, candidates: list[dict], *,
                 done(candidate)
                 continue
         else:
-            host_fn = host_functions.get(candidate["vram"])
-            if host_fn is None or host_fn["size"] != candidate["size"] or host_fn["name"] != candidate["name"]:
+            host_fn = host_functions.get(candidate["name"])
+            if host_fn is None or host_fn["size"] != candidate["size"] or host_fn["vram"] != candidate["vram"]:
                 skipped += 1
                 done(candidate)
                 continue
             function = host_fn["name"]
-            if candidate["vram"] in matched_vrams:
+            if function in matched_names:
                 done(candidate)
                 continue
         if candidate["status"] == "matched":
             transfers.append(("match", function, candidate["matched_source"], None, candidate))
-        elif not fork and best_comparable and (host_best.get(candidate["vram"]) is None
-                                               or candidate["best_score"] < host_best[candidate["vram"]]):
+        elif not fork and best_comparable and (host_best.get(function) is None
+                                               or candidate["best_score"] < host_best[function]):
             transfers.append(("best", function, candidate["best_source"], candidate["best_score"], candidate))
         else:
             done(candidate)
@@ -1267,6 +1480,8 @@ def _share_saved_progress(net, slug: str, link: Link, candidates: list[dict], *,
                 link.call("/collab/best", agent, function=function, source=source, score=score)
                 best_attempts += 1
         except Refused as e:
+            if e.room_wide:  # (no to everything now, not to this candidate: the rest waits for the next sync)
+                raise
             log(f"The host refused saved progress for {function}: {e}")
             done(candidate)
         except NetworkError as e:
@@ -1300,17 +1515,22 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
     if info.get("token"):
         r = http.get(f"{url}/collab/whoami", params={"room": hello["room"]},
                      headers=_auth(info['token'], hello["room"]))
-        if r.status_code == 200:
+        said = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        # the host knows this token: a member (its name), or one it hasn't let in yet (it waits on, as it was: a
+        # new join made "alex2" and left "alex" waiting in the host's list for good)
+        if r.status_code == 200 or said.get("error") == WAITING:
             old = net.links.pop(slug, None)
             if old is not None:
                 old.stop()
-            net.link_project(slug, info | {"url": url, "room": hello["room"], "member": r.json()["name"]},
-                             client=client, start=start)
-            log(f"reconnected to {hello['title']} as {r.json()['name']}")
+            member = said.get("name") or info.get("member") or "friend"
+            # (the same room at a new address: the saved work waiting for it goes there)
+            net.link_project(slug, info | {"url": url, "room": hello["room"], "member": member}, client=client,
+                             start=start, moved=True)
+            log(f"reconnected to {hello['title']} as {member}")
             return slug
     name = info.get("member") or "friend"
     r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit()})
-    joined = r.json()
+    joined = _joined(r)
     if r.status_code != 200:
         raise NetworkError(joined.get("error", "couldn't join"))
     if joined["name"].lower() != name.lower():
@@ -1322,6 +1542,34 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
                             "host_title": hello["title"], "head": info.get("head", "")}, client=client, start=start)
     log(f"joined {hello['title']} again as {joined['name']}")
     return slug
+
+
+def _joined(r) -> dict:
+    """The host's answer to a join. A tunnel's error page or a proxy in the way answers HTML: it said "Expecting
+    value" and left the user nothing to act on."""
+    try:
+        out = r.json()
+    except ValueError:
+        out = None
+    if not isinstance(out, dict):
+        raise NetworkError(f"the room's address answered, but not as a room ({r.status_code}): check the address, or "
+                           "try again once the host's app is running")
+    return out
+
+
+def _count(value) -> int:
+    """A cursor or count from a request: a number, or "invalid request" (int() of anything else was a 500)."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        raise NetworkError("invalid request: a count isn't a number") from None
+
+
+def matched_items(store, pid: int) -> list[list[str]]:
+    """A project's matched functions as [name, a digest of its C]: what a room's guest and host compare (the
+    digest of this list), so a match renamed, reopened or tidied on the host reaches the guest too."""
+    return [[r["name"], hashlib.sha256((r["matched_source"] or "").encode()).hexdigest()[:16]] for r in store.all(
+        "SELECT name, matched_source FROM functions WHERE project_id=? AND status='matched' ORDER BY name", pid)]
 
 
 def _digest(value) -> str:
@@ -1377,7 +1625,7 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
         candidates = _saved_progress(net, slug=slug)
         best_comparable = json.loads(net.project_row(slug)["config"]).get("compiler") == hello["compiler"]
         r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit()})
-        joined = r.json()
+        joined = _joined(r)
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
     except Exception:
@@ -1442,7 +1690,7 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
             if hello.get("sha1") else []
         log(f"joining {hello['title']} ({hello['functions']} functions, {hello['matched']} matched)")
         r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or "", "version": __version__, "commit": own_commit()})
-        joined = r.json()
+        joined = _joined(r)
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
         if joined["name"].lower() != name.lower():

@@ -11,6 +11,7 @@ from pathlib import Path
 from ... import consoles, scoring
 from ...network import MACHINE_AGENTS, WAITING, Agent, Network, NetworkError, stall_line
 from ...rom.symbols import SymbolTable
+from ..collab import Refused
 from .common import _AUTO_TOKEN, BATCH_INSNS
 
 # Releases with no compile pushed back per claim with the full advice; then the agent is told to stop (_push_back)
@@ -166,8 +167,17 @@ class JudgeMixin:
             return res
         name = self._function(function, project)["name"]
         if res["matched"]:
-            verdict = link.attempt(agent, name, source)
-            if not verdict.get("matched"):
+            try:
+                verdict = link.attempt(agent, name, source)
+            except Refused as e:
+                res["text"] += f"\n⚠️ The room's host didn't take this match: {e}"
+                return res
+            except NetworkError as e:
+                link.keep_for_later(name, source)
+                res["text"] += (f"\n⚠️ Not shared with the room yet ({e}): it is sent again when the host is back. "
+                                "Carry on with another function.")
+                return res
+            if not verdict.get("matched"):  # (this copy follows the host's: it opens here again at the next sync)
                 res["text"] += ("\n⚠️ The room's host could not confirm this match on their copy (score "
                                 f"{verdict.get('score')}). Check that both of you use the same compiler settings.")
             else:
