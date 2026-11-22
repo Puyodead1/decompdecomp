@@ -28,11 +28,36 @@ MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
 
 
 LOG_BYTES, LOG_BACKUPS = 5 << 20, 4
+LOG_RETRY = 60  # seconds before a log that couldn't be rolled over tries again
 TOOL_SAID_CHARS = 400  # the end of what a failed tool said, in its job's error
 DETAILS_CHARS, TRACE_CHARS = 6000, 4000  # what a failed job keeps of a tool's output and of the Python trace
 JOB_ID_CHARS = 12
 MIN_CONTEXT_TOKENS = 2048  # an endpoint's context is at least this: the work prompt alone needs about that
 MAX_SESSIONS = 32  # helpers on one endpoint at once, at most
+
+
+class LogFile(logging.handlers.RotatingFileHandler):
+    """The log file, started afresh past LOG_BYTES, and never silent because of it. On Windows a file another
+    program has open (an editor, a log viewer, a virus scanner) can't be renamed: the standard handler's rollover
+    failed after closing the file, so every line after it failed the same way and was lost. A Windows guest's log
+    ended two days before the room trouble it was asked about. A failed rollover now leaves the file as it is,
+    says so in it, and is tried again LOG_RETRY seconds later; the file only grows past its size meanwhile."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._retry_at = 0.0
+
+    def shouldRollover(self, record) -> bool:
+        return time.monotonic() >= self._retry_at and super().shouldRollover(record)
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError as e:
+            self._retry_at = time.monotonic() + LOG_RETRY
+            if self.stream is None:  # (closed before the rename that failed)
+                self.stream = self._open()
+            self.stream.write(f"(the log couldn't be started afresh, so it goes on here: {e})\n")
 
 
 def file_log(path: Path) -> logging.Logger:
@@ -46,7 +71,7 @@ def file_log(path: Path) -> logging.Logger:
         return logger
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(path, maxBytes=LOG_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
+        handler = LogFile(path, maxBytes=LOG_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
     except OSError:
         return logger
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s %(threadName)s] %(message)s"))
