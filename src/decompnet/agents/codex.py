@@ -16,6 +16,11 @@ STARTUP_TIMEOUT = 30  # seconds the app's server may take to list its tools befo
 SERVER = "decomp_agent"  # the app's server, by the name the run gives it
 # Codex's words when a required server didn't come up: it stops before any model turn
 _STARTUP_FAILED = re.compile(r"required MCP servers?.*(?:failed|not ready|did not start)|MCP startup failed", re.I)
+# Codex's own words for a used-up plan, at the start of an error or a stderr line; anywhere else (its model writing
+# "within the session limit") they aren't a limit
+PROVIDER_QUOTA = re.compile(r"^(?:Error:\s*)?(?:You(?:'ve| have) hit your usage limit\b|"
+                            r"(?:usage_limit_reached|insufficient_quota)\b)", re.I)
+QUOTA_CODES = ("usage_limit_reached", "insufficient_quota")
 COMMAND_SHOWN = 80  # characters of a shell command the feed shows
 
 
@@ -82,6 +87,15 @@ class Codex(Agent):
         cmd.append("-")  # the prompt comes from stdin
         return cmd, {TOKEN_ENV: token}
 
+    def quota_error(self, state: dict, exit_code: int, stderr: list[str], said: str) -> str:
+        """Only a failed turn or stderr line in Codex's own words: helpers sat in hour-long waits because a model
+        said it was "moving on within the session limit"."""
+        if state.get("quota_error"):
+            return state["quota_error"]
+        if exit_code:
+            return next((line for line in reversed(stderr) if PROVIDER_QUOTA.match(line)), "")
+        return ""
+
     def startup_failure(self, text: str) -> str | None:
         if _STARTUP_FAILED.search(text):
             return "Codex couldn't start decompdecomp's tools, so it stopped before any model turn: " + text.strip()[-600:]
@@ -104,13 +118,19 @@ class Codex(Agent):
             elif it == "error":
                 out.append(("error", str(item.get("message", ""))[:SAID_CHARS]))
         elif t == "turn.completed":  # its input tokens include the cached ones
+            state.pop("quota_error", None)  # (a later turn went through: whatever failed before wasn't the plan)
             out.append(("info", "turn finished"))
             usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
             cached = number(usage, "cached_input_tokens")
             out.append(usage_item(input=max(0, number(usage, "input_tokens") - cached), cache_read=cached,
                                   output=number(usage, "output_tokens"), turns=1))
         elif t in ("error", "turn.failed"):
-            out.append(("error", error_text(event.get("error") or event.get("message"))[:SAID_CHARS]))
+            error = event.get("error") or event.get("message")
+            message = error_text(error)
+            code = (error.get("code") or error.get("type")) if isinstance(error, dict) else None
+            if code in QUOTA_CODES or PROVIDER_QUOTA.match(message):
+                state["quota_error"] = message
+            out.append(("error", message[:SAID_CHARS]))
         return out
 
 
