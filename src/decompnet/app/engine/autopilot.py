@@ -202,7 +202,7 @@ class AutopilotMixin:
         alone, the room's function stayed open and the host's agents did it again."""
         link = self._link(proj["slug"])
         if link is None or not d.bytes_match:
-            self._record(fn, agent, d.score, source, version, matched=d.bytes_match)
+            self._record(fn, agent, d.score, source, version, matched=d.bytes_match, mismatch_rows=d.rows)
             if link is not None and (fn["best_score"] is None or d.score < fn["best_score"]):  # (as a guest's
                 # agents' better attempts reach the host)
                 threading.Thread(target=self._report, args=(link, agent, fn["name"], source, d.score),

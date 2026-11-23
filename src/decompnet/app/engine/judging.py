@@ -9,7 +9,16 @@ import time
 from pathlib import Path
 
 from ... import consoles, scoring
-from ...network import MACHINE_AGENTS, WAITING, Agent, Network, NetworkError, stall_line
+from ...network import (
+    COMPILE_LIMIT,
+    MACHINE_AGENTS,
+    WAITING,
+    Agent,
+    Network,
+    NetworkError,
+    compile_limit,
+    stall_line,
+)
 from ...rom.symbols import SymbolTable
 from ..collab import Refused
 from .common import _AUTO_TOKEN, BATCH_INSNS
@@ -158,6 +167,8 @@ class JudgeMixin:
 
     def _attempt(self, agent: Agent, function: str, source: str, project: str | None = None) -> dict:
         self._yield_autopilot(function, project)
+        if (over := self._over_compile_limit(agent, function, project)):
+            return {"text": over, "score": None, "matched": False}
         if (fork := self.fork_slug(project)):
             return self.forks.attempt(agent, fork, function, source)
         link = self._link(project)
@@ -185,6 +196,31 @@ class JudgeMixin:
         elif before is None or res["score"] < before:
             threading.Thread(target=lambda: self._report(link, agent, name, source, res["score"]), daemon=True).start()
         return res
+
+    def _over_compile_limit(self, agent: Agent, function: str, project: str | None) -> str | None:
+        """Why a compile is refused: the agent's claim on the function already had its compile_limit of compiles
+        without a better score (COMPILE_LIMIT times the move-on number, in a row or not), ROM and project mode
+        alike: it runs before they part. The move-on number counts them in a row, so a better score now and then
+        started it again, and an agent could keep going past it (n-delic/decompdecomp#286). A compile that beats the
+        claim's best doesn't count. None: the compile goes ahead (no claim, not open, one of decompdecomp's own
+        workers, you in the editor, or a room member's agent on the host: its own app counts its compiles, and the
+        host only confirms what it sends, so how a host judges a member's match stays as it was)."""
+        if agent.name in ("you", *MACHINE_AGENTS):
+            return None
+        row = self.store.one("SELECT origin FROM agents WHERE id=?", agent.id)
+        if row is not None and (row["origin"] or "").startswith("collab:"):
+            return None
+        try:
+            fn = self._function(function, project)
+        except NetworkError:
+            return None  # the compile path says what's wrong with the name
+        progress = self.claim_progress(agent, fn) if fn["status"] == "open" else None
+        if progress is None or progress["no_gain"] < compile_limit(progress["after"]):
+            return None
+        return (f"Not compiled: {progress['no_gain']} of your {progress['compiles']} compiles of {fn['name']} since "
+                f"you claimed it didn't beat your best before them. That's {COMPILE_LIMIT} times its move-on number "
+                f"({progress['after']}), the most one claim gets. Call release_function now with notes (what you "
+                "tried, what's left; your best attempt is kept), then claim the next function.")
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
@@ -310,6 +346,8 @@ class JudgeMixin:
         n, streak, after = progress["compiles"], progress["no_better"], progress["after"]
         if n and streak >= after:
             return None  # compile_and_diff said to move on
+        if progress.get("no_gain", 0) >= compile_limit(after):
+            return None  # compile_and_diff won't take another compile of it (_over_compile_limit)
         pushed = self.store.one("SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='release_pushed' AND "
                                 "detail=? AND created_at >= ?", agent.id, fn["name"], progress["claimed_at"])["n"]
         if n and pushed:

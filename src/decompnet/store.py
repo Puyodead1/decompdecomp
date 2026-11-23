@@ -124,6 +124,7 @@ MIGRATIONS = [
     ("functions", "last_improved", "REAL"),                   # latest compiled attempt that improved the score
     ("functions", "copy_mark", "TEXT"),                        # meta's copy_of (network.COPY)
     ("functions", "enough_mark", "TEXT"),                      # meta's good_enough (network.SET_ASIDE)
+    ("attempts", "diff_digest", "TEXT"),                       # network.diff_digest: same score, another diff
 ]
 
 # What the counts ask of each function's meta, copied into columns of their own: an index can hold a column, and

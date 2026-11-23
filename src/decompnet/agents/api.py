@@ -596,7 +596,9 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                            show=st('"asm" or "best": that part alone'))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source. "
-                             "`edits` instead of source: changes to your last C of one function.",
+                             "`edits` instead of source: changes to your last C of one function. One claim gets at "
+                             "most twice the function's move-on number of compiles without a better score (in a row "
+                             "or not); then it takes no more: release_function.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source"),
                                edits={"type": "array", "description": "{old, new} changes to your last C of this function",
                                       "items": {"type": "object", "properties": {"old": {"type": "string"},
@@ -609,7 +611,9 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "release_function": ("Give up a function with notes for the next agent, once compile_and_diff says to move "
                              "on (before that it answers once with what to try; call it again once you've compiled "
                              "it, to release anyway). A plain release with no compile since you claimed it is not "
-                             "taken, however often you ask: compile first, or end your session.",
+                             "taken, however often you ask: compile first, or end your session. After twice the "
+                             "move-on number of compiles without a better score in one claim (in a row or not), "
+                             "compile_and_diff takes no more and this goes through.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True),
                                not_c=bo("true when you're sure no C makes its code (hand-written assembly); say why in notes"),
                                needs=st("optional: another function this one needs done first (a callee or inlined "
@@ -732,7 +736,9 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
                                     "with objdiff. 100% / score 0 = matched. `edits` instead of source: changes to your "
-                                    "last C of the function.",
+                                    "last C of the function. One claim gets at most twice the function's move-on "
+                                    "number of compiles without a better score (in a row or not); then it takes no "
+                                    "more: release_function.",
                                     s(function=st("function name", True), source=st("the function definition"),
                                       edits=defs["compile_and_diff"][1]["properties"]["edits"]))
     names = set(tools.tool_names(fork) if names is None else names)

@@ -63,6 +63,8 @@ from ..network import (
     model_of,
     move_on_brief,
     set_aside,
+    state_text,
+    tried_brief,
 )
 from ..rom import RomError
 from ..scoring import percent_text
@@ -2944,7 +2946,8 @@ class ForkEngine:
                     cands[f"{uname}\0{sym}"] = ops
         out = []
         rows = {(r["unit"], self._meta(r).get("symbol")): r for r in self.net.store.all(
-            "SELECT id, name, unit, status, best_score, meta, n_insns FROM functions WHERE project_id=?", proj["id"])}
+            "SELECT id, name, unit, status, best_score, attempts, meta, n_insns FROM functions WHERE project_id=?",
+            proj["id"])}
         for key, sim in similarity.rank(target, cands, top=top * 2):
             uname, sym = key.split("\0", 1)
             if (uname, sym) in rows:
@@ -2963,8 +2966,7 @@ class ForkEngine:
             return f"No look-alikes found for {fn['name']} {note}."
         lines = [f"Functions that look like {fn['name']} {note}:"]
         for r, sim in hits:
-            state = "matched" if r["status"] == "matched" else f"best {r['best_score']}" if r["best_score"] is not None else "not started"
-            lines.append(f"- {r['name']}  {sim * 100:.0f}% similar  {state}  ({r['unit']}, {r['n_insns']} insns)")
+            lines.append(f"- {r['name']}  {sim * 100:.0f}% similar  {state_text(r)}  ({r['unit']}, {r['n_insns']} insns)")
         best = next((r for r, _ in hits if r["status"] == "matched"), None)
         if best is not None:
             src = self._current_source(fp, best)
@@ -3624,6 +3626,8 @@ class ForkEngine:
         lines = [f"## {header}: {fn['name']}  ({proj['name']})", f"unit {unit.name}, {fn['size']} bytes"]
         if fn["status"] != "matched":
             lines.append(move_on_brief(fn, self.net.stall_after(fn, agent)))
+            lines += tried_brief(fn)
+            lines += self.net.tried_at_best(fn)
         if (reg := meta.get("static_register_arg")) and fn["status"] != "matched":
             lines.append(f"its code reads {reg} before it sets it: an argument in {reg}, from callers all in its own "
                          f"source file. Visual C++ gives a static function a convention of its own (arguments in "
@@ -4386,7 +4390,8 @@ class ForkEngine:
                     return text
                 if kept:
                     self.net.remember_compile(key, agent, fn, text, score)
-                return text + self.net.same_score_note(fn["id"], agent.id, score, code)
+                return (text + self.net.same_score_note(fn["id"], agent.id, score, code)
+                        + self.net.judged_at_best_note(fn["id"], score, code))
 
             def undo() -> None:
                 _rewrite(path, before)
@@ -4415,7 +4420,8 @@ class ForkEngine:
                     self.net._record(fn, agent, None, code, 0)
                 why = "" if builds else ("\n(The file didn't build before your change either, so the error may be in "
                                          "other code of the file: fix that with edit_file.)")
-                return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}", "score": None,
+                stall = self.net.stall_note(fn["id"], agent.id) if quiet is None else ""  # (it counted too)
+                return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}{stall}", "score": None,
                         "matched": False}
             try:
                 d = fp.diff(unit, symbol)
@@ -4435,7 +4441,7 @@ class ForkEngine:
                 if d.match_percent is not None:
                     own = max(1, len(d.literals)) if d.literals else scaled(d.match_percent, fn["n_insns"])
                 if quiet is None:  # an attempt, never the best: release puts the best back in the file
-                    self.net._record(fn, agent, own, code, 0, compiled=True, best=False)
+                    self.net._record(fn, agent, own, code, 0, compiled=True, best=False, mismatch_rows=d.rows)
                 listed = ", ".join(broken[:8])
                 if own is None:
                     text = (f"❌ REJECTED and undone: your change breaks matched function(s) {listed}. Check you "
@@ -4453,14 +4459,16 @@ class ForkEngine:
                             f"functions), they match again once {fn['name']} matches exactly: work from the diff "
                             "below. Otherwise check you replaced the right definition (overloads?) and didn't change "
                             f"shared code.\n{d.render()}")
-                return {"text": remembered(text, own), "score": None, "held_score": own, "matched": False,
+                stall = self.net.stall_note(fn["id"], agent.id) if quiet is None else ""
+                return {"text": remembered(text, own) + stall, "score": None, "held_score": own, "matched": False,
                         "broken": broken, "alone": bool(d.matched)}
             if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
                 undo()
                 if quiet is None:
                     self.net._record(fn, agent, None, code, 0, compiled=True)
+                stall = self.net.stall_note(fn["id"], agent.id) if quiet is None else ""
                 return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
-                                f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
+                                f"the game no longer builds byte for byte:\n{_tail(ok[1])}{stall}", "score": None,
                         "matched": False}
             pct = d.match_percent if d.match_percent is not None else 0.0
             score = max(1, len(d.literals)) if d.literals else scaled(pct, fn["n_insns"])
@@ -4468,7 +4476,7 @@ class ForkEngine:
             if not matched and not keep and not was_matched:  # tried, not kept: the file stays as it was
                 undo()
                 if quiet is None or score < quiet:
-                    self.net._record(fn, agent, score, code, 0, compiled=True)
+                    self.net._record(fn, agent, score, code, 0, compiled=True, mismatch_rows=d.rows)
                 return {"text": f"{percent_text(pct)} match (score {score}); not kept in {unit.source}", "score": score,
                         "matched": False, "percent": pct}
             best = fn["best_score"]
@@ -4478,7 +4486,7 @@ class ForkEngine:
                 # the one the notes and the brief call the best (an agent found its 91.8% try there, not its 92.3%)
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, score, code, 0, compiled=True)
+                    self.net._record(fn, agent, score, code, 0, compiled=True, mismatch_rows=d.rows)
                 stall = self.net.stall_note(fn["id"], agent.id)
                 text = remembered(f"{percent_text(pct)} match (score {score}), worse than the best so far (score "
                                   f"{best}), so {unit.source} keeps what it had; your attempt is recorded.\n"
@@ -4499,7 +4507,7 @@ class ForkEngine:
                                                         f"Edited by {agent.name} with decompdecomp.")
                 return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
                         "score": 0, "matched": True}
-            self.net._record(fn, agent, score, code, 0, matched=matched)
+            self.net._record(fn, agent, score, code, 0, matched=matched, mismatch_rows=d.rows)
             self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"], agent=agent, text=after,
                                via=f"unit diff after a compile of {fn['name']}")
             self._remember(proj, fp, unit, d)
