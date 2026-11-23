@@ -139,17 +139,18 @@ class BriefMixin:
         if not seeds.available():
             return fn["seed"]
         key, toolchain, context = self._draft_plan(fn, proj)
-        if fn["seed"] is not None and fn["seed_key"] == key:
+        if seeds.drafted(fn["seed"], fn["seed_key"], key):
             return fn["seed"]
         with self._draft_locks.setdefault(fn["id"], threading.Lock()):
             row = self.store.one("SELECT seed, seed_key FROM functions WHERE id=?", fn["id"])
-            if row is None or (row["seed"] is not None and row["seed_key"] == key):  # made meanwhile
+            if row is None or seeds.drafted(row["seed"], row["seed_key"], key):  # made meanwhile
                 return row["seed"] if row else None
             data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
             draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], toolchain, context, data_asm)
             text = f"{DRAFT_NOTE}\n{draft}" if draft else ""
             with self.store.tx() as db:
-                db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?", (text, key, fn["id"]))
+                db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?",
+                           (text, seeds.draft_key(key, text), fn["id"]))
         return text
 
     def _program_drafts(self, proj, console, wait: bool) -> dict[int, str] | None:
@@ -159,7 +160,7 @@ class BriefMixin:
     def _own_seed(self, fn, proj, console, wait: bool) -> str | None:
         """The console's own draft of a function (_seed_for), kept in the row as m2c's are."""
         key = self._draft_plan(fn, proj)[0]
-        if fn["seed"] is not None and fn["seed_key"] == key:
+        if seeds.drafted(fn["seed"], fn["seed_key"], key):
             return fn["seed"]
         found = self._program_drafts(proj, console, wait)
         if found is None:
@@ -167,7 +168,7 @@ class BriefMixin:
         draft = found.get(fn["vram"])
         text = f"{OWN_DRAFT_NOTE}\n{draft.strip()}" if draft else ""
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?", (text, key, fn["id"]))
+            db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?", (text, seeds.draft_key(key, text), fn["id"]))
         return text
 
     def _own_draft_source(self, fn, proj, header: str) -> str | None:
@@ -196,8 +197,8 @@ class BriefMixin:
         contexts: dict[str, object] = {}
         for unit in {r["unit"] for r in rows}:
             contexts[unit] = self._context(proj["id"], unit)
-        return [r["id"] for r in rows if r["seed"] is None
-                or r["seed_key"] != self._draft_plan(r, proj, names[r["id"]][1], contexts[r["unit"]])[0]]
+        return [r["id"] for r in rows if r["seed"] is None or not seeds.drafted(
+            r["seed"], r["seed_key"], self._draft_plan(r, proj, names[r["id"]][1], contexts[r["unit"]])[0])]
 
     def draft_mark(self, proj) -> tuple:
         """What drafts are made from, summed up: a new header version, compiler, rename or split changes it."""
