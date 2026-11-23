@@ -91,6 +91,12 @@ def _state(state_file: Path) -> dict | None:
     return info if isinstance(info, dict) and _alive(info.get("port") or 0) else None
 
 
+def _alone(state_file: Path, restarted: dict | None) -> bool:
+    """Whether no other app of this home runs, once an older one was asked to quit: one that still answers may be
+    importing a game from its upload. A restart into an update is the same process: its jobs ended with the old code."""
+    return bool(restarted) or _state(state_file) is None
+
+
 def replace_older(state_file: Path, log=print) -> dict | None:
     """The running app's {port, secret} when it's this version or newer. An older one (still running after an
     upgrade) is stopped, so the new version starts in its place: returns None then, and when nothing runs. One
@@ -190,12 +196,15 @@ def run(args) -> int:
         # an update from 1.0.2 landed here: quitting would stop the helpers mid-work; they carry on, and `decomp`
         # opens the window once the packages are in (Window.open looks again)
 
+    alone = _alone(state_file, restarted)
     sock = _listen(restarted["port"] if restarted else args.port, exact=bool(restarted))
     port = sock.getsockname()[1]
     secret = restarted["secret"] if restarted else secrets.token_urlsafe(24)
     state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}), encoding="utf-8")
     os.chmod(state_file, 0o600)
     cleanup.old_registrations(internal)
+    if alone:
+        cleanup.stale_uploads(internal)
     net = RomNetwork(internal / "decomp.db", home)
     mcp, manager, security, quit_app = build(net, internal, port, secret)
     app = mcp.streamable_http_app(transport_security=security, max_request_body_size=REQUEST_BODY_LIMIT, host="127.0.0.1")

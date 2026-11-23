@@ -124,3 +124,30 @@ def test_the_packages_menu_entry_runs_the_packages_own_decomp():
     entry = subprocess.run(["sed", command.group(1), str(packaging / "decompdecomp.desktop")],
                            capture_output=True, text=True, check=True).stdout
     assert "Exec=/usr/bin/decomp\n" in entry
+
+
+def test_a_game_copy_an_unfinished_import_left_is_deleted_at_start(tmp_path):
+    """An import deletes the copy of the game the window sent when its job ends; one cut short by a quit or a crash
+    left it for good (a 1.4 GB disc image sat in .decomp/uploads for ten days)."""
+    uploads = tmp_path / "uploads"
+    (uploads / "d43c1e18").mkdir(parents=True)
+    (uploads / "d43c1e18" / "game.iso").write_bytes(b"x" * 10)
+    (uploads / "game.bin").write_bytes(b"y")  # (a game sent as bytes: Network.saved_file)
+    assert len(cleanup.stale_uploads(tmp_path)) == 2
+    assert list(uploads.iterdir()) == []
+    assert cleanup.stale_uploads(tmp_path / "missing") == []
+
+
+def test_uploads_stay_while_an_older_app_of_the_home_still_answers(tmp_path, monkeypatch):
+    """An older app asked to quit that still answers may be importing from its upload; a restart into an update is
+    this very process, whose jobs ended with the old code."""
+    from decompnet.app import cli
+
+    state = tmp_path / "server.json"
+    state.write_text(json.dumps({"port": 6999, "secret": "s", "pid": 1}), encoding="utf-8")
+    monkeypatch.setattr(cli, "_alive", lambda port: True)
+    assert not cli._alone(state, None)
+    assert cli._alone(state, {"port": 6999, "secret": "s"})
+    monkeypatch.setattr(cli, "_alive", lambda port: False)
+    assert cli._alone(state, None)
+    assert cli._alone(tmp_path / "none.json", None)

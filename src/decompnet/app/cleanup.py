@@ -12,6 +12,8 @@ Nothing else in those files changes.
 Claude Code and Codex are asked through their own `mcp remove` (they rewrite their files themselves: editing
 ~/.claude.json while a session writes it would lose one of the two). Antigravity's file is edited directly: running
 `agy` starts the MCP servers in its settings, the old bridge included, and that would start the app.
+
+Also here: what an earlier run left behind by accident (stale_uploads, at every start).
 """
 
 from __future__ import annotations
@@ -162,6 +164,26 @@ def remove_registrations(home: Path) -> list[str]:
     for name, rel, key in JSON_CLIENTS:
         said += _json_client(name, home / rel, key)
     return said
+
+
+def stale_uploads(internal: Path) -> list[Path]:
+    """Delete the copies of games the window sent (a file dropped on or picked in the import box, a room's game):
+    an import deletes its copy when its job ends, but one cut short by a quit or a crash left it for good (a 1.4 GB
+    disc image sat there for ten days). Called before the server starts, when no other app of this home runs, so no
+    import or room join can be reading one; a project keeps its own copy of the game, never one of these."""
+    uploads = internal / "uploads"
+    if not uploads.is_dir():
+        return []
+    removed = []
+    for entry in uploads.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+        removed.append(entry)
+    if removed:
+        logging.getLogger("decompdecomp").info("removed %d unfinished upload(s) from %s", len(removed), uploads)
+    return removed
 
 
 def old_registrations(internal: Path) -> None:
