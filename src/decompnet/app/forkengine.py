@@ -36,6 +36,7 @@ from ..forks import (
     convention,
     csource,
     datadiff,
+    dolcheck,
     drafts,
     dtkdata,
     dtksplits,
@@ -1718,6 +1719,8 @@ class ForkEngine:
                         linked.append(src)
                     else:
                         failed[src] = _tail(out)
+                        if "FAILED" in out:  # (the checksum's one line says nothing to fix: say where it differs)
+                            failed[src] += "\n" + dolcheck.report(fp.root, cfg.get("version") or (fp.versions() or [""])[0])
                 ok, out = build_with(linked)
                 if not ok:
                     linked = []
