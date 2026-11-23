@@ -234,6 +234,7 @@ class EditMixin:
         syms = self.symbols(proj["id"])
         trial = syms.copy()  # with every overlay twin's name (#117 review)
         addresses = {}
+        folded: dict[str, tuple[str, int]] = {}  # a function's new name in lower case -> (the name, its address)
         for old, new in pairs:
             if not (IDENT.match(old) and IDENT.match(new)):
                 raise NetworkError("old and new must be C identifiers")
@@ -249,6 +250,21 @@ class EditMixin:
             if any(r["name"] == new for r in at) and not any(r["name"] == new for r in renamed):
                 # the other overlay function at this address has it: the names would collide (#117 review)
                 raise NetworkError(f"`{new}` already names another function at 0x{addr:08X} (an overlay's)")
+            if renamed:
+                # A function's saved C is src/<name>.c, and macOS and Windows disks ignore capitals in file names: an
+                # N64 game's selectStateReset and SelectStateReset shared one file, every sync found the other's C
+                # where it meant to write, and its saves never settled. (Data has no file; project mode's saves are
+                # its own build's files, named by the game's source.)
+                ids = ",".join("?" * len(renamed))
+                row = self.store.one("SELECT name FROM functions WHERE project_id=? AND lower(name)=lower(?) AND "
+                                     f"id NOT IN ({ids}) LIMIT 1", proj["id"], new, *(r["id"] for r in renamed))
+                clash = row["name"] if row else None
+                if clash is None and (earlier := folded.get(new.lower())) and earlier[1] != addr:
+                    clash = earlier[0]  # (a batch naming two functions alike)
+                if clash is not None:
+                    raise NetworkError(f"`{new}` differs from `{clash}` only in capitals: their saved files would be one "
+                                       "file on macOS and Windows. Choose a name that differs in more than capitals.")
+                folded[new.lower()] = (new, addr)
             addresses[old] = addr
             if old in trial.by_name:
                 trial.rename(old, new)

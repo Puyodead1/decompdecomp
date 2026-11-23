@@ -1333,3 +1333,85 @@ def test_a_failed_autosave_pass_doesnt_end_the_thread(project, monkeypatch):
     monkeypatch.setattr(autosave.stop, "wait", lambda seconds: None)
     autosave._loop()
     assert len(passes) == 2
+
+
+@pytest.fixture
+def named(project):
+    """The project's two functions with symbols, so they can be renamed."""
+    net, folder, judged = project
+    pid = net.store.one("SELECT id FROM projects WHERE slug='game'")["id"]
+    with net.store.tx() as db:
+        for name, address in (("f", 4096), ("g", 4100)):
+            db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,4,'func')",
+                       (pid, name, address))
+    agent, _ = net.local_agent("helper")
+    return net, folder, agent, pid
+
+
+def _names(net):
+    return {row["name"] for row in net.store.all("SELECT name FROM functions")}
+
+
+def test_a_rename_refuses_a_name_that_differs_from_another_only_in_capitals(named):
+    """A function's saved C is src/<name>.c: on macOS and Windows disks an N64 game's selectStateReset and
+    SelectStateReset were one file, every sync found the other's C where it meant to write, and saves never settled.
+    A batch can't make such a pair either; a function may change the capitals of its own name."""
+    net, _, agent, _ = named
+    with pytest.raises(NetworkError, match="`F` differs from `f` only in capitals"):
+        net.rename_symbol(agent, "game", "g", "F")
+    with pytest.raises(NetworkError, match="only in capitals"):
+        net.rename_symbols(agent, "game", [("f", "resetState"), ("g", "ResetState")])
+    assert _names(net) == {"f", "g"}
+    assert net.rename_symbol(agent, "game", "g", "G").startswith("✅")
+    assert _names(net) == {"f", "G"}
+
+
+def test_saving_waits_and_names_the_functions_whose_names_clash(named, monkeypatch):
+    """A project that has such a pair already (renamed before the check) still opens, so the rename that ends it can
+    run; saving waits and says which functions, then continues after the rename."""
+    from decompnet.app import progress as progress_module
+
+    net, folder, agent, pid = named
+    monkeypatch.setattr(progress_module, "_ignores_case", lambda folder: True)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET name='F' WHERE name='g'")
+        db.execute("UPDATE symbols SET name='F' WHERE name='g'")
+    assert net.progress.sync("game", force=True) is False
+    message = net.progress.errors["game"]
+    assert "Functions `F` and `f` differ only in capitals" in message and "rename_symbol" in message
+    assert net._project("game")["id"] == pid
+    assert net.rename_symbol(agent, "game", "F", "reset_state").startswith("✅")
+    net.progress.sync("game", force=True)
+    assert "game" not in net.progress.errors
+    monkeypatch.setattr(progress_module, "_ignores_case", lambda folder: False)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET name='F' WHERE name='reset_state'")
+    assert progress_module.case_clash(net, pid, folder) is None  # (a disk that tells them apart has two files)
+
+
+def test_whether_a_disk_ignores_capitals_is_read_from_the_disk(tmp_path):
+    from decompnet.app.progress import _ignores_case
+
+    (tmp_path / "src").mkdir()
+    assert _ignores_case(tmp_path) == (tmp_path / "SRC").exists()
+
+
+def test_a_leftover_file_spelled_with_other_capitals_moves_to_unlisted(project, monkeypatch):
+    """After the rename that ended a clash, the shared file kept the former name's spelling and hid the other
+    function's C."""
+    from decompnet.app import progress as progress_module
+
+    net, folder, _ = project
+    pid = net.store.one("SELECT id FROM projects WHERE slug='game'")["id"]
+    for name in ("src/f.c", "best/f.c"):
+        (folder / name).unlink(missing_ok=True)
+    (folder / "best").mkdir(exist_ok=True)
+    (folder / "best/F.c").write_text("void f(void) { /* former spelling */ }\n", encoding="utf-8")
+    disk = _read(folder)
+    assert "best/F.c" in disk
+    monkeypatch.setattr(progress_module, "_ignores_case", lambda folder: True)
+    lines = []
+    repaired = _repair(net, pid, folder, disk, lines.append)
+    assert "best/F.c" not in repaired
+    assert (folder / "unlisted/best/F.c").read_text(encoding="utf-8") == "void f(void) { /* former spelling */ }\n"
+    assert any("moved to unlisted/" in line for line in lines)

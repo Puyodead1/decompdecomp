@@ -37,6 +37,7 @@ CHECK_SECONDS = 0.25  # a non-forced check of an unchanged folder is this rare p
 # after this long. Retried on every one, two such projects cost 2.9 s each second in the autosave alone, and each try
 # claimed a function anew. A user's action or a compile (forced) always tries again: a compiler installed meanwhile.
 RETRY_FAILED_SECONDS = 60
+CLASHES_SHOWN = 3  # pairs of names differing only in capitals a save names (case_clash)
 PARTIAL_FUNCTIONS = 256  # more changed functions than this: one full query beats this many per-name lookups
 
 
@@ -160,6 +161,14 @@ def _repair(net, pid: int, folder: Path, disk: dict[str, str], report) -> dict[s
         known = {row["name"] for row in net.store.all("SELECT name FROM functions WHERE project_id=?", pid)}
         known_files = {saves._source_file(function) for function in known}
         left = [name for name in left if Path(name).name not in known_files or Path(name).name in empty_files]
+    if _ignores_case(folder):
+        # A file spelled like a former name that differs only in capitals from a function's own (left by the rename
+        # that ended a clash) is that function's file on this disk: it would hide the function's real C forever.
+        known_files = {saves._source_file(row["name"]) for row in net.store.all(
+            "SELECT name FROM functions WHERE project_id=?", pid)}
+        folded = {name.lower() for name in known_files}
+        left = sorted(set(left) | {name for name in disk if name.startswith(("src/", "best/"))
+                                   and Path(name).name not in known_files and Path(name).name.lower() in folded})
     for name in left:
         (folder / "unlisted" / name).parent.mkdir(parents=True, exist_ok=True)
         os.replace(folder / name, folder / "unlisted" / name)
@@ -168,6 +177,38 @@ def _repair(net, pid: int, folder: Path, disk: dict[str, str], report) -> dict[s
         report(f"{len(left)} file(s) in src/ and best/ are of no function of the project (a function's file under a "
                "name it no longer has): moved to unlisted/, kept and not judged")
     return disk
+
+
+def _ignores_case(folder: Path) -> bool:
+    """Whether the disk holding `folder` takes File.c and file.c for one file (macOS and Windows, by default)."""
+    for path in (folder / "src", folder):
+        if path.is_dir() and path.name.swapcase() != path.name:
+            other = path.with_name(path.name.swapcase())
+            try:
+                return other.exists() and os.path.samefile(path, other)
+            except OSError:
+                return False
+    return False
+
+
+def case_clash(net, pid: int, folder: Path) -> str | None:
+    """Why saving waits, when two functions' names differ only in capitals on a disk that ignores them.
+
+    Their src/ files are one file there: on an N64 game each sync found the other function's file where it meant to
+    write, took it for an editor's change, rolled back and tried again, so its saves never settled."""
+    rows = net.store.all("SELECT name FROM functions WHERE project_id=? AND lower(name) IN (SELECT lower(name) FROM "
+                         "functions WHERE project_id=? GROUP BY lower(name) HAVING COUNT(*)>1) "
+                         "ORDER BY lower(name), name", pid, pid)
+    if not rows or not _ignores_case(folder):
+        return None
+    groups: dict[str, list[str]] = {}
+    for row in rows:
+        groups.setdefault(row["name"].lower(), []).append(row["name"])
+    shown = "; ".join(" and ".join(f"`{name}`" for name in names) for names in list(groups.values())[:CLASHES_SHOWN])
+    more = f" (and {len(groups) - CLASHES_SHOWN} more)" if len(groups) > CLASHES_SHOWN else ""
+    return (f"Functions {shown}{more} differ only in capitals, and this disk ignores capitals in file names, so their "
+            "saved C would be one file. Ask a helper to rename one of each pair (rename_symbol); saving continues "
+            "after the rename.")
 
 
 # #158: spimdisasm names a piece that starts at a jump target by its label, `.L80129B10`, and the app saves it so.
@@ -380,6 +421,7 @@ class Progress:
         self.sync_changes: dict[str, int] = {}  # kept for restore, which drops every in-memory trace of a project
         self.adopting: set[str] = set()
         self.blocked: dict[str, tuple] = {}  # slug -> (folder, dirty token, settings) while a compiler waits
+        self.case_checked: dict[str, tuple] = {}  # slug -> (dirty token, why saving waits for a rename, or None)
         self.failed: dict[str, tuple] = {}  # slug -> ((dirty token, settings, folder), when) of the last failed sync
         # slug -> when someone last used the project (a route, a tool call, the judge: any sync but the autosave's),
         # or a sync found work in it. The autosave reads only these projects' every file each second (saves.Autosave)
@@ -626,6 +668,7 @@ class Progress:
             self.states.pop(project_id, None)
             for cache in (self.disk, self.projected, self.checked, self.results, self.revisions,
                           self.signatures, self.stamps, self.published, self.sync_changes, self.errors, self.blocked,
+                          self.case_checked,
                           self.failed, self.used):
                 cache.pop(slug, None)
 
@@ -714,6 +757,15 @@ class Progress:
                     state = self._state(pid)
                     dirty = self._dirty(pid)
                     config_key = _config_key(proj, self.net.cfg(proj))
+                    # Saving waits, and says why, rather than failing every write; the project and renames stay
+                    # usable. Checked again only when a function changes (a rename changes the dirty token).
+                    checked = self.case_checked.get(slug)
+                    if checked is None or checked[0] != dirty.token:
+                        checked = self.case_checked[slug] = (dirty.token, case_clash(self.net, pid, folder))
+                    if checked[1]:
+                        self.blocked[slug] = (self._signature(folder), dirty.token, config_key)
+                        self.errors[slug] = checked[1]
+                        return False
                     failed = None if (force if retry is None else retry) else self.failed.get(slug)
                     if (failed and slug in self.errors and time.monotonic() - failed[1] < RETRY_FAILED_SECONDS
                             and failed[0] == (dirty.token, config_key, self._signature(folder))):
