@@ -40,3 +40,8 @@ def pytest_configure(config):
     from decompnet.app.engine.compilers import CompilerMixin
 
     CompilerMixin.rejudge_background = False
+    # and a helper's session starts without first asking the app's MCP server for its tools: the tests' helpers have
+    # an address that leads nowhere (tests/test_tool_preflight.py turns it on)
+    from decompnet.app.agents import Manager
+
+    Manager.check_tools = False
