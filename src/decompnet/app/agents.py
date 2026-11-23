@@ -64,6 +64,20 @@ class Fatal(RuntimeError):
     """A helper can't work until the user changes something: it pauses with this, instead of trying again."""
 
 
+class ToolConnectionUnavailable(RuntimeError):
+    """The app's own tool server didn't answer a helper's check before its session (busy, or starting): no model
+    request was made, so the helper waits a little and checks again, without counting it as a failed session."""
+
+
+def _leaf_errors(error: BaseException, token: str) -> str:
+    """What went wrong, from the errors an exception group hides (the MCP client's task groups wrap the transport's
+    error in one or two), without the helper's token."""
+    if children := getattr(error, "exceptions", None):
+        return "; ".join(_leaf_errors(child, token) for child in children[:4])[:600]
+    text = f"{type(error).__name__}: {error or 'no message'}"
+    return (text.replace(token, "[redacted]") if token else text)[:600]
+
+
 # An agent's error that's about signing in or keys: then the pause says how to sign in
 _SIGNIN = re.compile(r"auth|log ?in|sign(ed)? ?in|credential|api.?key|unauthori[sz]ed|\b401\b|\b403\b", re.I)
 
@@ -106,6 +120,12 @@ ROOM_STALE = 30
 # when nothing is claimable for a helper (held by others, given back by its model: network.MODEL_GIVE_UPS): look
 # again this often instead of starting sessions that find nothing to claim
 GIVEN_UP_RETRY = 10 * 60
+# Before each session of a CLI helper, the app's MCP server is asked for the helper's tools (Manager._preflight_tools):
+# a session that starts without them can only spend the user's allowance. A server that doesn't answer in
+# CONNECTION_CHECK_TIMEOUT is checked again after CONNECTION_WAIT_FIRST, doubling up to CONNECTION_WAIT_LONGEST.
+CONNECTION_CHECK_TIMEOUT = 15
+CONNECTION_WAIT_FIRST = 5
+CONNECTION_WAIT_LONGEST = 60
 PREP_WAIT = 15 * 60  # longest wait for start_files before the helpers start anyway
 ORDER_WAIT = 2 * 60  # longest wait for the twins' first ordering
 STOP_GRACE = 5  # seconds between asking a helper's processes to end (SIGTERM) and ending them (SIGKILL)
@@ -1197,7 +1217,7 @@ class Manager:
             self._set(s, "starting", "first setting hand-written assembly aside and putting the functions in order "
                                      "(seconds; a minute the first time)")
             twins.ordered.wait(ORDER_WAIT)
-        failures = fast = throttles = limits = auths = 0
+        failures = fast = throttles = limits = auths = unreachable = 0
         while not s.stop.is_set():
             if self._left(s.slug, task := s.options.get("task") or "") == 0:
                 self._finish(s, f"nothing left to {'polish' if task == 'readable' else 'decompile'} here 🎉")
@@ -1224,6 +1244,22 @@ class Manager:
                 self._pause(s, f"the project doesn't build on this computer, so no session starts: {broken}",
                             "Fix the project's setup (its page says what's wrong), then press Start again.")
                 break
+            kind = agents.get(s.kind)
+            if kind.command and self.check_tools:  # (the built-in API agent calls the tools in this process)
+                try:
+                    self._preflight_tools(token)
+                except Fatal as e:
+                    s.error = str(e)
+                    self._pause(s, str(e))
+                    break
+                except ToolConnectionUnavailable as e:
+                    unreachable += 1
+                    s.error = str(e)
+                    self._wait(s, f"the app's tool server didn't answer, so no session started: {e}", time.time()
+                               + min(CONNECTION_WAIT_LONGEST, CONNECTION_WAIT_FIRST * 2 ** (unreachable - 1)),
+                               "it checks again by itself")
+                    continue
+                unreachable = 0
             s.runs += 1
             self._set(s, "working")
             began = time.time()
@@ -1231,7 +1267,6 @@ class Manager:
             row = self._session_begin(s)
             secrets = (s.options.get("api_key"), token)
             s.record = lambda kind, value, row=row, secrets=secrets: self.transcripts.append(row, kind, value, secrets)
-            kind = agents.get(s.kind)
             try:
                 ok = self._run_cli(s, token, workdir) if kind.command else kind.run(self, s, agent)
             except Fatal as e:  # needs the user first: retrying can't help
@@ -1439,6 +1474,60 @@ class Manager:
             text = text.replace("\nWrite plausible original code", "\n" + "\n\n".join(extra)
                                 + "\n\nWrite plausible original code", 1)
         return text
+
+    check_tools = True  # (tests turn it off: their helpers' MCP address leads nowhere)
+
+    def _preflight_tools(self, token: str) -> None:
+        """Before a CLI helper's session: that the app's MCP server answers with this helper's tools, as the agent will
+        ask for them (its token, its project's list). Helpers started paid sessions with no tools, and spent them
+        saying so: a server that doesn't answer (busy, starting) raises ToolConnectionUnavailable, and one that
+        answers without the tools or refuses the token raises Fatal. No model request is made either way."""
+        import asyncio
+
+        try:
+            self.net.authenticate(token)
+        except NetworkError as e:
+            raise Fatal(f"The helper's own sign-in to the app's tools was refused ({_leaf_errors(e, token)}), so no "
+                        "session started. Start a new helper.") from e
+        phase, began = "connecting", time.monotonic()
+
+        async def check() -> None:
+            nonlocal phase
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+            from mcp.shared._httpx_utils import create_mcp_http_client
+
+            async with create_mcp_http_client(headers={"Authorization": f"Bearer {token}"}) as http:
+                async with streamable_http_client(self.mcp_url, http_client=http) as streams:
+                    async with ClientSession(*streams[:2]) as client:
+                        phase = "starting the MCP session"
+                        await client.initialize()
+                        phase = "listing the tools"
+                        names = {t.name for t in (await client.list_tools()).tools}
+                        # (the server lists a helper's project's tools only: none means its token or its project
+                        # wasn't recognised)
+                        if "project_info" not in names:
+                            raise Fatal("The app's tool server answered this helper without its project's tools, so "
+                                        "no session started. Start the helper again; if it keeps happening, look in "
+                                        "Agents & models for tools turned off.")
+
+        def permanent(e: BaseException) -> bool:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            return isinstance(e, Fatal) or status in (401, 403, 404) or any(map(permanent, getattr(e, "exceptions", ())))
+
+        def fatal(e: BaseException) -> Fatal | None:
+            return e if isinstance(e, Fatal) else next(filter(None, map(fatal, getattr(e, "exceptions", ()))), None)
+
+        try:
+            asyncio.run(asyncio.wait_for(check(), timeout=CONNECTION_CHECK_TIMEOUT))
+        except Exception as e:  # (an exception group from the client's task groups, a timeout, a refused connection)
+            if (said := fatal(e)) is not None:
+                raise said from e
+            why = f"{phase} failed after {time.monotonic() - began:.0f}s: {_leaf_errors(e, token)}"
+            if permanent(e):
+                raise Fatal(f"The app's tool server refused this helper ({why}), so no session started. Start a new "
+                            "helper.") from e
+            raise ToolConnectionUnavailable(why) from e
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str | None]:
         """The agent's command line, environment and what goes in on stdin (the prompt; None when its prompt went in
