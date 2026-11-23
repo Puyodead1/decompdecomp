@@ -66,13 +66,18 @@ def disabled(net):
     return set(json.loads(row['value'])) if row else set()
 
 
-def _options(net, slug, agent):
-    """The helper's options (task, disabled_tools), {} for an agent no helper of this app runs."""
+def _helper(net, slug, agent):
+    """The helper's options (task, disabled_tools), None for an agent no helper of this app runs."""
     try:
         row = net.store.one('SELECT options FROM helpers WHERE project=? AND name=?', slug, agent.name)
     except sqlite3.OperationalError:
         row = None  # an engine without a helper manager (a test, a command) has no helpers table yet
-    return json.loads(row['options'] or '{}') if row else {}
+    return json.loads(row['options'] or '{}') if row else None
+
+
+def _options(net, slug, agent):
+    """The helper's options, {} for an agent no helper of this app runs."""
+    return _helper(net, slug, agent) or {}
 
 
 def polishing(net, slug, agent) -> bool:
@@ -83,17 +88,20 @@ def polishing(net, slug, agent) -> bool:
 # claim_readable hands a polishing helper its functions: claim_function isn't on its list (tools._invoke refuses it,
 # and the other ways to take up an open function, with a sentence that sends it back)
 POLISHING_HIDDEN = {'claim_function'}
+# and the other way round: polishing's queue isn't a matching helper's (one the app started for matching: a row in
+# helpers without task=readable). Its tool definitions went with every turn of every matching helper, for tools that
+# take it away from its claimed function (RetroReversing ea54b2b06). Agents the app didn't start (an MCP client, a
+# room's members) and polishers keep them.
+MATCHING_HIDDEN = {'claim_readable', 'make_readable'}
 
 
 def visible(net, slug, names, agent=None):
     ensure(net)
     blocked = disabled(net)
     hidden = set()
-    if agent:
-        options = _options(net, slug, agent)
+    if agent and (options := _helper(net, slug, agent)) is not None:
         blocked.update(options.get('disabled_tools', []))
-        if options.get('task') == 'readable':
-            hidden = POLISHING_HIDDEN
+        hidden = POLISHING_HIDDEN if options.get('task') == 'readable' else MATCHING_HIDDEN
     return [name for name in names if name not in hidden and (name in REQUIRED or name not in blocked)]
 
 
@@ -118,6 +126,10 @@ def record(net, agent, slug, name):
     """Refuse a tool Agents & models turned off for every helper or for this one; count the others."""
     from .tools import HANDLERS
     if name not in visible(net, slug, list(HANDLERS), agent):
+        if agent and name in MATCHING_HIDDEN and _helper(net, slug, agent) is not None and not polishing(
+                net, slug, agent):
+            raise NetworkError(f'{name} is for helpers started to polish matched code. Work on your claimed '
+                               'function, or claim_function for the next one.')
         raise NetworkError(f'{name} is disabled in agent tool settings. Use an enabled tool instead.')
     now = time.time()
     with _counting:

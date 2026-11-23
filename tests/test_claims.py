@@ -901,6 +901,48 @@ def test_you_choose_close_c_for_the_plain_build(tmp_path, monkeypatch):
         assert "no C yet" in str(e)
 
 
+def test_while_autopilot_runs_helpers_take_what_it_still_means_to_draft_last(tmp_path):
+    """Helpers spent compiles on small functions autopilot's machine draft matched minutes later, and autopilot then
+    found them held. While it runs, an automatic claim takes its pending functions last; by name they're still
+    anyone's, and the project (machine_first: false) or a helper's own order turns it off (RetroReversing
+    ea54b2b06)."""
+    import threading
+
+    net, pid = _game(tmp_path, [("tiny", 4, "open"), ("small", 8, "open"), ("big", 400, "open")])
+    ids = {r["name"]: r["id"] for r in net.store.all("SELECT id, name FROM functions")}
+    state = {"state": "running", "_pending": {ids["tiny"], ids["small"]}, "stop": threading.Event()}
+    net.autopilots["game"] = state
+    a, _ = net.local_agent("a")
+    b, _ = net.local_agent("b")
+    assert net.claim_row(a, "game")["name"] == "big"
+    assert net.claim_row(b, "game")["name"] == "tiny"  # nothing else left: better than idle
+    assert "_pending" not in net.autopilot_status("game")  # (the GUI's JSON)
+    state["_pending"].discard(ids["tiny"])  # autopilot tried it
+    with net.store.tx() as db:  # (b's helper gone; a release would put tiny after the rest for a while)
+        db.execute("DELETE FROM claims WHERE function_id=?", (ids["tiny"],))
+    c, _ = net.local_agent("c")
+    assert net.claim_row(c, "game")["name"] == "tiny"
+    assert net.claim_row(net.local_agent("d")[0], "game", "small")["name"] == "small"  # by name: as always
+    for name in ("big", "small"):
+        with net.store.tx() as db:
+            db.execute("DELETE FROM claims WHERE function_id=?", (ids[name],))
+    state["_pending"] = {ids["small"]}
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps({"kind": "rom", "machine_first": False}),
+                                                                 pid))
+    assert net.claim_row(net.local_agent("e")[0], "game")["name"] == "small"
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps({"kind": "rom"}), pid))
+        db.execute("DELETE FROM claims WHERE function_id=?", (ids["small"],))
+    own, _ = net.local_agent("f")
+    net.set_selection("game", own.name, {"strategy": "easiest"})  # a helper with its own order keeps it
+    assert net.claim_row(own, "game")["name"] == "small"
+    with net.store.tx() as db:
+        db.execute("DELETE FROM claims WHERE function_id=?", (ids["small"],))
+    state["state"] = "done"  # autopilot finished: the usual order
+    assert net.claim_row(net.local_agent("g")[0], "game")["name"] == "small"
+
+
 def _matched_meanwhile(net, monkeypatch, fid):
     """_expire_claims runs first inside a claim's transaction: a helper's match landing just before it."""
     real = net._expire_claims

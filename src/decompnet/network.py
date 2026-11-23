@@ -1378,12 +1378,14 @@ class Network:
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND kind='release'
                                             AND created_at > :cooled),
                                  f.id IN ({READY}) DESC, f.id IN ({WANTED}) DESC,
+                                 f.id IN (SELECT value FROM json_each(:machine_pending)),
                                  :strong AND f.abandons >= :escalate DESC, {STRATEGIES[strategy]} LIMIT 1""")
                 escalate = self._escalation(db, proj["id"]) if route else ESCALATE_AFTER
                 args = {"pid": proj["id"], "agent": agent.id, "name": agent.name, "kin": json.dumps(kin),
                         "cooled": now - RELEASE_COOLDOWN,
                         "overall": overall, "escalate": escalate, "weak": route == "weak", "strong": route == "strong",
-                        "mine": self._own_release_cutoff(db, agent.id, now)} \
+                        "mine": self._own_release_cutoff(db, agent.id, now),
+                        "machine_pending": json.dumps(self._machine_pending(proj, agent, policy))} \
                     | self._selection_args(db, agent, policy) | self._given_up_args(db, proj["id"], agent)
                 fn = db.execute(query, args).fetchone()
                 if fn is None and route == "weak":  # only what stronger models are for is left: better tried than idle
@@ -1396,6 +1398,20 @@ class Network:
             db.execute("DELETE FROM waits WHERE function_id=? AND needs_id IN (SELECT id FROM functions "
                        "WHERE status='matched')", (fn["id"],))
         return fn
+
+    def _machine_pending(self, proj, agent: Agent, policy: dict) -> list[int]:
+        """The functions autopilot still means to draft while it runs in this project: a helper's automatic claim
+        takes them last (after the release rules and the waits, before the order), so helpers don't spend compiles on
+        what a free machine draft may match in a minute, and autopilot doesn't find them held. The project's
+        `machine_first: false` turns that off, and so does a helper's own order (set_selection's strategy); a claim
+        by name is never affected. Ported from RetroReversing ea54b2b06 (its claim part)."""
+        if agent.name in MACHINE_AGENTS or policy.get("strategy") or json.loads(proj["config"]).get("machine_first") \
+                is False:
+            return []
+        state = getattr(self, "autopilots", {}).get(proj["slug"])
+        if not state or state.get("state") != "running":
+            return []
+        return sorted((state.get("_pending") or set()).copy())  # (copied first: autopilot's workers take from it)
 
     @staticmethod
     def _escalation(db, project_id: int) -> int:

@@ -76,7 +76,7 @@ class AutopilotMixin:
     def autopilot_status(self, slug: str) -> dict | None:
         state = self.autopilots.get(slug)
         if state:
-            return {k: v for k, v in state.items() if k != "stop"}
+            return {k: v for k, v in state.items() if k not in ("stop", "_pending")}
         # the last run, from before the app restarted (settings only: the project list asks this for every project
         # every 5 s, and a read that syncs progress made that list a filesystem pass per project, #269)
         last = self.cfg(self._project(slug, sync=False)).get("autopilot")
@@ -121,8 +121,10 @@ class AutopilotMixin:
         state["phase"] = "drafts"
         ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
         state["total"] = len(ids)
+        state["_pending"] = set(ids)  # what helpers' automatic claims take last meanwhile (Network._machine_pending)
 
         def one(fid: int) -> None:
+            state["_pending"].discard(fid)
             if state["stop"].is_set():
                 return
             try:
@@ -137,6 +139,7 @@ class AutopilotMixin:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 list(pool.map(one, ids))
         finally:
+            state["_pending"] = set()
             state["state"] = "stopped" if state["stop"].is_set() else "done"
             state["finished_at"] = time.time()
             with self.store.tx() as db:
