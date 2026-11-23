@@ -13,7 +13,10 @@ worked on for days: the PC import only knew Visual C++'s runtime. What finds the
 - the catalog (catalog.toml, and the user's own `.toml` files there): what needs no signature. A library's text says
   it's there and which version (zlib's "inflate 1.1.3 Copyright 1995-1998 Mark Adler"); an algorithm's constants
   say which function is it (MD5's 0xd76aa478...), wherever the code came from, and the functions between two of
-  them, or beside one, are the same library's (RSA's MD5Update sits between MD5Init and MD5Transform);
+  them, or beside one, are the same library's (RSA's MD5Update sits between MD5Init and MD5Transform). A library
+  only one console's compiler links has its own names there: a console's catalog (`Console.library_catalog`) names
+  them, and the functions the game's symbols (or dtk's analysis) call so are its own, the ones between them too
+  (CodeWarrior's MSL and MetroTRK in a GameCube game);
 - with neither: the program's own text still names what it has built in, in copyright notices and the source paths
   its assertions keep ("..\\zlib\\inflate.c"), which the report lists for the user to look up and add.
 
@@ -88,9 +91,14 @@ class Library:
     constants: list[int] = field(default_factory=list)
     needs: int = 2
     companions: list[int] = field(default_factory=list)
+    companion_needs: int = 0  # how many of them a function beside its own must hold (0: `needs`, or all there are)
     tables: list[bytes] = field(default_factory=list)
     links: list[re.Pattern] = field(default_factory=list)  # the library files a program loads it by (DLLs, .so)
     wrappers: list[str] = field(default_factory=list)  # what only its header's own inline code calls
+    names: list[re.Pattern] = field(default_factory=list)  # its own functions' names: a function so named is its
+    companion_names: list[re.Pattern] = field(default_factory=list)  # names anyone's (memcpy): only beside its own
+    reach: int = MAX_BETWEEN  # functions between two of its own taken as its too, at most
+    span: int = MAX_SPAN  # bytes they span, at most
     aside: bool = False
     origin: str = "built in"
 
@@ -133,18 +141,29 @@ def _library(d: dict, origin: str) -> Library:
     def rx(items) -> list[re.Pattern]:
         return [re.compile(s.encode("latin-1")) for s in items or []]
 
+    def names(items) -> list[re.Pattern]:
+        return [re.compile(s) for s in items or []]
+
     return Library(id=str(d["id"]), name=str(d.get("name") or d["id"]), kind=str(d.get("kind") or "source"),
                    home=str(d.get("home") or ""), download=str(d.get("download") or ""), strings=rx(d.get("strings")),
                    versions=rx(d.get("versions")), constants=[int(c) for c in d.get("constants") or []],
                    needs=int(d.get("needs") or 2), companions=[int(c) for c in d.get("companions") or []],
+                   companion_needs=int(d.get("companion_needs") or 0),
                    tables=[bytes.fromhex(b) for b in d.get("bytes") or []],
                    links=[re.compile(s, re.IGNORECASE) for s in d.get("links") or []],
-                   wrappers=[str(w) for w in d.get("wrappers") or []], aside=bool(d.get("aside")), origin=origin)
+                   wrappers=[str(w) for w in d.get("wrappers") or []], names=names(d.get("names")),
+                   companion_names=names(d.get("companion_names")), reach=int(d.get("reach") or MAX_BETWEEN),
+                   span=int(d.get("span") or MAX_SPAN), aside=bool(d.get("aside")), origin=origin)
+
+
+def read_catalog(text: str, origin: str) -> list[Library]:
+    """A catalog file's libraries (catalog.toml's format)."""
+    return [_library(d, origin) for d in tomllib.loads(text).get("library", [])]
 
 
 def builtin() -> list[Library]:
-    text = resources.files("decompnet.libid").joinpath("catalog.toml").read_text(encoding="utf-8")
-    return [_library(d, "built in") for d in tomllib.loads(text)["library"]]
+    return read_catalog(resources.files("decompnet.libid").joinpath("catalog.toml").read_text(encoding="utf-8"),
+                        "built in")
 
 
 def parse_pattern(text: str) -> tuple[bytes, bytes]:
@@ -199,9 +218,10 @@ def signature_file(library: str, version: str, functions: list[tuple[str, bytes,
                           for n, raw, wild in functions if len(raw) - len(wild) >= SHORTEST]}
 
 
-def load(folder: Path | None = None) -> Catalog:
-    """The built-in catalog and everything in the user's signatures folder (and its folders)."""
-    libraries = builtin()
+def load(folder: Path | None = None, console: list[Library] | None = None) -> Catalog:
+    """The built-in catalog, the console's own (`console`: Console.library_catalog) and everything in the user's
+    signatures folder (and its folders)."""
+    libraries = builtin() + list(console or [])
     signatures: list[Signature] = []
     fid: list[Path] = []
     files: list[dict] = []
@@ -215,7 +235,7 @@ def load(folder: Path | None = None) -> Catalog:
         suffix = p.suffix.lower()
         try:
             if suffix == CATALOG_SUFFIX:
-                found = [_library(d, rel) for d in tomllib.loads(p.read_text(encoding="utf-8")).get("library", [])]
+                found = read_catalog(p.read_text(encoding="utf-8"), rel)
                 by_id = {lib.id: i for i, lib in enumerate(libraries)}
                 for lib in found:  # (the user's entry for a library replaces the built-in one)
                     if lib.id in by_id:
@@ -336,6 +356,12 @@ def _finding(found: dict[str, Finding], lib: Library | None, lid: str, name: str
     return found[key]
 
 
+def own_name(name: str) -> str:
+    """A function's name as its library spells it: without the project's `@unit` and without the address dtk adds to
+    a static function's (`longlong2str_803B6218`, MSL's printf helper in a stripped GameCube game)."""
+    return re.sub(r"_[0-9A-F]{8}$", "", name.split("@")[0])
+
+
 def called(symbol: str) -> str:
     """A relocation's symbol as its source names it: `__imp____glutInitWithExit@12` -> `__glutInitWithExit` (the
     import's prefix, C's leading underscore, stdcall's argument bytes off)."""
@@ -443,43 +469,58 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
         for k, why in funcs.items():
             f.functions.setdefault(k, why)
 
-    # constants: which functions are an algorithm's or a library's, and the ones between them
+    # constants and names: which functions are an algorithm's or a library's, and the ones between them
     order = sorted((c for c in codes if c.addr is not None), key=lambda c: c.addr)
     index = {c.key: i for i, c in enumerate(order)}
     imms_cache: dict[object, set[int]] = {}
     for lib in catalog.libraries:
-        if not lib.constants:
+        if not lib.constants and not lib.names:
             continue
-        strong: dict[object, set[int]] = {}
-        weak: dict[object, set[int]] = {}
+        strong: dict[object, str] = {}  # key -> why
+        weak: dict[object, str] = {}
+        named: set = set()
         for code in codes:
-            imms = None
-            if arch in SPLIT_IMMEDIATES:
-                imms = imms_cache.setdefault(code.key, _immediates(code, big_endian))
-            got = constants_in(code, lib.constants, arch, big_endian, imms)
-            if len(got) >= lib.needs:
-                strong[code.key] = got
-            elif lib.companions:
-                comp = constants_in(code, lib.companions, arch, big_endian, imms)
-                if len(comp) >= min(lib.needs, len(lib.companions)):
-                    weak[code.key] = comp
+            name = own_name(code.name)
+            if any(rx.fullmatch(name) for rx in lib.names):
+                strong[code.key] = f"{lib.name}: {name}, a function only it has"
+                named.add(code.key)
+                continue
+            if lib.constants:
+                imms = None
+                if arch in SPLIT_IMMEDIATES:
+                    imms = imms_cache.setdefault(code.key, _immediates(code, big_endian))
+                got = constants_in(code, lib.constants, arch, big_endian, imms)
+                if len(got) >= lib.needs:
+                    strong[code.key] = (f"{lib.name}: its code holds {len(got)} of its constants "
+                                        f"({', '.join(f'0x{c:08x}' for c in sorted(got)[:3])}…)")
+                    continue
+                if lib.companions:
+                    comp = constants_in(code, lib.companions, arch, big_endian, imms)
+                    if comp and len(comp) >= (lib.companion_needs or min(lib.needs, len(lib.companions))):
+                        weak[code.key] = f"{lib.name}: its starting values, beside its own code"
+                        continue
+            if any(rx.fullmatch(name) for rx in lib.companion_names):
+                weak[code.key] = f"{lib.name}: {name}, beside its own code"
         if not strong:
             continue
         f = _finding(found, lib, lib.id)
-        f.evidence.append(f"the constants of {len(strong)} of its functions")
-        for k, got in strong.items():
-            f.functions.setdefault(k, f"{lib.name}: its code holds {len(got)} of its constants "
-                                      f"({', '.join(f'0x{c:08x}' for c in sorted(got)[:3])}…)")
-        # beside them (by address): a companion within reach, and what lies between two of its own
+        if named:
+            f.evidence.append(f"{len(named)} of its own functions, by their names")
+        if len(strong) > len(named):
+            f.evidence.append(f"the constants of {len(strong) - len(named)} of its functions")
+        for k, why in strong.items():
+            f.functions.setdefault(k, why)
+        # beside them (by address): a companion within reach, and what lies between two of its own (a library is
+        # linked whole, one archive after another: what's between two of its functions is its too, as far as `reach`)
         mine = sorted(index[k] for k in strong if k in index)
         near = sorted(index[k] for k in weak if k in index)
         for i in near:
             if any(abs(i - j) <= MAX_BETWEEN + 1 and abs(order[i].addr - order[j].addr) <= MAX_SPAN for j in mine):
-                f.functions.setdefault(order[i].key, f"{lib.name}: its starting values, beside its own code")
+                f.functions.setdefault(order[i].key, weak[order[i].key])
                 mine.append(i)
         mine.sort()
         for a, b in zip(mine, mine[1:]):
-            if 1 < b - a <= MAX_BETWEEN + 1 and order[b].addr - order[a].addr <= MAX_SPAN:
+            if 1 < b - a <= lib.reach + 1 and order[b].addr - order[a].addr <= lib.span:
                 for i in range(a + 1, b):
                     f.functions.setdefault(order[i].key, f"{lib.name}: between two of its own functions "
                                                          f"({order[a].name}, {order[b].name})")

@@ -3,7 +3,8 @@
 #   kind               "source": released as source, a decomp uses it; "sdk": a system's own library (OpenGL,
 #                      DirectX), only its headers in a decomp; "middleware": no source anywhere;
 #                      "algorithm": code everyone copies from one reference (MD5 from RFC 1321); "runtime": the
-#                      compiler's own library (the console's import sets it aside by the compiler's own copy)
+#                      compiler's own library (the console's import sets it aside by the compiler's own copy, or
+#                      its catalog by its names: consoles/gc_wii/libraries.toml)
 #   home               where it's from, for the user to read
 #   download           its source for a version, {version} filled in (only where that address is reliable)
 #   strings            regular expressions over the program's text, any one of which says it's there; a group
@@ -13,6 +14,12 @@
 #   needs              how many different `constants` one function must hold to be the library's
 #   companions         words that alone say little (MD5's start values are SHA-1's too): a function holding
 #                      `needs` of them counts only beside one of the library's own functions
+#   companion_needs    how many companions that is instead of `needs` (1: any one of them, beside its own)
+#   names              regular expressions over the game's function names (without dtk's address suffix): a function
+#                      so named is the library's own (in a console's catalog: libraries only its compiler links)
+#   companion_names    names anyone's code may have (memcpy, sin): a function so named counts only beside its own
+#   reach, span        how many functions between two of its own are its too, and how many bytes they may span
+#                      (8 and 0x8000; more where the library is always linked whole, as one run)
 #   bytes              byte strings its tables hold (AES's S-box), hex
 #   links              regular expressions over the names of the library files a program loads (a PC game's DLLs,
 #                      a Linux game's .so): the library is there, called from its own file

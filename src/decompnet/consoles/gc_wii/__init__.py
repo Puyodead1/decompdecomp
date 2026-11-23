@@ -5,6 +5,7 @@ a dtk-template project (decomp-toolkit splits the game) built with Metrowerks Co
   or a program (DOL): the game's id, its modules (RELs), the first build that must rebuild it byte for byte. It also
   reads and writes configure.py for each source file's own CodeWarrior version (issue #26).
 - guides/mwcc.md: what agents read about matching CodeWarrior's code.
+- libraries.toml: CodeWarrior's own libraries every game links (its runtime, MSL, MetroTRK), for the library finder.
 
 dtk projects someone published are forked like any public decomp: forks/ reads their layout (forks/dtksplits.py).
 Its demo game is projects/demo-gc (the Demo Quest game built with CodeWarrior GC 1.3.2).
@@ -107,6 +108,16 @@ class GameCube(Console):
         except ForkError:
             pass
         return None
+
+    def library_catalog(self) -> list:
+        """CodeWarrior's runtime, MSL and MetroTRK (libraries.toml): no one may publish their code, so no signature
+        finds them; their names do, which the game's symbols or dtk's analysis give them (Wii's too)."""
+        from importlib import resources
+
+        from ... import libid
+
+        return libid.read_catalog(resources.files(__package__).joinpath("libraries.toml").read_text(encoding="utf-8"),
+                                  "CodeWarrior's libraries")
 
     def rename_symbol(self, fp, version: str, old: str, new: str) -> dict:
         """dtk's symbols.txt (the game's, and each module's): `old = .section:0x...` becomes `new = ...`."""
