@@ -43,3 +43,7 @@ Small data is `$gp`-relative (-G8 typical), so declare externs with their real s
 
 Libraries: Sony's libgraph, libdma, libpad, libcdvd, libkernl, libsd and libvu0 are linked as
 libraries; their prototypes are in the project's headers.
+
+SN EE-GCC 2.95.2/2.95.3 add an unquoted path to their own folder to the preprocessor command;
+decompdecomp runs them from a copy without spaces when theirs has some. A "Too many arguments"
+error from them is the compiler's setup, not the source or the flags: report it, don't work around it.

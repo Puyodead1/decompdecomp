@@ -88,6 +88,9 @@ class Toolchain:
 
     native_only: bool = False  # this pack cannot run through WSL or a Linux VM
     linux_vm: bool = False  # optional local macOS Linux runner for this pack
+    # an old driver puts an unquoted path to itself on its own command line, so its folder's path can't have spaces
+    # (runtime_dirs runs it from a copy elsewhere when it does)
+    space_free_runtime: bool = False
 
     def __post_init__(self):
         self.requires = [*self.requires, *(h for h in self.headers if h not in self.requires)]
@@ -370,13 +373,60 @@ def require(tid: str, linux: bool | None = None, *, vm: bool | None = None) -> P
     return path(tid, linux, vm=vm)
 
 
+_runtime_copy_lock = threading.Lock()
+_runtime_copy_home: tempfile.TemporaryDirectory | None = None
+_runtime_copies: dict[tuple, Path] = {}
+
+
+def _space_free_runtime(directory: Path) -> Path:
+    """`directory`, or a copy of it whose path has no spaces when its own has: SN's EE-GCC 2.95 drivers add
+    `-I <their own folder>/...` to the preprocessor's command unquoted, so installed under macOS's
+    ~/Library/Application Support every compile failed with "Too many arguments". A symlink doesn't help (the
+    driver asks for its real path) and neither does -nostdinc (the driver adds it anyway).
+
+    The copy is made from the install require() has just checked against its manifest, once per process and
+    install (the manifest's stamp changes when it's installed again; a compile still running keeps its old copy),
+    in a private temporary folder that goes when the app does. Symlinks are copied as the files they point to."""
+    global _runtime_copy_home
+    directory = directory.resolve()
+    if not any(c.isspace() for c in str(directory)):
+        return directory
+    try:
+        stamp = (directory / MANIFEST).stat()
+        key = (str(directory), stamp.st_mtime_ns, stamp.st_size)
+        with _runtime_copy_lock:
+            if key in _runtime_copies:
+                return _runtime_copies[key]
+            if _runtime_copy_home is None:
+                _runtime_copy_home = tempfile.TemporaryDirectory(prefix="decompnet-tools-",
+                                                                 dir="/tmp" if os.name == "posix" else None)
+            cache = Path(_runtime_copy_home.name).resolve()
+            if any(c.isspace() for c in str(cache)):
+                raise ToolchainError(f"{directory.name} needs a temporary folder whose path has no spaces, and "
+                                     f"{cache.parent} has: set TMPDIR (TEMP on Windows) to one without, then restart decompdecomp")
+            target = cache / hashlib.sha256(repr(key).encode()).hexdigest()[:16]
+            try:
+                shutil.copytree(directory, target)
+            except OSError:
+                shutil.rmtree(target, ignore_errors=True)
+                raise
+            _runtime_copies[key] = target
+            return target
+    except OSError as error:
+        raise ToolchainError(f"couldn't copy {directory.name} to a folder whose path has no spaces (it can't run from "
+                             f"{directory}): check the free space and the temporary folder's permissions ({error})") from None
+
+
 def runtime_dirs(tid: str) -> tuple[Path, ...]:
     """The toolchain plus everything it requires, for mounting into the sandbox (all Linux builds for WSL)."""
     tc = get(tid)
     if tc.via_vm:
         return (require(tid, vm=True), *(require(dep, vm=True) for dep in tc.requires))
     linux = tc.via_wsl
-    return (require(tid, linux), *(require(dep, linux) for dep in tc.requires))
+    primary = require(tid, linux)
+    if tc.space_free_runtime and not linux:  # (WSL's copy is mounted at a path of its own: wsl.prepare_tools)
+        primary = _space_free_runtime(primary)
+    return (primary, *(require(dep, linux) for dep in tc.requires))
 
 
 # ---------------------------------------------------------------------------- install
