@@ -995,7 +995,8 @@ def test_a_pc_near_miss_gets_its_files_flags_tried_once_per_best_attempt(tmp_pat
                    "VALUES(1,'f',8,20,'open','a','int f(void) { return 1; }',10)")
     calls = []
 
-    def search_flags(agent, slug, function, source=""):
+    def search_flags(agent, slug, function, source="", quick=False):
+        assert quick  # (the survey's few flags: the whole sweep of a PC file is for agents to ask)
         calls.append(source)
         if len(calls) == 2:
             with net.store.tx() as db:

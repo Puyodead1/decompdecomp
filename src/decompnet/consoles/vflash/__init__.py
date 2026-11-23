@@ -242,10 +242,10 @@ class VFlash(Console):
 
         return scratch.set_file_flags(fp, source, flags)
 
-    def flag_variants(self, flags: list[str]) -> list[list[str]]:
+    def flag_variants(self, flags: list[str], fp=None, source: str = "", named: str = "") -> list[list[str]]:
         from . import scratch
 
-        return scratch.flag_variants(flags)
+        return scratch.named_variants(flags, named) if named.strip() else scratch.flag_variants(flags)
 
     def survey_variants(self, flags: list[str]) -> list[list[str]]:
         from . import scratch

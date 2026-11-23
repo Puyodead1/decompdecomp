@@ -33,6 +33,8 @@ x64 one (own-<version>-x64), each before the pack's build.
   the code, and Ghidra's drafts made into C++ that compiles in the project (also in briefs, the background drafter and
   redraft). Each file may be built with more flags (file_flags: /Oy- where its functions keep an ebp frame, found by
   the import: scratch.frame_flags), which search_flags tries.
+- clflags.py: every Visual C++ flag that changes code, by version and target: what search_flags tries on a file (its
+  sweep) and what an agent may name to it.
 - project_template/: what that project starts as (tools/configure.py writes its ninja build; tools/relink.py links
   the program anew with Visual C++ 6.0's LINK.EXE, `ninja relink`, and writes it as MASM source; tools/assemble.py
   makes the program from that source, for a project without the user's copy).
@@ -576,20 +578,30 @@ class WindowsPC(Console):
         scratch.set_file_flags(fp.root, version, source, flags)
         return scratch.flags_file(fp.root, version).relative_to(fp.root).as_posix()
 
-    # What search_flags tries on a file: the frame pointer kept or not (/Oy-: about half of a 2010 game's code keeps
-    # it), optimised for size (/O1: some of a game's libraries were), inlining only what's marked inline (/Ob1), and
-    # the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it unasked), and no optimisation
-    # at all (/Od: libraries linked prebuilt, a 6.0 game's RSA MD5)
-    FLAG_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",), ("/Od",))
+    # What the flag survey (app/flagsurvey.py) builds every file of a game with: the frame pointer kept or not (/Oy-:
+    # about half of a 2010 game's code keeps it), optimised for size (/O1: some of a game's libraries were), inlining
+    # only what's marked inline (/Ob1), the buffer security check 7.0 and 7.1 make only when asked (/GS; 2005 on make it
+    # unasked), and no optimisation at all (/Od: libraries linked prebuilt, a 6.0 game's RSA MD5). A game's files are
+    # many: search_flags, on one function, tries the whole catalogue (clflags.py)
+    SURVEY_TOGGLES = (("/Oy-",), ("/O1",), ("/Ob1",), ("/O1", "/Oy-"), ("/GS",), ("/Od",))
 
-    def flag_variants(self, flags: list[str]) -> list[list[str]]:
+    def survey_variants(self, flags: list[str]) -> list[list[str]]:
         out = [list(flags)]
-        for toggle in self.FLAG_TOGGLES:
+        for toggle in self.SURVEY_TOGGLES:
             new = [f for f in flags if f not in toggle] if all(f in flags for f in toggle) else \
                 [*flags, *(f for f in toggle if f not in flags)]
             if new not in out:
                 out.append(new)
         return out
+
+    def flag_variants(self, flags: list[str], fp=None, source: str = "", named: str = "") -> list[list[str]]:
+        """Every flag of the file's Visual C++ that changes code, for the program's target (clflags.py): the agent's
+        `named` ones (checked against that list), else one choice changed at a time. Without a project: 6.0's, x86."""
+        from . import clflags, scratch
+
+        compiler = (self.file_compiler(fp, source) if fp is not None else None) or f"MSVC/{scratch.MSVC_DEFAULT}"
+        target = self.target(fp) if fp is not None else "x86"
+        return clflags.variants(flags, compiler, target, clflags.parse(named, compiler, target) if named.strip() else [])
 
     def file_ranges(self, fp) -> dict[str, list[tuple[int, int]]]:
         from . import scratch

@@ -4679,7 +4679,8 @@ class ForkEngine:
         own_flags = console.file_flags(fp, unit.source)
         known = [c.id for c in console.compilers]
         order = sorted(known, key=lambda c: abs(known.index(c) - known.index(own))) if own in known else known
-        variants = console.flag_variants(own_flags) if own_flags is not None else [None]
+        # (the survey's few flag variants: a search_flags sweep is a hundred on PC, for each compiler)
+        variants = console.survey_variants(own_flags) if own_flags is not None else [None]
         combos = [(c, f) for c in order for f in variants]
         agent, _ = self.net.local_agent("decompdecomp")
         rows, kept, until = [], None, time.monotonic() + COMPARE_SECONDS
@@ -4749,16 +4750,21 @@ class ForkEngine:
         return consoles.get(cfg.get("platform") or "").file_flags(fp, "x.c") is not None
 
     def search_flags(self, agent: Agent, slug: str, function: str, compiler: str = "", source: str = "",
-                     divided: bool = False) -> str:
-        """search_flags where each source file has flags of its own (Console.file_flags: PC's /Oy-): the function's C
-        built with each variant of its file's flags (Console.flag_variants), judged as an attempt that isn't kept. A
-        variant it matches with stays the file's, committed, when the file's other matched functions still match (the
-        attempt's own rule); otherwise the file keeps its flags and nothing is recorded.
+                     flags: str = "", divided: bool = False, quick: bool = False) -> str:
+        """search_flags where each source file has flags of its own (Console.file_flags: PC's and Xbox's, every
+        Visual C++ flag that changes code, consoles/pc/clflags.py; V.Flash's GCC levels): the function's C built with
+        each variant of its file's flags (Console.flag_variants: the agent's `flags`, else the console's sweep), judged
+        as an attempt that isn't kept, until TRY_ALL_SECONDS pass. A variant it matches with stays the file's,
+        committed, when the file's other matched functions still match (the attempt's own rule); otherwise the file
+        keeps its flags and nothing is recorded.
 
         A variant it matches with that breaks other matched functions of the file: the file is likely two of the game's
         (a V.Flash game's held functions matched at -O3, then functions its C matched only at -O1, and agents forced
         registers for days). The file is divided around the function, between it and those (split_file's checks), and
-        the search runs again on its part (`divided`)."""
+        the search runs again on its part (`divided`).
+
+        `quick`: only the flag survey's few variants (Console.survey_variants), as the background permuter tries them on
+        a near miss: a PC sweep is a hundred builds, with the project's tree held."""
         proj, fp, cfg = self.get(slug)
         console = consoles.get(cfg.get("platform"))
         fn = self._fn(slug, function)
@@ -4772,39 +4778,48 @@ class ForkEngine:
             raise NetworkError("in a room, the host's project decides each file's flags: search_flags works there")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} already matches with {unit.source}'s flags")
+        variants = console.survey_variants(own) if quick and not flags.strip() else \
+            console.flag_variants(own, fp, unit.source, flags)  # (named ones checked before anything builds)
+        if flags.strip() and len(variants) == 1:
+            raise NetworkError(f"{unit.source} is built with {flags.strip()} already")
         source = source.strip() or self.net._source_of(fn) or ""
         if not source:
             raise NetworkError(f"{fn['name']} has no attempt yet: pass the C as source")
         shown = lambda flags: " ".join(flags) or "(the project's flags only)"  # noqa: E731
         linked = unit.complete and fp.linkable()
-        results, kept, changed, apart = [], None, False, None
+        results, kept, changed, apart, done = [], None, False, None, 0
+        until = time.monotonic() + TRY_ALL_SECONDS
         held = self._hold_for_try(slug, function, agent)
         try:
             with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
                 try:
                     self._baseline(proj, fp, unit, (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
-                    for flags in console.flag_variants(own):
-                        if flags != own:
+                    for variant in variants:
+                        if done and time.monotonic() > until:
+                            break
+                        done += 1
+                        if variant != own:
                             with self._build_lock(proj):  # (a build reads the flags)
-                                rel = console.set_file_flags(fp, unit.source, flags)
+                                rel = console.set_file_flags(fp, unit.source, variant)
                             changed = True
                         with self._trying(unit.name):  # (its trial flags aren't a leftover to put back)
                             res = self._attempt(agent, slug, function, source, keep=False, quiet=0)
-                        if res["matched"] and flags == own:
+                        if res["matched"] and variant == own:
                             return f"{res['text']}\nThat's with {unit.source}'s own flags: nothing to change."
                         if res["matched"]:
-                            kept = flags
+                            kept = variant
                             self.net.bump_generation(proj["id"])  # (earlier compiles of the file aren't repeats)
-                            self._commit_entry(proj, fp, rel, lambda flags=flags: console.set_file_flags(fp, unit.source, flags),
-                                               f"Build {unit.source} with {shown(flags)}\n\n{fn['name']} "
-                                                        f"matches with them (found by {agent.name} with decompdecomp).")
-                            return f"{shown(flags)}: {res['text']}\n{unit.source} is built with them from now on."
+                            self._commit_entry(proj, fp, rel,
+                                               lambda variant=variant: console.set_file_flags(fp, unit.source, variant),
+                                               f"Build {unit.source} with {shown(variant)}\n\n{fn['name']} "
+                                               f"matches with them (found by {agent.name} with decompdecomp).")
+                            return f"{shown(variant)}: {res['text']}\n{unit.source} is built with them from now on."
                         if res.get("broken") and res.get("alone") and apart is None:
-                            apart = (flags, res["broken"])
+                            apart = (variant, res["broken"])
                         why = "breaks the file's matched functions" if res.get("broken") else \
                             "doesn't build" if res["score"] is None else f"score {res['score']}"
                         results.append((res["score"] if res["score"] is not None and not res.get("broken") else None,
-                                        flags, why))
+                                        variant, why))
                     # none matches, but one is far closer than the file's own and breaks nothing: a V.Flash game's
                     # file was -O0 code built at -O3, the agent's C scored 282 at -O0 and 4064 at -O3, and the file
                     # kept -O3 because nothing matched yet: agents could only say "needs -O0" in a note
@@ -4833,11 +4848,12 @@ class ForkEngine:
             said = self._divide_for_flags(agent, slug, fn, unit, apart[1])
             if said.startswith("✅"):
                 return f"{shown(apart[0])} matches {fn['name']} but not {', '.join(apart[1][:4])}: {said}\n" + \
-                    self.search_flags(agent, slug, function, source=source, divided=True)
+                    self.search_flags(agent, slug, function, source=source, flags=flags, divided=True,
+                                      quick=quick)
             results.append((None, apart[0], "matches, but breaks matched functions; " + said))
         results.sort(key=lambda r: (r[0] is None, r[0] or 0))
-        lines = [f"- {why:>8}  {shown(flags)}" + ("   <- the file's flags" if flags == own else "")
-                 for _, flags, why in results]
+        lines = [f"- {why:>8}  {shown(variant)}" + ("   <- the file's flags" if variant == own else "")
+                 for _, variant, why in results]
         best = results[0] if results else None
         verdict = ("Your C builds with none of them: make it build first (compile_and_diff says why)."
                    if all(r[0] is None for r in results) else
@@ -4847,8 +4863,13 @@ class ForkEngine:
             verdict = (f"{unit.source} is built with {shown(kept)} from now on: no match broke, and your C comes far "
                        f"closer with them. Work on it with these flags (search_flags again puts others back if a "
                        f"later C says so).")
+        # what wasn't tried, as what each adds to the file's flags: the agent names them (flags="...")
+        left = [" ".join(f for f in v if f not in own) or f"without {' '.join(f for f in own if f not in v)}"
+                for v in variants[done:]]
         return (f"{len(results)} flag variants for {fn['name']} in {unit.source} (lower is better), none matches:\n"
-                + "\n".join(lines) + "\n" + verdict)
+                + "\n".join(lines) + "\n" + verdict
+                + (f"\nNot tried yet (time ran out): {', '.join(left)}. Name the ones worth trying: "
+                   f"search_flags(function, flags=\"...\")." if left else ""))
 
     def file_flags_of(self, slug: str, source: str) -> list[str] | None:
         _, fp, cfg = self.get(slug)

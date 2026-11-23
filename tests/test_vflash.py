@@ -406,6 +406,13 @@ def test_a_file_builds_with_flags_of_its_own(tmp_path):
     variants = consoles.get("vflash").flag_variants(["-O1"])
     assert variants[0] == ["-O1"] and [] in variants and ["-O2", "-frename-registers"] in variants
     assert ["-O1", "-fno-schedule-insns2"] in variants and len(variants) <= 12
+    # an agent names them (search_flags(flags=...)): together, then each alone; nothing else reaches GCC
+    named = consoles.get("vflash").flag_variants(["-O1"], fp, "x.c", "-O0 -frename-registers")
+    assert named == [["-O1"], ["-O0", "-frename-registers"], ["-O0"], ["-O1", "-frename-registers"]]
+    assert consoles.get("vflash").flag_variants(["-O1"], fp, "x.c", "-O3") == [["-O1"], []]  # (the project's)
+    for bad in ("-O2 -O0", "-fplugin=x.so", "-B/tmp", "/GS-"):
+        with pytest.raises(Exception, match="one choice|isn't a flag search_flags tries"):
+            consoles.get("vflash").flag_variants(["-O1"], fp, "x.c", bad)
     (root / "tools" / "configure.py").write_text("# the project's own\n")
     assert scratch.file_flags(fp, "x.c") is None  # (its build sets them)
 
