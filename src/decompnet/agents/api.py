@@ -56,6 +56,9 @@ API_RETRIES, API_RETRY_WAIT = 3, 10  # a dropped request or a gateway's 5xx, ask
 # a function is done with when the helper compiled it to a match or released it: its work then folds into a line
 FINISHING = ("compile_and_diff", "release_function")
 FOLDED = 2  # messages a fold leaves: one call and its result
+# A reply that ran into the model's output limit (OpenAI-compatible: "length", Anthropic: "max_tokens"): what it
+# called may be cut off mid-arguments (read as no arguments), so the manager starts a fresh session (OUTPUT_RECOVERY)
+CUT_OFF = ("length", "max_tokens")
 # Anthropic's Messages API (provider "anthropic"). A reply's tokens: well within a non-streamed request's time. Its
 # efforts (OpenAI's "minimal" is its "low"). Thinking blocks go back as they came (their reasoning carries on between
 # tool calls), and folding a finished function's work or trimming old tool output changes the history they were made
@@ -161,6 +164,7 @@ class Api(Agent):
                 try:
                     reply = r.json()
                     msg = reply["choices"][0]["message"]
+                    finish = reply["choices"][0].get("finish_reason")
                 except (ValueError, KeyError, IndexError, TypeError):  # LM Studio's address without /v1 answers so
                     s.error = (f"{base}/chat/completions answered with no reply from a model ({r.text[:ERROR_SHOWN]}): "
                                "the address must be the API's own, which often ends in /v1 (LM Studio: "
@@ -173,6 +177,11 @@ class Api(Agent):
                     s.push("think", msg["reasoning_content"][:REASONING_SHOWN])
                 if msg.get("content"):
                     s.push("text", msg["content"])
+                if finish in CUT_OFF:  # its tool call (or its arguments) cut off: a fresh session asks for less
+                    s.output_limited = True
+                    s.error = "the model's reply reached its output limit, so its last tool call was cut off"
+                    s.push("error", s.error)
+                    return False
                 calls = msg.get("tool_calls") or []
                 # its reasoning goes back with the calls it made: DeepSeek's thinking mode refuses the next request
                 # without it ("The reasoning_content in the thinking mode must be passed back to the API": 106 times
@@ -564,7 +573,7 @@ class _Answered:
         self.reply = reply
 
     def json(self) -> dict:
-        return {"choices": [{"message": anthropic_message(self.reply)}],
+        return {"choices": [{"message": anthropic_message(self.reply), "finish_reason": self.reply.get("stop_reason")}],
                 "usage": anthropic_usage(self.reply.get("usage") or {}, self.reply.get("model") or "")}
 
 

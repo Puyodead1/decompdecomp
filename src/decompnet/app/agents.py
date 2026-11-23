@@ -201,6 +201,16 @@ _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|excee
                         r"credit balance is too low|payment required|out of credits?|credits[ _-]exhausted", re.I)
 # and when it's asked too much at once (HTTP 429): it works again in a while
 THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency[ _-]?limit|\b429\b|overloaded", re.I)
+# and when the model's reply ran into its output limit, cut off in the middle of a tool call (Codex: "Incomplete
+# response returned, reason: max_output_tokens"; Claude Code: "Claude's response exceeded the 32000 output token
+# maximum"): the call never reached the app, and the same session would only write the same too-long reply again
+OUTPUT_LIMIT = re.compile(r"\bmax_output_tokens\b|exceeded the \d+ output token maximum", re.I)
+# A fresh session after that, with OUTPUT_RECOVERY in its prompt; a second one in a row pauses the helper
+OUTPUT_RECOVERY = (
+    "Your previous session's reply reached the model's output limit, so its last tool call never reached the app. "
+    "claim_function (no function named) gives back a function you still hold, and last_diff your last compile of it. "
+    "Keep each reply small: change your last compile with compile_and_diff's `edits` (a few exact lines each) instead "
+    "of sending the whole C again, and say little between calls.")
 # and when a subscription's allowance is used up for now (Claude Code: "usage limit reached", "You've hit your
 # session limit", Codex: "You've hit your usage limit", Antigravity: RESOURCE_EXHAUSTED, OpenCode Go: "quota
 # exceeded"): it resets by itself in hours, so a helper waits for it instead of stopping (a night's run lost most of
@@ -431,6 +441,8 @@ class Session:
     throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
     limited: bool = False  # the last run ended on the plan's usage limit: wait for it to reset
     limit_until: float | None = None  # when the agent said that limit resets
+    output_limited: bool = False  # the last run ended on the model's output limit (OUTPUT_LIMIT)
+    followup: str = ""  # said once more in the next session's prompt (OUTPUT_RECOVERY)
 
     @property
     def model(self) -> str:
@@ -1221,7 +1233,7 @@ class Manager:
             self._set(s, "starting", "first setting hand-written assembly aside and putting the functions in order "
                                      "(seconds; a minute the first time)")
             twins.ordered.wait(ORDER_WAIT)
-        failures = fast = throttles = limits = auths = unreachable = 0
+        failures = fast = throttles = limits = auths = unreachable = cut_off = 0
         while not s.stop.is_set():
             if self._left(s.slug, task := s.options.get("task") or "") == 0:
                 self._finish(s, f"nothing left to {'polish' if task == 'readable' else 'decompile'} here 🎉")
@@ -1312,6 +1324,18 @@ class Manager:
                            kind.signin_for(s.options))
                 continue
             auths = 0
+            if s.output_limited:  # one fresh session asking for smaller replies; the same again needs the user
+                s.output_limited, cut_off = False, cut_off + 1
+                if cut_off > 1:
+                    self._pause(s, "the model's reply reached its output limit again, after a fresh session asked "
+                                   "for smaller replies", "Start it again with another model or a higher effort "
+                                   "setting, or give the function to another helper.")
+                    break
+                s.followup = OUTPUT_RECOVERY
+                s.restarts += 1
+                self._wait(s, "the model's reply reached its output limit; a fresh session asks for smaller replies",
+                           time.time() + SESSION_GAP)
+                continue
             if s.limited:  # the plan's allowance is used up for now: it resets, so wait as long as it takes
                 limits += 1
                 until = s.limit_until or time.time() + min(LIMIT_WAIT_LONGEST, LIMIT_WAIT_FIRST * 2 ** (limits - 1))
@@ -1327,7 +1351,7 @@ class Manager:
                 continue
             throttles = 0
             if ok:
-                failures = fast = limits = 0
+                failures = fast = limits = cut_off = 0
                 self._set(s, "waiting", "the next session starts in a moment")
                 s.stop.wait(SESSION_GAP)
                 continue
@@ -1422,6 +1446,8 @@ class Manager:
     def session_prompt(self, s: Session) -> str:
         """A session's prompt (prompt), kept in its transcript."""
         text = self.prompt(s)
+        if s.followup:
+            text, s.followup = f"{text}\n{s.followup}\n", ""
         if s.record is not None:
             s.record("prompt", text)
         return text
@@ -1633,7 +1659,7 @@ class Manager:
         threading.Thread(target=feed_prompt, daemon=True).start()
         err_reader = threading.Thread(target=drain_err, daemon=True)
         err_reader.start()
-        saw_tool = False
+        saw_tool = cut_off = False
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
         last_error = refused = ""
@@ -1649,6 +1675,7 @@ class Manager:
                 if kind == "error":
                     last_error = text
                     refused = refused or (text if k.fatal(text) else "")
+                    cut_off = cut_off or bool(OUTPUT_LIMIT.search(text))
                 s.push(kind, text)
             if s.stop.is_set():
                 _terminate(proc)
@@ -1671,6 +1698,11 @@ class Manager:
             raise Fatal(why)  # every agent on this account fails the same way until it's topped up
         if code != 0 and THROTTLED.search(everything):
             s.throttled = True
+        if not s.limited and (cut_off or any(OUTPUT_LIMIT.search(e) for e in errors)):
+            s.output_limited = True
+            s.error = "the model's reply reached its output limit, so its last tool call never reached the app"
+            s.push("error", s.error)
+            return False
         if code != 0 and _SIGNED_OUT.search(everything):
             s.signed_out = True
             s.error = f"{k.name} isn't signed in on this computer. {k.signin_for(s.options)}"
