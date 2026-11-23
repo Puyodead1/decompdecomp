@@ -15,7 +15,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from ... import compilermap, consoles, scoring, toolchains
+from ... import __version__, compilermap, consoles, scoring, toolchains
 from ...hostenv import NO_WINDOW
 from ...network import CLAIM_ORDERS, IN_BUILD, PROGRESS_COLUMNS, NetworkError, set_aside
 from ...project import compiler_for
@@ -237,10 +237,12 @@ class GuiMixin:
         if slug in self.links:
             link = self.links[slug]
             status = link.status()
+            # (`version`, `host_version`: a host on another version of one room protocol is said to work with this)
             return {"role": "guest", "host": link.url, "member": link.member, "error": link.error,
-                    "members": link.members, "connected": status["state"] in ("syncing", "connected"), **status}
+                    "members": link.members, "connected": status["state"] in ("syncing", "connected"),
+                    "version": __version__, "host_version": link.host_version, **status}
         if slug in self.rooms:
-            return {"role": "host", "members": self.rooms[slug].members()}
+            return {"role": "host", "members": self.rooms[slug].members(), "version": __version__}
         return None
 
     def function_map(self, slug: str) -> list[dict]:

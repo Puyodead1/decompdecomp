@@ -191,6 +191,9 @@ linting). In short:
   then attaches them to the GitHub release; it can be run by hand
   for a pushed tag (`gh workflow run release -f tag=vX.Y.Z`). Linux package copies set `DECOMP_PACKAGE` and don't
   update themselves; the Windows copy updates its bundled packages in place.
+- Rooms need one room protocol, not one version: a change to what crosses between a room's computers (a `/collab`
+  call or what it sends, what the host syncs, how the host judges a match) bumps `ROOM_PROTOCOL` in `app/collab.py`
+  and records it again (`uv run python tests/test_room_protocol.py`): CONTRIBUTING.md, "Rooms".
 - What's planned is in ROADMAP.md, with a table of which feature works on which platform: when a feature ships or
   reaches another platform, update the table and move its item to done.
 - A change that adds or changes a console's support, or how decompdecomp is installed or downloaded, also updates

@@ -46,6 +46,41 @@ def pair(tmp_path):
     return host, slug, guest, gslug, link, client
 
 
+def test_another_version_on_the_same_room_protocol_shares_the_room(pair):
+    """Every release sent a whole room to update, though most changed nothing between the computers: one room
+    protocol is enough now (collab.ROOM_PROTOCOL), each screen says which version the others run, and another
+    protocol is refused saying who has to update."""
+    host, slug, guest, gslug, link, client = pair
+    room = host.rooms[slug]
+    join = {"invite": room.open_invite(), "sha1": "same", "version": "0.0.1-other", "commit": "cccccccccccc"}
+    tok = client.post(f"/collab/join?room={slug}", json=join | {"name": "newer", "protocol": collab.ROOM_PROTOCOL}).json()["token"]
+    headers = {"authorization": f"Bearer {tok}", collab.VERSION_HEADER: "0.0.1-other",
+               collab.PROTOCOL_HEADER: str(collab.ROOM_PROTOCOL)}
+    said = client.get(f"/collab/whoami?room={slug}", headers=headers)
+    assert said.status_code == 200 and said.json()["app_version"] == collab.__version__  # (the guest's screen)
+    room._members = (0.0, [])
+    info = host._room_info(slug)
+    assert {m["name"]: m["version"] for m in info["members"]}["newer"] == "0.0.1-other"
+    assert info["version"] == collab.__version__
+    assert guest._room_info(gslug)["version"] == collab.__version__ and "host_version" in guest._room_info(gslug)
+    # without a protocol, the version must be the same, as before
+    old = client.get(f"/collab/whoami?room={slug}", headers={**headers, collab.PROTOCOL_HEADER: ""})
+    assert old.status_code == 400 and collab.SAME_VERSION in old.json()["error"]
+    later = client.post(f"/collab/join?room={slug}", json=join | {"name": "later", "protocol": collab.ROOM_PROTOCOL + 1})
+    assert later.status_code == 400 and collab.SAME_PROTOCOL in later.json()["error"]
+    assert "Update the host" in later.json()["error"]
+    link_ = "http://192.168.1.20:6481/join/abcdefghij#room=game"
+    for protocol, ok in ((collab.ROOM_PROTOCOL + 1, False), (collab.ROOM_PROTOCOL, True)):
+        hello = httpx.MockTransport(lambda request, p=protocol: httpx.Response(200, json={
+            "room": slug, "app_version": "9.9", "room_protocol": p}))
+        with httpx.Client(transport=hello) as http:
+            if ok:
+                assert collab._hello(http, link_)[2]["app_version"] == "9.9"
+            else:
+                with pytest.raises(NetworkError, match="Update this computer"):
+                    collab._hello(http, link_)
+
+
 def _set(net, fn_name, **cols):
     with net.store.tx() as db:
         db.execute(f"UPDATE functions SET {', '.join(f'{k}=?' for k in cols)} WHERE name=?", (*cols.values(), fn_name))
@@ -104,7 +139,8 @@ def test_a_hosts_failure_is_not_a_refusal(pair):
         link.client = httpx.Client(transport=httpx.MockTransport(
             lambda _r: httpx.Response(status, json=body) if body is not None else httpx.Response(status, text="<html>")))
     for status, body in [(502, None), (500, {"error": "boom"}), (400, {"error": "slow down"}),
-                         (400, {"error": f"{collab.SAME_VERSION}. Update"})]:
+                         (400, {"error": f"{collab.SAME_VERSION}. Update"}),
+                         (400, {"error": f"{collab.SAME_PROTOCOL}. Update this computer"})]:
         answer(status, body)
         with pytest.raises(NetworkError) as e:
             link._req("GET", "/collab/state", {})
