@@ -18,6 +18,8 @@ class LinkResult:
     problems: list[str] = field(default_factory=list)
     # data the candidate defines itself, as placed at the game's copy: section name -> {offset: address}
     placements: dict[str, dict[int, int]] = field(default_factory=dict)
+    # library calls the compiler wrote (sqrtf, __divdi3) bound to the game's own call address (the export defines them)
+    bound: dict[str, int] = field(default_factory=dict)
 
 
 def _text(data: bytes) -> bool:

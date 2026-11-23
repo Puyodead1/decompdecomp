@@ -177,6 +177,7 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
     functions.sort(key=lambda f: f["vram"])
 
     objects, private, as_fallback = [], [], []
+    library_calls: dict[str, int] = {}  # sqrtf -> the game's routine it's linked to (match.LinkResult.bound)
     program_functions = {r["name"] for r in rows.values()}  # (each its own file: a copy in another's C goes)
     for f in functions:
         row = rows.get(f["vram"])
@@ -201,6 +202,11 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
             continue
         if not linked.exact:
             as_fallback.append((f["name"], "no longer matches"))
+            f["kind"] = "asm"
+            continue
+        if any(library_calls.setdefault(name, addr) != addr for name, addr in linked.bound.items()):
+            as_fallback.append((f["name"], "a library call the compiler wrote names another address in another "
+                                           "function"))
             f["kind"] = "asm"
             continue
         bases, ok = {}, True
@@ -277,6 +283,9 @@ def export_rom(net, slug: str, out: Path, console, log=print) -> dict:
                            "pieces": sorted(data, key=lambda d: d["vram"]), "bss": sorted(bss, key=lambda d: d["vram"])})
     syms = net.symbols(proj["id"])
     absolute = {s.name: s.address for s in syms.by_name.values() if s.name not in defined}
+    for name, addr in library_calls.items():  # (the matched C calls the game's routine by the compiler's name)
+        if name not in defined:
+            absolute.setdefault(name, addr)
     for auto in ("undefined_syms_auto.txt", "undefined_funcs_auto.txt"):
         p = out / auto
         if p.exists():
