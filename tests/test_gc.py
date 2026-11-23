@@ -346,6 +346,8 @@ def test_codewarriors_runtime_is_found_by_its_names_and_the_games_own_libc_is_no
     taken = {f["name"] for lib in found.values() for f in lib["functions"]}
     assert {"__save_gpr", "__restore_gpr"} <= {f["name"] for f in found["mw-runtime"]["functions"]}
     assert "msl" not in found and "metrotrk" not in found  # (the demo links neither)
+    # (dtk's signatures were read, and its own start-up code, libc and zlib aren't Nintendo's SDK)
+    assert report["signatures"] > 500 and "dolphin-sdk" not in found
     rows = {r["name"]: r for r in net.store.all("SELECT name, vram, status FROM functions")}
     for name, r in rows.items():
         if syms.get(r["vram"]) in ("malloc", "memcpy", "strlen", "exit", "main", "clamp_s32", "adler32", "inflate"):

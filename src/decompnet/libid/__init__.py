@@ -120,6 +120,11 @@ class Signature:
     # little which it is (a 2001 GameCube SDK's empty callbacks and getters, CARDProbe or GXSaveCPUFifo, are the
     # game's own too)
     unit: str = ""
+    # each byte's bits that must be `pattern`'s where `mask` is 1 (b"": all of them): dtk's signatures keep an
+    # instruction's opcode and registers and clear what a relocation fills in (consoles/gc_wii/sdk.py)
+    bits: bytes = b""
+    # the bytes its relocations fill in, where known: code whose relocations fill others isn't it (None: not asked)
+    wild: frozenset[int] | None = None
 
 
 @dataclass
@@ -306,10 +311,11 @@ def signature_matches(sig: Signature, code: Code) -> bool:
     raw = code.raw
     if sig.size is not None and sig.size not in (len(raw), _trimmed(raw)):
         return False
-    if len(raw) < len(sig.pattern):
+    if len(raw) < len(sig.pattern) or sig.wild is not None and sig.wild != code.wild:
         return False
+    bits = sig.bits
     for i, (p, m) in enumerate(zip(sig.pattern, sig.mask)):
-        if m and i not in code.wild and raw[i] != p:
+        if m and i not in code.wild and (raw[i] ^ p) & (bits[i] if bits else 0xFF):
             return False
     if sig.crc is not None:
         start, length, crc = sig.crc

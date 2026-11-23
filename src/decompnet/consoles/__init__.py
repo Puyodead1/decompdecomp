@@ -391,6 +391,12 @@ class Console:
         (consoles/<id>/libraries.toml). [] where it has none: the built-in catalog is every console's."""
         return []
 
+    def library_signatures(self) -> list:
+        """Its libraries' functions by their code, as libid.Signature, from a tool decompdecomp installs (never
+        bundled with it): the GameCube's and Wii's from dtk's own (consoles/gc_wii/sdk.py), each of a library of
+        library_catalog. [] where it has none: the user's own signatures and kits are every console's."""
+        return []
+
     def debug_info(self, program: bytes, known: set[str]):
         """The game's own names, types and source files, when it shipped with them; None when it didn't."""
         return None
