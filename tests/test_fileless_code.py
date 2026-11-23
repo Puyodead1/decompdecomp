@@ -103,3 +103,20 @@ def test_a_rename_rewrites_the_stored_c_too(tmp_path):
     assert rows["fn_80012300"]["best_source"] == "void a(void) { Creature_Spawn(); }"
     assert rows["fn_80012400"]["matched_source"] == "void b(void) { Creature_Spawn(); }"
     assert rows["fn_80012500"]["best_source"] == "void c(void) { fn_800123400(); }"  # (whole words only)
+
+
+def test_a_sync_keeps_the_good_enough_mark():
+    """A GameCube game's 37 functions marked good enough lost the mark at the next sync: "set aside", off the
+    progress total (58 KB of its code), and no longer the user's mark to undo."""
+    from decompnet.app.forkengine import kept_meta
+
+    said = "good enough: you marked its best C (99.1%) as close enough, so agents leave it alone"
+    mark = {"score": 40, "t": 1.0}
+    assert kept_meta({"asm_code": said, "good_enough": mark, "held": 1}, True) == {"asm_code": said, "good_enough": mark}
+    # dropped by a sync before: back, from its words
+    again = kept_meta({"asm_code": said}, True, best_score=40)
+    assert again["good_enough"]["score"] == 40 and again["asm_code"] == said
+    # its code grew (pieces joined to it): open again, as any set-aside function
+    assert kept_meta({"asm_code": said, "good_enough": mark}, False) == {}
+    # set aside for another reason: no mark made up
+    assert "good_enough" not in kept_meta({"asm_code": "hand-written assembly"}, True)

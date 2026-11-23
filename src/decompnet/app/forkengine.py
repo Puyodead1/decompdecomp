@@ -487,7 +487,22 @@ _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written a
 # next check would set it aside again), and agents' proposals to join it or end it elsewhere (each sync, after every
 # match, dropped them: on a small PC game three agents of three models proposed the same join over twenty minutes, a
 # match between each, and it never added up)
-_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries", "library_said", "library")
+# The user's good enough mark too (network.mark_good_enough): dropped by every sync, a GameCube game's 37 functions
+# marked good enough were "set aside" (off the progress total, 58 KB of code) and no longer the user's mark
+_KEPT_KEYS = (*_ASM_KEYS, "not_c", "reopened", "joins", "boundaries", "library_said", "library", "good_enough")
+GOOD_ENOUGH_SAID = "good enough:"  # how network.mark_good_enough's asm_code begins
+
+
+def kept_meta(was: dict, same_size: bool, best_score=None) -> dict:
+    """What a sync keeps of a function's meta: _KEPT_KEYS while its code is the same size, else only that the user
+    gave it back to the agents. Its asm_code goes when it was set aside or no file could hold it (decided again each
+    sync). A good enough mark a sync before this dropped, its words still there, comes back."""
+    kept = _KEPT_KEYS if same_size else ("reopened",)
+    out = {k: v for k, v in was.items() if k in kept
+           and not (k == "asm_code" and (was.get("set_aside") or was.get("no_file")))}
+    if "good_enough" not in out and str(out.get("asm_code", "")).startswith(GOOD_ENOUGH_SAID):
+        out["good_enough"] = {"score": best_score, "t": time.time()}
+    return out
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 _MSVC_C = re.compile(r"[_@]([A-Za-z_]\w*?)(?:@\d+)?")  # how MSVC decorates a C function's name (PC, Xbox)
 _OLD_SYMBOL = re.compile(r"@?[A-Za-z_]\w*(?:@\d+)?")  # rename_symbol's old name (a PC report's @f@8 too)
@@ -1515,11 +1530,7 @@ class ForkEngine:
                     if sym in held.get(uname, ()):
                         fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
                 if old is not None:  # its code grew (pieces joined to it): why it was set aside was about a piece
-                    was = self._meta(old)
-                    kept = _KEPT_KEYS if old["size"] == size else ("reopened",)
-                    meta.update({k: v for k, v in was.items() if k in kept
-                                 and not (k == "asm_code" and (was.get("set_aside") or was.get("no_file")))})
-                    # (set aside, or no file could hold it: decided below, again each time)
+                    meta.update(kept_meta(self._meta(old), old["size"] == size, old["best_score"]))
                 if sym in registers:  # (claimed last, and its brief says why)
                     meta["register_arg"] = registers[sym]
                 if sym in statics:
