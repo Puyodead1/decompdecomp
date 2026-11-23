@@ -899,6 +899,9 @@ def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
     relink = [sys.executable, "tools/relink.py", f"config/{version}/functions.json", f"build/{version}", *link]
 
     def runs() -> bool:  # (to its end: wibo says so when the program's entry returns)
+        if sys.platform == "win32":  # (run as it is, no wibo to say so: it returns what the user's copy returns)
+            return (subprocess.run([str(program)], capture_output=True, timeout=60).returncode
+                    == subprocess.run([str(EXE)], capture_output=True, timeout=60).returncode)
         said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(program)],
                               capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
         return "We came back" in said.stdout + said.stderr
