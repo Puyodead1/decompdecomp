@@ -13,9 +13,11 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -747,6 +749,7 @@ class Network:
     def __init__(self, db_path: str | Path, claim_ttl: int = CLAIM_TTL):
         self.store = Store(db_path)
         self.claim_ttl = claim_ttl
+        self._ahead = threading.local()  # a compile made beforehand for this thread's next attempt (compiled_ahead)
         self._pool = ThreadPoolExecutor(max_workers=8)
         # (agent id, function id) -> its last compile's diff rows and their legend, for last_diff
         self._last_diffs: dict[tuple[int, int], tuple[list, str]] = {}
@@ -999,6 +1002,32 @@ class Network:
         if fn is not None and cfg.get("compiler_ranges"):
             cfg = {**cfg, "compiler": compiler_for(cfg, fn["vram"])}
         return self._compile_placed(compiler_config(Path(proj["root"]), cfg), proj, fn, header, source)
+
+    @staticmethod
+    def _compile_snapshot(proj, fn, header: str, source: str) -> tuple:
+        """What a compile depends on, to tell whether one made beforehand is still the one an attempt would make: the
+        project's compiler settings and folder, the function (its name and meta too: a rename between the two changes
+        what the compiler is asked for), its header and the C."""
+        return (proj["id"], proj["root"], proj["config"], fn["id"], fn["name"], fn["vram"], fn["meta"], header,
+                source)
+
+    @contextmanager
+    def compiled_ahead(self, prepared):
+        """Offer this thread's next attempt a compile made beforehand, (snapshot, future): restoring a save compiles
+        the saved functions on several threads, and judges and records each here, one at a time, as any attempt. A
+        snapshot that no longer matches is compiled again (_attempt_compilation)."""
+        previous = getattr(self._ahead, "prepared", None)
+        self._ahead.prepared = prepared
+        try:
+            yield
+        finally:
+            self._ahead.prepared = previous
+
+    def _attempt_compilation(self, proj, header: str, source: str, fn):
+        prepared = getattr(self._ahead, "prepared", None)
+        if prepared is not None and prepared[0] == self._compile_snapshot(proj, fn, header, source):
+            return prepared[1].result()
+        return self._compile(proj, header, source, fn)
 
     NEAR_PERCENT = 95  # a miss this close is tried in the console's other layouts (Console.compile_layouts)
 
@@ -1905,7 +1934,7 @@ class Network:
         key = self.compile_key(fn, ctx["header"], str(ctx["version"]), proj["config"] or "", source)
         if not scratch and (again := self.repeat_of(key, agent, fn)) is not None:
             return again
-        result = self._compile(proj, ctx["header"], source, fn)
+        result = self._attempt_compilation(proj, ctx["header"], source, fn)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"])
