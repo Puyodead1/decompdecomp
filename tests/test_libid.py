@@ -591,8 +591,9 @@ def test_only_codewarriors_consoles_have_its_libraries(tmp_path):
 
     assert {lib.id for lib in consoles.get("wii").library_catalog()} == {"mw-runtime", "msl", "metrotrk",
                                                                      "dolphin-sdk"}
-    for other in ("ps2", "n64", "pc"):
+    for other in ("ps2", "pc"):
         assert consoles.get(other).library_catalog() == []
+    assert not {lib.id for lib in consoles.get("n64").library_catalog()} & {"mw-runtime", "msl", "metrotrk"}
     report = libid.identify(None, _gamecube_runtime(), libid.load(tmp_path / "none"), arch="ppc", big_endian=True)
     assert not {lib["id"] for lib in report["libraries"]} & {"mw-runtime", "msl", "metrotrk"}
 

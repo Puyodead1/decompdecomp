@@ -234,14 +234,18 @@ class LibraryIdMixin:
     def _library_codes(self, proj) -> tuple[list[libid.Code], dict[int, dict]]:
         """Every function of the project as libid.Code (its id the key), and the rows by id."""
         rows = {r["id"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])}
+        from ..twins import object_prints, rom_print
+
         codes: list[libid.Code] = []
         if self.is_rom(proj):
             arch = proj["arch"] or "mips"
+            big = bool(self.cfg(proj).get("big_endian", self.console(proj).big_endian))
             for r in rows.values():
                 if not r["target"]:
                     continue
                 relocs = [(int(x[0]), int(x[1])) for x in json.loads(r["relocs"] or "[]") if len(x) >= 2]
-                codes.append(libid.Code(r["id"], r["name"], r["vram"], bytes(r["target"]), _wild(relocs, arch)))
+                codes.append(libid.Code(r["id"], r["name"], r["vram"], bytes(r["target"]), _wild(relocs, arch),
+                                        fingerprint=rom_print(r, arch, big, str).key))
             return codes, rows
         from ...forks.project import ForkError, ForkProject
 
@@ -258,9 +262,14 @@ class LibraryIdMixin:
             if unit.target is None or not unit.target.is_file():
                 continue
             try:
-                found = object_code(unit.target.read_bytes())
+                data = unit.target.read_bytes()
+                found = object_code(data)
             except Exception:  # (an object neither reader takes: nothing of it is read)
                 continue
+            try:
+                prints = object_prints(data)
+            except Exception:  # (then found by everything but the console's fingerprint tables)
+                prints = {}
             for r in urows:
                 sym = json.loads(r["meta"] or "{}").get("symbol") or r["name"].split("@")[0]
                 if sym not in found:
@@ -269,7 +278,8 @@ class LibraryIdMixin:
                 m = FUNCTION_NAME.search(sym)
                 # where it is: the import's own record (PC), objdiff's (the row's vram: a dtk project's), its name's
                 addr = addrs.get(sym, r["vram"] if r["vram"] is not None else int(m.group(1), 16) if m else None)
-                codes.append(libid.Code(r["id"], r["name"], addr, raw, wild, calls))
+                codes.append(libid.Code(r["id"], r["name"], addr, raw, wild, calls,
+                                        prints[sym].key if sym in prints else ""))
         return codes, rows
 
     @staticmethod
@@ -315,6 +325,11 @@ class LibraryIdMixin:
         if (own := console.library_signatures()):  # (its libraries' code, from a tool it installs: dtk's)
             catalog.signatures += own
             log(f"{console.name}'s libraries: {len(own):,} functions' signatures")
+        for library, table in console.library_prints:  # (its SDK's library, rebuilt from public source: no SDK needed)
+            try:
+                catalog.prints += libid.read_fingerprints(Path(table), library)
+            except (OSError, ValueError) as e:
+                log(f"{console.name}'s own {library} fingerprints weren't read: {e}")
         named = {}
         if (archives := kits.libraries(console.kits)):  # (the console's SDK, the user's own copy: Setup)
             own = kit_signatures(archives)

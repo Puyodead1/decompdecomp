@@ -50,6 +50,19 @@ class Nintendo64(Console):
     reference_tools = ("binutils-mips", "mips-ps2-decompals-as", "mips-ps2-decompals-ld")
     image_ext = ".z64"
     asm_preamble = '.include "macro.inc"\n.set noat\n.set noreorder\n.set gp=64\n.section .text, "ax"\n'
+    # libultra 2.0I-2.0L as decompals/ultralib rebuilds it, and n_audio 2.0J-2.0L, which it doesn't (signatures.py):
+    # without the user's SDK, a racing game had 2 of its 152 libultra functions found
+    library_prints = (("libultra", str(Path(__file__).with_name("ultralib_signatures.tsv"))),
+                      ("n_audio", str(Path(__file__).with_name("naudio_signatures.tsv"))))
+
+    def library_catalog(self) -> list:
+        """libultra and n_audio (libraries.toml): found by their fingerprints (library_prints), set aside."""
+        from importlib import resources
+
+        from ... import libid
+
+        return libid.read_catalog(resources.files(__package__).joinpath("libraries.toml").read_text(encoding="utf-8"),
+                                  "the N64's libraries")
 
     def sniff(self, head: bytes, file) -> bool:
         from .rom import MAGIC
