@@ -4,6 +4,7 @@ only restores onto the same game."""
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -335,3 +336,38 @@ def test_a_project_mode_games_save_writes_its_closest_attempts(tmp_path):
     best = (root / "progress" / "best" / "f.c").read_text()
     assert "97.0% match" in best and "claude-sonnet-5-5-1" in best and "src/auto/u.c" in best and "return 1;" in best
     assert not (root / "progress" / "best" / "g.c").exists() and (root / "progress" / "README.md").exists()
+
+
+def test_each_save_write_has_a_temporary_file_of_its_own(tmp_path, monkeypatch):
+    """Two saves at once shared `decompdecomp.json.tmp`: a short manifest written over a long one kept the long one's
+    last bytes, so the manifest ended in a stray `}` (Extra data) and every later sync refused it."""
+    import os
+    import threading
+
+    opened, real_open = [], os.open
+    monkeypatch.setattr(saves.os, "open", lambda path, *a, **k: opened.append(Path(path).name) or real_open(path, *a, **k))
+    target = tmp_path / "decompdecomp.json"
+    saves._replace_text(target, '{"a": 1}\n}\n')
+    saves._replace_text(target, '{"a": 1}\n')
+    assert target.read_text(encoding="utf-8") == '{"a": 1}\n'
+    assert len(set(opened)) == 2 and all(name.startswith(".") and name.endswith(".tmp") for name in opened)
+    assert [p.name for p in tmp_path.iterdir()] == ["decompdecomp.json"]
+
+    texts = [json.dumps({"n": i, "pad": "x" * (i * 997 % 5000)}) + "\n" for i in range(24)]
+    workers = [threading.Thread(target=saves._replace_text, args=(target, text)) for text in texts]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert target.read_text(encoding="utf-8") in texts  # one whole write, never two mixed
+    assert [p.name for p in tmp_path.iterdir()] == ["decompdecomp.json"]
+
+
+def test_a_failed_save_write_leaves_no_temporary_file(tmp_path, monkeypatch):
+    def refuse(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(saves.os, "replace", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        saves._replace_text(tmp_path / "decompdecomp.json", "{}\n")
+    assert list(tmp_path.iterdir()) == []
