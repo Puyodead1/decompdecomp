@@ -28,6 +28,7 @@ from pathlib import Path
 
 from ...arch import mips
 from ...arch.mips import JR_RA, SCAN_BLOCK, code_before, is_frame, jal_targets, place
+from ...arch.mips_recovery import extent
 from ...rom import split
 
 BLOCK = SCAN_BLOCK
@@ -120,7 +121,8 @@ def find_segments(rom: bytes, taken: list[tuple[int, int, int]], ends: tuple[int
         start = code_before(rom, lo + frames[0], floor)
         end = min((lo + returns[-1] + 8 + 0xF) & ~0xF, len(rom))
         accept(start, end, start + mapping)
-    return complete_tails(rom, close_gaps(rom, sorted(found), taken), taken)
+    found = complete_tails(rom, close_gaps(rom, sorted(found), taken), taken)
+    return sorted(found + called_gaps(rom, sorted([*taken, *found])))
 
 
 GAP_LIMIT = 0x10000  # the longest function a gap between two pieces of one segment can be
@@ -199,6 +201,40 @@ def complete_tails(rom: bytes, found: list[tuple[int, int, int]], taken=()) -> l
                     done = at + 8
                 break
         out.append((start, max(end, done or end), vram))
+    return out
+
+
+def called_gaps(rom: bytes, segments: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    """Gaps between two code segments that are one whole function, as segments of their own: a function alone
+    between two others is too short a stretch for the search to place (a stack frame and a return in one block).
+    Only when known code calls the gap's start at exactly one of the mappings the segments have, and the gap is
+    exactly one function: its frame at the start, given back in the delay slot of the return that ends the gap (and
+    of every other return), no other frame, and every way through it ending in a return inside it."""
+    spans = sorted(segments)
+    mappings = {v - s for s, _, v in spans}
+    calls = set()
+    for s, e, v in spans:
+        code = rom[s:e][:(min(e, len(rom)) - s) // 4 * 4]
+        calls.update(jal_targets(struct.unpack(f">{len(code) // 4}I", code), v))
+    out = []
+    for (_, start, _), (end, _, _) in zip(spans, spans[1:]):  # (the gap: from one's end to the next one's start)
+        if (not 0 < end - start <= GAP_LIMIT or start % 4 or end % 4
+                or any(s < end and start < e for s, e, _ in spans)):
+            continue
+        choices = [start + m for m in mappings if start + m in calls]
+        frame = int.from_bytes(rom[start:start + 4], "big")
+        if len(choices) != 1 or not is_frame(frame):
+            continue
+        vram = choices[0]
+        words = struct.unpack(f">{(end - start) // 4}I", rom[start:end])
+        pop = 0x27BD0000 | (0x10000 - (frame & 0xFFFF))  # addiu $sp, $sp, N: the frame given back
+        flow = extent(rom, start, end, vram)
+        if (words[-2:] != (JR_RA, pop) or not flow.closed or flow.size != end - start
+                or any(is_frame(w) for w in words[1:])
+                or any(w == JR_RA and words[i + 1] != pop for i, w in enumerate(words[:-1]))
+                or any(b < vram + end - start and vram < b + e - s for s, e, b in spans)):
+            continue
+        out.append((start, end, vram))
     return out
 
 

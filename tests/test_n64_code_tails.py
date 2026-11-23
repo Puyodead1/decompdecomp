@@ -4,6 +4,7 @@ bin: the segment is completed to the function's own return, and only then."""
 
 import struct
 
+import pytest
 import yaml
 
 from decompnet.consoles.n64 import code
@@ -67,3 +68,40 @@ def test_segments_found_end_to_end_get_no_bin_between_them(tmp_path, monkeypatch
     code.add_segments(path, tmp_path, "rom.z64", log=lambda _: None)
     starts = [s[0] if isinstance(s, list) else s["start"] for s in yaml.safe_load(path.read_text())["segments"]]
     assert len(starts) == len(set(starts))
+
+
+# a function alone between two segments, too short a stretch for the search: found when known code calls it
+BODY = [0x27BDFFE8, 0xAFBF0014, 0x24020007, 0x8FBF0014, RETURN, POP]
+MAPPING = 0x7FFFF000  # address minus ROM offset
+
+
+def between(callees=(0x1020 + MAPPING,), gap=BODY):
+    """Segments at 0x1000 (a function calling `callees`) and after the gap (BODY), the gap between them."""
+    caller = [0x27BDFFE8, 0xAFBF0014, *(0x0C000000 | (c >> 2) & 0x3FFFFFF for c in callees), 0, 0x8FBF0014,
+              RETURN, POP]
+    caller += [0] * (-len(caller) % 4)
+    words = [0] * (0x1000 // 4) + caller + gap + BODY
+    start = 0x1000 + 4 * len(caller)
+    end = start + 4 * len(gap)
+    rom = struct.pack(f">{len(words)}I", *words)
+    return rom, start, [(0x1000, start, 0x1000 + MAPPING), (end, end + 24, end + MAPPING)]
+
+
+def test_a_called_function_alone_between_two_segments_is_one_of_its_own():
+    rom, start, spans = between()
+    assert code.called_gaps(rom, spans) == [(start, start + 24, start + MAPPING)]
+
+
+@pytest.mark.parametrize("case", ["no_call", "padding_after", "second_frame", "early_return", "two_mappings",
+                                  "overlap"])
+def test_a_gap_that_isnt_plainly_one_called_function_stays(case):
+    gap = {"padding_after": BODY + [0], "second_frame": BODY[:2] + [0x27BDFFE8] + BODY[3:],
+           "early_return": BODY[:2] + [RETURN, 0] + BODY[2:]}.get(case, BODY)
+    callees = {"no_call": (0x1100 + MAPPING,), "two_mappings": (0x1020 + MAPPING, 0x1020 + MAPPING + 0x1000)}
+    rom, start, spans = between(callees.get(case, (0x1020 + MAPPING,)), gap)
+    assert start == 0x1020
+    if case == "two_mappings":  # another segment's mapping lands the second call on the gap too: no one address
+        spans.append((len(rom), len(rom), len(rom) + MAPPING + 0x1000))
+    if case == "overlap":  # another segment at the gap's addresses
+        spans.append((len(rom), len(rom) + 4, start + 8 + MAPPING))
+    assert code.called_gaps(rom, spans) == []
