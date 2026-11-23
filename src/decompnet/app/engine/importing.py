@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from ... import consoles, scoring, seeds, toolchains
-from ...network import NetworkError
+from ...network import Agent, NetworkError
 from ...project import compiler_for
 from ...rom import Picked, RomError, split
 from ...rom.symbols import AUTO_NAME, Symbol, SymbolTable
@@ -83,15 +83,17 @@ class ImportMixin:
         return path
 
     def import_split(self, console: consoles.Console, picked: Picked, *, toolchain: str | None = None,
-                     flags: list[str] | None = None, log=print, reimport_slug: str | None = None) -> str:
-        """ROM mode: split the program `console` read from the user's file, store every function as a target."""
+                     flags: list[str] | None = None, log=print, reimport_slug: str | None = None,
+                     rejudge: list | None = None) -> str:
+        """ROM mode: split the program `console` read from the user's file, store every function as a target.
+        `rejudge` (a reimport): gets (name, matched C, agent id) of each match whose C must be judged again."""
         if reimport_slug is None:
             return self._import_split(console, picked, toolchain=toolchain, flags=flags, log=log)
         with self.progress.rebuilding(reimport_slug):
             return self._reimport_split(console, picked, toolchain=toolchain, flags=flags, log=log,
-                                        reimport_slug=reimport_slug)
+                                        reimport_slug=reimport_slug, rejudge=rejudge)
 
-    def _reimport_split(self, console, picked, *, toolchain, flags, log, reimport_slug):
+    def _reimport_split(self, console, picked, *, toolchain, flags, log, reimport_slug, rejudge=None):
         proj = self._project(reimport_slug)
         cfg = json.loads(proj["config"])
         if cfg.get("kind") != "rom" or self.console(proj).id != console.id:
@@ -105,12 +107,13 @@ class ImportMixin:
         stage = Path(tempfile.mkdtemp(prefix=f".{reimport_slug}-reimport-", dir=root.parent))
         try:
             return self._import_split(console, picked, toolchain=toolchain, flags=flags, log=log,
-                                      reimport=proj, workdir=stage)
+                                      reimport=proj, workdir=stage, rejudge=rejudge)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
     def _import_split(self, console: consoles.Console, picked: Picked, *, toolchain: str | None = None,
-                      flags: list[str] | None = None, log=print, reimport=None, workdir: Path | None = None) -> str:
+                      flags: list[str] | None = None, log=print, reimport=None, workdir: Path | None = None,
+                      rejudge: list | None = None) -> str:
         rom, info = picked.data, picked.info
         check_cancel = getattr(log, "check_cancel", lambda: None)
         check_cancel()
@@ -257,7 +260,7 @@ class ImportMixin:
                         "INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                         (slug, info["title"], f"{info['game_code']} · {info['region']} · {len(res.functions)} functions",
                          console.arch, int(picked.big_endian), str(workdir), json.dumps(cfg))).lastrowid
-                    old_functions, gone, old_names = {}, {}, {}
+                    old_functions, gone, old_names = {}, {}, []
                 else:
                     pid = reimport["id"]
                     rows = db.execute("SELECT * FROM functions WHERE project_id=?", (pid,)).fetchall()
@@ -266,9 +269,10 @@ class ImportMixin:
                     old_functions = pair_old_functions(rows, res.functions)
                     paired = {o["id"] for o in old_functions.values()}
                     gone = {r["name"]: r for r in rows if r["id"] not in paired}
-                    # the names agents gave (functions and data), by address: matched C calls them by those names
-                    old_names = {r["address"]: r["name"] for r in db.execute(
-                        "SELECT name, address FROM symbols WHERE project_id=?", (pid,)) if not AUTO_NAME.match(r["name"])}
+                    # the names agents gave (functions and data), every one: matched C calls them by those names
+                    old_names = [(r["address"], r["name"], r["size"], r["kind"]) for r in db.execute(
+                        "SELECT name, address, size, kind FROM symbols WHERE project_id=? ORDER BY rowid", (pid,))
+                                 if not AUTO_NAME.match(r["name"])]
                     db.execute("UPDATE projects SET description=?, arch=?, big_endian=?, config=? WHERE id=?",
                                (f"{info['game_code']} · {info['region']} · {len(res.functions)} functions",
                                 console.arch, int(picked.big_endian), json.dumps(cfg), pid))
@@ -323,6 +327,11 @@ class ImportMixin:
                             (fn.size, n_insns, target.code, relocs, asm, unit, fn.vram, fn.rom, meta, old["id"]))
                         preserved += old["status"] == "matched" and bool(old["matched_source"])
                     else:
+                        if (rejudge is not None and old["status"] == "matched" and old["matched_source"]
+                                and old["target"] == target.code):
+                            # Same bytes, other relocations (a newer reader annotates references an older one left as
+                            # numbers): the C may still match, so it's judged again after the import, not dropped
+                            rejudge.append((old["name"], old["matched_source"], old["matched_agent_id"]))
                         for table in ("claims", "attempts", "twin_misses", "compiler_tests"):
                             db.execute(f"DELETE FROM {table} WHERE function_id=?", (old["id"],))
                         db.execute(
@@ -334,10 +343,24 @@ class ImportMixin:
                             (fn.size, n_insns, target.code, relocs, asm, unit, fn.vram, fn.rom, meta, status,
                              old["id"]))
                 previews = {r[1]: r[4] for r in data_rows}
-                for addr, name in old_names.items():
+                # A name went where the new split had no symbol starting at its address: a reimport that sized bss
+                # blocks over 177 named addresses (a 66 KB struct) dropped those names, and the matched C using them
+                # no longer linked. Every name stays: on the split's symbol, beside it, or where the split has none.
+                named = set()
+                for addr, name, size, kind in old_names:
+                    if name in symbols.by_name:
+                        continue
                     s = symbols.by_addr.get(addr)
-                    if s is not None and s.name != name and name not in symbols.by_name:
+                    if s is not None and s.name != name and addr not in named:
                         symbols.rename(s.name, name)
+                    elif s is not None:
+                        # a second name for one address (two helpers named it): both resolve, with the first's size
+                        # and kind (a 0-byte second name of a 66 KB block would change how an access inside it builds)
+                        symbols.alias(Symbol(name, addr, s.size, s.kind))
+                    else:  # (often inside a block the split sized: a field of a bss struct)
+                        symbols.add(Symbol(name, addr, size or 0, kind or "data"), reindex=False)
+                    named.add(addr)
+                symbols.reindex_symbols()
                 for s in symbols.by_name.values():
                     check_cancel()
                     preview = previews.get(s.address)
@@ -390,12 +413,39 @@ class ImportMixin:
         console = consoles.identify(data)
         picked = console.read_game(data, name)
         log("Game recognized; starting the replacement split.")
-        self.import_split(console, picked, reimport_slug=slug, log=log)
+        rejudge: list = []
+        self.import_split(console, picked, reimport_slug=slug, log=log, rejudge=rejudge)
+        self._judge_kept_matches(slug, rejudge, log)
         counts = self.store.one(
             "SELECT COUNT(*) AS functions, SUM(status='matched') AS matched FROM functions WHERE project_id=?",
             proj["id"])
         log(f"Reimport complete: {counts['functions']} functions; {counts['matched'] or 0} still match.")
         return {"slug": slug, "functions": counts["functions"], "matched": counts["matched"] or 0}
+
+    def _judge_kept_matches(self, slug: str, kept: list, log) -> None:
+        """Judge again the matched C of functions whose bytes a reimport left alone but whose relocations it read anew
+        (a newer reader annotates references an older one left as numbers). A reimport dropped that C unjudged: a
+        game lost 234 matches at once. One that still matches keeps its helper's credit; one that doesn't keeps its
+        C as the closest attempt."""
+        if not kept:
+            return
+        log(f"judging {len(kept)} matched function(s) again: same code, references read anew")
+        check_cancel = getattr(log, "check_cancel", lambda: None)
+        pid = self._project(slug)["id"]
+        matched = 0
+        for name, source, agent_id in kept:
+            check_cancel()
+            row = self.store.one("SELECT * FROM agents WHERE id=?", agent_id) if agent_id else None
+            agent = (Agent(row["id"], row["name"], row["owner"], bool(row["trusted"])) if row
+                     else self.local_agent("you")[0])
+            try:
+                matched += bool(self.attempt(agent, name, source, slug)["matched"])
+            except (NetworkError, toolchains.ToolchainError) as error:
+                log(f"{name}: {error}")
+            with self.store.tx() as db:  # kept as the closest attempt, for whoever goes on
+                db.execute("UPDATE functions SET best_source=?, best_score=MAX(1, COALESCE(n_insns, 1))*100 WHERE "
+                           "project_id=? AND name=? AND status<>'matched' AND best_source IS NULL", (source, pid, name))
+        log(f"{matched} of {len(kept)} still match; the others keep their C as the best attempt")
 
     def _debug_types(self, debug, cfg: dict, workdir: Path, log) -> str:
         """The game's own types from its debug information (consoles/ps2/debuginfo.py), for the first header, once

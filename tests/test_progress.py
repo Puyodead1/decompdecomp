@@ -1426,3 +1426,14 @@ def test_a_rename_to_a_compiler_builtin_that_breaks_callers_says_why(named, monk
     assert out.startswith("❌ REJECTED") and "memcpy: the compiler has its own (a builtin)" in out
     assert "builtin" not in net.rename_symbol(agent, "game", "f", "copy_bytes")
     assert _names(net) == {"f", "g"}
+
+
+def test_an_address_inside_a_larger_data_block_can_be_named(named):
+    """A reimport sized bss blocks (up to 70 KB) over addresses agents had named: those names must be given back, and
+    the block keeps its own name."""
+    net, _, agent, pid = named
+    with net.store.tx() as db:
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,'gBlock',8192,256,'bss')", (pid,))
+    assert net.rename_symbol(agent, "game", "D_00002010", "gField").startswith("✅")
+    table = net.symbols(pid)
+    assert table.resolve("gField") == 0x2010 and table.resolve("gBlock") == 0x2000
