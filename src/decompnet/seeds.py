@@ -331,6 +331,21 @@ def method_draft(draft: str, name: str, cls: str, fields: list[tuple[int, int, s
     return f"{head.rstrip()}\n{note}\nclass {cls} {{\n" + "\n".join(body) + f"\n}};\n\n{ret}{cls}::{name}({rest}) {tail}"
 
 
+DRAFT_RETRY = 1  # raised when drafting gets better: every draft that failed before is tried once more (1: the nop)
+
+
+def draft_key(key: str | None, text: str | None) -> str | None:
+    """The key a draft is stored with (functions.seed_key): what it's made from, and for a failed one (no text)
+    which DRAFT_RETRY it failed at too."""
+    return key if text else f"{key or ''}/{DRAFT_RETRY}"
+
+
+def drafted(seed: str | None, seed_key: str | None, key: str | None) -> bool:
+    """Whether a stored draft (or failure) is still the one `key` makes: a failure from before the last DRAFT_RETRY
+    isn't."""
+    return seed is not None and seed_key == draft_key(key, seed)
+
+
 class DraftError(Exception):
     """m2c couldn't make the draft asked for (strict runs only), with its own reason."""
 
@@ -357,9 +372,26 @@ def _failure(res: subprocess.CompletedProcess) -> str:
     return note.strip().strip("*/").strip()[-MAX_REASON_CHARS:] or f"m2c stopped with code {res.returncode}"
 
 
+# m2c's refusal of a label on a delay slot: "Label ._m2c_.L80001010before refers to a delay slot ... add a nop"
+_DELAY_SLOT_LABEL = re.compile(r"Label \._m2c_(\.?L[0-9A-Fa-f]{8}\w*?)before refers to a delay slot")
+DELAY_SLOT_NOPS = 8  # labels a function's assembly gets a nop before, at most
+
+
+def _nop_for_delay_slot(asm_text: str, res: subprocess.CompletedProcess) -> str | None:
+    """`asm_text` with the nop m2c asked for before a label it found on a delay slot (a branch-likely's target right
+    after a call's delay slot), or None when it asked for none. The nop changes nothing the draft says: m2c stopped
+    there with no draft at all, and 48 open functions of an N64 game had none for it."""
+    found = _DELAY_SLOT_LABEL.search((res.stdout or "") + (res.stderr or "")) if res.returncode else None
+    if not found:
+        return None
+    padded = re.sub(rf"^([ \t]*{re.escape(found[1])}:[ \t]*)$", r"nop\n\1", asm_text, count=1, flags=re.M)
+    return padded if padded != asm_text else None
+
+
 def run_m2c(asm_text: str, name: str, target: str, context_header: str = "", data_asm: str | None = None,
             timeout: float = 20, valid: bool = False, strict: bool = False) -> str | None:
-    """Run m2c for one function with an explicit target triple (e.g. ppc-mwcc-c++)."""
+    """Run m2c for one function with an explicit target triple (e.g. ppc-mwcc-c++). A label m2c finds on a delay
+    slot gets the nop it asks for, and m2c runs again (_nop_for_delay_slot)."""
     if not available():
         return None
     if target.startswith("gba"):  # a public GBA decomp (pret style): function macros, pre-UAL load mnemonics
@@ -378,9 +410,22 @@ def run_m2c(asm_text: str, name: str, target: str, context_header: str = "", dat
             ctx = Path(tmp) / "context.c"
             ctx.write_text(_context_for_m2c(context_header), encoding="utf-8")
             argv[1:1] = ["--context", str(ctx)]
-        try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+
+        def run(args: list[str]) -> subprocess.CompletedProcess:
+            nonlocal asm_text
+            res = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                                  encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+            for _ in range(DELAY_SLOT_NOPS):
+                if (padded := _nop_for_delay_slot(asm_text, res)) is None:
+                    break
+                asm_text = padded
+                asm.write_text(asm_text, encoding="utf-8")
+                res = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                                     encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+            return res
+
+        try:
+            res = run(argv)
         except subprocess.TimeoutExpired:
             if strict:
                 raise DraftError(f"m2c took longer than {timeout:g} s") from None
@@ -389,7 +434,6 @@ def run_m2c(asm_text: str, name: str, target: str, context_header: str = "", dat
             raise DraftError(_failure(res))
         if res.returncode != 0 and "--context" in argv:  # an unparsable context must not cost us the seed
             i = argv.index("--context")
-            res = subprocess.run(argv[:i] + argv[i + 2:], capture_output=True, text=True, timeout=timeout,
-                                 encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+            res = run(argv[:i] + argv[i + 2:])
         out = res.stdout.strip()
         return out if res.returncode == 0 and out else None

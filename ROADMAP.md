@@ -312,6 +312,11 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **Machine drafts for labels m2c finds on a delay slot.** m2c refused a label right after a call's delay slot
+  that a branch-likely also targets ("add a nop to the delay slot"), and 48 open functions of an N64 game had no
+  draft. The nop it asks for is added and m2c runs again; a draft that failed before is tried once more, ROM and
+  project mode alike.
+
 - **MIPS functions splat left as data are found by the calls into them.** When a word in a stretch of text isn't
   an instruction, spimdisasm files the rest of the stretch as `.word`s, every function after the word with it. A
   call from compiled code into such a stretch now says where a function is; where it's plainly one compiled

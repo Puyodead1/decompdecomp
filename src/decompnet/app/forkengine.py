@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 
 from elftools.common.exceptions import ELFError
 
-from .. import __version__, arch, classes, coffobj, consoles, similarity, structs, toolchains
+from .. import __version__, arch, classes, coffobj, consoles, seeds, similarity, structs, toolchains
 from ..arch import advice as arch_advice
 from ..forks import (
     convention,
@@ -4055,7 +4055,7 @@ class ForkEngine:
         read the code), cached in the database. A console with drafts of its own (Ghidra's: PC) keys it by the unit's
         target object: a join, a split or a repair of the analysis changes that, and the draft is made again."""
         key = self._draft_key(cfg, unit)
-        if fn["seed"] is not None and fn["seed_key"] == key:
+        if seeds.drafted(fn["seed"], fn["seed_key"], key):
             return fn["seed"] or None
         hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
         meta = self._meta(fn)
@@ -4071,7 +4071,8 @@ class ForkEngine:
         except OSError:
             text = None
         with self.net.store.tx() as db:
-            db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?", (text or "", key, fn["id"]))
+            db.execute("UPDATE functions SET seed=?, seed_key=? WHERE id=?",
+                       (text or "", seeds.draft_key(key, text), fn["id"]))
         return text
 
     @staticmethod
@@ -4109,7 +4110,7 @@ class ForkEngine:
                     keys[r["unit"]] = self._draft_key(cfg, fp.unit(r["unit"]))
                 except (ForkError, KeyError):
                     keys[r["unit"]] = None
-        stale = [r["id"] for r in rows if r["seed"] is None or r["seed_key"] != keys[r["unit"]]]
+        stale = [r["id"] for r in rows if not seeds.drafted(r["seed"], r["seed_key"], keys[r["unit"]])]
         agent, _ = self.net.local_agent("autopilot")
         tried = {r["function_id"] for r in self.net.store.all(
             "SELECT DISTINCT a.function_id FROM attempts a JOIN functions f ON f.id=a.function_id WHERE "
