@@ -92,6 +92,22 @@ def test_struct_access_through_an_automatic_name(net):
     assert "g_player.hp" in net._function("func_80000808", "demo-quest-64")["matched_source"]
 
 
+def test_a_rename_builds_again_only_the_matches_that_spell_it(net, monkeypatch):
+    """A ROM game with thousands of matched functions built every one again per rename and passed the tools'
+    timeout: only the functions whose source the rename rewrites can change (Network._rename_affected)."""
+    agent, _ = net.local_agent("tester2b")
+    seen, real = {}, net.regression_test
+
+    def spy(proj, header, **kw):
+        seen["only"] = [f["name"] for f in kw.get("only") or []]
+        return real(proj, header, **kw)
+
+    monkeypatch.setattr(net, "regression_test", spy)
+    assert net.rename_symbol(agent, "demo-quest-64", "g_player", "g_hero").startswith("✅")
+    assert seen["only"] == ["func_80000808"]  # (clamp_s32, matched too, doesn't use it)
+    assert net.rename_symbol(agent, "demo-quest-64", "g_hero", "g_player").startswith("✅")  # (the tests below)
+
+
 def test_wrong_code_gets_a_diff_and_link_notes(net):
     agent, _ = net.local_agent("tester3")
     out = net.compile_and_diff(agent, "func_80000A0C", "void func_80000A0C(s32 p) { mystery(p); }", "demo-quest-64")

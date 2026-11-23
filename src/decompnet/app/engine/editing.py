@@ -273,9 +273,14 @@ class EditMixin:
         renamed_rows = [dict(r) | {"name": new_of.get(r["name"], r["name"])} for r in matched]
         header_for = lambda fn: changed.get(self._effective_unit(fn, units),
                                             current_ctx[self._effective_unit(fn, units)]["header"])
+        # only what the rename rewrites is built again (Network._rename_affected), under its new name
+        affected = self._rename_affected(matched, rewritten, [new for _, new in pairs],
+                                         [c["header"] for c in current_ctx.values()])
+        hit = None if affected is None else {r["id"] for r in affected}
+        only = [r for r in renamed_rows if hit is None or r["id"] in hit]
         self._sym_override[proj["id"]] = trial
         try:
-            broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for)
+            broken = self.regression_test(proj, None, sources=rewritten, only=only, header_for=header_for)
         finally:
             self._sym_override.pop(proj["id"], None)
         if broken:
