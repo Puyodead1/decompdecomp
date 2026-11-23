@@ -54,6 +54,11 @@ def test_reimport_replaces_analysis_and_keeps_only_unchanged_matches(tmp_path, m
                    "VALUES(?,?,?,?,?,?)", (pid, 1, "user header", "custom", 1, ""))
         for fid in (changed_id, removed_id):  # #241: saved compiler comparisons of code that changed or went
             db.execute("INSERT INTO compiler_tests VALUES(?,?,?,?)", (fid, "digest", 0.0, "{}"))
+        # what was said about the unchanged one stays; what the analysis read is read again
+        db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(
+            {"naming": {"method": "operator"}, "plain": "int x;", "debug": {"stale": 1}}), unchanged_id))
+        db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps({"naming": {"method": "operator"}}),
+                                                               changed_id))
 
     game = tmp_path / "selected.z64"
     game.write_bytes(b"new rom")
@@ -114,6 +119,9 @@ def test_reimport_replaces_analysis_and_keeps_only_unchanged_matches(tmp_path, m
     unchanged = net.store.one("SELECT status, matched_source FROM functions WHERE id=?", unchanged_id)
     assert unchanged["status"] == "matched"
     assert unchanged["matched_source"] == "void clamp_s32(void) {}"
+    assert json.loads(net.store.one("SELECT meta FROM functions WHERE id=?", unchanged_id)["meta"]) == \
+        {"naming": {"method": "operator"}, "plain": "int x;"}
+    assert not net.store.one("SELECT meta FROM functions WHERE id=?", changed_id)["meta"]
     assert net.store.one("SELECT name FROM functions WHERE id=?", unchanged_id)["name"] == "clamp_s32"
     assert net.store.one("SELECT address FROM symbols WHERE project_id=? AND name='clamp_s32'", pid)["address"] == 0x80000000
     assert not net.store.one("SELECT 1 FROM symbols WHERE project_id=? AND name='func_80000000'", pid)

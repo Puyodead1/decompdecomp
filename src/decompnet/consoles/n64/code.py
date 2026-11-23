@@ -26,6 +26,7 @@ import struct
 import zlib
 from pathlib import Path
 
+from ...arch import mips
 from ...arch.mips import JR_RA, SCAN_BLOCK, code_before, is_frame, jal_targets, place
 from ...rom import split
 
@@ -119,7 +120,7 @@ def find_segments(rom: bytes, taken: list[tuple[int, int, int]], ends: tuple[int
         start = code_before(rom, lo + frames[0], floor)
         end = min((lo + returns[-1] + 8 + 0xF) & ~0xF, len(rom))
         accept(start, end, start + mapping)
-    return close_gaps(rom, sorted(found), taken)
+    return complete_tails(rom, close_gaps(rom, sorted(found), taken), taken)
 
 
 GAP_LIMIT = 0x10000  # the longest function a gap between two pieces of one segment can be
@@ -144,6 +145,61 @@ def close_gaps(rom: bytes, found: list[tuple[int, int, int]], taken=()) -> list[
                 continue
         out.append([start, end, vram])
     return [(a, b, v) for a, b, v in out]
+
+
+TAIL_LIMIT = 0x10000  # the longest function a segment's last one can be completed to
+TAIL_ALIGNMENT = 32  # a segment's end is its last return's delay slot rounded up to 16 bytes: the return is this close
+
+
+def complete_tails(rom: bytes, found: list[tuple[int, int, int]], taken=()) -> list[tuple[int, int, int]]:
+    """Segments whose end, rounded up past their last return, caught the stack frame of one more function, completed
+    to that function's return: the search ends a segment two quiet blocks into a long function (no return, no frame
+    in them), and the rounding left its first instructions in the segment and the rest of it in a bin no one sees.
+    Only that shape: up to its frame nothing but instructions that don't jump (loads the compiler moved above it),
+    after it valid instructions with no other frame, every branch landing inside, ending in the first `jr $ra` whose
+    delay slot pops this frame. Never into the next segment nor over another one's addresses."""
+    import rabbitizer
+
+    def word(at: int) -> int:
+        return int.from_bytes(rom[at:at + 4], "big")
+
+    def branches(w: int) -> bool:
+        op, rs, _, _, _ = mips.fields(w)
+        return op in (mips.REGIMM, *mips.BRANCHES) or (op == mips.COP1 and rs == mips.BC1)
+
+    def jumps(w: int) -> bool:
+        op, _, _, _, funct = mips.fields(w)
+        return branches(w) or op in (mips.J, mips.JAL) or (op == mips.SPECIAL and funct in (mips.JR, mips.JALR))
+
+    every = [*found, *taken]
+    out = []
+    for start, end, vram in found:
+        returns = [at for at in range(max(start, end - TAIL_ALIGNMENT), end - 4, 4) if word(at) == JR_RA]
+        last = returns[-1] + 8 if returns else end
+        frame = next((at for at in range(last, min(end + 16, len(rom) - 3), 4) if is_frame(word(at))), None)
+        if (last >= end or not any(word(at) for at in range(last, end, 4)) or frame is None
+                or any(not rabbitizer.Instruction(word(at)).isValid() or jumps(word(at)) for at in range(last, frame, 4))):
+            out.append((start, end, vram))
+            continue
+        pops = 0x27BD0000 | (0x10000 - (word(frame) & 0xFFFF))  # addiu $sp, $sp, N: the frame's size given back
+        limit = min([len(rom), frame + TAIL_LIMIT, *(s for s, _, _ in every if s >= end and s != start),
+                     *(start + v - vram for s, _, v in every if s != start and v >= vram + end - start)])
+        reach, done = end, None
+        for at in range(frame, limit - 3, 4):
+            w = word(at)
+            if not rabbitizer.Instruction(w).isValid() or (at != frame and is_frame(w)):
+                break
+            if branches(w):
+                to = at + 4 + mips.signed_immediate(w) * 4
+                if not start <= to < limit:
+                    break
+                reach = max(reach, to + 4, at + 8)
+            if w == JR_RA:
+                if at + 8 <= limit and word(at + 4) == pops and at + 8 >= reach:
+                    done = at + 8
+                break
+        out.append((start, max(end, done or end), vram))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- compressed code
@@ -283,7 +339,8 @@ def add_segments(config: Path, workdir: Path, image: str, log=print) -> str:
     for st, en, vram in found:
         name = f"code_{vram:08X}"
         segs.append({"name": name, "type": "code", "start": st, "vram": vram, "subsegments": [[st, "c", name]]})
-        if en < len(rom) and not any(start_of(s) == en for s in segs if not isinstance(s, list)):
+        # (a segment found right after this one starts there: a bin there too would give splat two at one offset)
+        if en < len(rom) and en not in starts and not any(start_of(s) == en for s in segs if not isinstance(s, list)):
             segs.append({"type": "bin", "start": en})
     segs.sort(key=lambda s: start_of(s) if start_of(s) is not None else -1)
     segs.append([len(rom)])

@@ -304,15 +304,16 @@ class ImportMixin:
                     same_target = (old is not None and old["target"] == target.code
                                    and json.loads(old["relocs"] or "[]") == target.to_json())
                     asm = console.function_asm(fn)
-                    meta_data = dict(console.function_meta(fn))
+                    # an unchanged target keeps its status, so it keeps what was said about it too: why it's set aside
+                    # (asm_code, not_c), the user's C for the plain build (Network.set_plain), that the user gave it
+                    # back (Network.reopen), its naming. What this analysis reads is read again.
+                    meta_data = {k: v for k, v in json.loads(old["meta"] or "{}").items()
+                                 if k not in ("debug", "demangled")} if same_target else {}
+                    meta_data.update(console.function_meta(fn))
                     if known:
                         meta_data["debug"] = known
                     if fn.name in demangled:
                         meta_data["demangled"] = demangled[fn.name]
-                    if old is not None and same_target and "plain" in (kept := json.loads(old["meta"] or "{}")):
-                        meta_data["plain"] = kept["plain"]  # (the user's C for the plain build: Network.set_plain)
-                    if old is not None and same_target and json.loads(old["meta"] or "{}").get("reopened"):
-                        meta_data["reopened"] = True  # (the user gave it back to the agents: Network.reopen)
                     status = old["status"] if same_target else console.function_status(fn)
                     # a stretch of NOPs splat named a function is set aside before it reaches the agents' queue, its
                     # bytes and symbol kept; an unchanged target only while still open and the user didn't give it
