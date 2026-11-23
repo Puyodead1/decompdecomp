@@ -115,11 +115,12 @@ def commit_config(net, proj, proposed, log=print):
     symbols = [tuple(r) for r in net.store.all('SELECT * FROM symbols WHERE project_id=? ORDER BY name', proj['id']) if relevant(r)]
     check_cancel = getattr(log, 'check_cancel', lambda: None)
     report = getattr(log, 'progress', lambda value: None)
-    scores = {}
+    scores, scored = {}, {}
     for index, fn in enumerate(affected, 1):
         check_cancel()
         own = compiler_for(proposed, fn['vram'])
         source = fn['matched_source'] if fn['status'] == 'matched' else net._source_of(fn)
+        scored[fn['id']] = source
         ok, diff, _ = net._judge_with(trial, fn, own['toolchain'], list(own['flags']), source) if source else (False, None, '')
         if fn['status'] == 'matched' and not ok:
             raise NetworkError(f"{fn['name']} would no longer match. Keep its compiler settings and retry.")
@@ -133,8 +134,10 @@ def commit_config(net, proj, proposed, log=print):
         headers = [tuple(r) for r in db.execute('SELECT unit,version FROM context_versions WHERE project_id=? ORDER BY version', (proj['id'],))
                    if r['unit'] in units]
         current_symbols = [tuple(r) for r in db.execute('SELECT * FROM symbols WHERE project_id=? ORDER BY name', (proj['id'],)) if relevant(r)]
+        # A helper saving an attempt while the check runs is normal: it only makes that function's score stale, which
+        # is redone below. What a verdict depends on (the matches, the targets, the header, the settings) must hold.
         if (any(current.get(k) != before.get(k) for k in ('compiler', 'compiler_ranges', 'gp', 'big_endian', 'rom', 'platform'))
-                or any(now is None or tuple(now) != tuple(fn) for fn, now in zip(affected, latest)) or headers != contexts
+                or any(now is None or verdict(now) != verdict(fn) for fn, now in zip(affected, latest)) or headers != contexts
                 or current_symbols != symbols):
             raise NetworkError('Code or settings changed during verification. Retry after the other work finishes.')
         for fn in affected:
@@ -143,11 +146,45 @@ def commit_config(net, proj, proposed, log=print):
         current['compiler'] = proposed['compiler']
         current['compiler_ranges'] = proposed.get('compiler_ranges', [])
         db.execute('UPDATE projects SET config=? WHERE id=?', (json.dumps(current), proj['id']))
-        for fid, score in scores.items():
-            db.execute('UPDATE functions SET best_score=?,seed=NULL WHERE id=?', (score, fid))
+        stale = []
+        for now in latest:
+            if now['id'] not in scores:
+                continue
+            if source_now(db, now) != scored[now['id']]:
+                db.execute('UPDATE functions SET seed=NULL WHERE id=?', (now['id'],))
+                stale.append(now['id'])
+            else:
+                db.execute('UPDATE functions SET best_score=?,seed=NULL WHERE id=?', (scores[now['id']], now['id']))
         net._event(db, proj['id'], None, 'compiler', 'Verified compiler profile changes saved')
+    for fid in stale:  # its saved score describes the old settings: judge the newer attempt with the new ones
+        fn = net.store.one('SELECT * FROM functions WHERE id=?', fid)
+        source = net._source_of(fn) if fn is not None and fn['status'] == 'open' else None
+        if not source:
+            continue
+        own = compiler_for(proposed, fn['vram'])
+        _, diff, _ = net._judge_with(trial, fn, own['toolchain'], list(own['flags']), source)
+        with net.store.tx() as db:  # unless a later attempt (judged with the new settings already) replaced it
+            if source_now(db, db.execute('SELECT * FROM functions WHERE id=?', (fid,)).fetchone()) == source:
+                db.execute('UPDATE functions SET best_score=? WHERE id=?', (diff.score if diff is not None else None, fid))
     net.bump_generation(proj['id'])
     net.progress.sync(proj['slug'], force=True)
+
+
+_VERDICT = ('id', 'name', 'vram', 'rom_offset', 'unit', 'size', 'target', 'relocs', 'meta', 'status', 'matched_source')
+
+
+def verdict(row):
+    """What a compiler check's verdict on a function depends on; its attempts, score and draft are not."""
+    return tuple(row[k] for k in _VERDICT)
+
+
+def source_now(db, fn):
+    """net._source_of inside a transaction: the best C, else the latest attempt."""
+    if fn['best_source']:
+        return fn['best_source']
+    row = db.execute('SELECT source FROM attempts WHERE function_id=? AND source IS NOT NULL ORDER BY id DESC LIMIT 1',
+                     (fn['id'],)).fetchone()
+    return row['source'] if row else None
 
 
 def saved_attempts(net, function_ids):
