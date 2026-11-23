@@ -12,6 +12,10 @@ from . import SAID_CHARS, Agent, args_brief, error_text, number, tool_name, usag
 
 TOKEN_ENV = "DECOMP_TOKEN"  # the session's token reaches Codex through its environment, never its command line
 TOOL_TIMEOUT = 180  # seconds a tool call may take (a fork's build)
+STARTUP_TIMEOUT = 30  # seconds the app's server may take to list its tools before Codex gives up on it
+SERVER = "decomp_agent"  # the app's server, by the name the run gives it
+# Codex's words when a required server didn't come up: it stops before any model turn
+_STARTUP_FAILED = re.compile(r"required MCP servers?.*(?:failed|not ready|did not start)|MCP startup failed", re.I)
 COMMAND_SHOWN = 80  # characters of a shell command the feed shows
 
 
@@ -58,10 +62,15 @@ class Codex(Agent):
         # The helper's own server; the user's MCP servers are switched off for the run (`-c` settings merge into the
         # user's config), as --strict-mcp-config does for Claude Code
         cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only"]
+        # (never the app's own: a user's config with a server of that name switched off took the tools away too)
         for name in (codex_config().get("mcp_servers") or {}):
-            if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            if name != SERVER and re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
-        cmd += ["-c", f'mcp_servers.decomp_agent={{url="{mcp_url}", bearer_token_env_var="{TOKEN_ENV}", '
+        # required: without the tools a session can only spend the user's allowance, so Codex stops before its first
+        # model turn when the server doesn't come up, instead of working with none (it used to, and said "the decomp
+        # tools aren't available" at the user's cost)
+        cmd += ["-c", f'mcp_servers.{SERVER}={{url="{mcp_url}", bearer_token_env_var="{TOKEN_ENV}", '
+                      f'enabled=true, required=true, startup_timeout_sec={STARTUP_TIMEOUT}, '
                       f'default_tools_approval_mode="approve", tool_timeout_sec={TOOL_TIMEOUT}}}',
                 "-c", 'approval_policy="never"',
                 "-c", 'web_search="disabled"']  # the read-only sandbox keeps its shell offline; this, its own search
@@ -72,6 +81,11 @@ class Codex(Agent):
             cmd += ["-m", model]
         cmd.append("-")  # the prompt comes from stdin
         return cmd, {TOKEN_ENV: token}
+
+    def startup_failure(self, text: str) -> str | None:
+        if _STARTUP_FAILED.search(text):
+            return "Codex couldn't start decompdecomp's tools, so it stopped before any model turn: " + text.strip()[-600:]
+        return None
 
     def parse(self, event: dict, state: dict) -> list[tuple[str, str] | None]:
         t = event.get("type")
