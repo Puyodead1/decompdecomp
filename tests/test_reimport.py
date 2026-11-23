@@ -182,3 +182,94 @@ def test_reimport_pairs_the_two_functions_an_overlay_puts_at_one_address():
     assert paired["func_00200000"]["id"] == 3  # renamed since: still paired by its address
     assert "func_00300000" not in paired  # new in this split
     assert len({o["id"] for o in paired.values()}) == len(paired)  # each old function pairs once
+
+
+def test_reimport_keeps_agents_names_and_judges_c_whose_references_were_read_anew(tmp_path, monkeypatch):
+    """A game lost 234 matches at once: its new split sized bss blocks over 177 addresses helpers had named (the names
+    went, so matched C stopped linking), and a newer reader annotated references the old targets left as numbers
+    (same bytes, other relocations), so the C was dropped unjudged."""
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "old.z64").write_bytes(b"old")
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    cfg = {"kind": "rom", "platform": "n64", "big_endian": True, "gp": 0,
+           "rom": {"file": "old.z64", "program": "old.z64", "sha1": "old"}, "segments": [],
+           "compiler": {"toolchain": "chosen-toolchain", "flags": ["-G0"], "timeout": 30}}
+    helper = net.authenticate(net.register_agent("claude-helper", "you"))
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,root,arch,config) VALUES(?,?,?,?,?)",
+                         ("game", "old game", str(root), "mips", json.dumps(cfg))).lastrowid
+        fid = db.execute(
+            "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,status,matched_source,matched_agent_id,"
+            "vram) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (pid, "race_update", 4, 1, bytes.fromhex("24020001"), "[]", "matched",
+             "void race_update(void) { gRecords = 0; }", helper.id, 0x80000000)).lastrowid
+        for name, address, kind in (("gRecords", 0x800C35A0, "data"), ("gSlotState", 0x800C35A0, "data"),
+                                    ("gLapCount", 0x800D0000, "bss"), ("gStreamState", 0x800C02AE, "bss"),
+                                    ("stream_state", 0x800C02AE, "bss")):
+            db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,0,?)",
+                       (pid, name, address, kind))
+        db.execute("INSERT INTO context_versions(project_id,version,header,message,created_at,unit) "
+                   "VALUES(?,1,'','',1,'')", (pid,))
+    game = tmp_path / "selected.z64"
+    game.write_bytes(b"new rom")
+
+    class TestConsole(Console):
+        id = "n64"
+        name = "Nintendo 64"
+        arch = "mips"
+
+        def read_game(self, file, name):
+            return Picked("n64", b"new rom", "new.z64", {"title": "new game", "size": 7, "game_code": "ABCD",
+                                                         "region": "US", "compiler_guess": "KMC", "sha1": "new"}, True)
+
+        def debug_info(self, program, known):
+            return None
+
+        def default_compiler(self, info, guess):
+            return "detected-toolchain"
+
+        def default_flags(self, toolchain, gp):
+            return []
+
+        def after_import(self, net, slug, chosen, log):
+            pass
+
+        def target_from_split(self, fn, resolve, big_endian, gp):
+            from decompnet.rom.match import RomTarget
+            return RomTarget(fn.name, fn.vram, bytes.fromhex("24020001"), [(0, 5, 0x800C35A0)], True, 0)
+
+    console = TestConsole()
+    monkeypatch.setattr("decompnet.app.engine.importing.consoles.identify", lambda _: console)
+    net.console = lambda _: console
+    line = split.AsmLine(0, 0x80000000, 0x24020001, "addiu", "v0, zero, 1")
+    functions = [split.RomFunction("func_80000000", 0x80000000, 0, "code", [line], root / "f.s")]
+    data = [split.DataSymbol("D_800C02AE", 0x800C02AE, None, 66514, "bss"),  # sized over gRecords
+            split.DataSymbol("D_800CFFF0", 0x800CFFF0, None, 0x100, "bss")]  # gLapCount lies inside this one
+
+    def fake_split(workdir, *args, **kwargs):
+        return split.SplitResult(functions, data, [split.Segment("code", 0, 16, 0x80000000)], {}, None, "", "")
+
+    monkeypatch.setattr("decompnet.app.engine.importing.split.split_rom", fake_split)
+    judged = []
+
+    def attempt(agent, name, source, project=None):
+        judged.append((agent.name, name, source))
+        return {"matched": False}
+
+    net.attempt = attempt
+    messages = []
+    net.reimport_rom("game", game, confirmed=True, log=messages.append)
+    rows = net.store.all("SELECT name, address, size FROM symbols WHERE project_id=?", pid)
+    names, sizes = {r["name"]: r["address"] for r in rows}, {r["name"]: r["size"] for r in rows}
+    assert names["gRecords"] == names["gSlotState"] == 0x800C35A0  # both names of one address
+    assert sizes["gStreamState"] == sizes["stream_state"] == 66514  # both names of the block keep its size
+    assert "D_800C02AE" not in sizes
+    assert names["gLapCount"] == 0x800D0000 and names["D_800CFFF0"] == 0x800CFFF0  # inside a sized block
+    table = net.symbols(pid)
+    assert table.resolve("gRecords") == table.resolve("gSlotState") == 0x800C35A0  # (read back, both still resolve)
+    assert table.resolve("gStreamState") == table.resolve("stream_state") == 0x800C02AE
+    assert judged == [("claude-helper", "race_update", "void race_update(void) { gRecords = 0; }")]
+    row = net.store.one("SELECT status, best_source FROM functions WHERE id=?", fid)
+    assert row["status"] == "open" and row["best_source"] == "void race_update(void) { gRecords = 0; }"
+    assert any("0 of 1 still match" in m for m in messages)
