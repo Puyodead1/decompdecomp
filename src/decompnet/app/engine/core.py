@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from ... import consoles, hostenv
-from ...network import Agent, Network, NetworkError, hash_token
+from ...network import Agent, AmbiguousOverlayRead, Network, NetworkError, hash_token
 from ...rom import split
 from ...rom.symbols import Symbol, SymbolTable
 from .common import _ADDRESS
@@ -252,8 +252,8 @@ class Core(Network):
             offsets = {s.rom_start + addr - s.vram for s in candidates}
             # None means unbacked memory to the linker and skips verification. Ambiguity must fail instead.
             if fn is not None and len(offsets) > 1:
-                raise NetworkError(f"Cannot verify bytes at 0x{addr:X}: multiple ROM overlays cover this address "
-                                   "and the caller's ROM offset does not select one.")
+                raise AmbiguousOverlayRead(f"Cannot verify bytes at 0x{addr:X}: multiple ROM overlays cover this "
+                                           "address and the caller's ROM offset does not select one.")
             if candidates:
                 at = candidates[0].rom_start + addr - candidates[0].vram
                 return rom[at:at + n]

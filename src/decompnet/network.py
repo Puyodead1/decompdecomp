@@ -263,6 +263,11 @@ class NetworkError(Exception):
     """An error meant to be shown to the agent as-is."""
 
 
+class AmbiguousOverlayRead(NetworkError):
+    """A function reads bytes at an address several ROM overlays load at, and its own ROM offset doesn't say which:
+    the judge can't verify it (#230). Its own class so a check that changes no bytes can tell it from a break."""
+
+
 
 def _no_better(scores: list[int | None], digests: list[str | None] | None = None) -> int:
     """How many of the last compiles in a row (oldest first in `scores`) didn't beat the best before them. With
@@ -2251,7 +2256,9 @@ class Network:
             matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
             rewritten = {r["id"]: word.sub(new, r["matched_source"]) for r in matched}
             header_for = lambda fn: changed.get(self._effective_unit(fn, units), current[self._effective_unit(fn, units)]["header"])  # noqa: B023  called within this pass of the loop
-            broken = self.regression_test(proj, None, sources=rewritten, only=matched, header_for=header_for)
+            affected = self._rename_affected(matched, rewritten, [new], [c["header"] for c in current.values()])
+            broken = self.regression_test(proj, None, sources=rewritten, only=matched if affected is None else affected,
+                                          header_for=header_for)
             if broken:
                 listing = "\n".join(f"- {name}: {why}" for name, why in broken[:10])
                 return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
@@ -2275,6 +2282,19 @@ class Network:
             return (f"✅ renamed `{old}` -> `{new}` in {len(changed)} header(s) and in {len(rewritten)} matched "
                     f"sources; all still match.")
         raise NetworkError("headers are being edited heavily right now; retry")
+
+    @staticmethod
+    def _rename_affected(matched: list, rewritten: dict[int, str], new_names: list[str], headers: list[str]) -> list | None:
+        """The matched functions a rename can change: those whose source it rewrites (or that spell a new name
+        already). A name doesn't change code and a rename keeps every type's layout, so a function whose source is
+        untouched still matches; building every matched function again per rename took a project with thousands of
+        them past the tools' timeout, and renames stopped landing. None (check every one) when a new name is in a
+        header already: there it could redefine an identifier a function uses without spelling the old name."""
+        new_word = re.compile(r"\b(" + "|".join(re.escape(n) for n in new_names) + r")\b")
+        if any(new_word.search(h or "") for h in headers):
+            return None
+        return [r for r in matched if rewritten.get(r["id"], r["matched_source"]) != r["matched_source"]
+                or new_word.search(r["matched_source"] or "")]
 
     def _latest_version(self, db, project_id: int, unit: str) -> int | None:
         row = db.execute("SELECT MAX(version) AS v FROM context_versions WHERE project_id=? AND unit=?",
@@ -2302,10 +2322,15 @@ class Network:
                                 (sources or {}).get(fn["id"], fn["matched_source"]), fn)
             if not res.ok:
                 return fn["name"], "no longer compiles: " + res.log.strip().splitlines()[0][:200] if res.log.strip() else "compile failed"
-            cand, verdict, _ = self._evaluate(fn, proj, res.obj)
-            if verdict is None and cand is not None:
-                want = self._target_obj(fn, proj).fingerprint()
-                verdict = cand.fingerprint() == want
+            try:
+                cand, verdict, _ = self._evaluate(fn, proj, res.obj)
+                if verdict is None and cand is not None:
+                    want = self._target_obj(fn, proj).fingerprint()
+                    verdict = cand.fingerprint() == want
+            except AmbiguousOverlayRead:
+                # a function that reads bytes several overlays load at can't be verified at all: the edit isn't what
+                # broke it, and refusing for it refused every rename on a game whose overlays overlap
+                return None
             if cand is None or not verdict:
                 return fn["name"], "compiles but no longer matches"
             return None

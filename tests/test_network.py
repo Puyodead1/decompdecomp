@@ -359,3 +359,68 @@ def test_fit_brief_puts_the_last_bulky_blocks_behind_their_pointers_first():
     assert fit_brief(blocks, 10_000) == ["head", "best " * 50, "asm " * 50, "diff " * 50, "tail"]
     assert fit_brief(blocks, 520) == ["head", "best " * 50, "asm " * 50, "diff: see it", "tail"]
     assert fit_brief(blocks, 10) == ["head", "best: see it", "asm: see it", "diff: see it", "tail"]
+
+
+def test_a_rename_checks_only_the_functions_whose_source_it_rewrites():
+    """A name doesn't change code and a rename keeps every type's layout, so a matched function whose source the
+    rename leaves alone still matches. Building every matched function again per rename took a project with thousands
+    of them past the tools' timeout. A new name already in a header could redefine something: then every one."""
+    matched = [{"id": 1, "matched_source": "int a(void) { return foo; }"},
+               {"id": 2, "matched_source": "int b(void) { return bar; }"},
+               {"id": 3, "matched_source": "int c(void) { return renamed; }"}]
+    rewritten = {1: "int a(void) { return renamed; }", 2: "int b(void) { return bar; }",
+                 3: "int c(void) { return renamed; }"}
+    affected = Network._rename_affected(matched, rewritten, ["renamed"], ["struct S { int foo; };"])
+    assert [r["id"] for r in affected] == [1, 3]  # (3 spells the new name already: it may resolve differently now)
+    assert Network._rename_affected(matched, rewritten, ["foo"], ["int foo;"]) is None
+
+
+def test_a_function_no_one_can_verify_does_not_refuse_an_edit(tmp_path, monkeypatch):
+    """#230: a function reading bytes several ROM overlays load at can't be verified. The check a rename or header
+    edit runs refused the edit for it, so on a game whose overlays overlap every rename was refused. A function that
+    no longer builds is still a break."""
+    from types import SimpleNamespace
+
+    from decompnet.network import AmbiguousOverlayRead
+
+    n = Network(tmp_path / "t.db")
+    fn = {"id": 1, "name": "any_fn", "matched_source": "void any_fn(void) {}"}
+    monkeypatch.setattr(n, "_compile", lambda *a, **k: SimpleNamespace(ok=True, obj=b"", log=""))
+
+    def ambiguous(*a, **k):
+        raise AmbiguousOverlayRead("Cannot verify bytes at 0x4D30D0: multiple ROM overlays cover this address")
+
+    monkeypatch.setattr(n, "_evaluate", ambiguous)
+    assert n.regression_test({"id": 1}, None, only=[fn]) == []
+    monkeypatch.setattr(n, "_compile", lambda *a, **k: SimpleNamespace(ok=False, obj=b"", log="error: x"))
+    assert n.regression_test({"id": 1}, None, only=[fn]) == [("any_fn", "no longer compiles: error: x")]
+
+
+def _spy_regression(net, monkeypatch) -> dict:
+    seen, real = {}, net.regression_test
+
+    def spy(proj, header, **kw):
+        seen["only"] = [f["name"] for f in (kw.get("only") or [])]
+        return real(proj, header, **kw)
+
+    monkeypatch.setattr(net, "regression_test", spy)
+    return seen
+
+
+def test_a_rename_builds_again_only_what_it_rewrote(net, agents, monkeypatch):
+    alice, _ = agents
+    net.compile_and_diff(alice, "player_take_damage", SOLUTIONS["player_take_damage"])  # uses unk_1C
+    net.compile_and_diff(alice, "entity_update_physics", SOLUTIONS["entity_update_physics"])  # doesn't
+    seen = _spy_regression(net, monkeypatch)
+    out = net.rename_symbol(alice, "demo", "unk_1C", "player_life_points", "fresh name")
+    assert "renamed" in out, out
+    assert seen["only"] == ["player_take_damage"]
+
+
+def test_a_rename_to_a_name_a_header_has_builds_every_match_again(net, agents, monkeypatch):
+    alice, _ = agents
+    net.compile_and_diff(alice, "player_take_damage", SOLUTIONS["player_take_damage"])
+    net.compile_and_diff(alice, "entity_update_physics", SOLUTIONS["entity_update_physics"])
+    seen = _spy_regression(net, monkeypatch)
+    net.rename_symbol(alice, "demo", "unk_1C", "hp", "collides with a field")  # (Entity has an hp)
+    assert set(seen["only"]) == {"player_take_damage", "entity_update_physics"}
