@@ -238,14 +238,24 @@ def register(app: App) -> None:
         return {"ok": why is None, "message": why}
 
     def p_delete(slug, request, data):
+        """Remove a project, even one whose progress folder can't be synchronized (deleted, or a manifest it rejects):
+        every lookup here synchronized it first and failed, so the project stayed listed for good and its game
+        couldn't be started afresh."""
         manager.forget_project(slug)  # (it stopped every project's helpers)
-        proj = net.project_row(slug)
-        net.knowledge.forget(slug)
+        proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+        if proj is None:
+            raise NetworkError(f"no project {slug!r} here: check its name, or whether it was removed")
         from .. import manual_mcp
-        for connection in list(manual_mcp.connections(settings)):
-            if connection['slug'] == slug:
-                manual_mcp.revoke(net, settings, connection['id'])
-        net.remove_project(slug)
+        previous = getattr(net.progress.local, "busy", False)
+        net.progress.local.busy = True  # (what the lookups below synchronize is about to be deleted)
+        try:
+            net.knowledge.forget(slug)
+            for connection in list(manual_mcp.connections(settings)):
+                if connection['slug'] == slug:
+                    manual_mcp.revoke(net, settings, connection['id'])
+            net.remove_project(slug)
+        finally:
+            net.progress.local.busy = previous
         if app.invalidate_map:
             app.invalidate_map(slug)
         if data.get("files"):
