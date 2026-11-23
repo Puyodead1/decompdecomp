@@ -273,6 +273,13 @@ class Agent:
         message doesn't say; None when it can't tell (the helper then waits longer each time: app/agents.py)."""
         return None
 
+    def quota_error(self, state: dict, exit_code: int, stderr: list[str], said: str) -> str:
+        """What says its plan's usage limit is reached ("" when nothing does), read by limit_reset for when it resets.
+        `said` is everything the session said when it reads as a limit (app/agents.LIMIT); an agent that reports
+        its limit in a structured error answers from that instead, so its model's own words ("within the session
+        limit") never start a wait (Codex)."""
+        return said
+
     def startup_failure(self, text: str) -> str | None:
         """Why the agent stopped before its first model turn (its required MCP server didn't come up), read from what
         it said, or None: the helper says so and tries again like after any failure (Codex)."""
