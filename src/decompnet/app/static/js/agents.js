@@ -475,7 +475,7 @@ function renderLauncher(box, compact = true) {
   const tasks = polishOffered(S.ov) ?`<div class="field"><span>What they do</span><div class="seg" role="radiogroup" aria-label="What they do">${
     TASKS.map(([k, label, what]) => `<button type="button" role="radio" aria-checked="${LZ.task === k}" class="${LZ.task === k ? "on" : ""}" data-task="${k}" title="${what}">${label}</button>`).join("")}</div>
     <span class="muted small">${esc(TASKS.find(([k]) => k === LZ.task)[2])}</span>
-    ${LZ.task === "readable" ? `<span class="muted small">Polished before types were shown? <button class="link-btn" data-act="repolish" type="button">Find polished functions that still read structs through raw offsets</button></span>` : ""}</div>` : "";
+    ${LZ.task === "readable" ? `<span class="muted small">Polished before types were shown? <button class="link-btn" data-act="repolish" type="button">Find polished functions that still read structs through raw offsets</button></span>${S.ov.unpolished ? `<span class="muted small">${plural(S.ov.unpolished, "matched function")} left unpolished after 3 tries. <button class="link-btn" data-act="polish-again" type="button">Give them back to polishing</button></span>` : ""}` : ""}</div>` : "";
   if (!tasks) LZ.task = "";
   box.innerHTML = `${tasks}<div class="lz-kinds">${kinds}</div>
     <div class="lz-body">${body}
@@ -623,6 +623,19 @@ function renderLauncher(box, compact = true) {
       const done = await api("/api/repolish", { method: "POST", body: { slug: S.slug } });
       toast(`${done.count} function${done.count === 1 ? " is" : "s are"} on the polishing list again.`);
     } catch (e) { toast(esc(e.message), "err"); } finally { repolish.disabled = false; repolish.textContent = label; }
+  };
+  // functions polishing left after their tries (readable.polish_again): given back only if the user says so
+  const polishAgain = box.querySelector('[data-act="polish-again"]');
+  if (polishAgain) polishAgain.onclick = async () => {
+    polishAgain.disabled = true;
+    try {
+      const { count } = await api(`/api/polish_again?slug=${encodeURIComponent(S.slug)}`);
+      if (!count) { toast("No matched function is left unpolished."); return; }
+      if (!confirm(`${count} matched function${count === 1 ? " was" : "s were"} left unpolished: polishing tried each 3 times without a rewrite that kept it matching. Put them on the polishing list again, with 3 new tries each?`)) return;
+      const done = await api("/api/polish_again", { method: "POST", body: { slug: S.slug } });
+      toast(`${done.count} function${done.count === 1 ? " is" : "s are"} on the polishing list again.`);
+      S.ov.unpolished = 0;
+    } catch (e) { toast(esc(e.message), "err"); } finally { polishAgain.disabled = false; }
   };
   const again = box.querySelector('[data-act="detect"]');
   if (again) again.onclick = async () => {
@@ -773,6 +786,7 @@ function eventHtml(ev) {
     case "claim": return `${who} started ${fnLink(d)}`;
     case "polish": return `${who} started polishing ${fnLink(d)} ${POLISH_TAG}`;
     case "readable": return `<span class="ok">✎</span> ${who} polished ${fnLink(d)} ${POLISH_TAG}`;
+    case "polish_again": return `${fnLink(d)} is on the polishing list again, with new tries ${POLISH_TAG}`;
     // a source file tidied once its functions are polished (app/readable.py: its types, names and declarations)
     case "tidy": return `${who} started tidying ${esc(d)} ${POLISH_TAG}`;
     case "tidied": return `<span class="ok">✎</span> ${who} tidied ${esc(d)} ${POLISH_TAG}`;

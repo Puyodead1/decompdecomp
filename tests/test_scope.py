@@ -212,9 +212,12 @@ def test_a_held_function_given_back_with_nothing_judged_isnt_a_try(tmp_path, mon
     assert "1 matched functions aren't readable but are left as they are" in said and "Stop here" in said
     assert net.readability.counts(proj)["given_up"] == 1
 
+    # the user gives it back: its tries count from now (a GameCube room's 29, rewrites refused, had no way back)
+    assert net.readability.polish_again(slug, dry=True) == 1
+    assert net.readability.polish_again(slug) == 1 and net.readability.counts(proj)["given_up"] == 0
+    assert net.readability.polish_again(slug) == 0
+
     # never judged at all, but handed out POLISH_HANDOUTS times: let go
-    with net.store.tx() as db:
-        net._event(db, proj["id"], one.id, "readable", "game_b")
     for _ in range(readable.POLISH_HANDOUTS):
         assert net.readability.claim(one, slug).startswith("MAKE READABLE: game_b")
     assert "Stop here" in net.readability.claim(one, slug)
@@ -681,3 +684,22 @@ def test_a_copy_too_small_to_be_a_twin_still_follows_its_original(tmp_path):
     net.twins.prints = lambda proj: {ids["a"]: Print("ret", [], 4), ids["b"]: Print("ret", [], 4),
                                      ids["x"]: Print("ret2", [], 4), ids["y"]: Print("ret2", [], 4)}
     assert net.twins.pairs(net.project_row("p")) == [(ids["a"], ids["b"])]
+
+
+def test_the_user_gives_functions_left_unpolished_back_from_the_window(client, tmp_path, monkeypatch):
+    """The Polish launcher's "Give them back to polishing": how many, then each with new tries."""
+    from decompnet.app import readable
+
+    c, net, home = client
+    root = home / "p"
+    root.mkdir()
+    slug = _project(net, root, monkeypatch)
+    net.forks.sync(slug, log=lambda *_: None)
+    net.store.conn.execute("UPDATE functions SET status='matched' WHERE name='game_b'")
+    proj = net._project(slug)
+    with net.store.tx() as db:
+        for k in range(readable.POLISH_TRIES):  # three helpers' claims: tried out
+            net._event(db, proj["id"], net.local_agent(f"claude-sonnet-5-5-{k}")[0].id, "polish", "game_b")
+    assert c.get(f"/api/polish_again?slug={slug}").json() == {"count": 1}
+    assert c.post("/api/polish_again", json={"slug": slug}).json() == {"count": 1}
+    assert c.get(f"/api/polish_again?slug={slug}").json() == {"count": 0}

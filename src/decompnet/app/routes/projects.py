@@ -260,6 +260,11 @@ def register(app: App) -> None:
             return {"count": net.readability.reopen_untyped(slug, log=lambda *_: None, guesses=True, dry=True)}
         return {"count": net.readability.reopen_untyped(slug, guesses=True)}
 
+    def p_polish_again(slug, request, data):
+        """Matched functions polishing left unpolished after their tries (readable.polish_again): GET how many, POST
+        puts them on the polishing list again."""
+        return {"count": net.readability.polish_again(slug, dry=request.method == "GET")}
+
     def p_release(slug, request, data):
         agent, _ = net.local_agent("you")
         try:
@@ -442,7 +447,7 @@ def register(app: App) -> None:
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
-        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/good_enough": (p_good_enough, ["POST"]), "/api/plain": (p_plain, ["POST"]),
+        "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/repolish": (p_repolish, ["GET", "POST"]), "/api/polish_again": (p_polish_again, ["GET", "POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]), "/api/good_enough": (p_good_enough, ["POST"]), "/api/plain": (p_plain, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]), "/api/compare": (p_compare, ["POST"]), "/api/file": (p_file, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/claim-order": (p_claim_order, ["POST"]),

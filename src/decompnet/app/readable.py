@@ -54,8 +54,8 @@ POLISH_HANDOUTS = 10  # ... or handed out this often, tries or not (a helper tha
 GIVEN_UP = ("SELECT t.detail FROM (SELECT p.project_id, p.detail, p.agent_id, p.created_at, "
             "LAG(p.agent_id) OVER w AS prev_agent, LAG(p.created_at) OVER w AS prev_at "
             "FROM events p WHERE p.project_id=? AND p.kind='polish' AND p.id > COALESCE((SELECT "
-            "MAX(r.id) FROM events r WHERE r.project_id=p.project_id AND r.kind='readable' AND r.detail=p.detail), 0) "
-            "WINDOW w AS (PARTITION BY p.detail ORDER BY p.id)) t GROUP BY t.detail "
+            "MAX(r.id) FROM events r WHERE r.project_id=p.project_id AND r.kind IN ('readable', 'polish_again') "
+            "AND r.detail=p.detail), 0) WINDOW w AS (PARTITION BY p.detail ORDER BY p.id)) t GROUP BY t.detail "
             "HAVING SUM(t.prev_at IS NULL OR t.prev_agent IS NOT t.agent_id OR EXISTS(SELECT 1 FROM attempts a "
             "JOIN functions f ON f.id=a.function_id WHERE a.agent_id=t.agent_id "
             "AND a.created_at BETWEEN t.prev_at AND t.created_at AND f.project_id=t.project_id AND f.name=t.detail)) "
@@ -197,6 +197,22 @@ class Readability:
                 "are known (the game's debug information, or the struct layouts its code shows): they're on the "
                 "polishing list again")
         return len(again)
+
+    def polish_again(self, slug: str, dry: bool = False) -> int:
+        """The matched functions left unpolished after their tries (GIVEN_UP) on the polishing list again, the user's
+        word: their tries count from now (a 'polish_again' event, as a 'readable' one resets them). A GameCube room's
+        29 had rewrites refused three times each and nothing gave them back. `dry`: how many there are."""
+        proj = self.net.project_row(slug)
+        if self.net._link(slug):
+            raise NetworkError("in a room, the host gives functions back to polishing")
+        rows = self.net.store.all(f"SELECT name FROM functions WHERE project_id=? AND status='matched' AND readable=0 "
+                                  f"AND {GAME_CODE} AND name IN ({GIVEN_UP})", proj["id"], proj["id"])
+        if dry or not rows:
+            return len(rows)
+        with self.net.store.tx() as db:
+            for r in rows:
+                self.net._event(db, proj["id"], None, "polish_again", r["name"])
+        return len(rows)
 
     def name_addresses(self, slug: str, log=print, only: set[str] | None = None) -> int:
         """Matched functions whose C writes addresses as numbers (`printf((char *)0x80aa0c0)`) given what the game
