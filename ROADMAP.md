@@ -312,6 +312,11 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **A jump table with no symbol of its own is placed at the ROM's table.** A switch's table at the end of an N64
+  overlay has no name, so spimdisasm wrote its `lui`/`lw` as plain numbers and every candidate bringing its own
+  table was refused ("refers to .rodata+0x0 where the ROM's code has no address"). The judge reads the address
+  from the ROM's two words, only where the candidate has that pair, and still compares the table's bytes there.
+
 - **MIPS targets of only NOPs stay out of the agents' queue.** splat can name a zero-filled stretch as a function;
   such a target is now set aside at import (and by an unchanged reimport while it's still open), in Check again
   with its own reason instead of "runs on into the next function", and in a project's MIPS objects, whose console's

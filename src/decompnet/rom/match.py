@@ -26,6 +26,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 
 from .. import scoring
+from ..arch import mips
 from ..elfobj import MASKS_BY_ARCH, FunctionObj, Reloc, canonical_symbol, section_target, symbol_at, unmangle
 from .link import LinkResult, significant  # (re-exported: callers still ask match.LinkResult)
 from .split import RomFunction
@@ -223,6 +224,37 @@ class _Linker:
             return None
         return base
 
+    def _target_word(self, off: int) -> int | None:
+        """The ROM's instruction word at `off` in the function, or None outside it."""
+        if off < 0 or off % 4 or off + 4 > len(self.target.code):
+            return None
+        return int.from_bytes(self.target.code[off:off + 4], self.target.order)
+
+    def _raw_ref(self, raw: list[dict], k: int) -> tuple[int, int] | None:
+        """(relocation type, address) of a hi/lo pair the disassembler left as plain numbers (#312). A switch's
+        jump table at the end of an overlay has no symbol, so spimdisasm writes its `lui`/`lw` with raw immediates
+        and target_from_split records no relocation. The candidate's own relocations say which two instructions
+        are the pair, and the ROM's words still hold the address (the hi carrying bit 15's carry, the lo signed).
+        Only where the candidate has a pair: most raw `lui`/`addiu` pairs are plain constants, and reading them
+        as addresses changed the diffs of functions that already matched."""
+        r = raw[k]
+        if r["type"] not in (R_MIPS_HI16, R_MIPS_LO16):
+            return None
+        same = [x for x in raw if x["symidx"] == r["symidx"] and x["symtab"] is r["symtab"]]
+        if r["type"] == R_MIPS_HI16:
+            mate = next((x for x in same if x["off"] > r["off"] and x["type"] == R_MIPS_LO16), None)
+        else:
+            mate = next((x for x in reversed(same) if x["off"] < r["off"] and x["type"] == R_MIPS_HI16), None)
+        if mate is None:
+            return None
+        hi_off, lo_off = (r["off"], mate["off"]) if r["type"] == R_MIPS_HI16 else (mate["off"], r["off"])
+        if hi_off in self.target_at or lo_off in self.target_at:  # (the ROM's pair is annotated: that address)
+            return None
+        hi, lo = self._target_word(hi_off), self._target_word(lo_off)
+        if hi is None or lo is None or hi >> mips.OPCODE_SHIFT != mips.LUI:
+            return None
+        return r["type"], (((hi & 0xFFFF) << 16) + mips.signed_immediate(lo)) & 0xFFFFFFFF
+
     def address(self, raw: list[dict], k: int, fn_shndx: int, fn_start: int) -> int | None:
         r = raw[k]
         if r["type"] == R_MIPS_GPREL16:
@@ -262,8 +294,10 @@ class _Linker:
                 self.local_map.setdefault((shndx, off), addr)  # g++'s `.sdata+4`: the export places the section
         else:
             want = self.target_at.get(r["off"])
+            if want is None:
+                want = self._raw_ref(raw, k)
             if want is None or want[0] != r["type"]:
-                label = f"{named[0]}+0x{named[1]:X}" if named else f"{self.elf.get_section(shndx).name}+0x{off:X}"
+                label =f"{named[0]}+0x{named[1]:X}" if named else f"{self.elf.get_section(shndx).name}+0x{off:X}"
                 self.problem(f"your code refers to {label} where the ROM's code has no address")
                 return None
             addr = want[1]
