@@ -108,6 +108,11 @@ FAST_FAILURES_TO_PAUSE = 5
 # the provider's limit of requests at once (HTTP 429): not the helper's failure, so waited out, this many times
 THROTTLE_WAIT = 60
 THROTTLES_IN_A_ROW = 10
+# A CLI that keeps its session open while its provider refuses each try (OpenCode: "The inference service is
+# overloaded", Agent.stderr_retry) is ended once it said so OVERLOAD_TRIES times over OVERLOAD_QUIET seconds with no
+# text, thinking or tool call between: the helper then waits like after any throttle, instead of an open session
+OVERLOAD_TRIES = 3
+OVERLOAD_QUIET = 2 * 60
 # A plan's usage limit resets by itself: wait until the time the agent says, a little after it; when it says none,
 # from LIMIT_WAIT_FIRST doubling up to LIMIT_WAIT_LONGEST. A reset further away than LIMIT_RESET_FURTHEST is misread.
 LIMIT_WAIT_FIRST = 15 * 60
@@ -200,7 +205,11 @@ AUTH_WAIT = 60  # seconds before the first try again, doubling
 _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
                         r"credit balance is too low|payment required|out of credits?|credits[ _-]exhausted", re.I)
 # and when it's asked too much at once (HTTP 429): it works again in a while
-THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency[ _-]?limit|\b429\b|overloaded", re.I)
+THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency[ _-]?limit|\b429\b|overloaded|"
+                       r"no capacity available|\bUNAVAILABLE\s*\(\s*code\s+503\b", re.I)
+# of which, the provider having no room for the model at all (Antigravity: "UNAVAILABLE (code 503): No capacity
+# available for model"): said as such, since fewer helpers on the account wouldn't help
+NO_CAPACITY = re.compile(r"overloaded|no capacity available|\bUNAVAILABLE\s*\(\s*code\s+503\b", re.I)
 # and when the model's reply ran into its output limit, cut off in the middle of a tool call (Codex: "Incomplete
 # response returned, reason: max_output_tokens"; Claude Code: "Claude's response exceeded the 32000 output token
 # maximum"): the call never reached the app, and the same session would only write the same too-long reply again
@@ -392,6 +401,35 @@ def _stdin_payload(prompt: str | None) -> str | None:
     if prompt is None:
         return gate or None
     return gate + prompt
+
+
+class _StreamRetries:
+    """A CLI's provider refusing it again and again on an open session (Agent.stderr_retry): `observe` says when it
+    has been OVERLOAD_TRIES times over OVERLOAD_QUIET seconds with no progress between (`progress`). One refusal, or a
+    few close together, is the CLI's own retrying, which often works."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.said, self.first, self.count, self.given_up = "", 0.0, 0, ""
+
+    def progress(self) -> None:
+        with self.lock:
+            self.said, self.count = "", 0
+
+    def span(self) -> float:
+        return time.monotonic() - self.first
+
+    def observe(self, said: str) -> bool:
+        if not said:
+            return False
+        with self.lock:
+            if said != self.said:
+                self.said, self.first, self.count = said, time.monotonic(), 0
+            self.count += 1
+            if self.count >= OVERLOAD_TRIES and self.span() >= OVERLOAD_QUIET and not self.given_up:
+                self.given_up = said
+                return True
+        return False
 
 
 def _feed_stdin(proc: subprocess.Popen, prompt: str | None) -> None:
@@ -1346,8 +1384,12 @@ class Manager:
                 continue
             if s.throttled and throttles < THROTTLES_IN_A_ROW:  # the provider's limit, not the agent's failure
                 s.throttled, throttles = False, throttles + 1
-                self._wait(s, "the model's provider says too many requests at once", time.time() + THROTTLE_WAIT,
-                           "fewer agents at once on this account would wait less")
+                if NO_CAPACITY.search(s.error):
+                    self._wait(s, "the model's provider is overloaded: it has no capacity for this model now",
+                               time.time() + THROTTLE_WAIT, "it tries again by itself; nothing here is broken")
+                else:
+                    self._wait(s, "the model's provider says too many requests at once", time.time() + THROTTLE_WAIT,
+                               "fewer agents at once on this account would wait less")
                 continue
             throttles = 0
             if ok:
@@ -1640,6 +1682,7 @@ class Manager:
         s.proc, s.pid_start = proc, _proc_start(proc.pid)
         self._save(s)  # its process, should the app crash: the next start ends it
         errors: collections.deque = collections.deque(maxlen=20)
+        retries = _StreamRetries()
 
         def feed_prompt():
             try:
@@ -1652,6 +1695,8 @@ class Manager:
                 text = k.clean_stderr(line)
                 if token:  # (an MCP error may echo its header)
                     text = text.replace(token, "[redacted]")
+                if retries.observe(k.stderr_retry(line)) and not s.stop.is_set():
+                    _terminate(proc)  # (the provider kept refusing it: the helper waits, then a new session)
                 if text and (not errors or errors[-1] != text):
                     errors.append(text)
                     if k.limit_hangs and LIMIT.search(text):  # (it would retry the limit for hours: see Agent)
@@ -1665,6 +1710,8 @@ class Manager:
         last_error = refused = ""
         for line in proc.stdout:
             for kind, text in k.parse_line(line, state):
+                if kind in ("text", "think", "tool"):
+                    retries.progress()
                 if kind == "usage":
                     self.account(s, json.loads(text))
                     continue
@@ -1691,6 +1738,11 @@ class Manager:
         everything = " ".join([*said, *errors])
         if refused:
             raise Fatal(refused)  # every retry would meet it the same way
+        if retries.given_up:
+            s.throttled = True
+            s.error = f"{retries.given_up} (said {retries.count} times in {retries.span():.0f} s, with nothing between)"
+            s.push("error", s.error)
+            return False
         if (quota := k.quota_error(state, code, list(errors), everything if LIMIT.search(everything) else "")):
             s.limited = True  # whatever the exit code: Claude Code says so in an ordinary result
             s.limit_until = limit_reset(quota) or k.limit_resets_at()
