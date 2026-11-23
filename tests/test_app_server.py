@@ -18,6 +18,7 @@ from decompnet.agents import api
 from decompnet.app import agents, window
 from decompnet.app.engine import RomNetwork
 from decompnet.app.server import build
+from decompnet.network import NetworkError
 
 # the tests that import the demo ROM (the rest, such as the GUI's security, run anywhere)
 needs_demo = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or not shutil.which("ld.lld"),
@@ -1300,3 +1301,40 @@ def test_an_endpoint_without_a_model_saves_and_a_missing_address_is_said(app):
     bad = client.post("/api/settings", json={"endpoint": {"provider": "custom", "base_url": "", "model": ""}},
                       headers=write)
     assert bad.status_code == 400 and "API address" in bad.text
+
+
+@pytest.mark.parametrize("damage", ["folder deleted", "manifest rejected"])
+def test_a_project_whose_progress_folder_fails_to_sync_can_still_be_removed(tmp_path, damage):
+    """Removing a project looked it up through the progress sync, so one whose progress folder was deleted, or whose
+    manifest is rejected, couldn't be opened or removed: it stayed listed, and its game couldn't start afresh."""
+    home = tmp_path / "home"
+    (home / ".decomp").mkdir(parents=True)
+    net = RomNetwork(home / ".decomp" / "decomp.db", home)
+    mcp, _, security, _ = build(net, home / ".decomp", PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
+    cfg = {"kind": "rom", "platform": "n64", "rom": {"sha1": "demo"}, "compiler": {"toolchain": "gcc-2.7.2-kmc", "flags": ""}}
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,root,config) VALUES('game','Game',?,?)",
+                         (str(home / "game"), json.dumps(cfg))).lastrowid
+        db.execute("INSERT INTO context_versions(project_id,version,header,created_at,unit) "
+                   "VALUES(?,1,'',0,'')", (pid,))
+        db.execute("INSERT INTO functions(project_id,name,vram,size,n_insns,status,unit) "
+                   "VALUES(?,'f',4096,4,1,'open','')", (pid,))
+    net.progress.sync("game", force=True)
+    folder = home / "game" / "progress"
+    if damage == "folder deleted":
+        shutil.rmtree(home / "game")
+    else:
+        manifest = json.loads((folder / "decompdecomp.json").read_text())
+        manifest["layout"][0]["name"] = "?f@@YAXXZ"
+        (folder / "decompdecomp.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(NetworkError, match="progress/decompdecomp.json"):
+        net.progress.sync("game", force=True)  # (the autosave's: a lookup within seconds of a sync doesn't read)
+    opened = client.get("/api/project?slug=game")
+    assert opened.status_code == 400 and "progress/decompdecomp.json" in opened.json()["error"]
+    assert client.get("/api/projects").json()[0]["progress_error"]
+    removed = client.post("/api/delete", json={"slug": "game", "files": True}, headers={"X-Decomp": "1"})
+    assert removed.status_code == 200, removed.text
+    assert client.get("/api/projects").json() == []
+    assert not (home / "game").exists()

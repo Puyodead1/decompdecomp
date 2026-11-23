@@ -16,7 +16,12 @@ async function openProject(slug, tab = "overview") {
     S.ov = ov;
   } catch (e) {
     if (gen !== S.gen) return;
-    toast(esc(e.message), "err");
+    // One whose progress folder can't be synchronized, or that can't be read, never opens: its page's Remove button
+    // can't be reached, so offer it here, once the route home has run (route() closes every dialog).
+    const p = (S.projects || []).find((x) => x.slug === slug);
+    if (!(p && (p.progress_error || p.broken))) toast(esc(e.message), "err");
+    else if (location.hash === "#/") confirmRemove(slug, p.title, e.message);
+    else window.addEventListener("hashchange", () => confirmRemove(slug, p.title, e.message), { once: true });
     location.hash = "#/";
     return;
   }

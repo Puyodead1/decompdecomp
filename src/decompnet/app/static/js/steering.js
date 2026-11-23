@@ -1102,19 +1102,25 @@ function renderCompilerWaiting(ov) {
   const sg = compilerSuggestions(ov);
   setHtml($("compilerWaiting"), sg.length ? `<p class="col-title">Waiting for you</p>${sg.map(suggestionHtml).join("")}` : "");
 }
-$("deleteBtn").onclick = () => {
-  dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decompdecomp? Matched functions and notes are deleted.</p>
+/* Remove a project: its own page's button, or a project that won't open (openProject: `why` is what stops it), which
+   has no page to reach that button on. */
+function confirmRemove(slug, title, why = "") {
+  const stuck = why ? `<p><b>${esc(title)}</b> can't be opened: ${esc(why)}</p>
+    <p class="muted small">Fix its progress folder and open it again, or remove the project.</p>` : "";
+  dialog(why ? "Project can't be opened" : "Remove project", `${stuck}
+    <p>Remove <b>${esc(title)}</b> from decompdecomp? Matched functions and notes are deleted.</p>
     <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
     <div class="row"><button class="primary" id="delGo" type="button">Remove</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   $("delGo").onclick = async () => {
     try {
-      await api("/api/delete", { method: "POST", body: { slug: S.slug, files: $("delFiles").checked } });
+      await api("/api/delete", { method: "POST", body: { slug, files: $("delFiles").checked } });
       closeDialog();
       loadNav();
       location.hash = "#/";
     } catch (e) { toast(esc(e.message), "err"); }
   };
-};
+}
+$("deleteBtn").onclick = () => confirmRemove(S.slug, S.ov.title);
 
 // Profile menus use the app's standard dismissal behavior.
 document.addEventListener("click", event => {
