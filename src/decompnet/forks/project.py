@@ -100,6 +100,11 @@ _CHECK = re.compile(r"^build (\S+[/\\]ok): check\b")  # dtk-template writes buil
 # build.ninja's top-level variables (`PY = /path/python`) and rules' commands (`  command = /path/tool ...`): the
 # program each runs first (build_problem)
 _NINJA_PROGRAM = re.compile(r"^(?:([A-Za-z_][\w.-]*)|\s+command)\s*=\s*(.*)$")
+# a line ending in an odd number of $ goes on after the next line's indent ($$ before it is a dollar): ninja_syntax
+# wraps long lines so, "command = $" with the program next, or at a space inside a quoted path
+_NINJA_CONTINUATION = re.compile(r"(?<!\$)((?:\$\$)*)\$\n[ \t]*")
+# ninja's escapes for a space, a colon and a dollar ($PY and ${cc} are variables, left as they are)
+_NINJA_ESCAPE = re.compile(r"\$([ :$])")
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
@@ -230,6 +235,29 @@ def _hash_mismatch(tail: str) -> str | None:
             f"{expected[:8]}..., yours is {got[:8]}...). Your dump is likely fine: some projects are set up from "
             "files that aren't on the retail disc (check the project's README for which file and where it comes "
             "from). Or start the game from your own copy instead: choose New project → Open a game file.")
+
+
+def _command_program(command: str) -> str:
+    """The program a command line runs first, read the way it runs: ninja undoes its escapes first ($  a space,
+    $: a colon, $$ a dollar), then the shell takes the first word, with its quotes ("a path/tool") undone.
+    Without the quotes its first word ended at the space of ~/Library/Application Support, where macOS keeps
+    this app's toolchains, and a project that builds fine looked broken (#320). A "$ " outside quotes is a
+    space the shell splits at, so the word ends there, as it does when the build runs it."""
+    word: list[str] = []
+    quote = ""
+    for c in _NINJA_ESCAPE.sub(r"\1", command.strip()):
+        if quote:  # inside "..." or '...': spaces don't split the word
+            if c == quote:
+                quote = ""
+            else:
+                word.append(c)
+        elif c in "'\"":
+            quote = c
+        elif c.isspace():
+            break
+        else:  # a variable ninja expands ($PY, ${cc}) stays as it is: build_problem doesn't check those
+            word.append(c)
+    return "".join(word)
 
 
 def _absent_program(prog: str) -> bool:
@@ -778,13 +806,13 @@ class ForkProject:
             text = ninja.read_text(errors="replace", encoding="utf-8")
         except OSError as e:
             return f"build.ninja can't be read: {e}"
-        # (ninja_syntax wraps long lines with "$" and an indented continuation: "command = $\n      C:\...\python")
-        for line in re.sub(r"(?<!\$)\$\n[ \t]*", " ", text).splitlines():
+        # (ninja_syntax wraps long lines with "$" and an indented continuation: "command = $\n      C:\...\python",
+        # or "Application $\n    Support/..." inside a quoted path: joined back as ninja reads them, #320)
+        for line in _NINJA_CONTINUATION.sub(r"\1", text).splitlines():
             m = _NINJA_PROGRAM.match(line)
             if m is None:
                 continue
-            first = m.group(2).strip().strip("'\"").split()[0] if m.group(2).strip() else ""
-            prog = first.strip("'\"")
+            prog = _command_program(m.group(2))
             # (a path with a variable ninja fills in for each file can't be checked as written: on Windows a GameCube
             # project runs `...\mwcc$mw_version\mwcceppc.exe`, and every session paused for a compiler that's there)
             if prog not in missing and "$" not in prog and _absent_program(prog):
