@@ -1828,6 +1828,49 @@ def test_an_anthropic_helper_keeps_as_much_of_its_conversation_as_its_model_take
     assert api.anthropic_window(fake, {"model": "claude-opus-5-5", "context_tokens": 200000}) == 200000
 
 
+def test_an_anthropic_request_answers_every_call_and_drops_results_without_one():
+    """The Messages API refuses a whole request with a tool call left unanswered, or a result whose call is gone: a
+    call cut off before its result gets one saying so, and an orphaned result goes."""
+    from decompnet.agents import api
+
+    calls = [{"id": i, "type": "function", "function": {"name": "claim_function", "arguments": "{}"}} for i in "ab"]
+    convo = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"},
+             {"role": "assistant", "content": None, "tool_calls": calls},
+             {"role": "tool", "tool_call_id": "a", "content": "claimed f"},
+             {"role": "user", "content": "carry on"},
+             {"role": "tool", "tool_call_id": "gone", "content": "orphan"},
+             {"role": "assistant", "content": None, "tool_calls": calls[:1]}]
+    sent = api.anthropic_request("claude-opus-5-5", convo, [], None)["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "user", "user", "assistant", "user"]
+    results = sent[2]["content"]
+    assert [(b["tool_use_id"], b["content"]) for b in results] == [("b", api.ANTHROPIC_NO_RESULT), ("a", "claimed f")]
+    assert results[0]["is_error"] and sent[3] == {"role": "user", "content": "carry on"}
+    assert sent[5]["content"] == [{"type": "tool_result", "tool_use_id": "a", "content": api.ANTHROPIC_NO_RESULT,
+                                   "is_error": True}]
+    assert "orphan" not in str(sent)
+
+
+@pytest.mark.parametrize("model,thinking,betas", [
+    ("claude-opus-5-5", {"type": "adaptive", "display": "summarized",
+                         "block_binding": {"prefix_mismatch_behavior": "drop_block"}}, True),
+    ("claude-fable-5-1", {"type": "adaptive", "display": "summarized",
+                          "block_binding": {"prefix_mismatch_behavior": "drop_block"}}, True),
+    ("claude-opus-4-6", {"type": "adaptive", "display": "summarized"}, False),
+    ("claude-sonnet-4-6", {"type": "adaptive", "display": "summarized"}, False),
+    ("claude-haiku-4-5", None, False),
+    ("claude-sonnet-4-5-20250929", None, False),
+    ("claude-3-7-sonnet-20250219", None, False),
+])
+def test_only_claude_5_models_get_thinking_bound_to_the_conversation(model, thinking, betas):
+    """The binding beta's `drop_block` is a Claude 5 setting: an older model with adaptive thinking takes it plain,
+    and one without (Claude 3, 4.0-4.5) gets no thinking settings it would refuse."""
+    from decompnet.agents import api
+
+    request = api.anthropic_request(model, [{"role": "user", "content": "go"}], [], None)
+    assert request.get("thinking") == thinking
+    assert ("betas" in request) == betas
+
+
 def test_a_long_diff_comes_a_page_at_a_time(tmp_path):
     from decompnet import network
 
