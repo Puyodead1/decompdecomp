@@ -681,9 +681,21 @@ class Network:
             return rows[0]
         raise NetworkError("several projects exist; pass `project` (its slug)")
 
+    @staticmethod
+    def _function_reference(name: str, project: str | None) -> tuple[str, str | None]:
+        """A "slug/name" label (claims print it so) as (name, slug); anything else as it is. Only a slug before the
+        first "/" counts (a fork's names hold units: symbol@dir/file), and only the project's own when one is given:
+        an agent copying a label from a claim's heading sent "game/fn_1_17958" with the project already known, and
+        got "no function" back."""
+        prefix, slash, local = name.partition("/")
+        if slash and "@" not in prefix and (project is None or prefix == project):
+            return local, prefix
+        return name, project
+
     def _function(self, name: str, project: str | None):
-        if project is None and "/" in name and "@" not in name.split("/", 1)[0]:  # project/name (fork names hold units)
-            project, name = name.split("/", 1)
+        local, scope = self._function_reference(name, project)
+        if project is None:
+            name, project = local, scope
         if project is None:
             rows = self.store.all("SELECT * FROM functions WHERE name=?", name)
             if len(rows) > 1:
@@ -694,6 +706,10 @@ class Network:
                 "SELECT f.* FROM functions f JOIN projects p ON p.id=f.project_id WHERE p.slug=? AND f.name=?",
                 project, name,
             )
+            if row is None and local != name:  # (a name stored with a "/" in it comes first)
+                row = self.store.one(
+                    "SELECT f.* FROM functions f JOIN projects p ON p.id=f.project_id WHERE p.slug=? AND f.name=?",
+                    project, local)
         if row is None:
             raise NetworkError(f"no function {name!r}" + (f" in {project!r}" if project else ""))
         return row
