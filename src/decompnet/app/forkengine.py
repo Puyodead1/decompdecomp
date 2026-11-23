@@ -2778,6 +2778,13 @@ class ForkEngine:
                     fp.run(cmd, log=lambda *_: None)
                 raise NetworkError(f"not renamed, nothing changed: {e}") from None
             with self.net.store.tx() as db:  # the function keeps its row, its matches and notes, under its new name
+                if not thunk:  # (and its stored C: see _with_renames)
+                    for r in db.execute("SELECT id, best_source, matched_source FROM functions WHERE project_id=? AND "
+                                        "(best_source IS NOT NULL OR matched_source IS NOT NULL)", (proj["id"],)).fetchall():
+                        best, done = (word.sub(new, t) if t else t for t in (r["best_source"], r["matched_source"]))
+                        if (best, done) != (r["best_source"], r["matched_source"]):
+                            db.execute("UPDATE functions SET best_source=?, matched_source=? WHERE id=?",
+                                       (best, done, r["id"]))
                 if console.renames_in_report:  # (else sync gives it its real name, from the console's config)
                     db.execute("UPDATE functions SET name=?, meta=json_set(COALESCE(meta, '{}'), '$.symbol', ?) WHERE "
                                "project_id=? AND (name=? OR json_extract(meta, '$.symbol')=?)",
@@ -3666,8 +3673,8 @@ class ForkEngine:
         else:
             source_block = ["", f"### Not in {unit.source or 'the source'} yet: compile_and_diff adds it at the end."]
         if fn["best_source"] and fn["status"] != "matched":
-            best_block = ["", f"### Best attempt so far (score {fn['best_score']})", "```c", fn["best_source"].strip(),
-                          "```"]
+            best_block = ["", f"### Best attempt so far (score {fn['best_score']})", "```c",
+                          self._with_renames(proj["slug"], fn, fn["best_source"]).strip(), "```"]
         elif fn["status"] != "matched" and (span is None or csource.is_stub(src_text[span[0]:span[1]])):
             seed = self._draft(proj, fp, cfg, fn, unit)
             made = self._compilable(proj, fp, cfg, fn, unit) if seed else None
@@ -4023,6 +4030,24 @@ class ForkEngine:
         said = self._best_in_file(agent, slug, fn)
         return (said + "\n\n" if said else "") + self.brief(self._fn(slug, fn["name"]), agent, "CLAIMED")
 
+    def _with_renames(self, slug: str, fn, text: str | None) -> str | None:
+        """A function's stored C with the renames made since it was written (rename events after its last_improved).
+        rename_symbol renamed in the files but left the stored best: the next claim put it back in its file
+        (_best_in_file), and a GameCube function at 99.3% called SoundManager_CreateSource, renamed
+        SoundManager_AllocSource hours before. CodeWarrior took the old name as an undeclared function, so it built
+        and only its call's relocation was wrong. (Also C stored before this was fixed, and a room member's copy, whose
+        renames arrive as the host's events.)"""
+        if not text:
+            return text
+        proj, _, cfg = self.get(slug)
+        console = consoles.get(cfg.get("platform"))
+        for r in self.net.store.all("SELECT detail FROM events WHERE project_id=? AND kind='rename' AND created_at > ? "
+                                    "ORDER BY id", proj["id"], fn["last_improved"] or 0):
+            old, _, new = (r["detail"] or "").partition(" → ")
+            if _OLD_SYMBOL.fullmatch(old) and re.fullmatch(r"[A-Za-z_]\w*", new):  # (a thunk's name: no source has it)
+                text = re.sub(console.rename_pattern(old), new, text)
+        return text
+
     def _best_in_file(self, agent: Agent, slug: str, fn) -> str:
         """Put an open function's best attempt in its source file when the file holds another version: the permuter,
         a deep search and autopilot's drafts record a better attempt without writing it there, and on a GameCube game
@@ -4036,12 +4061,13 @@ class ForkEngine:
             return ""
         names = self._names(meta, fn)
         _, span = self._find(text := self._settled_text(slug, fp.root / unit.source), names)
-        _, best_span = self._find(fn["best_source"], names)
-        best_code = fn["best_source"][best_span[0]:best_span[1]] if best_span else fn["best_source"]
+        best = self._with_renames(slug, fn, fn["best_source"])
+        _, best_span = self._find(best, names)
+        best_code = best[best_span[0]:best_span[1]] if best_span else best
         if span and text[span[0]:span[1]].strip() == best_code.strip():
             return ""
         try:
-            res = self.attempt(agent, slug, fn["name"], fn["best_source"])
+            res = self.attempt(agent, slug, fn["name"], best)
         except NetworkError as e:
             res = {"text": str(e)}
         if res.get("matched") or (res.get("score") is not None and res["score"] <= (fn["best_score"] or 0)):

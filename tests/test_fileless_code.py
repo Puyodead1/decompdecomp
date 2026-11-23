@@ -40,3 +40,66 @@ def test_a_sync_says_the_share_of_code_only_when_it_moved():
     assert progress_moved({"matched_code_percent": 89.511}, {"matched_code_percent": 89.509}) is None
     assert progress_moved({"matched_code_percent": 89.51}, {"matched_code_percent": 89.6}) == "89.60% of code matches"
     assert progress_moved({}, {}) == "0.00% of code matches"
+
+
+def test_a_stored_best_follows_the_renames_made_since(tmp_path, monkeypatch):
+    """A GameCube function at 99.3%: its best attempt, stored before SoundManager_CreateSource was renamed
+    SoundManager_AllocSource, went back into its file at the next claim. CodeWarrior took the old name as an undeclared
+    function, so it built, and no C could match: the call's relocation named another symbol."""
+    import time
+
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "d.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("game", "Game", "", "ppc", 1, str(tmp_path), "{}")).lastrowid
+        net._event(db, pid, None, "rename", "SoundManager_CreateSource → SoundManager_AllocSource")
+        net._event(db, pid, None, "rename", "func_80012340 → Creature_Spawn")
+        net._event(db, pid, None, "rename", "@48@__dt__4ItemFv → @48@__dt__4Item")  # (a thunk's: no source has it)
+    forks = ForkEngine.__new__(ForkEngine)
+    forks.net = net
+    monkeypatch.setattr(ForkEngine, "get", lambda self, slug: (net.project_row(slug), None, {"platform": "gc"}))
+    best = "void f(void) { SoundManager_CreateSource(1); func_80012340(); SoundManager_CreateSourceX(); }"
+    fn = {"last_improved": 0}
+    assert forks._with_renames("game", fn, best) == (
+        "void f(void) { SoundManager_AllocSource(1); Creature_Spawn(); SoundManager_CreateSourceX(); }")
+    # stored after the renames: as it was
+    assert forks._with_renames("game", {"last_improved": time.time() + 1}, best) == best
+    assert forks._with_renames("game", fn, None) is None
+
+
+def test_a_rename_rewrites_the_stored_c_too(tmp_path):
+    """ROM mode's rename rewrote every best attempt and matched C (network.rename_symbol); project mode's only the
+    files, so the stale best went back into its file at the next claim."""
+    import threading
+    from contextlib import nullcontext
+
+    from decompnet.app.engine import RomNetwork
+
+    conf = tmp_path / "config" / "v"
+    conf.mkdir(parents=True)
+    (conf / "symbols.txt").write_text("fn_80012340 = .text:0x80012340; // type:function size:0x8\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.c").write_text("void fn_80012340(void) {\n}\n")
+    net = RomNetwork(tmp_path / "d.db", tmp_path / "home")
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                         ("p", "Game", "", "ppc", 1, str(tmp_path), "{}")).lastrowid
+        for name, best, done in [("fn_80012300", "void a(void) { fn_80012340(); }", None),
+                                 ("fn_80012400", None, "void b(void) { fn_80012340(); }"),
+                                 ("fn_80012500", "void c(void) { fn_800123400(); }", None)]:
+            db.execute("INSERT INTO functions(project_id,name,vram,size,n_insns,status,best_source,matched_source) "
+                       "VALUES(?,?,?,?,?,?,?,?)", (pid, name, 0, 8, 2, "open", best, done))
+    fp = SimpleNamespace(root=tmp_path, manifest={"version": "v"}, setup_commands=lambda version: [],
+                         report=lambda: {"units": []})
+    eng = ForkEngine.__new__(ForkEngine)
+    eng.net, eng._build_locks, eng._mlock = net, {pid: threading.Lock()}, threading.Lock()
+    eng._tree = lambda proj: SimpleNamespace(exclusive=lambda: nullcontext())
+    eng._commit_paths = eng.sync = lambda *args, **kwargs: None
+    eng.get = lambda slug: (net.project_row("p"), fp, {"platform": "gc", "version": "v"})
+    assert eng.rename_symbol(None, "p", "fn_80012340", "Creature_Spawn").startswith("✅")
+    rows = {r["name"]: r for r in net.store.all("SELECT * FROM functions")}
+    assert rows["fn_80012300"]["best_source"] == "void a(void) { Creature_Spawn(); }"
+    assert rows["fn_80012400"]["matched_source"] == "void b(void) { Creature_Spawn(); }"
+    assert rows["fn_80012500"]["best_source"] == "void c(void) { fn_800123400(); }"  # (whole words only)
