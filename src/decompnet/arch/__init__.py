@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import arm, mips, mips_fields, ppc, ppc64, x86, x86_fields
+from . import arm, mips, mips_fields, mips_observations, ppc, ppc64, x86, x86_fields
 
 # What decompdecomp's readers can do with a processor's code (each is a module of its own that reads MIPS, and some
 # x86):
@@ -51,13 +51,20 @@ class Arch:
     # whether this code's last instruction has a delay slot, so the next word belongs to the function (MIPS):
     # (code, big_endian) -> bool. Architectures without delay slots leave it None.
     ends_in_delay_branch: Callable[[bytes, bool], bool] | None = None
+    # what a scored diff shows beyond its rows (the frame's size, registers moved along a chain, a delay slot filled
+    # otherwise), in lines for the agent: rows -> [line] (arch/advice.py). Clues, never a verdict
+    diff_observations: Callable[[list], list[str]] | None = None
+    # objdiff's rows (a project's diff) in the terms diff_observations reads, scoring's: (rows, (target's start,
+    # yours)) -> rows, the starts being where each function is in its section (objdiff's branch destinations)
+    objdiff_rows: Callable[[list, tuple], list] | None = None
 
 
 ARCHES = [
     Arch("mips", "MIPS", mips.CAPSTONE, mips.RELOC_MASKS, mips.asm_reason, True,
          frozenset({COMPILER_MAP, CLASSES, BOUNDARIES, STRUCTS}), mips_fields.read_facts,
          variants={mips.ALLEGREX: mips.allegrex_lines}, is_padding=mips.is_padding,
-         ends_in_delay_branch=mips.ends_in_delay_branch),
+         ends_in_delay_branch=mips.ends_in_delay_branch, diff_observations=mips_observations.observe,
+         objdiff_rows=mips_observations.objdiff_rows),
     Arch("ppc", "PowerPC", ppc.CAPSTONE, ppc.RELOC_MASKS, ppc.asm_reason, is_padding=ppc.is_padding),
     Arch("ppc64", "PowerPC64", ppc64.CAPSTONE, ppc64.RELOC_MASKS, ppc64.asm_reason, features=frozenset({BOUNDARIES}), is_padding=ppc.is_padding),
     Arch("x86", "x86", x86.CAPSTONE, x86.RELOC_MASKS, features=frozenset({CLASSES, STRUCTS}),

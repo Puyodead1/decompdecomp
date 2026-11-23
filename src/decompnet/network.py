@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import agents, scoring
+from .arch import advice as arch_advice
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config, compiler_for
@@ -1594,6 +1595,11 @@ class Network:
                             f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
                             f"start from this", "```c", fn["best_source"].strip(), "```"]
                 lines += ["<best>"]
+                # this agent's last compile of it, while the app keeps its diff (last_diff): what it showed beyond
+                # its rows, as compile_and_diff said it
+                if agent is not None and (kept := self._last_diffs.get((agent.id, fn["id"]))):
+                    best += arch_advice.diff_lines(proj["arch"], kept[0], heading="Processor observations on your "
+                                                   "last compile of it (clues for your next change, not a verdict):")
             elif fn["seed"]:
                 maker = "Ghidra" if "by Ghidra" in fn["seed"][:80] else "m2c"
                 lines += ["", f"### Machine draft ({maker}): its control flow and arithmetic are usually right, its "
@@ -1713,7 +1719,10 @@ class Network:
         warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
-        text = f"{head}\n{d.render()}{warn}"
+        # what the rows show beyond themselves (the frame's size, registers moved along a chain): the processor's
+        # reader, advice only (arch/advice.py)
+        observed = "\n".join(arch_advice.diff_lines(proj["arch"], d.rows))
+        text = f"{head}\n{d.render()}{observed}{warn}"
         if not scratch:
             self.remember_compile(key, agent, fn, text, d.score)
             text += self.same_score_note(fn["id"], agent.id, d.score, source)
