@@ -2810,10 +2810,12 @@ class ForkEngine:
                 if lost := sorted(n for n in matched if (renamed if n == old else n) not in now):
                     raise ForkError(f"these functions would stop matching: {', '.join(lost[:8])}")
             except (ForkError, RomError, ObjdiffError, OSError, ValueError) as e:
-                for p, t in saved.items():
-                    p.write_text(t, encoding="utf-8")
-                for cmd in fp.setup_commands(version):
-                    fp.run(cmd, log=lambda *_: None)
+                if saved:  # (nothing written, nothing to set up again: a refused rename held both locks for a
+                    # whole configure run, and every other compile of the game waited on it)
+                    for p, t in saved.items():
+                        p.write_text(t, encoding="utf-8")
+                    for cmd in fp.setup_commands(version):
+                        fp.run(cmd, log=lambda *_: None)
                 raise NetworkError(f"not renamed, nothing changed: {e}") from None
             with self.net.store.tx() as db:  # the function keeps its row, its matches and notes, under its new name
                 if not thunk:  # (and its stored C: see _with_renames)
