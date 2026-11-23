@@ -15,6 +15,7 @@ project says what's its game's: there the report only lists what's found.
 
 from __future__ import annotations
 
+import bisect
 import functools
 import json
 import re
@@ -82,6 +83,8 @@ def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int], frozenset
     for rs in elf.iter_sections():
         if isinstance(rs, RelocationSection):
             relocs.setdefault(rs["sh_info"], []).extend((r["r_offset"], r["r_info_type"]) for r in rs.iter_relocations())
+    for rs in relocs.values():  # (by offset: a function's own are found by bisection, not by reading them all)
+        rs.sort()
     raw_of: dict[int, bytes] = {}
     for s in symtab.iter_symbols():
         if s["st_info"]["type"] != "STT_FUNC" or not isinstance(s["st_shndx"], int) or not s["st_size"] or not s.name:
@@ -91,7 +94,10 @@ def object_code(data: bytes) -> dict[str, tuple[bytes, frozenset[int], frozenset
             sec = elf.get_section(shndx)
             raw_of[shndx] = b"" if sec["sh_type"] == "SHT_NOBITS" else sec.data()
         lo = s["st_value"] & ~1 if arch == "arm" else s["st_value"]
-        mine = [(o - lo, t) for o, t in relocs.get(shndx, []) if lo <= o < lo + s["st_size"]]
+        # (a dtk project's whole program is a few objects: a GameCube game's 20,000 functions read every one of
+        # their section's relocations each, and Find libraries took eight minutes)
+        rs = relocs.get(shndx, [])
+        mine = [(o - lo, t) for o, t in rs[bisect.bisect_left(rs, (lo,)):bisect.bisect_left(rs, (lo + s["st_size"],))]]
         out[s.name] = (raw_of[shndx][lo:lo + s["st_size"]], _wild(mine, arch), frozenset())
     return out
 
@@ -261,7 +267,8 @@ class LibraryIdMixin:
                     continue
                 raw, wild, calls = found[sym]
                 m = FUNCTION_NAME.search(sym)
-                addr = addrs.get(sym, int(m.group(1), 16) if m else None)
+                # where it is: the import's own record (PC), objdiff's (the row's vram: a dtk project's), its name's
+                addr = addrs.get(sym, r["vram"] if r["vram"] is not None else int(m.group(1), 16) if m else None)
                 codes.append(libid.Code(r["id"], r["name"], addr, raw, wild, calls))
         return codes, rows
 
@@ -300,11 +307,11 @@ class LibraryIdMixin:
         """Which libraries the game has built in; those its catalog entry says to set aside are set aside now.
         `fid`: also run Ghidra's Function ID with the user's own databases (minutes). Returns the report."""
         proj = self._project(slug)
-        catalog = libid.load()
+        console = self.console(proj)
+        catalog = libid.load(console=console.library_catalog())
         for f in catalog.files:
             if "error" in f:
                 log(f"your signatures: {f['file']} wasn't read: {f['error']}")
-        console = self.console(proj)
         named = {}
         if (archives := kits.libraries(console.kits)):  # (the console's SDK, the user's own copy: Setup)
             own = kit_signatures(archives)

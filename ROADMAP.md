@@ -39,7 +39,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Check again (and before helpers start, once after each update) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | partly: code no C makes set aside; no new analysis yet | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Kernel stubs set aside and named | — | set aside (BIOS calls) | ✓ | ✓ import stubs (NIDs) and `sc` calls | — | set aside, named by library and NID | set aside (BIOS calls) | — | ✓ import thunks | ✓ import thunks, named from the kernel export list | — (BIOS calls set aside, not named) | library calls by their PLT stubs' names | — | — |
 | SDK library code found by your copy, named and set aside | — | — | — | — | — | — | — | ✓ your Dolphin or Revolution SDK's libraries, set aside by the library finder (a 2001 SDK: 178 of a game's 20,000 functions; not named yet) | the C runtime (Visual C++'s libraries) | ✓ your XDK's libraries | ✓ your NitroSDK, TwlSDK, NitroSystem, WiFi, DWC and CodeWarrior runtime libraries | — | — | — |
-| Libraries found and set aside (`libid/`: the game's text, the catalog's constants, the DLLs and .so files it loads (`Console.linked_libraries`) and their headers' inline wrappers, your signature files: ours, FLIRT `.pat`/`.sig`, Ghidra `.fidb`; agents' `report_library`); their source fetched into `libs/` | ✓ (same code as Linux; not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | — | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (RSA's MD5 set aside on three games; zlib, libpng, libjpeg, FMOD, Bink named; OpenGL, GLUT and its glut.h wrappers, OpenAL, DirectX from the DLLs loaded) | ✓ (not run on a game yet) | ✓ (ran; the SDK's own code is the import's) | ✓ (a 2008 program: zlib, libpng, Lua, Theora, Vorbis, TinyXML, SDL_mixer, Scaleform named; OpenGL, SDL, OGRE, Cg from the .so files loaded) | — | listed only: the project says what's its game's |
+| Libraries found and set aside (`libid/`: the game's text, the catalog's constants, the DLLs and .so files it loads (`Console.linked_libraries`) and their headers' inline wrappers, your signature files: ours, FLIRT `.pat`/`.sig`, Ghidra `.fidb`; agents' `report_library`); their source fetched into `libs/` | ✓ (same code as Linux; not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | — | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (CodeWarrior's runtime, MSL and MetroTRK by their names: 306 of a 20,000-function GameCube game's set aside; 20 at the seams between them left open) | ✓ (RSA's MD5 set aside on three games; zlib, libpng, libjpeg, FMOD, Bink named; OpenGL, GLUT and its glut.h wrappers, OpenAL, DirectX from the DLLs loaded) | ✓ (not run on a game yet) | ✓ (ran; the SDK's own code is the import's) | ✓ (a 2008 program: zlib, libpng, Lua, Theora, Vorbis, TinyXML, SDL_mixer, Scaleform named; OpenGL, SDL, OGRE, Cg from the .so files loaded) | — | listed only: the project says what's its game's |
 | Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ (2-byte boundaries) | — | ✓ (agents agree, the rebuild checks) | ✓ | — | ✓ (approved on the project page; a cut on an instruction's start) | — | — |
 | Your own compiler (Setup: another build of one it has) | ✓ | ✓ | ✓ | ✓ your SDK | — | ✓ | ✓ | — | ✓ your Visual C++ (x86 and x64 copies): 32-bit and 64-bit games the pack's build doesn't match exactly | ✓ your XDK | — | — | — | the project's own build |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | — | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | from scratch: per source file (`try_compiler`, Settings); else the project's build | ✓ (`try_compiler`, suggestions) | flags file by file | the project's build |
@@ -230,6 +230,20 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   classes and methods).
 
 ## Recently done
+
+- **CodeWarrior's own libraries found in GameCube and Wii games.** Every GameCube and Wii game links CodeWarrior's
+  runtime (`__save_gpr`, `__div2i`, the C++ runtime), MSL (its C library and fdlibm's math: `__pformatter`,
+  `__two_exp`, `__ieee754_exp`) and most link MetroTRK, the debugger's kernel (`TRKDoWriteMemory`); none of it was in
+  the catalog, so agents spent hours on functions no C of the game's makes (3 of 8 functions taken for matches in a
+  GameCube game were MSL's and MetroTRK's). A console now has a catalog of its own (`Console.library_catalog`,
+  `consoles/gc_wii/libraries.toml`): the names only a library has (from the public decomps' symbol lists, read as
+  dtk writes a static function's too, `longlong2str_803B6218`), the names anyone may have (`memcpy`, `strlen`) taken
+  only beside its own, fdlibm's high-word constants, and its version from its text ("MetroTRK for GAMECUBE v2.0").
+  CodeWarrior links each library whole, so what's between two of its own is its too, as far as an entry's `reach`.
+  All three are set aside: they're the compiler's code, never the game's. On a stripped GameCube game of 20,003
+  functions: MetroTRK 2.0's 152, MSL's 103 and the runtime's 51, each one run with nothing of the game's inside.
+  A dtk project's functions now have their address (the row's, from objdiff) for "between", and Find libraries reads
+  a 20,000-function project's objects in 3 seconds instead of eight minutes (relocations found by bisection).
 
 - **The judge reads switch jump tables.** objdiff compares a function's instructions, and the ones that load a jump
   table read the same whatever the table holds, so a switch whose case labels sent cases to the wrong bodies read
@@ -1304,6 +1318,15 @@ only under 3,000 characters.
 Measure each step on that DS game's 25: how many get tried and how far, against the week before. Step 2 is what
 matters most for free models: step 3 adds speed, and contention on one file, so it waits until 2 shows parts can be
 worked on alone.
+
+### CodeWarrior's libraries: the seams, and DS
+
+The GameCube and Wii catalog (`consoles/gc_wii/libraries.toml`) leaves open the functions between the end of one
+library and the start of the next (20 on a 20,000-function game: MSL's float wrappers before MetroTRK, the runtime's
+last before MSL), since nothing says whose they are. Next: the order the archives are linked in (runtime, MSL,
+MetroTRK in most games) and each archive's last function's name would close them. DS games link CodeWarrior's MSL
+and runtime too; a DS project's are found today by the user's own SDK copy (`kits/`), and a ds-decomp project names
+too few functions for the names catalog to help until its import names them.
 
 ### Libraries: from their text to their functions
 

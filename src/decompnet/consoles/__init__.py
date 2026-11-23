@@ -385,6 +385,12 @@ class Console:
         it calls without having their code (libid's `links`). [] where a console's programs load none."""
         return []
 
+    def library_catalog(self) -> list:
+        """Libraries only its games have, as libid's catalog has them (libid.read_catalog): what its compilers link
+        into every game (CodeWarrior's MSL and MetroTRK on the GameCube), found by their text and their own names
+        (consoles/<id>/libraries.toml). [] where it has none: the built-in catalog is every console's."""
+        return []
+
     def debug_info(self, program: bytes, known: set[str]):
         """The game's own names, types and source files, when it shipped with them; None when it didn't."""
         return None
