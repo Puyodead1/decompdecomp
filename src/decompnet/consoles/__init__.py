@@ -680,6 +680,14 @@ class Console:
         (app/flagsurvey.py): search_flags' by default, fewer where those are many."""
         return self.flag_variants(flags)
 
+    def trial_command(self, command: list[str], copy: Path, folder: Path, out: Path) -> tuple[list[str], Path] | None:
+        """The build's command for a source file (ForkProject.compile_command: its arguments) changed to compile
+        `copy`, the file with a try in it, written elsewhere under the file's own name, into the folder `out`, as the
+        file in `folder` compiles: (the command, the object it writes). A try that isn't kept is then compiled
+        alone, and the project's file and build are left as they are (ForkEngine._trial_diff). None (the default):
+        the try is written to the file and the project built, as before."""
+        return None
+
     def file_ranges(self, fp) -> dict[str, list[tuple[int, int]]]:
         """Where each source file's code is ({source: [(start, end)]}): the project Settings' address ranges, for a
         project whose files each have a compiler."""

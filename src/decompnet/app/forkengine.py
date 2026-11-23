@@ -19,6 +19,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 from bisect import bisect_left
@@ -45,7 +46,7 @@ from ..forks import (
     unresolved,
 )
 from ..forks.objdiff import MappingConflict, ObjdiffError
-from ..forks.project import EDITABLE, GAME, PROGRAM, SCOPES, STATE, ForkError, ForkProject, project_macro
+from ..forks.project import EDITABLE, GAME, PROGRAM, SCOPES, STATE, UNIT_SECONDS, ForkError, ForkProject, project_macro
 from ..hostenv import NO_WINDOW
 from ..network import (
     ASM_PAGE,
@@ -4305,6 +4306,37 @@ class ForkEngine:
         after = _with_includes(after, includes, prelude)
         return code, after, path, before
 
+    def _trial_diff(self, fp: ForkProject, console, unit, symbol: str, text: str, path: Path,
+                    protected: set[str]) -> objdiff.FunctionDiff | None:
+        """A try that won't be kept, compiled alone: the unit's own compile command (ForkProject.compile_command) run
+        on a copy of the file in a folder of its own (Console.trial_command), and measured as fp.diff measures the
+        unit. A GameCube game's permuter, search_flags and drafts wrote each try into the file, built it with ninja,
+        then wrote the file back and built it again: two runs of the build, and the project's file rewritten, for
+        a verdict the compiler alone gives.
+
+        Only a try whose verdict is "not kept" is answered here; None, and the try is written and built as before,
+        for whatever else: no command to read (another build, build.ninja about to be written again), a copy that
+        doesn't build (the build's own error is what the agent reads), a diff that fails, a match (committed from
+        the project's own build) and a neighbour it breaks. tests/test_gc.py checks both ways give the same verdict."""
+        if unit.mappings or unit.target is None or (command := fp.compile_command(unit)) is None:
+            return None
+        with tempfile.TemporaryDirectory(prefix="decomp-try-") as tmp:
+            copy = Path(tmp) / path.name
+            trial = console.trial_command(command, copy, path.parent, Path(tmp))
+            if trial is None:
+                return None
+            _rewrite(copy, text)
+            ok, _ = fp.run(trial[0], log=lambda *_: None, timeout=UNIT_SECONDS)
+            if not ok or not trial[1].is_file():
+                return None
+            try:
+                d = fp.diff(unit, symbol, base=trial[1])
+            except (ObjdiffError, ForkError):
+                return None
+        if d.matched or any((d.unit_scores.get(n) or 0) < 100 for n in protected):
+            return None
+        return d
+
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
                  quiet: int | None = None, comment: bool = False, background: bool = False) -> dict:
         proj, fp, cfg = self.get(slug)
@@ -4394,7 +4426,13 @@ class ForkEngine:
                         p.write_text(t, encoding="utf-8")
 
             committed = [unit.source, *(p.relative_to(fp.root).as_posix() for p in renamed)]
-            _rewrite(path, after)
+            # a try that isn't kept, compiled alone where it can be (_trial_diff); the rest is written to the file and
+            # built, as a try that ends kept or matching or breaking a neighbour still is
+            d = self._trial_diff(fp, console, unit, symbol, after, path, protected) \
+                if not keep and not was_matched and not linked and not renamed else None
+            written = d is None
+            if written:
+                _rewrite(path, after)
 
             def remembered(text: str, score: int | None, kept: bool = True) -> str:
                 """A result as repeat_of gives it back later (agents' tries only), plus the note when this variant
@@ -4407,6 +4445,8 @@ class ForkEngine:
                         + self.net.judged_at_best_note(fn["id"], score, code))
 
             def undo() -> None:
+                if not written:  # (compiled alone: the file and its object are as they were)
+                    return
                 _rewrite(path, before)
                 unname()
                 if (proj["id"], unit.name) in self._trials and scores is not None and not renamed:
@@ -4415,7 +4455,7 @@ class ForkEngine:
                 if self._build_unit(proj, fp, unit)[0] and scores is not None:
                     self._keep_scores(proj, unit, before, scores)
 
-            ok, log = self._build_unit(proj, fp, unit)
+            ok, log = self._build_unit(proj, fp, unit) if written else (True, "")
             if not ok and (broken := fp.build_problem()) is not None:
                 # the build itself is broken, not the agent's code: nothing recorded or counted, and the project
                 # is set up again in the background (one project spent five compiles on a build.ninja whose python
@@ -4437,7 +4477,7 @@ class ForkEngine:
                 return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}{stall}", "score": None,
                         "matched": False}
             try:
-                d = fp.diff(unit, symbol)
+                d = fp.diff(unit, symbol) if written else d
             except (ObjdiffError, ForkError) as e:
                 undo()
                 return {"text": f"❌ objdiff couldn't compare (your change was undone): {e}", "score": None, "matched": False}

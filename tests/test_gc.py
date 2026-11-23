@@ -91,6 +91,45 @@ def test_a_compile_puts_a_trys_leftover_compiler_back_first(gc):
     assert net._function(auto, slug)["status"] == "matched", res["text"]
 
 
+def test_a_try_that_isnt_kept_is_compiled_alone_with_the_verdict_the_build_gives(gc, monkeypatch):
+    """A try that isn't kept (the permuter's, search_flags', a draft's) was written into the file, built with ninja,
+    then written back and built again. Now CodeWarrior compiles it alone, from the unit's own command in build.ninja,
+    in a folder of its own: the file isn't touched, and each verdict is the one building it in the project gives.
+    What isn't a plain "not kept" (a build error here) is still built in the project."""
+    from decompnet.app.forkengine import ForkEngine
+    from decompnet.forks.project import ForkProject
+
+    net, slug = gc
+    fp = net.forks.get(slug)[1]
+    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    agent, _ = net.local_agent("gc-trial")
+    auto = f"fn_{syms['checksum_save']:08X}"
+    real = csource.get(GAME.read_text(), "checksum_save").replace("checksum_save(", auto + "(", 1)
+    tries = [real.replace("0x1234", "0x4321"), real.replace("(sum << 5) + sum", "(sum << 4) - sum"),
+             f"u32 {auto}(const u8 *data, s32 len) {{ return len; }}", f"u32 {auto}(void) {{ return nothing; }}"]
+    source = fp.root / net.forks.file_status(slug, auto).splitlines()[0][3:]
+    alone, real_diff = [], ForkEngine._trial_diff
+
+    def spied(self, *a, **kw):
+        alone.append(d := real_diff(self, *a, **kw))
+        return d
+
+    monkeypatch.setattr(ForkEngine, "_trial_diff", spied)
+    verdicts = []
+    for code in tries:
+        stamp = source.stat().st_mtime_ns
+        res = net.forks.attempt(agent, slug, auto, code, keep=False)
+        verdicts.append({k: res.get(k) for k in ("text", "score", "matched", "percent")})
+        if alone[-1] is not None:
+            assert source.stat().st_mtime_ns == stamp  # (compiled alone: the file as it was)
+    assert [d is not None for d in alone] == [True, True, True, False], verdicts
+    monkeypatch.setattr(ForkProject, "compile_command", lambda self, unit: None)  # the build's way, as before
+    built = [net.forks.attempt(agent, slug, auto, code, keep=False) for code in tries]
+    assert verdicts == [{k: res.get(k) for k in ("text", "score", "matched", "percent")} for res in built]
+    assert "BUILD ERROR" in verdicts[-1]["text"] and all(v["score"] for v in verdicts[:3])
+    net.release(agent, auto, "", slug)
+
+
 def test_a_file_is_split_and_its_match_moves_along(gc):
     """split_file: the matched function and what follows it go to a new file; the game still builds identically
     and the match still counts (it runs after test_agents_match_functions)."""

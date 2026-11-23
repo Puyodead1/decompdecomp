@@ -291,6 +291,64 @@ def _query_outputs(text: str) -> set[str]:
     return found
 
 
+# (project root, a unit's object as the build names it) -> (build.ninja's mtime when read, the command that builds it,
+# split, or None; what build.ninja is written from): ForkProject.compile_command
+_COMMANDS: dict[tuple[str, str], tuple[int, list[str] | None, tuple[str, ...]]] = {}
+_COMMANDS_LOCK = threading.Lock()
+_OPERATORS = ";&|<>()"  # what makes a line more than one program, to sh
+
+
+def split_command(line: str, windows: bool = os.name == "nt") -> list[str] | None:
+    """One of the build's command lines as the arguments its program gets: ninja runs it with CreateProcess on
+    Windows (whose C runtime splits it: quotes, and backslashes only before a quote) and with `sh -c` elsewhere. None
+    when it's more than one program: sh's operators outside quotes, or Windows's `cmd /c`."""
+    if not windows:
+        import shlex
+
+        lex = shlex.shlex(line, posix=True, punctuation_chars=_OPERATORS)
+        lex.whitespace_split = True
+        try:
+            args = list(lex)
+        except ValueError:  # (an unclosed quote)
+            return None
+        # (an operator comes out as a word of its own; `$` and backquotes: what sh would put in their place)
+        if not args or "$" in line or "`" in line or any(set(a) <= set(_OPERATORS) for a in args):
+            return None
+        return args
+    args, cur, quoted, have, i = [], [], False, False, 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\":
+            n = len(line) - i - len(line[i:].lstrip("\\"))
+            if i + n < len(line) and line[i + n] == '"':
+                cur.append("\\" * (n // 2))
+                if n % 2:
+                    cur.append('"')
+                    i += n + 1
+                else:
+                    i += n
+            else:
+                cur.append("\\" * n)
+                i += n
+            have = True
+            continue
+        if c == '"':
+            quoted, have = not quoted, True
+        elif c in " \t" and not quoted:
+            if have:
+                args.append("".join(cur))
+            cur, have = [], False
+        else:
+            cur.append(c)
+            have = True
+        i += 1
+    if have:
+        args.append("".join(cur))
+    if not args or quoted or Path(args[0]).stem.lower() == "cmd":
+        return None
+    return args
+
+
 class ForkProject:
     def __init__(self, root: Path, platform: str = ""):
         self.root = Path(root)
@@ -972,6 +1030,58 @@ class ForkProject:
         """A file of the project (absolute, or relative to the root) as the build names it (_build_dir)."""
         return os.path.normpath(os.path.relpath(self.root / path, self.root / self._build_dir()))
 
+    def compile_command(self, unit: Unit) -> list[str] | None:
+        """The one command the project's ninja build compiles this unit's object with (`ninja -t commands -s`), split
+        into its arguments as the system would (sh off Windows, CreateProcess's rules on Windows): what a try that
+        isn't kept runs on a copy of the file instead of building the project (Console.trial_command).
+
+        Read once for each writing of build.ninja. None, and the try builds the project as before, when the build
+        isn't ninja's or runs in another folder or file (`-C`, `-f`), when the step isn't one program (`a && b`, `cmd /c`, a pipe), or when
+        build.ninja is older than what it's written from: a try's compiler or flags were just written to
+        configure.py, and ninja would write build.ninja again before compiling."""
+        cfg = self.objdiff_config()
+        make = cfg.get("custom_make") or "make"
+        tool = _tool(make)
+        where = _ninja_where(cfg.get("custom_args", []))
+        if unit.base is None or tool is None or Path(tool).stem.lower() != "ninja" or where:  # (-C, -f: another file)
+            return None
+        try:
+            built = (self.root / "build.ninja").stat().st_mtime_ns
+        except OSError:
+            return None
+        ninja = [tool]
+        key = (str(self.root), self._target(unit.base))
+        with _COMMANDS_LOCK:
+            hit = _COMMANDS.get(key)
+        if hit is None or hit[0] != built:
+            hit = (built, *self._read_command(ninja, key[1]))
+            with _COMMANDS_LOCK:
+                _COMMANDS[key] = hit
+        _, command, inputs = hit
+        for f in inputs:  # (as ninja decides: an input newer than build.ninja, or gone, and it's written again)
+            try:
+                if (self.root / f).stat().st_mtime_ns > built:
+                    return None
+            except OSError:
+                return None
+        return command
+
+    def _read_command(self, ninja: list[str], target: str) -> tuple[list[str] | None, tuple[str, ...]]:
+        """(The target's last build command, split, or None; what build.ninja is written from, all the way down)."""
+        def ask(*args: str) -> str | None:
+            try:
+                res = subprocess.run([*ninja, *args], cwd=self.root, capture_output=True, text=True,
+                                     errors="replace", encoding="utf-8", timeout=60, creationflags=NO_WINDOW)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return res.stdout if res.returncode == 0 else None
+
+        said, inputs = ask("-t", "commands", "-s", target), ask("-t", "inputs", "build.ninja")
+        lines = [ln for ln in (said or "").splitlines() if ln.strip()]
+        if len(lines) != 1 or inputs is None:  # (an old ninja without -s or inputs: the build, as before)
+            return None, ()
+        return split_command(lines[0]), tuple(ln.strip() for ln in inputs.splitlines() if ln.strip())
+
     def never_defined(self, names: set[str]) -> set[str]:
         """Which of these macros no build of the project can define: not the compiler's own (a name that starts with
         "_" or has a lowercase letter, or one compilers are known to predefine), not #defined in any of its sources,
@@ -1059,8 +1169,12 @@ class ForkProject:
     def report(self) -> dict:
         return objdiff.report(self.root, self.root / STATE / "report.json")
 
-    def diff(self, unit: Unit, symbol: str) -> objdiff.FunctionDiff:
-        return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
+    def diff(self, unit: Unit, symbol: str, base: Path | None = None) -> objdiff.FunctionDiff:
+        """`base`: another build of the unit's object to measure (a try compiled alone, ForkEngine._trial_diff); not
+        for a unit with symbol mappings, which objdiff reads with the unit's own paths from objdiff.json."""
+        if base is not None and unit.mappings:
+            raise ForkError(f"{unit.name} has symbol mappings: only its own object can be measured")
+        return objdiff.diff(unit.target, base or unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
                             project=self.root if unit.mappings else None, unit=unit.name,
                             others=[u.target for u in self._config_entry()[2].values() if u.target is not None])
 
