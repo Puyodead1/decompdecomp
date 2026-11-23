@@ -312,6 +312,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **A helper in a section of its own is relocated before it's compared.** The ROM judge compares a region the
+  candidate defines with the ROM's bytes, but applied only the pointers in it: a helper the compiler kept in a
+  section of its own (C++'s inline functions in `.gnu.linkonce.t.*`, a function with `-ffunction-sections`)
+  compared its `jal`, `%hi`/`%lo` and `$gp`-relative fields as the assembler's unrelocated zeros, and a function
+  right in every byte that matters stayed one half-word short. Every relocation is applied now, what the helper
+  loads or calls is placed where the ROM's words point and compared there (as wide as its widest load).
+
 - **A jump table with no symbol of its own is placed at the ROM's table.** A switch's table at the end of an N64
   overlay has no name, so spimdisasm wrote its `lui`/`lw` as plain numbers and every candidate bringing its own
   table was refused ("refers to .rodata+0x0 where the ROM's code has no address"). The judge reads the address
