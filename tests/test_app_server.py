@@ -511,6 +511,10 @@ def test_api_models_are_discovered_and_started_only_on_their_saved_endpoint(tmp_
     settings.save()
     net = RomNetwork(tmp_path / "decomp.db", tmp_path)
     tiny_game(net)
+    # (the app asks every endpoint's /models for its efforts on a thread of its own when it starts, through the same
+    # httpx.get patched below: in a full run it sometimes asked after the patch, and the second endpoint's request,
+    # with its own key, showed up among the ones this test counts)
+    monkeypatch.setattr(support.Settings, "learn_efforts", lambda self, eid="": None)
     mcp, manager, security, _ = build(net, tmp_path, PORT, SECRET)
     requests = []
 
