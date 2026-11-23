@@ -199,7 +199,8 @@ def run(args) -> int:
     mcp, manager, security, quit_app = build(net, internal, port, secret)
     app = mcp.streamable_http_app(transport_security=security, max_request_body_size=REQUEST_BODY_LIMIT, host="127.0.0.1")
     # with a tray icon, helpers kept working without the window have a way back to it
-    window.IN_TRAY = tray.start(window.open_app, quit_app)
+    window.IN_TRAY = False  # (until the icon shows: on its own thread, so the server and window don't wait for it)
+    tray.start_in_background(window.open_app, quit_app, lambda shown: setattr(window, "IN_TRAY", shown))
     print(f"{edition.NAME} {__import__('decompnet').__version__}\nyour projects: {hostenv.shown_path(home)}"
           + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C, or quit it in its window" if window.wanted()
              else "\nno window: pair a browser with `decomp pair`; stop with Ctrl-C or `decomp stop`"), flush=True)
