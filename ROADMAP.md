@@ -243,7 +243,9 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   symbols only its code uses mark it; one out of order is a global placed elsewhere; cuts snap to aligned symbols);
   `ForkEngine.give_data` keeps it only if the game still builds byte for byte and no function stops matching. Link
   asks for it first, once per file. On that game's copy: 41 files given 3.1 MB, the DOL still OK; the 12 earlier
-  failures now show as data to match. Run on the GameCube demo (`tests/test_gc.py`).
+  failures now show as data to match. Run on the GameCube demo (`tests/test_gc.py`). A file that still fails the
+  checksum says where: `forks/dolcheck.py` names the first symbols at which the built DOL differs from the game's
+  (`file_status` shows it; a REL's difference isn't named yet).
 
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
@@ -1137,7 +1139,8 @@ Only dtk-template projects (GameCube, Wii) give a file its data (`give_data`): a
 project's delinked COFF objects and a V.Flash project's units haven't been checked for files that cover only code
 and leave their data to the build's leftovers. Check each on its demo: a file whose functions all match, its data
 compared and linked. Then the rest of the GameCube plan: the 200-function files cut at the original files'
-boundaries, a linkable form for set-aside functions, and a failed link that names the symbol or section that differed.
+boundaries, a linkable form for set-aside functions, and a failed link that names where a REL differed (the DOL's
+differences are named: `forks/dolcheck.py`).
 
 ### GameCube, Wii and DS: the rest of the table (#232)
 
