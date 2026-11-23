@@ -3398,7 +3398,9 @@ class ForkEngine:
         if reason:
             meta["asm_code"] = reason
         with self.net.store.tx() as db:
-            db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", (json.dumps(meta), fn["id"]))
+            if db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'",
+                          (json.dumps(meta), fn["id"])).rowcount:
+                db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))  # out of the queue, and its claim
 
     # ------------------------------------------------------------------ for agents
 

@@ -311,9 +311,18 @@ class ImportMixin:
                         meta_data["demangled"] = demangled[fn.name]
                     if old is not None and same_target and "plain" in (kept := json.loads(old["meta"] or "{}")):
                         meta_data["plain"] = kept["plain"]  # (the user's C for the plain build: Network.set_plain)
+                    if old is not None and same_target and json.loads(old["meta"] or "{}").get("reopened"):
+                        meta_data["reopened"] = True  # (the user gave it back to the agents: Network.reopen)
+                    status = old["status"] if same_target else console.function_status(fn)
+                    # a stretch of NOPs splat named a function is set aside before it reaches the agents' queue, its
+                    # bytes and symbol kept; an unchanged target only while still open and the user didn't give it
+                    # back (the rest of asm_reason waits for the twins pass: pieces aren't joined yet)
+                    if ((not same_target or (status == "open" and not meta_data.get("reopened")))
+                            and (why := console.padding_reason(target.code))):
+                        meta_data["asm_code"] = why
+                        status = "asm"
                     meta = json.dumps(meta_data) if meta_data else None
                     n_insns = console.function_insns(fn)
-                    status = console.function_status(fn)
                     if old is None:
                         db.execute(
                             "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,meta,status) "
@@ -322,9 +331,11 @@ class ImportMixin:
                              fn.rom, meta, status))
                     elif same_target:
                         db.execute(
-                            "UPDATE functions SET size=?,n_insns=?,target=?,relocs=?,asm=?,unit=?,vram=?,rom_offset=?,meta=? "
-                            "WHERE id=?",
-                            (fn.size, n_insns, target.code, relocs, asm, unit, fn.vram, fn.rom, meta, old["id"]))
+                            "UPDATE functions SET size=?,n_insns=?,target=?,relocs=?,asm=?,unit=?,vram=?,rom_offset=?,meta=?,"
+                            "status=? WHERE id=?",
+                            (fn.size, n_insns, target.code, relocs, asm, unit, fn.vram, fn.rom, meta, status, old["id"]))
+                        if status != old["status"]:
+                            db.execute("DELETE FROM claims WHERE function_id=?", (old["id"],))
                         preserved += old["status"] == "matched" and bool(old["matched_source"])
                     else:
                         if (rejudge is not None and old["status"] == "matched" and old["matched_source"]
