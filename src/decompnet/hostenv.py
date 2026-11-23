@@ -33,6 +33,21 @@ def replace_file(tmp: Path, path: Path) -> None:
             time.sleep(0.1)
 
 
+def run_server(server, sockets=None) -> None:
+    """Run a uvicorn server until it stops. On Windows on a selector event loop: the default one there (Proactor)
+    closes the listening socket itself when a connection is reset before it's accepted (CPython #93821), and the
+    app then stopped answering its own window and helpers (a room's server, its teammates), though it ran on. (A
+    selector loop can't run subprocesses through asyncio, which these servers never do: builds and helpers run in
+    threads.)"""
+    if sys.platform != "win32":
+        server.run(sockets=sockets)
+        return
+    import asyncio
+
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        runner.run(server.serve(sockets=sockets))
+
+
 def console_python(exe: str | None = None) -> str:
     """The Python to run build steps with: on Windows the app runs as pythonw.exe, which has no console, so every
     console program a build step under it starts (a compiler, a linker) opens a console window of its own. The
