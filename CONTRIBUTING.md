@@ -387,6 +387,9 @@ An agent is one of two sorts:
    | `parse(event, state)` | The feed items in one JSON event it prints: text, thinking, tool calls, errors, what the session spent. |
    | `clean_stderr(line)` | A line of its stderr worth showing, or "" for noise. |
    | `fatal(error)` | Whether an error means every try would fail the same way: the helper pauses instead. |
+   | `startup_failure(text)` | Why it stopped before its first model turn (its required MCP server didn't come up), or None. |
+   | `quota_error(state, exit_code, stderr, said)` | What says its plan's usage limit is reached, from a structured error where it has one. |
+   | `stderr_retry(line)` | A stderr line saying its provider refused a try it retries itself on an open session: repeated with no progress, the session ends and the helper waits. |
    | `models(path, run)`, `read_models(lines)` | The models to offer in the launcher. |
    | `config_model()` | The default model in the agent's own settings. |
    | `version(path)` | Its version (`--version` by default). |

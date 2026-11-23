@@ -206,6 +206,12 @@ class Opencode(Agent):
                                   cache_read=number(cache, "read"), cache_write=number(cache, "write"), turns=1))
         return out
 
+    def stderr_retry(self, line: str) -> str:
+        # OpenCode Go kept its session open through an overloaded provider for as long as it lasted, retrying
+        if re.search(r"\bThe inference service is overloaded\b", self.clean_stderr(line), re.I):
+            return "the model's provider is overloaded: OpenCode kept retrying with no answer"
+        return ""
+
     def clean_stderr(self, line: str) -> str:
         """--print-logs: keep the error itself, drop the stack noise."""
         line = line.strip()

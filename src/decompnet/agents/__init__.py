@@ -280,6 +280,12 @@ class Agent:
         limit") never start a wait (Codex)."""
         return said
 
+    def stderr_retry(self, line: str) -> str:
+        """A line of its stderr saying the model's provider refused a try that the CLI retries itself, keeping its
+        session open (OpenCode's "inference service is overloaded"), as a sentence; "" for any other line. Said
+        again and again with no progress between, the session ends and the helper waits (app/agents.py)."""
+        return ""
+
     def startup_failure(self, text: str) -> str | None:
         """Why the agent stopped before its first model turn (its required MCP server didn't come up), read from what
         it said, or None: the helper says so and tries again like after any failure (Codex)."""
