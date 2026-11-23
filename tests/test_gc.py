@@ -292,3 +292,23 @@ def test_an_sdk_inline_that_is_asm_comes_from_the_users_sdk_never_an_agent(gc, t
     assert "defines InitCasts already" in net.forks.sdk_inline(agent, slug, "InitCasts", source)
     with pytest.raises(NetworkError, match="isn't an inline function"):
         net.forks.sdk_inline(agent, slug, "NoSuchThing", source)
+
+
+def test_codewarriors_runtime_is_found_by_its_names_and_the_games_own_libc_is_not(gc):
+    """The GameCube catalog of CodeWarrior's own libraries (consoles/gc_wii/libraries.toml) on a stripped program:
+    dtk names the runtime's register helpers, so they're found and set aside; the demo's own malloc, memcpy, strlen
+    and exit, nameless in a stripped program and not beside the runtime's, stay the game's, and so do zlib's."""
+    net, slug = gc
+    syms = {s["st_value"]: s.name for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()
+            if s["st_info"]["type"] == "STT_FUNC"}
+    report = net.find_libraries(slug, log=lambda *_: None, fid=False)
+    found = {lib["id"]: lib for lib in report["libraries"]}
+    assert found["mw-runtime"]["aside"] and found["mw-runtime"]["kind"] == "runtime"
+    taken = {f["name"] for lib in found.values() for f in lib["functions"]}
+    assert {"__save_gpr", "__restore_gpr"} <= {f["name"] for f in found["mw-runtime"]["functions"]}
+    assert "msl" not in found and "metrotrk" not in found  # (the demo links neither)
+    rows = {r["name"]: r for r in net.store.all("SELECT name, vram, status FROM functions")}
+    for name, r in rows.items():
+        if syms.get(r["vram"]) in ("malloc", "memcpy", "strlen", "exit", "main", "clamp_s32", "adler32", "inflate"):
+            assert name not in taken, syms[r["vram"]]
+    assert rows["__save_gpr"]["status"] != "open"
