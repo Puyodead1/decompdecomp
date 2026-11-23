@@ -693,6 +693,18 @@ def test_a_function_your_object_only_calls_is_not_in_your_build_not_a_match(monk
     assert d.match_percent == 100.0 and d.matched
 
 
+def _runs_to_its_end(program: Path, cwd: Path | None = None) -> str:
+    """"" when a demo program runs until its entry returns, else what it said. Under wibo, wibo says so ("We came
+    back"); run as it is on Windows, nothing does: its entry returned when no exception (an NTSTATUS, 0xC...) ended
+    it, whatever it returned."""
+    if sys.platform == "win32":
+        ran = subprocess.run([str(program)], capture_output=True, text=True, timeout=60, cwd=cwd)
+        return "" if 0 <= ran.returncode < 0xC0000000 else f"ended with {ran.returncode:#x}: {ran.stderr[-2000:]}"
+    said = subprocess.run([str(toolchains.binary("wibo")), str(program)], capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "WIBO_DEBUG": "1"}, cwd=cwd)
+    return "" if "We came back" in said.stdout + said.stderr else said.stdout[-2000:] + said.stderr[-2000:]
+
+
 def _map(path: Path = MAP) -> dict[str, int]:
     """Symbol -> address of every function and variable, from the linker's map of the demo."""
     return {m.group(1): int(m.group(2), 16)
@@ -898,13 +910,8 @@ def test_the_project_links_the_program_again_with_visual_cpps_own_linker(pc):
             *(["--wrapper", str(toolchains.binary("wibo"))] if sys.platform != "win32" else [])]
     relink = [sys.executable, "tools/relink.py", f"config/{version}/functions.json", f"build/{version}", *link]
 
-    def runs() -> bool:  # (to its end: wibo says so when the program's entry returns)
-        if sys.platform == "win32":  # (run as it is, no wibo to say so: it returns what the user's copy returns)
-            return (subprocess.run([str(program)], capture_output=True, timeout=60).returncode
-                    == subprocess.run([str(EXE)], capture_output=True, timeout=60).returncode)
-        said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(program)],
-                              capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
-        return "We came back" in said.stdout + said.stderr
+    def runs() -> bool:
+        return _runs_to_its_end(program) == ""
 
     ok, out = fp.run([*relink, "--pad", "0x1000"], log=lambda *_: None)
     assert ok, out
@@ -979,10 +986,8 @@ def test_the_export_writes_the_program_as_source_and_a_project_without_the_game_
     assert ok, out
     assert linked.read_bytes()[0x400:] != EXE.read_bytes()[0x400:]
 
-    def runs(program: Path) -> bool:  # (to its end: wibo says so when the program's entry returns)
-        said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []), str(program)],
-                              capture_output=True, text=True, env={**os.environ, "WIBO_DEBUG": "1"}, timeout=60)
-        return "We came back" in said.stdout + said.stderr
+    def runs(program: Path) -> bool:
+        return _runs_to_its_end(program) == ""
     assert runs(linked)
     # a string of the data's C made longer: what follows it moves, what points at it follows, and it still runs
     strings = next(clone / "source" / p["c"] for p in program["pieces"] if "c" in p and
@@ -4047,10 +4052,7 @@ def test_a_game_folder_brings_its_dll_and_agents_match_the_dlls_functions(tmp_pa
     relinked = root / "build" / "demoquest" / "relink"
     assemble = scratch_pe._template_tool("assemble")
     assert assemble.differing((folder / "demoquest.dll").read_bytes(), (relinked / "demoquest.dll").read_bytes()) == []
-    said = subprocess.run([*([str(toolchains.binary("wibo"))] if sys.platform != "win32" else []),
-                           str(relinked / "demoquest.exe")], capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "WIBO_DEBUG": "1"}, cwd=relinked)
-    assert "We came back" in said.stdout + said.stderr, said.stdout[-2000:] + said.stderr[-2000:]
+    assert (said := _runs_to_its_end(relinked / "demoquest.exe", cwd=relinked)) == "", said
 
 
 @needs_tools
