@@ -312,6 +312,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **The ROM judge reads data past the code.** A ROM project's code segments stop where the next one starts, so a
+  candidate's own data after the last of them (jump tables, strings, constants) read as no bytes and its check was
+  skipped as for BSS: a racing game's 19 switches matched with wrong case labels. The judge now reads it through
+  the image its code segment loads (splat's config: from the segment's start to its BSS), still nothing in BSS;
+  and a table GCC reads through an index (`lw $at, %lo(jtbl)($at)`) counts every entry, not the one word loaded.
+
 - **Browse compiler profiles.** Group applied ranges by compiler and arguments, compiler family, or address;
   sort by range count, verification status, compiler name, or address. Expand profiles and the default settings to see function links,
   argument lists and verification details. ROM profiles can be compared with the default, tested as a replacement,
