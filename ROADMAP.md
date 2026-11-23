@@ -332,7 +332,9 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   first instructions and its body went to a bin no one saw. The segment is completed to that function's return
   (valid instructions, branches inside, a return popping its frame), and segments found end to end no longer get a
   bin at the same offset. An unchanged function keeps everything said about it through a reimport (why it's set
-  aside, its naming), not only its status.
+  aside, its naming), not only its status. A function alone between two code segments (too short a stretch for
+  the search to place) becomes a segment of its own when known code calls it at one mapping and the gap is exactly
+  that function, from its frame to the return giving it back.
 
 - **A masked `%lo` is read as the relocation it is.** spimdisasm writes the low half of an address 64 KB or more
   past its symbol as `%lo(sym + (0x12340 & 0xFFFF))`, which the ROM target didn't read: the diff showed it as a
