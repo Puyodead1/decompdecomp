@@ -617,15 +617,20 @@ ALWAYS_LOAD = agents.TOOL_META
 
 HEAVY_TOOLS = frozenset({"compile_and_diff", "search_code", "search_flags", "try_compiler",
                          "edit_file", "split_file", "join_functions"})
+# Quick reads an agent makes first or between steps (its first project_info, a guide): a lane of their own, so a
+# burst of claims and briefs on the light lane can't hold them until the agent's MCP call times out (-32001)
+FAST_TOOLS = frozenset({"project_info", "guide", "read_file", "list_functions", "file_status"})
+HEAVY_LANE, LIGHT_LANE, FAST_LANE = 16, 64, 16
 
 
 def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]]) -> MCPServer:
     """MCP server for CLI agents. `agent_of` maps a request to (agent, project slug)."""
     mcp = MCPServer(name="decomp", title="decompdecomp", instructions=INSTRUCTIONS, version=__version__)
-    heavy_limiter = anyio.CapacityLimiter(16)
+    heavy_limiter = anyio.CapacityLimiter(HEAVY_LANE)
     # the rest on threads of their own too: on anyio's default ones, calls waiting for a project's lock (a room's
     # rebuild) took every thread a room's requests needed, and its guest saw the host as gone (collab.host_app)
-    light_limiter = anyio.CapacityLimiter(64)
+    light_limiter = anyio.CapacityLimiter(LIGHT_LANE)
+    fast_limiter = anyio.CapacityLimiter(FAST_LANE)
 
     async def run(ctx: Context, name: str, /, **args) -> str:  # (positional: sdk_inline has its own `name`)
         try:
@@ -633,7 +638,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
-            limiter = heavy_limiter if name in HEAVY_TOOLS else light_limiter
+            limiter = (heavy_limiter if name in HEAVY_TOOLS else fast_limiter if name in FAST_TOOLS
+                       else light_limiter)
             return await anyio.to_thread.run_sync(lambda: _invoke(net, agent, slug, name, args), limiter=limiter)
         except NetworkError as e:
             raise ToolError(str(e)) from None

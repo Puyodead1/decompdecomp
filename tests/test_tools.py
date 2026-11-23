@@ -121,6 +121,45 @@ def test_every_mcp_tool_reaches_its_handler_with_its_own_arguments(tmp_path, mon
     assert reached == [("sdk_inline", sdk)]
 
 
+def test_quick_reads_dont_wait_behind_a_burst_of_claims(tmp_path, monkeypatch):
+    """An agent's first project_info queued behind other helpers' claims and briefs until its MCP call timed out
+    (-32001): quick reads have a lane of their own."""
+    import threading
+
+    import anyio
+
+    assert {"project_info", "guide"} <= tools.FAST_TOOLS and not tools.FAST_TOOLS & {"claim_function", "search_code"}
+    monkeypatch.setattr(tools, "LIGHT_LANE", 1)
+    entered, release = threading.Event(), threading.Event()
+
+    def invoke(net, agent, slug, name, args):
+        if name == "claim_function":  # (holds the light lane's one thread)
+            entered.set()
+            assert release.wait(5)
+        return name
+
+    monkeypatch.setattr(tools, "_invoke", invoke)
+    mcp = tools.build_mcp(RomNetwork(tmp_path / "test.db", tmp_path), lambda ctx: (None, "slug"))
+    said = {}
+
+    async def scenario():
+        async def claim():
+            said["claim"] = await mcp.call_tool("claim_function", {})
+
+        async def info():
+            await anyio.to_thread.run_sync(lambda: entered.wait(5))
+            with anyio.fail_after(3):
+                said["info"] = await mcp.call_tool("project_info", {})
+            release.set()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(claim)
+            tg.start_soon(info)
+
+    anyio.run(scenario)
+    assert set(said) == {"claim", "info"}
+
+
 def test_compile_and_diff_takes_edits_to_the_agents_last_c(tmp_path):
     """A GameCube game's 1,318-instruction function cost its agents 23,000 characters of C a compile, to change a
     line or two: `edits` change the C of the agent's last compile of the function (its best attempt before that)."""
