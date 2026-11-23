@@ -3,7 +3,7 @@
 A game started from scratch has files that cover only .text: everything else (.rodata, .data, .bss, .sdata, ...)
 sits in dtk's auto units (auto_06_..._rodata). objdiff then compares 0 bytes of data, so a file whose functions all
 match looked finished and was linked, and its C's own constants and globals collided with the auto units' copies
-(a GameCube game with 400 files: 12 tries, every one multiply defined or a checksum off). Its data has to be the
+(a GameCube game: 12 tries, every one multiply defined or a checksum off). Its data has to be the
 file's before the file can link, and before its data can be compared at all.
 
 The linker lays out each section file by file in link order, so a file's data is one stretch of each section, in the
