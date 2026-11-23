@@ -42,6 +42,9 @@ Files decompdecomp made (text_<offset>.c)
 Code that had no source file gets one per stretch of code (`text_<offset>.c`, `.cpp` for C++ code); it often holds
 several of the game's original files, and it can only link when it's exactly one. `file_status` shows its ranges.
 <!-- only: ppc -->
+Such a file starts with only its code. Before it links, decompdecomp gives it its stretch of each data section (the
+strings, constants and globals its code uses, in the order the linker laid them out), and that data has to match
+too: `file_status` shows it next to the original's.
 When you can tell where an original file ends (a block of functions that use their own strings and constants, a
 REL's `_prolog`/`_epilog`, a `runtime` tail, a C++ class's methods together), `split_file(path, at, new_name, data)`
 divides it there: the function `at` and everything after it go to the new file with their C, and `data` moves the

@@ -33,6 +33,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Permuter on near misses | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ (demo: 200 → 10) | ✓ | ✓ |
 | Hand-written assembly set aside | ✓ | ✓ | ✓ | ✓ (`sc` stubs) | — | ✓ | ✓ (`_call_via` helpers, `svc`/`swi` stubs) | ✓ | Visual C++'s exception-handling stubs (64-bit: the funclets its exception data names) | Visual C++'s exception-handling stubs | BIOS call stubs, pieces of functions | the C runtime's start-up code | the CPU's mode and caches, pieces of functions | MIPS, PowerPC, ARM's BIOS stubs and pieces of functions |
 | Source splitting (`split_file`) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ (`split_unit`) | by project |
+| Each file's data given to it, so it can link (files that cover only code) | — | — | — | — | — | — | — | ✓ from scratch (`give_data`, before a file links) | — | — | — | — | — | the project's own |
 | Pieces of functions joined to their function | — | — | — | — | — | — | — | — | ✓ (`scratch.merge_pieces`; 64-bit: .pdata's extents, none to join) | ✓ (`scratch.merge_pieces`) | ✓ (`recover.merge_pieces`) | — | — | — |
 | Agents' verdict "no C makes this" (3 agents of 2 models: set aside, red in the map) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | The SDK's own inline functions from your copy (`sdk_inline`: an asm block like OSInitFastCast, no agent asm) | — | — | — | — | — | — | — | ✓ | — | — | — | — | — | — their own headers |
@@ -232,6 +233,16 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   classes and methods).
 
 ## Recently done
+
+- **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
+  code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a
+  file's data, every file whose functions matched was linked, and each link failed with its C's data defined twice
+  (a GameCube game: 12 tries, all multiply defined or a checksum off). `forks/dtkdata.py` reads which data each file's
+  code refers to in the original's objects and gives each file its stretch of every data section in link order (the
+  symbols only its code uses mark it; one out of order is a global placed elsewhere; cuts snap to aligned symbols);
+  `ForkEngine.give_data` keeps it only if the game still builds byte for byte and no function stops matching. Link
+  asks for it first, once per file. On that game's copy: 41 files given 3.1 MB, the DOL still OK; the 12 earlier
+  failures now show as data to match. Run on the GameCube demo (`tests/test_gc.py`).
 
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
@@ -1097,6 +1108,14 @@ Their projects (dtk-template, ds-decomp) take CodeWarrior by version from the co
 holds every build known, so no game has needed one of its own yet. When one does: the project's build gets a
 compilers folder of the user's beside the archive's (dtk-template's configure.py reads one), and the console lists
 its versions (`Console.kit_compilers`), as Windows PC does for Visual C++ through `--own`.
+
+### Each file's data on the other project-mode consoles
+
+Only dtk-template projects (GameCube, Wii) give a file its data (`give_data`): a DS project's delinks, a PC or Xbox
+project's delinked COFF objects and a V.Flash project's units haven't been checked for files that cover only code
+and leave their data to the build's leftovers. Check each on its demo: a file whose functions all match, its data
+compared and linked. Then the rest of the GameCube plan: the 200-function files cut at the original files'
+boundaries, a linkable form for set-aside functions, and a failed link that names the symbol or section that differed.
 
 ### GameCube, Wii and DS: the rest of the table (#232)
 
