@@ -273,6 +273,11 @@ class Agent:
         message doesn't say; None when it can't tell (the helper then waits longer each time: app/agents.py)."""
         return None
 
+    def startup_failure(self, text: str) -> str | None:
+        """Why the agent stopped before its first model turn (its required MCP server didn't come up), read from what
+        it said, or None: the helper says so and tries again like after any failure (Codex)."""
+        return None
+
     def fatal(self, error: str) -> bool:
         """Whether an error it said is one every try would meet the same way (Antigravity refusing decompdecomp's
         tools): the helper pauses with it, instead of starting again."""

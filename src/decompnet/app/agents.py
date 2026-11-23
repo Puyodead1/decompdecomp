@@ -1511,7 +1511,10 @@ class Manager:
 
         def drain_err():
             for line in proc.stderr:
-                if (text := k.clean_stderr(line)) and (not errors or errors[-1] != text):
+                text = k.clean_stderr(line)
+                if token:  # (an MCP error may echo its header)
+                    text = text.replace(token, "[redacted]")
+                if text and (not errors or errors[-1] != text):
                     errors.append(text)
                     if k.limit_hangs and LIMIT.search(text):  # (it would retry the limit for hours: see Agent)
                         _terminate(proc)
@@ -1566,6 +1569,10 @@ class Manager:
             said_it = next((t for t in [*errors, *said] if AUTH_FAILED.search(t)), "")
             s.error = said_it.strip()[:200] or "its sign-in failed"
             s.push("error", f"{k.name}'s sign-in failed (exit code {code}): {s.error}")
+            return False
+        if code != 0 and not saw_tool and (startup := k.startup_failure("\n".join([*errors, last_error]))):
+            s.error = startup[:300]  # (no model turn was spent: the usual wait, then it tries again)
+            s.push("error", startup)
             return False
         if code != 0:
             tail =" · ".join(list(errors)[-3:]) or last_error or f"exited with code {code}"
