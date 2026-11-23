@@ -1,0 +1,124 @@
+# CodeWarrior's own libraries, which every GameCube and Wii game links: the library finder's entries for them
+# (libid/catalog.toml says what each key means; the console hands them over as Console.library_catalog).
+#
+# No one may publish their code, so no signature can find them: their names do. A game that kept its symbols has
+# them, and dtk's own analysis names a few dozen in a stripped one (memcpy, __save_gpr, __pformatter, TRKNubMainLoop).
+# Each library is linked whole, one archive after the other: in five public decomps (GameCube and Wii) the runtime,
+# MSL and MetroTRK are each one run of functions with nothing else inside, so the functions between two of one
+# library's own named ones are its too, as far as `reach`. Their names here are the ones those decomps give the
+# functions of their Runtime, MSL_C and TRK_MINNOW_DOLPHIN objects.
+#
+# `names` are the library's alone: a function so named is its, wherever it is. `companion_names` are also anyone's
+# (strlen, sin, printf: a game may write its own): they count only beside the library's own functions.
+#
+# Set aside without asking (`aside`): this is the compiler's own code, never the game's, and a decomp links the
+# compiler's copy instead of writing it. Three of eight functions an old judge falsely matched in a GameCube game
+# were library code (MSL's __two_exp, MetroTRK's TRKDoWriteMemory, the SDK's GXGetVtxAttrFmt): agents spend their
+# time on it otherwise. The user gives a function back in the Libraries panel, and it stays given back.
+
+[[library]]
+id = "mw-runtime"
+name = "CodeWarrior's runtime (Runtime.PPCEABI)"
+kind = "runtime"
+home = "https://www.nxp.com/design/design-center/software/development-software/codewarrior-development-tools:CW_HOME"
+strings = ['Metrowerks CW runtime library initializing default heap', 'GCN_Mem_Alloc\.c : InitDefaultHeap']
+names = ['__save_gpr', '__restore_gpr', '__save_fpr', '__restore_fpr', '_savegpr_\d+', '_restgpr_\d+',
+         '_savefpr_\d+', '_restfpr_\d+', '__div2u', '__div2i', '__mod2u', '__mod2i', '__shl2i', '__shr2i', '__shr2u',
+         '__cvt_fp2unsigned', '__cvt_dbl_ull', '__cvt_dbl_usll', '__cvt_sll_flt', '__cvt_ull_dbl', '__cvt_ull_flt',
+         '__cvt_sll_dbl', '__va_arg', '__ptmf_scall', '__ptmf_scall4', '__ptmf_cmpr', '__ptmf_test',
+         '__construct_array', '__construct_new_array', '__destroy_arr', '__destroy_new_array',
+         '__dt__26__partial_array_destructorFv', '__destroy_global_chain', '__register_global_object',
+         '__init_cpp_exceptions', '__fini_cpp_exceptions', '__register_fragment', '__unregister_fragment',
+         'GetR2(?:__Fv)?', '__fill_mem', '__copy', '__setjmp', '__longjmp', '__sys_alloc', '__sys_free']
+companion_names = ['memcpy', 'memset']
+reach = 48
+span = 0x4000
+aside = true
+
+[[library]]
+id = "msl"
+name = "MSL, CodeWarrior's C library (MSL_C)"
+kind = "runtime"
+home = "https://www.nxp.com/design/design-center/software/development-software/codewarrior-development-tools:CW_HOME"
+# ansi_fp.c's table for __two_exp: 2 to the -64th's digits (printf's floating point)
+strings = ['542101086242752217003726400434970855712890625']
+names = ['__pformatter', '__sformatter', '__wpformatter', '__two_exp', '__ieee754_\w+', '__kernel_\w+',
+         '__FileWrite', '__StringRead', '__StringWrite', '__wStringWrite', '__fwrite', '__flush_buffer',
+         '__prep_buffer', '__flush_all', '__close_all', '__stdio_atexit', '__begin_critical_region',
+         '__end_critical_region', '__kill_critical_regions', '__num2dec', '__num2dec_internal', '__dec2num',
+         '__str2dec', '__strtold', '__strtoul', '__strtoull', '__ull2dec', '__timesdec', '__minus_dec', '__equals_dec',
+         '__less_dec', '__count_trailing_zerol', '__memrchr', '__copy_longs_aligned', '__copy_longs_rev_aligned',
+         '__copy_longs_unaligned', '__copy_longs_rev_unaligned', '__msl_\w+', '__fpclassifyd', '__fpclassifyf',
+         '__signbitd', '__mbtowc_noconv', '__wctomb_noconv', '__pool_free', '__put_char', '__sinit_trigf_c',
+         'parse_format', 'float2str', 'double2hex', 'long2str', 'longlong2str', 'round_decimal', 'Block_link',
+         'SubBlock_merge_next', 'deallocate_from_fixed_pools', 'deallocate_from_var_pools', 'is_utf8_complete',
+         'unicode_to_UTF8', '_fseek', '_ftell']
+companion_names = ['abort', 'exit', 'abs', 'labs', 'div', 'atoi', 'rand', 'srand', 'raise', 'free', 'malloc',
+                   'acos', 'acosf', 'asin', 'atan', 'atan2', 'ceil', 'copysign', 'cos', 'cosf', 'cos__Ff', 'exp',
+                   'fabsf__Ff', 'floor', 'fmod', 'frexp', 'ldexp', 'log', 'log10', 'logf', 'modf', 'nan', 'pow',
+                   'scalbn', 'sin', 'sinf', 'sin__Ff', 'sqrt', 'tan', 'tanf', 'fclose', 'fflush', 'fprintf', 'fputs',
+                   'fseek', 'ftell', 'fwide', 'fwrite', 'printf', 'snprintf', 'sprintf', 'sscanf', 'vprintf',
+                   'vsnprintf', 'vsprintf', 'swprintf', 'vswprintf', 'mbstowcs', 'mbtowc', 'wcstombs', 'memchr',
+                   'memcmp', 'memmove', 'memcpy', 'memset', 'strcasecmp', 'strcat', 'strchr', 'strcmp', 'strcpy',
+                   'stricmp', 'strlen', 'strncasecmp', 'strncmp', 'strncpy', 'strnicmp', 'strrchr', 'strstr',
+                   'strtol', 'strtoul', 'tolower', 'toupper', 'wcschr', 'wcscmp', 'wcscpy', 'wcslen', 'wcsncpy',
+                   'wmemchr', 'wmemcpy', '__read_console', '__write_console', '__close_console']
+# its math is Sun's fdlibm, whose code compares a double's high word with these (built by lis/addi): e_exp's
+# overflow and ln 2, e_pow's 2^31 and 2^64, e_rem_pio2's pi/4, 3pi/4 and 2^20 pi/2, k_tan's and s_atan's. dtk names
+# none of it; in a GameCube game of 20,000 functions only exp, pow and __ieee754_rem_pio2 held two, and fourteen of
+# the game's own one (pi/4 is anyone's): one counts only beside MSL's own code
+constants = [0x40862e42, 0x3fd62e42, 0x3ff0a2b2, 0x41e00000, 0x43f00000, 0x3fe921fb, 0x4002d97c, 0x413921fb,
+             0x3fe59428, 0x44100000]
+needs = 2
+companions = [0x3fe921fb, 0x4002d97c, 0x413921fb, 0x3fe59428, 0x44100000, 0x400f6a7a, 0x40874910]
+companion_needs = 1
+reach = 48
+span = 0x4000
+aside = true
+
+[[library]]
+id = "metrotrk"
+name = "MetroTRK, CodeWarrior's debugger stub (TRK_MINNOW_DOLPHIN)"
+kind = "runtime"
+home = "https://www.nxp.com/design/design-center/software/development-software/codewarrior-development-tools:CW_HOME"
+strings = ['MetroTRK for (?:GAMECUBE|Dolphin|Revolution) v(?P<version>\d+\.\d+)',
+           'Metrowerks Target Resident Kernel for PowerPC', 'MetroTRK Option : SerialIO - ',
+           'MessageSend : cc_write returned']
+names = ['TRKAccessFile', 'TRKAcquireMutex', 'TRKAppendBuffer', 'TRKAppendBuffer1_ui16', 'TRKAppendBuffer1_ui32',
+         'TRKAppendBuffer1_ui64', 'TRKAppendBuffer_ui32', 'TRKAppendBuffer_ui8', 'TRKCloseFile', 'TRKConstructEvent',
+         'TRKCopyEvent', 'TRKDestructEvent', 'TRKDispatchMessage', 'TRKDoCPUType', 'TRKDoConnect', 'TRKDoContinue',
+         'TRKDoDisconnect', 'TRKDoFlushCache', 'TRKDoNotifyStopped', 'TRKDoOverride', 'TRKDoReadMemory',
+         'TRKDoReadRegisters', 'TRKDoReset', 'TRKDoSetOption', 'TRKDoStep', 'TRKDoStop', 'TRKDoSupportMask',
+         'TRKDoUnsupported', 'TRKDoVersions', 'TRKDoWriteMemory', 'TRKDoWriteRegisters', 'TRKEXICallBack',
+         'TRKExceptionHandler', 'TRKGetBuffer', 'TRKGetFreeBuffer', 'TRKGetInput', 'TRKGetNextEvent',
+         'TRKHandleRequestEvent', 'TRKHandleSupportEvent', 'TRKIdle', 'TRKInitializeDispatcher',
+         'TRKInitializeEndian', 'TRKInitializeEventQueue', 'TRKInitializeIntDrivenUART',
+         'TRKInitializeMessageBuffers', 'TRKInitializeMutex', 'TRKInitializeNub', 'TRKInitializeSerialHandler',
+         'TRKInitializeTarget', 'TRKInterruptHandler', 'TRKInterruptHandlerEnableInterrupts', 'TRKLoadContext',
+         'TRKMessageIntoReply', 'TRKMessageSend', 'TRKNubMainLoop', 'TRKNubWelcome', 'TRKOpenFile',
+         'TRKPPCAccessFPRegister', 'TRKPPCAccessPairedSingleRegister', 'TRKPPCAccessSPR', 'TRKPPCAccessSpecialReg',
+         'TRKPollUART', 'TRKPositionFile', 'TRKPostEvent', 'TRKPostInterruptEvent', 'TRKProcessInput',
+         'TRKReadBuffer', 'TRKReadBuffer1_ui16', 'TRKReadBuffer1_ui32', 'TRKReadBuffer1_ui64', 'TRKReadBuffer1_ui8',
+         'TRKReadBuffer_ui32', 'TRKReadBuffer_ui8', 'TRKReadUARTN', 'TRKReadUARTPoll', 'TRKReleaseBuffer',
+         'TRKReleaseMutex', 'TRKRequestSend', 'TRKResetBuffer', 'TRKRestoreExtended1Block', 'TRKSaveExtended1Block',
+         'TRKSendACK', 'TRKSetBufferPosition', 'TRKSetBufferUsed', 'TRKStandardACK', 'TRKSuppAccessFile',
+         'TRKSwapAndGo', 'TRKTargetAccessARAM', 'TRKTargetAccessDefault', 'TRKTargetAccessExtended1',
+         'TRKTargetAccessExtended2', 'TRKTargetAccessFP', 'TRKTargetAccessMemory', 'TRKTargetAddExceptionInfo',
+         'TRKTargetAddStopInfo', 'TRKTargetCPUMinorType', 'TRKTargetCPUType', 'TRKTargetCheckStep',
+         'TRKTargetContinue', 'TRKTargetDoStep', 'TRKTargetEnableTrace', 'TRKTargetFlushCache', 'TRKTargetGetPC',
+         'TRKTargetInterrupt', 'TRKTargetReadInstruction', 'TRKTargetSetInputPendingPtr', 'TRKTargetSetStopped',
+         'TRKTargetSingleStep', 'TRKTargetStepDone', 'TRKTargetStepOutOfRange', 'TRKTargetStop', 'TRKTargetStopped',
+         'TRKTargetSupportMask', 'TRKTargetSupportRequest', 'TRKTargetTranslate', 'TRKTargetVersions',
+         'TRKTerminateNub', 'TRKTerminateSerialHandler', 'TRKTestForPacket', 'TRKUARTInterruptHandler',
+         'TRKValidMemory32', 'TRKWriteUARTN',
+         'TRK_(?:ReadUARTN|WriteUARTN|_read_aram|_write_aram|board_display|copy_vector|fill_mem|flush_cache)',
+         'TRK_(?:main|memcpy|memset|ppc_memcpy|strlen)', '__TRK_\w+', 'InitMetroTRK\w*', 'EnableMetroTRKInterrupts',
+         'EnableEXI2Interrupts', 'ReserveEXI2Port', 'UnreserveEXI2Port', 'GetTRKConnected', 'SetTRKConnected',
+         'GetUseSerialIO', 'SetUseSerialIO', 'Handle(?:Open|Close|Position)FileSupportRequest',
+         'InitializeProgramEndTrap', 'MW(?:Enter|Exit|Initialize)CriticalSection', 'MWTRACE', 'usr_put_initialize',
+         'usr_puts_serial', '(?:ddh|gdev|udp)_cc_\w+']
+companion_names = ['CBGetBytesAvailableForRead', 'CircleBuffer\w+', 'OutputData', 'ReadFPSCR', 'WriteFPSCR',
+                   'WriteUART1', 'WriteUARTFlush', '__read_console', '__write_console', '__close_console']
+reach = 48
+span = 0x4000
+aside = true

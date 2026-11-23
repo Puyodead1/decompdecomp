@@ -521,3 +521,122 @@ def test_a_stripped_games_library_functions_get_their_librarys_names(tmp_path, m
     found = net.libraries_found("demo")
     assert any(f["name"] == "sceMcOpen" and f.get("real") == "sceMcOpen" for lib in found["libraries"]
                for f in lib["functions"])
+
+
+# ---------------------------------------------------------------------------------------------- CodeWarrior's own
+
+_PLAIN = struct.pack(">4I", 0x9421FFF0, 0x7C0802A6, 0x38210010, 0x4E800020)  # (no constant of anyone's)
+
+
+def _gamecube_runtime() -> list[libid.Code]:
+    """A stripped GameCube game's runtime stretch as dtk names it: the runtime, MSL, MetroTRK and the SDK, one after
+    the other, a few of each named by dtk's analysis and the rest fn_<address>."""
+    layout = [
+        ("Game_Update", _PLAIN), ("strlen", _PLAIN),  # the game's own: a strlen of its own too, far from MSL's
+        *[(f"fn_8000{i:04X}", _PLAIN) for i in range(12)],
+        ("__va_arg", _PLAIN), ("fn_803AD1C8", _PLAIN), ("__save_gpr", _PLAIN), ("fn_803ADCA4", _PLAIN),
+        ("__register_fragment", _PLAIN), ("fn_803AF878", _PLAIN),  # (runtime or MSL: the seam, left alone)
+        ("exit", _PLAIN), ("fn_803AFA2C", _PLAIN), ("__close_all", _PLAIN), ("fn_803B0094", _PLAIN),
+        ("longlong2str_803B6218", _PLAIN),  # (dtk keeps a static function's name with its address)
+        ("fn_803B6C88", _PLAIN), ("fwide", _PLAIN), ("fn_803B9A0C", _PLAIN),
+        ("fn_803BA210", struct.pack(">4I", 0x3C604086, 0x38632E42, 0x3C803FD6, 0x38842E42)),  # e_exp's, lis/addi
+        ("fn_803BB3B0", struct.pack(">4I", 0x3C603FE9, 0x386321FB, 0x3C804002, 0x3884D97C)),  # e_rem_pio2's
+        ("fn_803BCCD0", struct.pack(">2I", 0x3C603FE9, 0x386321FB)),  # pi/4 alone, beside MSL's own
+        ("fn_803BD388", _PLAIN),  # (MSL or MetroTRK: the seam)
+        ("TRKNubMainLoop", _PLAIN), ("fn_803BD74C", _PLAIN), ("TRKDoWriteMemory", _PLAIN),
+        *[(f"fn_803BE{i:03X}", _PLAIN) for i in range(20)],  # (msghndlr's, between two of its own)
+        ("TRKInterruptHandler", _PLAIN), ("MWTRACE", _PLAIN), ("fn_803C32C4", _PLAIN),
+        ("PPCMfmsr", _PLAIN), ("TRKGetLength", _PLAIN),  # the SDK's, and a racing game's own for its tracks
+        ("fn_80469000", struct.pack(">2I", 0x3C603FE9, 0x386321FB)),  # the game's own pi/4, far from MSL
+    ]
+    return [libid.Code(i, name, 0x80300000 + 0x100 * i, raw) for i, (name, raw) in enumerate(layout)]
+
+
+def test_codewarriors_own_libraries_are_found_by_their_names_in_a_gamecube_game(tmp_path):
+    """MSL, MetroTRK and CodeWarrior's runtime in a GameCube game: no one may publish their code, so their names (the
+    game's symbols, dtk's analysis) say which functions are theirs, each library linked whole, so what's between two
+    of its own is its too. The seams between two libraries, and every function of the game's (a strlen of its own,
+    a TRKGetLength for its tracks, a pi/4 of its own), stay open. MSL's math is fdlibm's: its high-word constants."""
+    from decompnet import consoles
+
+    catalog = libid.load(tmp_path / "none", console=consoles.get("gc").library_catalog())
+    text = b"\0MetroTRK for GAMECUBE v2.0\0" + b"542101086242752217003726400434970855712890625\0"
+    codes = _gamecube_runtime()
+    report = libid.identify(text, codes, catalog, arch="ppc", big_endian=True)
+    found = {lib["id"]: lib for lib in report["libraries"]}
+    names = {lib: {f["name"] for f in found[lib]["functions"]} for lib in found}
+    key = {c.name: c.key for c in codes}
+
+    def run(first: str, last: str) -> set[str]:
+        return {c.name for c in codes if key[first] <= c.key <= key[last]}
+    assert names["mw-runtime"] == run("__va_arg", "__register_fragment")
+    assert names["msl"] == run("exit", "fn_803BCCD0")
+    assert names["metrotrk"] == run("TRKNubMainLoop", "MWTRACE")
+    taken = set().union(*names.values())
+    for own in ("Game_Update", "strlen", "fn_803AF878", "fn_803BD388", "fn_803C32C4", "PPCMfmsr", "TRKGetLength",
+                "fn_80469000"):
+        assert own not in taken
+    assert found["metrotrk"]["version"] == "2.0"
+    assert all(found[lib]["aside"] and found[lib]["kind"] == "runtime" for lib in ("mw-runtime", "msl", "metrotrk"))
+    why = {f["name"]: f["why"] for lib in found.values() for f in lib["functions"]}
+    assert "longlong2str, a function only it has" in why["longlong2str_803B6218"]
+    assert "between two of its own functions (TRKDoWriteMemory, TRKInterruptHandler)" in why["fn_803BE000"]
+    assert "constants" in why["fn_803BA210"] and "beside its own code" in why["fn_803BCCD0"]
+
+
+def test_only_codewarriors_consoles_have_its_libraries(tmp_path):
+    """A PS2 game's memcpy and __save_gpr aren't MSL's: CodeWarrior's libraries are the GameCube's and the Wii's
+    catalog, not the one every console reads."""
+    from decompnet import consoles
+
+    assert {lib.id for lib in consoles.get("wii").library_catalog()} == {"mw-runtime", "msl", "metrotrk"}
+    for other in ("ps2", "n64", "pc"):
+        assert consoles.get(other).library_catalog() == []
+    report = libid.identify(None, _gamecube_runtime(), libid.load(tmp_path / "none"), arch="ppc", big_endian=True)
+    assert not {lib["id"] for lib in report["libraries"]} & {"mw-runtime", "msl", "metrotrk"}
+
+
+def test_find_libraries_sets_metrotrk_aside_in_a_gamecube_project_by_where_its_functions_are(tmp_path, monkeypatch):
+    """A dtk project's functions have no address in their names (TRKNubMainLoop): where they are is the row's, from
+    objdiff's report. Without it nothing was between two of MetroTRK's own and only the named were set aside; with
+    it the ones between are too, into the project's set_aside.json."""
+    import subprocess as sp
+
+    from decompnet import kits
+    from decompnet.app.engine import RomNetwork, libraryid
+    from decompnet.forks import project
+
+    repo = tmp_path / "theirs"
+    (repo / "config" / "V").mkdir(parents=True)
+    (repo / ".decomp.wtf.json").write_text(json.dumps({"created": "from scratch", "platform": "gc", "version": "V"}))
+    (repo / "config" / "V" / "config.yml").write_text("name: V\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    sp.run([*git, "-C", str(repo), "add", "-A"], check=True)
+    sp.run([*git, "-C", str(repo), "commit", "-q", "-m", "first"], check=True)
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "home")
+    slug = net.forks.clone(str(repo), name="Theirs", platform="gc", log=lambda *_: None)
+    proj = net._project(slug)
+    layout = [("Game_Update", 0x803BD000), ("TRKNubMainLoop", 0x803BD630), ("fn_803BD74C", 0x803BD74C),
+              ("fn_803BD764", 0x803BD764), ("TRKDoWriteMemory", 0x803BD844), ("fn_803BD900", 0x803BD900)]
+    with net.store.tx() as db:
+        for name, vram in layout:
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,vram,meta,attempts,abandons,unit) "
+                       "VALUES(?,?,?,?,?,?,?,0,0,?)", (proj["id"], name, 16, 4, "open", vram,
+                                                       json.dumps({"symbol": name}), "main/auto/text_803AF810"))
+    target = tmp_path / "text.o"
+    target.write_bytes(b"")
+    monkeypatch.setattr(project.ForkProject, "unit", lambda self, name: type("U", (), {"target": target})())
+    monkeypatch.setattr(libraryid, "object_code", lambda data: {n: (_PLAIN, frozenset(), frozenset()) for n, _ in layout})
+    monkeypatch.setattr(kits, "libraries", lambda kids: [])
+    monkeypatch.setattr(libid, "signature_folder", lambda: tmp_path / "sigs")
+
+    codes, _ = net._library_codes(proj)
+    assert {c.name: c.addr for c in codes} == dict(layout)
+    report = net.find_libraries(slug, log=lambda *_: None, fid=False)
+    trk = next(lib for lib in report["libraries"] if lib["id"] == "metrotrk")
+    assert {f["name"] for f in trk["functions"]} == {"TRKNubMainLoop", "fn_803BD74C", "fn_803BD764", "TRKDoWriteMemory"}
+    status = {r["name"]: r["status"] for r in net.store.all("SELECT name, status FROM functions")}
+    assert status["fn_803BD764"] == "asm" and status["Game_Update"] == status["fn_803BD900"] == "open"
+    aside = json.loads((Path(proj["root"]) / "config" / "V" / "set_aside.json").read_text())
+    assert "fn_803BD74C" in aside and "MetroTRK" in aside["fn_803BD74C"]
