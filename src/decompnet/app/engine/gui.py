@@ -133,12 +133,13 @@ class GuiMixin:
             "AND f.status='matched' AND a.origin='local' AND a.name NOT IN ('you','autopilot')", proj["id"])["n"]
         twins = self.twins.jobs.get(proj["slug"])
         base = self._overview(slug, proj)
+        polish = self.readability.counts(proj)
         return base | {"last_activity": last, "autopilot": self.autopilot_status(slug),
                        "permuter": self.permuter.status(proj["slug"]),
                        "twins": None if twins is None else {
                            k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
                        "helper_matches": helpers,
-                       "readable": self.readability.counts(proj)["readable"],
+                       "readable": polish["readable"], "unpolished": polish["given_up"],
                        "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                        "claim_order": cfg.get("claim_order") if cfg.get("claim_order") in CLAIM_ORDERS else "",
                        "priority": cfg.get("priority", []), "save_folder": str(saves.save_folder(self, slug)),

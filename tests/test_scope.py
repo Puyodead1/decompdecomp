@@ -53,6 +53,13 @@ def _statuses(net: RomNetwork) -> dict[str, str]:
     return {r["name"]: r["status"] for r in net.store.all("SELECT name, status FROM functions")}
 
 
+def _judged(net: RomNetwork, agent, name: str) -> None:
+    """A rewrite of `name` judged for `agent` and refused (an attempt, as make_readable and compile_and_diff record)."""
+    fid = net.store.one("SELECT id FROM functions WHERE name=?", name)["id"]
+    net.store.conn.execute("INSERT INTO attempts(function_id, agent_id, score, compiled, source, created_at) "
+                           "VALUES(?,?,?,?,?,?)", (fid, agent.id, 40, 1, "/* refused */", time.time()))
+
+
 def _sums(net: RomNetwork) -> tuple[int, int]:
     """What the project list and header show: functions less the set-aside ones (base.js cFunctions), and matched
     ones (network.PROGRESS_COLUMNS: a set-aside one, for either reason, doesn't count)."""
@@ -70,7 +77,7 @@ def test_polishing_takes_the_games_own_code_and_leaves_set_aside_library_code(tm
     net.forks.sync(slug, log=lambda *_: None)
     net.store.conn.execute("UPDATE functions SET n_insns=16, matched_source='int f(void) { return 0; }'")
     monkeypatch.setattr(type(net.forks), "_current_source", lambda self, fp, fn, comment=False: None)
-    assert net.readability.counts(net._project(slug)) == {"matched": 1, "readable": 0}  # game_a, not lib_a
+    assert net.readability.counts(net._project(slug)) == {"matched": 1, "readable": 0, "given_up": 0}  # game_a, not lib_a
     agent, _ = net.local_agent("claude-sonnet-5-5-1")
     assert "MAKE READABLE: game_a" in net.readability.claim(agent, slug)
     other, _ = net.local_agent("claude-sonnet-5-5-2")
@@ -131,6 +138,7 @@ def test_polishing_takes_small_functions_last_and_leaves_one_it_keeps_failing_on
     assert readable.Readability(net).left(proj) == 2
     for _ in range(readable.POLISH_TRIES):  # game_b, the bigger, first: given up on each time
         assert "MAKE READABLE: game_b" in net.readability.claim(agent, slug)
+        _judged(net, agent, "game_b")
         net.release(agent, "game_b", "", slug)
     assert net.readability.left(proj) == 1
     assert "MAKE READABLE: game_a" in net.readability.claim(agent, slug)  # then the small one
@@ -161,6 +169,7 @@ def test_a_held_function_taken_up_again_counts_as_a_try(tmp_path, monkeypatch):
     for _ in range(readable.POLISH_TRIES):  # never released: each session's claim_readable gives it back
         said = net.readability.claim(agent, slug)
         assert said.startswith("MAKE READABLE: game_b")
+        _judged(net, agent, "game_b")  # (every rewrite failed to compile)
     said = net.readability.claim(agent, slug)
     assert said.startswith(f"You held game_b; it was tried {readable.POLISH_TRIES} times without a rewrite that kept it "
                            "matching")
@@ -172,6 +181,43 @@ def test_a_held_function_taken_up_again_counts_as_a_try(tmp_path, monkeypatch):
     said = net.readability.claim(agent, slug)
     assert "You held" not in said and "Stop here" in said
     assert net.store.all("SELECT * FROM claims") == []
+
+
+def test_a_held_function_given_back_with_nothing_judged_isnt_a_try(tmp_path, monkeypatch):
+    """A GameCube room's 79 matched functions were all left unpolished, and every helper said every function was
+    readable: 44 of them had their three tries from one helper's claim given back at the start of three short sessions,
+    no rewrite ever judged. Given back with nothing judged since, it isn't a try; another helper's claim is; and handed
+    out POLISH_HANDOUTS times it's let go all the same. The stop line says how many are left as they are."""
+    from decompnet.app import readable
+
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path / "ws")
+    root = tmp_path / "ws" / "p"
+    root.mkdir(parents=True)
+    slug = _project(net, root, monkeypatch)
+    net.forks.sync(slug, log=lambda *_: None)
+    net.store.conn.execute("UPDATE functions SET n_insns=50, status='matched' WHERE name='game_b'")
+    net.store.conn.execute("UPDATE functions SET n_insns=20, readable=1 WHERE name='game_a'")
+    monkeypatch.setattr(type(net.forks), "_current_source", lambda self, fp, fn, comment=False: None)
+    proj = net._project(slug)
+    one, _ = net.local_agent("claude-sonnet-5-5-1")
+    two, _ = net.local_agent("claude-sonnet-5-5-2")
+    for _ in range(readable.POLISH_TRIES + 2):  # sessions that ended without sending a rewrite: one try in all
+        assert net.readability.claim(one, slug).startswith("MAKE READABLE: game_b")
+    net.release(one, "game_b", "", slug)
+    assert net.readability.claim(two, slug).startswith("MAKE READABLE: game_b")  # another helper's: two
+    _judged(net, two, "game_b")
+    assert net.readability.claim(two, slug).startswith("MAKE READABLE: game_b")  # judged since: three
+    said = net.readability.claim(two, slug)
+    assert said.startswith(f"You held game_b; it was tried {readable.POLISH_TRIES} times")
+    assert "1 matched functions aren't readable but are left as they are" in said and "Stop here" in said
+    assert net.readability.counts(proj)["given_up"] == 1
+
+    # never judged at all, but handed out POLISH_HANDOUTS times: let go
+    with net.store.tx() as db:
+        net._event(db, proj["id"], one.id, "readable", "game_b")
+    for _ in range(readable.POLISH_HANDOUTS):
+        assert net.readability.claim(one, slug).startswith("MAKE READABLE: game_b")
+    assert "Stop here" in net.readability.claim(one, slug)
 
 
 def test_a_held_function_set_aside_while_held_is_let_go_without_a_try_line(tmp_path, monkeypatch):

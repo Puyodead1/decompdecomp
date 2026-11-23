@@ -44,13 +44,22 @@ SMALL_INSNS, BIG_INSNS = 8, 400
 ORDER = (f"boost DESC, CASE WHEN n_insns > {BIG_INSNS} THEN 1 WHEN n_insns < {SMALL_INSNS} THEN 2 ELSE 0 END, "
          f"CASE WHEN n_insns > {BIG_INSNS} THEN n_insns ELSE -n_insns END")
 POLISH_TRIES = 3  # a function taken up this often since it was last made readable, and still not readable, is skipped
+POLISH_HANDOUTS = 10  # ... or handed out this often, tries or not (a helper that takes it up and never sends a rewrite)
 # what polishing takes (claim) and what a polishing helper's session counts as left (agents.Manager._left): the game's
 # own matched code that isn't readable yet and isn't given up on: one no rewrite kept matching was handed out again
-# and again, to every helper, being the biggest. (TODO and GIVEN_UP each take one ?, the project's id, after the
-# caller's own)
-GIVEN_UP = ("SELECT p.detail FROM events p WHERE p.project_id=? AND p.kind='polish' AND p.id > COALESCE((SELECT "
+# and again, to every helper, being the biggest. A try is a claim by another helper than the last one, or one taken up
+# again after a rewrite of it was judged: a GameCube room's 79 matched functions left unreadable were all "tried out",
+# 44 of them with no rewrite ever judged, each the same helper's claim given back to it at the start of three short
+# sessions. (TODO and GIVEN_UP each take one ?, the project's id, after the caller's own)
+GIVEN_UP = ("SELECT t.detail FROM (SELECT p.project_id, p.detail, p.agent_id, p.created_at, "
+            "LAG(p.agent_id) OVER w AS prev_agent, LAG(p.created_at) OVER w AS prev_at "
+            "FROM events p WHERE p.project_id=? AND p.kind='polish' AND p.id > COALESCE((SELECT "
             "MAX(r.id) FROM events r WHERE r.project_id=p.project_id AND r.kind='readable' AND r.detail=p.detail), 0) "
-            f"GROUP BY p.detail HAVING COUNT(*) >= {POLISH_TRIES}")
+            "WINDOW w AS (PARTITION BY p.detail ORDER BY p.id)) t GROUP BY t.detail "
+            "HAVING SUM(t.prev_at IS NULL OR t.prev_agent IS NOT t.agent_id OR EXISTS(SELECT 1 FROM attempts a "
+            "JOIN functions f ON f.id=a.function_id WHERE a.agent_id=t.agent_id "
+            "AND a.created_at BETWEEN t.prev_at AND t.created_at AND f.project_id=t.project_id AND f.name=t.detail)) "
+            f">= {POLISH_TRIES} OR COUNT(*) >= {POLISH_HANDOUTS}")
 TODO = f"status='matched' AND readable=0 AND {GAME_CODE} AND name NOT IN ({GIVEN_UP})"
 
 
@@ -444,9 +453,11 @@ class Readability:
 
     def counts(self, proj) -> dict:
         """The game's own code only (GAME_CODE): library code set aside is out of progress, so out of polishing too."""
-        row = self.net.store.one("SELECT SUM(status='matched') AS matched, SUM(status='matched' AND readable=1) AS readable "
-                                 f"FROM functions WHERE project_id=? AND {GAME_CODE}", proj["id"])
-        return {"matched": row["matched"] or 0, "readable": row["readable"] or 0}
+        row = self.net.store.one("SELECT SUM(status='matched') AS matched, SUM(status='matched' AND readable=1) AS readable, "
+                                 f"SUM(status='matched' AND readable=0 AND name IN ({GIVEN_UP})) AS given_up "
+                                 f"FROM functions WHERE project_id=? AND {GAME_CODE}", proj["id"], proj["id"])
+        # given_up: left as they are after their tries (GIVEN_UP), so the page says why polishing has stopped short
+        return {"matched": row["matched"] or 0, "readable": row["readable"] or 0, "given_up": row["given_up"] or 0}
 
     def left(self, proj) -> int:
         """How many functions polishing can still take, held ones included, and files to tidy: a polishing helper
@@ -715,9 +726,14 @@ class Readability:
                     return given_up + job
             if self.left(proj):  # what's left is held by other helpers
                 return given_up + self._held_by_others(proj)
-            return (given_up + "Every matched function is readable already (or was tried "
-                    f"{POLISH_TRIES} times without staying matched), and every file tidy. 🎉 Stop here: nothing is "
-                    "left to polish.")
+            # how many are left as they are, said as a number: helpers read "readable already (or tried ...)" as
+            # every function polished, and told the user so while 79 of a GameCube game's weren't
+            short = self.counts(proj)["given_up"]
+            return (given_up + ("Every matched function is readable already, " if not short else
+                                f"{short} matched functions aren't readable but are left as they are (each was tried "
+                                f"{POLISH_TRIES} times without a rewrite that kept it matching); every other one is "
+                                "readable, ") +
+                    "and every file tidy. 🎉 Stop here: nothing is left to polish.")
         counts = self.counts(proj)
         where = f" at 0x{fn['vram']:08X}" if fn["vram"] is not None else f" in {fn['unit']}"
         names = ("- rename_symbol the function, and the globals and functions it uses, once their purpose is clear "
