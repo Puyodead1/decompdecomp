@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import arm, mips, mips_fields, mips_observations, ppc, ppc64, x86, x86_fields
+from . import arm, mips, mips_fields, mips_observations, mips_recovery, ppc, ppc64, x86, x86_fields
 
 # What decompdecomp's readers can do with a processor's code (each is a module of its own that reads MIPS, and some
 # x86):
@@ -60,6 +60,9 @@ class Arch:
     objdiff_rows: Callable[[list, tuple], list] | None = None
     # the part of asm_reason that needs no console's facts: (code, big_endian) -> why it's only padding, or None
     padding_reason: Callable[..., str | None] | None = None
+    # the size of the compiled function a call lands on in text a ROM's disassembler left as data, or None when it
+    # isn't plainly one: (image, start, end, vram, big_endian=, cpu=, asm_check=) -> int | None (rom/mixed_code.py)
+    called_code_extent: Callable[..., int | None] | None = None
 
 
 ARCHES = [
@@ -67,7 +70,7 @@ ARCHES = [
          frozenset({COMPILER_MAP, CLASSES, BOUNDARIES, STRUCTS}), mips_fields.read_facts,
          padding_reason=mips.padding_reason, variants={mips.ALLEGREX: mips.allegrex_lines}, is_padding=mips.is_padding,
          ends_in_delay_branch=mips.ends_in_delay_branch, diff_observations=mips_observations.observe,
-         objdiff_rows=mips_observations.objdiff_rows),
+         objdiff_rows=mips_observations.objdiff_rows, called_code_extent=mips_recovery.called_extent),
     Arch("ppc", "PowerPC", ppc.CAPSTONE, ppc.RELOC_MASKS, ppc.asm_reason, is_padding=ppc.is_padding),
     Arch("ppc64", "PowerPC64", ppc64.CAPSTONE, ppc64.RELOC_MASKS, ppc64.asm_reason, features=frozenset({BOUNDARIES}), is_padding=ppc.is_padding),
     Arch("x86", "x86", x86.CAPSTONE, x86.RELOC_MASKS, features=frozenset({CLASSES, STRUCTS}),
