@@ -22,7 +22,9 @@ from decompnet.hostenv import NO_WINDOW
 
 from . import compile_cache, limits, linuxvm, wsl
 
-MAX_SOURCE_BYTES = 64 * 1024
+# A guard on what agents submit, not a build limit: one real game function is 35 KB of machine code and its machine
+# draft 113 KB compacted (188 KB as m2c writes it), which gcc 2.7.2 compiles in well under a second.
+MAX_SOURCE_BYTES = 256 * 1024
 # Per-compile resource caps (address space, CPU seconds, output file size) and a global
 # concurrency cap, so a hostile submission can't take the host down with it.
 LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
