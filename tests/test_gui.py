@@ -32,6 +32,16 @@ def test_the_game_picker_stays_above_existing_project_cards():
             assert not re.search(r"(?:^|;)\s*order\s*:", declarations), selector
 
 
+def test_off_screen_sidebar_rows_are_not_laid_out_or_painted():
+    """With hundreds of projects every sidebar row was laid out and painted on each scroll frame. Off-screen rows are
+    skipped, with a remembered height so the scrollbar doesn't jump."""
+    css = (Path(__file__).resolve().parent.parent / "src/decompnet/app/static/app.css").read_text(encoding="utf-8")
+    rules = " ".join(body for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+                     if selector.strip().split("\n")[-1].strip() == ".nav-proj")
+    assert re.search(r"content-visibility:\s*auto", rules)
+    assert re.search(r"contain-intrinsic-size:\s*auto\s+\d+px", rules)
+
+
 def test_every_list_in_the_agents_feed_panel_scrolls_inside_it():
     """An agent's full transcript grew past its panel, under the cost panel below, with no scrollbar: its list sat in
     a wrapper that wasn't allowed to shrink. Each list the feed panel shows is one that shrinks and scrolls, or sits in
