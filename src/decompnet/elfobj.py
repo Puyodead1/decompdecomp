@@ -139,25 +139,46 @@ def section_target(arch: str, raw: list[dict], k: int) -> int | None:
     return None
 
 
+def _named_by_section(symtab: SymbolTableSection) -> dict[int, list[tuple]]:
+    """The symbols `symbol_at` may answer with, grouped by section, built once per symbol table. A candidate object
+    has a section-relative reference per relocation, and reading every symbol through pyelftools for each one was
+    most of the time spent parsing an object (3.3 ms to 1.7 ms for a 109-instruction function). Each entry is
+    (start, size, kind rank, global, name, bind), in the table's order; a size of 0 (period assemblers record none)
+    is already resolved to run to the next symbol."""
+    cached = getattr(symtab, "_decomp_named", None)
+    if cached is not None:
+        return cached
+    raw: dict[int, list[tuple]] = {}
+    for s in symtab.iter_symbols():
+        name, kind = s.name, s["st_info"]["type"]
+        if (not name or name[0] in ".$" or kind in ("STT_SECTION", "STT_FILE") or name.endswith(".")
+                or name.startswith("__gnu_compiled")):  # markers like gcc2_compiled.
+            continue
+        raw.setdefault(s["st_shndx"], []).append(
+            (s["st_value"], s["st_size"], {"STT_FUNC": 2, "STT_OBJECT": 1}.get(kind, 0),
+             s["st_info"]["bind"] == "STB_GLOBAL", name, s["st_info"]["bind"]))
+    out: dict[int, list[tuple]] = {}
+    for shndx, entries in raw.items():
+        starts = sorted({e[0] for e in entries})
+        out[shndx] = [(lo, size or next((x for x in starts if x > lo), 1 << 32) - lo, kind, is_global, name, bind)
+                      for lo, size, kind, is_global, name, bind in entries]
+    try:
+        symtab._decomp_named = out
+    except AttributeError:  # (a table that takes no attributes is read again next time)
+        pass
+    return out
+
+
 def symbol_at(symtab: SymbolTableSection, shndx: int, offset: int) -> tuple[str, int] | None:
     """(name, offset into it) of the named symbol covering `offset` in a section, preferring exact starts,
     global symbols, and functions/objects over plain labels."""
     best = None
-    named = [s for s in symtab.iter_symbols()
-             if s["st_shndx"] == shndx and s.name and s.name[0] not in ".$"
-             and s["st_info"]["type"] not in ("STT_SECTION", "STT_FILE")
-             and not s.name.endswith(".") and not s.name.startswith("__gnu_compiled")]  # markers like gcc2_compiled.
-    starts = sorted({s["st_value"] for s in named})
-    for s in named:
-        lo, size = s["st_value"], s["st_size"]
-        if size == 0:  # period assemblers record no sizes: the symbol runs to the next one
-            size = next((x for x in starts if x > lo), 1 << 32) - lo
+    for lo, size, kind, is_global, name, bind in _named_by_section(symtab).get(shndx, ()):
         if not (lo == offset or lo <= offset < lo + size):
             continue
-        kind = {"STT_FUNC": 2, "STT_OBJECT": 1}.get(s["st_info"]["type"], 0)
-        rank = (lo == offset, kind, s["st_info"]["bind"] == "STB_GLOBAL")
+        rank = (lo == offset, kind, is_global)
         if best is None or rank > best[0]:
-            best = (rank, canonical_symbol(s.name, s["st_info"]["bind"]), offset - lo)
+            best = (rank, canonical_symbol(name, bind), offset - lo)
     return (best[1], best[2]) if best else None
 
 
