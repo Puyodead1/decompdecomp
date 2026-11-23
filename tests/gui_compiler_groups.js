@@ -17,6 +17,16 @@ assert.equal(ctx.compilerPartGroups(parts, 'range', 'address-desc')[0].start, 70
 assert.equal(parts[0].start, 30); // grouping never mutates the source configuration
 assert.equal(ctx.compilerPartGroups([], 'settings').length, 0);
 assert.equal(ctx.compilerPartGroups([{start:0,end:1,compiler:'Custom',flags:''}])[0].functions, null);
+// Hover help: each known argument is its own element with what it does (and its tell in the assembly); unknown ones
+// stay plain text, and html is escaped.
+const flagHtml = ctx.compilerFlagsHtml('-G0 -mips3 -O2 -mcpu=VR4300 -fwhatever <x>');
+assert.match(flagHtml, /<span class="compiler-flag"[^>]*data-flag-help="[^"]+"[^>]*>-O2<\/span>/);
+assert.match(flagHtml, /data-flag-tell="[^"]*\$gp[^"]*"[^>]*aria-label="-G0: /); assert.match(flagHtml, /data-flag-help="Schedule[^"]*N64/);
+assert.ok(!flagHtml.includes('>-fwhatever</span>') && !flagHtml.includes('title=')); assert.ok(flagHtml.includes('-fwhatever &lt;x&gt;'));
+assert.match(ctx.compilerFlagsHtml('-G 0'), />-G 0<\/span>/);
+assert.match(ctx.compilerFlagsHtml(['-mips2', '/Oy-']), /data-flag-help="Target the MIPS II[^"]*"[\s\S]*data-flag-tell="[^"]*push ebp/);
+assert.equal(ctx.compilerFlagsHtml(''), '');
+assert.match(ctx.compilerFlagsHtml('-fno-schedule-insns'), /data-flag-help="[^"]*scheduling[^"]*" data-flag-tell="[^"]*source order/);
 console.log('compiler groups passed');
 
 // ROM overview responses omit kind; the profile migration action must still appear.
@@ -86,7 +96,7 @@ ctx.renderCompilerAnswer({compiler:'GCC A', flags:'-O2 -g', default_functions:1,
   default_function_list:[{name:'default_function'}], parts:[], elsewhere_count:0});
 const defaultCard = elements.get('compilerAnswer').innerHTML;
 assert.match(defaultCard, /<details class="compiler-profile compiler-default" data-default-functions open>/);
-assert.match(defaultCard, /<b>GCC A<\/b> <span class="chip-s">Default<\/span> <code class="compiler-arguments">-O2 -g<\/code>/);
+assert.match(defaultCard, /<b>GCC A<\/b> <span class="chip-s">Default<\/span> <code class="compiler-arguments"><span class="compiler-flag"[^>]*>-O2<\/span> <span class="compiler-flag"[^>]*>-g<\/span><\/code>/);
 assert.match(defaultCard, /data-compiler-function="default_function"/);
 ctx.renderCompilerAnswer({compiler:'GCC A', flags:'', default_functions:0, parts:[], elsewhere_count:0});
 assert.match(elements.get('compilerAnswer').innerHTML, /No functions use the default settings/);
