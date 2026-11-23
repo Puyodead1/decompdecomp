@@ -97,3 +97,23 @@ def test_yaz0():
     # "abcabcabc": three literals, then a back-reference 3 back, 6 long (0x40 >> 4 = 4, + 2)
     data = b"Yaz0" + (9).to_bytes(4, "big") + bytes(8) + bytes([0b11100000]) + b"abc" + bytes([0x40, 0x02])
     assert yaz0(data) == b"abcabcabc"
+
+
+def test_a_function_longer_than_the_quiet_stretch_joins_its_neighbours():
+    """An N64 shooter lost 15 functions of 3-20 KB, its main loop among them: each ended the search's stretch, and
+    the segment's two sides were placed alone with the function left out between them as data."""
+    from decompnet.consoles.n64.code import close_gaps
+
+    nop = (0).to_bytes(4, "big")
+    big = nop * 0x600 + JR_RA.to_bytes(4, "big") + nop  # one 6 KB function: its only return at the end
+    rom = bytes(0x1000) + nop * 0x100 + big + nop * 0x100 + bytes(0x100) + nop * 0x40
+    a_end = 0x1000 + 0x400
+    b_start = a_end + len(big)
+    found = [(0x1000, a_end, 0x80001000), (b_start, b_start + 0x400, 0x80001000 + b_start - 0x1000)]
+    assert close_gaps(rom, found) == [(0x1000, b_start + 0x400, 0x80001000)]
+    # another mapping (an overlay elsewhere), a gap with no return (data), known code or addresses in the gap: apart
+    assert len(close_gaps(rom, [found[0], (b_start, b_start + 0x400, 0x80400000)])) == 2
+    quiet = bytes(0x1000) + nop * 0x100 + nop * 0x600 + nop * 0x100
+    assert len(close_gaps(quiet, found)) == 2
+    assert len(close_gaps(rom, found, [(a_end + 0x100, a_end + 0x200, 0x80700000)])) == 2
+    assert len(close_gaps(rom, found, [(0x100000, 0x100100, 0x80001000 + a_end - 0x1000 + 0x100)])) == 2

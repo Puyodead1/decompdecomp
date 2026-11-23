@@ -119,7 +119,31 @@ def find_segments(rom: bytes, taken: list[tuple[int, int, int]], ends: tuple[int
         start = code_before(rom, lo + frames[0], floor)
         end = min((lo + returns[-1] + 8 + 0xF) & ~0xF, len(rom))
         accept(start, end, start + mapping)
-    return sorted(found)
+    return close_gaps(rom, sorted(found), taken)
+
+
+GAP_LIMIT = 0x10000  # the longest function a gap between two pieces of one segment can be
+
+
+def close_gaps(rom: bytes, found: list[tuple[int, int, int]], taken=()) -> list[tuple[int, int, int]]:
+    """Neighbouring segments placed at the same mapping (address minus ROM offset), joined with what lies between
+    them when it ends in a return: a function longer than the search's quiet stretch (2 blocks with no return and
+    no stack frame) ends a stretch, and each side was placed alone. An N64 shooter lost 15 functions of 3-20 KB that
+    way, its main loop among them. Never across known code, nor over another segment's addresses."""
+    out: list[list[int]] = []
+    for start, end, vram in sorted(found):
+        if out:
+            p = out[-1]
+            gap = rom[p[1]:start]
+            lo, hi = p[2] + p[1] - p[0], vram  # the gap's addresses
+            if (vram - start == p[2] - p[0] and 0 < start - p[1] <= GAP_LIMIT and start % 4 == 0 and p[1] % 4 == 0
+                    and JR_RA in struct.unpack(f">{len(gap) // 4}I", gap[:len(gap) // 4 * 4])
+                    and not any(a < start and p[1] < b for a, b, _ in taken)
+                    and not any(v < hi and lo < v + (b - a) for a, b, v in [*taken, *found])):
+                p[1] = end
+                continue
+        out.append([start, end, vram])
+    return [(a, b, v) for a, b, v in out]
 
 
 # ---------------------------------------------------------------------------------------------- compressed code
