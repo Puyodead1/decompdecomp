@@ -20,7 +20,7 @@ from pathlib import Path
 
 from decompnet.hostenv import NO_WINDOW
 
-from . import limits, linuxvm, wsl
+from . import compile_cache, limits, linuxvm, wsl
 
 MAX_SOURCE_BYTES = 64 * 1024
 # Per-compile resource caps (address space, CPU seconds, output file size) and a global
@@ -246,6 +246,18 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
 
     if NO_CONTEXT.search(source):  # (C++ with the real standard headers: the shared header defines their types too)
         context_header = ""
+    # The same C with the same compiler compiled before, in this process or an earlier one (compile_cache.py): its
+    # object, which the judge links and compares exactly as it would a fresh one. Only successes are kept.
+    entry = compile_cache.key(cfg, _sandbox_mode(cfg), context_header, source, language)
+    if entry is not None and (cached := compile_cache.load(entry)) is not None:
+        return cached
+    result = _compile_fresh(cfg, context_header, source, language)
+    if entry is not None and result.ok:
+        compile_cache.store(entry, result)
+    return result
+
+
+def _compile_fresh(cfg: CompilerConfig, context_header: str, source: str, language: str | None) -> CompileResult:
     with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
         work = Path(tmp)
         inc = work / "include"

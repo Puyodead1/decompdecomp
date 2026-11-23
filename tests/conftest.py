@@ -13,6 +13,9 @@ os.environ["DECOMP_DETECT_AGENTS"] = "off"
 # nothing a test runs opens a window on the user's screen (app/window.py), a browser tab (webbrowser), or a tray icon
 os.environ["DECOMP_WINDOW"] = "0"
 os.environ.setdefault("BROWSER", "true")
+# tests count compiles and change compilers under one key: one test's stored objects must not answer another's
+# (tests/test_compile_cache.py turns the persistent object cache on for itself)
+os.environ["DECOMP_OBJECT_CACHE_MB"] = "0"
 os.environ.setdefault("DECOMP_TRAY", "0")
 # nor the wine prefix the user's app runs Visual C++ 2017 in (toolchains/.wine, a development copy's .wine-dev: #146):
 # a test that names no prefix of its own (the own_wine_prefix fixture) gets this one, so a wine program it starts,
