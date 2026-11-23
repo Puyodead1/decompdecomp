@@ -325,11 +325,14 @@ class Store:
         # counts read every function's whole row without them, 58 ms for a 28,900-function game; now 7)
         # (and the copy mark: a V.Flash game's modules' copies of its engine count once, network.COPY)
         # (and the good-enough mark: such a function is out of the agents' way, never off the total)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_totals ON functions(project_id, status, size, "
+        # (and the name: the project's page counts the functions left unpolished by name, readable.counts)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_summary ON functions(project_id, status, size, "
                           "attempts, best_score, matched_at, readable, matched_agent_id, aside_mark, gone_mark, "
-                          "copy_mark, enough_mark)")
-        # (the second: this index on json_extract; the last two: it without the copy mark, without the good-enough one)
-        for old in ("idx_functions_progress", "idx_functions_counts", "idx_functions_tally", "idx_functions_tallies"):
+                          "copy_mark, enough_mark, name)")
+        # (the second: this index on json_extract; the next two: it without the copy mark, without the good-enough
+        # one; the last: it without the name)
+        for old in ("idx_functions_progress", "idx_functions_counts", "idx_functions_tally", "idx_functions_tallies",
+                    "idx_functions_totals"):
             self.conn.execute(f"DROP INDEX IF EXISTS {old}")
         # agents created before `origin` existed were all minted by the operator on the CLI
         self.conn.execute("UPDATE agents SET trusted = 1, origin = 'cli' WHERE origin IS NULL")
