@@ -495,7 +495,8 @@ def register(app: App) -> None:
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)
-        return JSONResponse({"cancelled": jobs.cancel(str(data.get("id") or ""))})
+        # (in a worker: Jobs.cancel takes the jobs' lock, which a job that's ending holds; the event loop never waits)
+        return JSONResponse({"cancelled": await call(jobs.cancel, str(data.get("id") or ""))})
 
     @mcp.custom_route("/api/background-work", methods=["GET", "POST"])
     async def api_background_work(request: Request) -> Response:
