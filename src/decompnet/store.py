@@ -265,6 +265,29 @@ WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
 IN_MEMORY = ":memory:"  # a database only its own connection sees: reads go through the writer's connection
 
 
+class _ThreadReader:
+    """A thread's own reading connection, closed as soon as the thread ends. A sqlite3 connection holds reference
+    cycles, so the thread's storage letting go of it left the database and its log open until the cycle collector
+    ran: drafts, the permuter and the routes start short-lived threads, and a macOS app started from the Dock (256
+    open files) ran out of descriptors. This holder has no cycle, so it goes with the thread."""
+
+    def __init__(self, path: str):
+        # (the thread that ends isn't always the one whose storage is let go last: it may be closed from another)
+        self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        try:
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA query_only=1").close()  # a write here would bypass the writer's lock
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def __del__(self):
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001 (a finalizer: nothing to tell, and nobody to tell it to)
+            pass
+
+
 ANALYSIS_LIMIT = 400  # rows PRAGMA optimize reads per index: enough for the planner, quick on a big database
 
 
@@ -394,20 +417,20 @@ class Store:
         wrote) and for an in-memory database, reads go through the writer's connection."""
         if self.path == IN_MEMORY or getattr(self._local, "in_tx", False):
             return None
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self.path, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA query_only=1")  # a write here would bypass the writer's lock
-            self._local.conn = conn
-        return conn
+        reader = getattr(self._local, "reader", None)
+        if reader is None:
+            reader = self._local.reader = _ThreadReader(self.path)
+        return reader.conn
 
     def _read(self, sql: str, args: tuple, single: bool):
         conn = self._reader()
         if conn is None:
             with self.lock:
                 cur = self.conn.execute(sql, args)
-                return cur.fetchone() if single else cur.fetchall()
+                try:
+                    return cur.fetchone() if single else cur.fetchall()
+                finally:
+                    cur.close()
         cur = conn.execute(sql, args)
         try:
             return cur.fetchone() if single else cur.fetchall()
