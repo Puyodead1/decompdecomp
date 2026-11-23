@@ -312,6 +312,15 @@ def raw_doubles(text: str, big_endian: bool) -> str:
     return _EIGHT_BYTES.sub(one, text)
 
 
+def padding_reason(code: bytes, big_endian: bool = True, **_facts) -> str | None:
+    """Why a target of nothing but NOPs isn't the agents' work, or None. splat can name a zero-filled stretch as a
+    function, and trimming padding leaves one NOP: its bytes stay for the rebuild, but no C function compiles to
+    code with no return. Needs no console facts, so a project's object of unknown console is judged too."""
+    if code and len(code) % 4 == 0 and is_padding(code, big_endian):
+        return "contains only NOPs: zero-filled padding or a code fragment, not a complete C function"
+    return None
+
+
 def asm_reason(code: bytes, big_endian: bool, *, eabi: bool = False, cop2: str = "", cpu: str = "") -> str | None:
     """Why this MIPS function (its code, from the entry) can't come from a compiler, or None. The console says what
     its compilers do: `eabi`, eight integer arguments (a0-a3 and t0-t3, the PS2's EABI) instead of four; `cop2`, what
@@ -321,6 +330,8 @@ def asm_reason(code: bytes, big_endian: bool, *, eabi: bool = False, cop2: str =
     words = [int.from_bytes(code[at:at + 4], order) for at in range(0, len(code) - 3, 4)]
     if not words:
         return None
+    if why := padding_reason(code, big_endian):
+        return why
     for w in words:
         op = w >> OPCODE_SHIFT
         if op == SPECIAL and w & FUNCT_BITS == SYSCALL:  # not break (0x0D): GCC emits that for its own divide-by-zero checks

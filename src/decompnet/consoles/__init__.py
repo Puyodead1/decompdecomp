@@ -733,6 +733,13 @@ class Console:
         reason = arch.get(self.arch).asm_reason
         return reason(code, self.big_endian, cpu=self.cpu_variant) if reason else None
 
+    def padding_reason(self, code: bytes, fn=None) -> str | None:
+        """Why a function's code is only padding (MIPS: nothing but NOPs), so no agent should get it, or None. It
+        needs no other facts, so import applies it at once; the rest of asm_reason waits for the twins pass, after
+        import has joined pieces (code that runs on into its function) to their functions."""
+        reason = arch.get(self.target_arch(fn) if fn is not None else self.arch).padding_reason
+        return reason(code, self.big_endian) if reason else None
+
     def is_padding(self, code: bytes, fn=None) -> bool:
         """Whether `code` is all this processor's alignment padding (its nop/filler), so a function trimmed
         down to it is nothing to match. The reader is chosen by the function's mode (GBA: ARM vs Thumb), so

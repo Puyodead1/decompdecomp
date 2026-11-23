@@ -312,6 +312,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **MIPS targets of only NOPs stay out of the agents' queue.** splat can name a zero-filled stretch as a function;
+  such a target is now set aside at import (and by an unchanged reimport while it's still open), in Check again
+  with its own reason instead of "runs on into the next function", and in a project's MIPS objects, whose console's
+  ABI isn't known (`Arch.padding_reason`). Its bytes and symbol stay for the rebuild; a claim on it is released, and
+  one the user gave back to the agents stays theirs.
+
 - **N64 games find their libultra without the user's SDK.** Find libraries compared a game only with the SDK
   archives the user set up, so without an N64 SDK a racing game had 2 of its 152 libultra functions found. The N64
   now ships fingerprints (the twins pass's: masked code and relocation layout, a SHA-1; sizes and names, no code)

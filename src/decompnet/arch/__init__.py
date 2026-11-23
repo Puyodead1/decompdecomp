@@ -32,7 +32,8 @@ class Arch:
     # why a function's code can't come from a compiler, or None: (code, big_endian, **the console's facts)
     asm_reason: Callable[..., str | None] | None = None
     # its asm_reason needs the console's facts (MIPS: which registers carry arguments depends on the console's ABI,
-    # the PS2's EABI passes them in t0-t3 too), so code whose console isn't known (a fork's object) isn't judged
+    # the PS2's EABI passes them in t0-t3 too), so code whose console isn't known (a fork's object) is judged only by
+    # padding_reason
     asm_needs_console: bool = False
     features: frozenset[str] = frozenset()
     # what a function does with pointers, for structs.py: (vram, code, relocs, big_endian=, datum=) -> structs.Facts
@@ -57,12 +58,14 @@ class Arch:
     # objdiff's rows (a project's diff) in the terms diff_observations reads, scoring's: (rows, (target's start,
     # yours)) -> rows, the starts being where each function is in its section (objdiff's branch destinations)
     objdiff_rows: Callable[[list, tuple], list] | None = None
+    # the part of asm_reason that needs no console's facts: (code, big_endian) -> why it's only padding, or None
+    padding_reason: Callable[..., str | None] | None = None
 
 
 ARCHES = [
     Arch("mips", "MIPS", mips.CAPSTONE, mips.RELOC_MASKS, mips.asm_reason, True,
          frozenset({COMPILER_MAP, CLASSES, BOUNDARIES, STRUCTS}), mips_fields.read_facts,
-         variants={mips.ALLEGREX: mips.allegrex_lines}, is_padding=mips.is_padding,
+         padding_reason=mips.padding_reason, variants={mips.ALLEGREX: mips.allegrex_lines}, is_padding=mips.is_padding,
          ends_in_delay_branch=mips.ends_in_delay_branch, diff_observations=mips_observations.observe,
          objdiff_rows=mips_observations.objdiff_rows),
     Arch("ppc", "PowerPC", ppc.CAPSTONE, ppc.RELOC_MASKS, ppc.asm_reason, is_padding=ppc.is_padding),
