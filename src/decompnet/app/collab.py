@@ -49,6 +49,7 @@ WAITING = "waiting for the host to let you in"
 NOT_MEMBER = "not a member of this room"
 ROOM_CLOSED = "this room is closed"
 SAME_VERSION = "everyone in a room runs the same version"
+SAME_PROTOCOL = "everyone in a room needs the same room protocol"
 EVENTS_PAGE = 500  # events per answer; a guest that's behind asks again at once
 MATCHED_PAGE = 200  # matched functions' C per /collab/matched answer
 LET_IN_WAIT = 30 * 60  # longest a git project's join waits to be let in: it needs the host's files before anything
@@ -78,14 +79,22 @@ def _check_name(name: str) -> None:
 
 # ---------------------------------------------------------------------------------------------- host
 
-# Every computer in a room runs the same decompdecomp: the host and its members each judge, build and sync work, and a
-# fix one side has and the other hasn't broke rooms quietly (a laptop's helpers, named by an older host, shared one
-# claim). The member sends its version with every request, and the host says its own: any difference is refused.
+# Every computer in a room must agree on what crosses between them: the host and its members each judge, build and
+# sync work, and a fix one side had and the other hadn't broke rooms quietly (a laptop's helpers, named by an older
+# host, shared one claim). The member sends its version with every request, and the host says its own.
 VERSION_HEADER = "x-decomp-version"
 # A copy installed from a branch has one version through many commits, whose rooms can differ (new calls between
 # host and member, new things the host sends): its commit is sent too, and two that both know theirs must agree. A
 # release's copy knows none, and its version says it.
 COMMIT_HEADER = "x-decomp-commit"
+# Refusing every other version made each small release (a fix to the GUI, to a console's drafts) send a whole room
+# to update at once. What has to agree is only what crosses between the computers: the /collab calls and what they
+# send and answer, the work the host syncs to members, and how the host judges a member's match. ROOM_PROTOCOL counts
+# changes to those, and two copies on one protocol share a room whatever their versions and commits. Bump it with any
+# such change (CONTRIBUTING.md, "Rooms"); tests/test_room_protocol.py fails when a call or a key it sends changes
+# without a bump. A copy from before the protocol sends none, and is held to the exact version as before.
+ROOM_PROTOCOL = 1
+PROTOCOL_HEADER = "x-decomp-room-protocol"
 
 
 @functools.lru_cache(maxsize=1)
@@ -97,20 +106,49 @@ def own_commit() -> str:
 
 
 def _auth(token: str, room: str) -> dict:
-    """A member's request headers: its token, the room, and its version (and commit)."""
+    """A member's request headers: its token, the room, its room protocol and its version (and commit)."""
     return {"authorization": f"Bearer {token}", "x-room": room, VERSION_HEADER: __version__,
-            **({COMMIT_HEADER: own_commit()} if own_commit() else {})}
+            PROTOCOL_HEADER: str(ROOM_PROTOCOL), **({COMMIT_HEADER: own_commit()} if own_commit() else {})}
+
+
+def own() -> tuple[str, str, int]:
+    """This copy, as rooms compare it: (version, commit, room protocol)."""
+    return __version__, own_commit(), ROOM_PROTOCOL
+
+
+def _protocol(value) -> int:
+    """A room protocol as the other side sent it; 0 when it sent none (a copy from before rooms had one)."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _build(version: str | None, commit: str | None) -> str:
     return f"{version or 'an older version'}" + (f" (commit {commit[:12]})" if version and commit else "")
 
 
-def check_same(host: tuple[str | None, str | None], member: tuple[str | None, str | None]) -> None:
-    """Refuse a host and a member of different versions, or of different commits when both know theirs."""
-    (hv, hc), (mv, mc) = host, member
+def check_same(host: tuple, member: tuple) -> None:
+    """Refuse a host and a member that can't share a room. Each is (version, commit[, room protocol]). Two that both
+    send a protocol need the same one, whatever their versions; otherwise (one is from before the protocol) they
+    need the same version, and the same commit when both know theirs."""
+    (hv, hc, hp), (mv, mc, mp) = (*host, None, None)[:3], (*member, None, None)[:3]
+    hp, mp = _protocol(hp), _protocol(mp)
+    if hp and mp:
+        if hp != mp:
+            raise NetworkError(same_protocol((hv, hp), (mv, mp)))
+        return
     if hv != mv or (hc and mc and hc[:12] != mc[:12]):
         raise NetworkError(same_version(_build(hv, hc), _build(mv, mc)))
+
+
+def same_protocol(host: tuple[str | None, int], member: tuple[str | None, int]) -> str:
+    """Why a room refused: the host and the member speak different room protocols."""
+    (hv, hp), (mv, mp) = host, member
+    behind = "this computer" if mp < hp else "the host"
+    return (f"this room's host runs decompdecomp {hv or 'an older version'} (room protocol {hp}) and this computer "
+            f"{mv or 'an older version'} (room protocol {mp}): {SAME_PROTOCOL}, since what they send each other "
+            f"changed between them. Update {behind}; the room carries on once both do")
 
 
 def same_version(host: str | None, member: str | None) -> str:
@@ -139,6 +177,7 @@ class Room:
         self.fork = bool(net.fork_slug(slug))  # a git source tree (forkroom.py)
         self._hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=900))
         self._members: tuple[float, list] = (0.0, [])  # cached: every member polls, the list changes slowly
+        self.versions: dict[str, str] = {}  # each member's decompdecomp, as its last request said (the host's list)
 
     @property
     def settings(self) -> dict:
@@ -247,7 +286,8 @@ class Room:
                 f"({','.join('?' * len(ids))})", *ids)]
             out.append({"name": r["name"], "joined": r["created_at"], "last_seen": r["last_seen"],
                         "online": bool(r["last_seen"]) and time.time() - r["last_seen"] < 30,
-                        "agents": [a["name"].split(".", 1)[1] for a in agents], "matched": matched, "working": working})
+                        "agents": [a["name"].split(".", 1)[1] for a in agents], "matched": matched, "working": working,
+                        "version": self.versions.get(r["name"], "")})
         return out
 
     def join(self, name: str, sha1: str) -> tuple[str, str]:
@@ -297,7 +337,8 @@ class Room:
     def member(self, request: Request, counted: bool = True) -> Agent:
         """The member asking. `counted`: their request counts toward "slow down"; the heartbeat doesn't, since a
         refused one shows the host as gone to everyone in the room."""
-        check_same((__version__, own_commit()), (request.headers.get(VERSION_HEADER), request.headers.get(COMMIT_HEADER)))
+        version = request.headers.get(VERSION_HEADER)
+        check_same(own(), (version, request.headers.get(COMMIT_HEADER), request.headers.get(PROTOCOL_HEADER)))
         token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         try:
             agent = self.net.authenticate(token or None)
@@ -308,6 +349,7 @@ class Room:
             raise NetworkError(WAITING)
         if row["origin"] != self.origin or row["owner"] is not None:
             raise NetworkError(NOT_MEMBER)
+        self.versions[agent.name] = version or ""
         if not counted:
             return agent
         hits = self._hits[agent.name]
@@ -588,9 +630,9 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         cfg = room.cfg
         ov = net.overview(room.slug)
         if room.fork:
-            return {"room": room.slug, "app_version": __version__, "app_commit": own_commit(), **forkroom.hello(net, room.slug), "functions": ov["functions"],
+            return {"room": room.slug, "app_version": __version__, "app_commit": own_commit(), "room_protocol": ROOM_PROTOCOL, **forkroom.hello(net, room.slug), "functions": ov["functions"],
                     "matched": ov["matched"], "members": len(room.members()), **room.settings}
-        return {"room": room.slug, "app_version": __version__, "app_commit": own_commit(), "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
+        return {"room": room.slug, "app_version": __version__, "app_commit": own_commit(), "room_protocol": ROOM_PROTOCOL, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
                 "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"],
                 "functions": ov["functions"], "matched": ov["matched"], "members": len(room.members()),
                 **room.settings}
@@ -598,12 +640,12 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
     def join(room, member, d):
         if not room.invite_ok(str(d.get("invite", ""))):
             raise NetworkError("this invite link is no longer valid")
-        check_same((__version__, own_commit()), (d.get("version"), d.get("commit")))
+        check_same(own(), (d.get("version"), d.get("commit"), d.get("protocol")))
         token, name = room.join(str(d.get("name", "")), str(d.get("sha1", "")))
         return {"token": token, "room": room.slug, "name": name, "waiting": room.settings["approve"]}
 
     def whoami(room, member, q):
-        return {"name": member.name, "room": room.slug}
+        return {"name": member.name, "room": room.slug, "app_version": __version__}
 
     def state(room, member, q):
         return room.state(_count(q.get("e")), _count(q.get("a")), _count(q.get("v")), member,
@@ -1000,6 +1042,7 @@ class Link:
         self.members: list[dict] = []
         self.error = ""
         self.refused = False  # the host's last answer to our sync was no (`error` says why)
+        self.host_version = ""  # the host's decompdecomp, as its heartbeat says (the guest's screen)
         self.last_ok = 0.0
         self.last_contact = 0.0  # a heartbeat can answer while applying the host's work is still busy
         self.behind = 0  # events the host still has for us
@@ -1029,7 +1072,7 @@ class Link:
             r, out = self._wait_for_job(out["job"])
         if r.status_code != 200:
             said = out.get("error") if isinstance(out, dict) else None
-            if not said or r.status_code >= 500 or said == "slow down" or SAME_VERSION in said:
+            if not said or r.status_code >= 500 or said == "slow down" or SAME_VERSION in said or SAME_PROTOCOL in said:
                 # not the host saying no: a tunnel's error page, the host's own failure, too many requests at once,
                 # or one side updated before the other. Each passes by itself; as a refusal it covered the project
                 # with "You're not in this room" and dropped the saved work being sent.
@@ -1323,6 +1366,8 @@ class Link:
                     if r.status_code != 200:
                         raise NetworkError(f"host answered {r.status_code}")
                     self.last_contact = time.time()
+                    said = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                    self.host_version = str(said.get("app_version") or "") if isinstance(said, dict) else ""
                 except Exception as e:
                     current = type(e).__name__ if isinstance(e, httpx.HTTPError) else str(e)
                     if current != problem:
@@ -1376,7 +1421,7 @@ def _hello(http: httpx.Client, link: str) -> tuple[str, str, dict]:
     hello = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     if r.status_code != 200:
         raise NetworkError(hello.get("error", "the invite didn't work"))
-    check_same((hello.get("app_version"), hello.get("app_commit")), (__version__, own_commit()))
+    check_same((hello.get("app_version"), hello.get("app_commit"), hello.get("room_protocol")), own())
     return url, code, hello
 
 
@@ -1529,7 +1574,7 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
             log(f"reconnected to {hello['title']} as {member}")
             return slug
     name = info.get("member") or "friend"
-    r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit()})
+    r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit(), "protocol": ROOM_PROTOCOL})
     joined = _joined(r)
     if r.status_code != 200:
         raise NetworkError(joined.get("error", "couldn't join"))
@@ -1624,7 +1669,7 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
         # error must not leave a member on the host and an imported project here (#80).
         candidates = _saved_progress(net, slug=slug)
         best_comparable = json.loads(net.project_row(slug)["config"]).get("compiler") == hello["compiler"]
-        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit()})
+        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello["sha1"], "version": __version__, "commit": own_commit(), "protocol": ROOM_PROTOCOL})
         joined = _joined(r)
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
@@ -1689,7 +1734,7 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
         candidates = _saved_progress(net, identity=hello.get("sha1"), room=hello["room"], url=url) \
             if hello.get("sha1") else []
         log(f"joining {hello['title']} ({hello['functions']} functions, {hello['matched']} matched)")
-        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or "", "version": __version__, "commit": own_commit()})
+        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or "", "version": __version__, "commit": own_commit(), "protocol": ROOM_PROTOCOL})
         joined = _joined(r)
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))

@@ -405,6 +405,25 @@ An agent is one of two sorts:
 8. **Say it**: add the agent to README.md's list of agents, docs/GUIDE.md's table and the site's agent list
    (`site/public/index.html`).
 
+## Rooms
+
+A room's computers no longer need one version, only one **room protocol** (`ROOM_PROTOCOL` in
+`src/decompnet/app/collab.py`). A host and a member on the same protocol share a room whatever their versions, and the
+room screens say so; on different protocols the join is refused and says which computer must update. That keeps a
+release that changes nothing between the computers from making a whole room update at once, and it only holds if
+the protocol is bumped every time something that crosses between them changes:
+
+- a `/collab/...` call is added, removed or renamed, or takes or answers something new or different;
+- what the host syncs to members changes shape (the state, the layout, the events, a fork's bundle and commits);
+- the meaning of a value changes, though its name doesn't (a score, a status, a cursor);
+- **how the host judges a member's match** changes: what counts as matched, what a score means. A member on the old
+  judge would report matches the host now refuses, or the other way round. The record below can't see this one.
+
+`tests/test_room_protocol.py` keeps a record of the calls and keys that cross (`tests/room_protocol.json`) and fails
+when they change. If what the computers send each other changed, bump `ROOM_PROTOCOL`. Either way, record it again:
+`uv run python tests/test_room_protocol.py`. A copy from before the protocol sends none, and is held to the exact
+version, as every room was.
+
 ## Pull requests
 
 - Talk it over first in `#contributors` on the [Discord](https://discord.gg/hhEm3zZagB), or in an issue.

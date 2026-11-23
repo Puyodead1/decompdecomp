@@ -526,6 +526,11 @@ async function renderTeam(box) {
   }, TEAM_HOST_EVERY_MS);
 }
 
+/* A room asks for one room protocol, not one version (collab.ROOM_PROTOCOL): another version on the same protocol
+   is let in, and the screens say so, so an update that changed nothing between the computers asks nobody to hurry. */
+const COMPATIBLE = "a different version, but the same room protocol, so they work together. Updating isn't needed until a version changes what the computers send each other; the room then says so.";
+const otherVersion = (theirs, mine) => Boolean(theirs && mine && theirs !== mine);
+
 function renderGuest(box, room) {
   const members = room.members || [];
   const waiting = room.state === "waiting";
@@ -537,6 +542,7 @@ function renderGuest(box, room) {
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
       : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>
     <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+    ${otherVersion(room.host_version, room.version) ? `<p class="muted small">The host runs decompdecomp ${esc(room.host_version)} and this computer ${esc(room.version)}: ${COMPATIBLE}</p>` : ""}
     ${people ? `<div class="setup-group"><h3>In the room</h3>${people}</div>` : ""}
     <div class="row"><button class="ghost" id="roomReconnect" type="button">${room.connected ? "The host shared a new link?" : "Reconnect with a new link"}</button><button class="ghost danger" id="roomLeave" type="button">Leave room</button></div>`);
   $("roomReconnect").onclick = openReconnect;
@@ -589,7 +595,7 @@ function renderHost(box, info) {
   const members = info.room?.members || [];
   const online = members.filter((m) => m.online).length;
   const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}</b>
-      <span>${m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched} matched${m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div>
+      <span>${m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched} matched${m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}${otherVersion(m.version, info.room?.version) ? ` · <span title="${esc(COMPATIBLE)}">runs ${esc(m.version)}, works with yours</span>` : ""}</span></div>
       <button class="ghost small-btn danger" data-remove="${esc(m.name)}" type="button">Remove</button></div>`).join("");
   const waiting = (info.pending || []).map((p) => `<div class="line-item"><div class="txt"><b>${esc(p.name)}</b><span>asks to join</span></div>
       <button class="primary small-btn" data-approve="${esc(p.name)}" type="button">Let in</button><button class="ghost small-btn" data-decline="${esc(p.name)}" type="button">Decline</button></div>`).join("");
