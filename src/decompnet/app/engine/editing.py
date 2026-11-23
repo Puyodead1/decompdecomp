@@ -13,6 +13,13 @@ from ...network import CLAIM_ORDERS, Agent, NetworkError, write_renamed
 from ...rom.symbols import IDENT, Symbol, SymbolTable
 from .common import _ADDRESS
 
+# Functions GCC knows itself (its builtins): a call to one can be built as inline code or another call, so naming a
+# game's function after one changes its callers' code and the rename is refused. The callers' flags would have to
+# change (-fno-builtin-memcpy) to keep it, and flags here belong to an address range, not to one function.
+BUILTIN_NAMES = frozenset("bzero bcopy bcmp memcpy memmove memset memcmp memchr strlen strchr strrchr strcpy strncpy "
+                          "strcmp strncmp strcat strncat strstr sqrt sqrtf sin sinf cos cosf tan tanf fabs fabsf abs "
+                          "labs malloc calloc realloc free printf sprintf snprintf puts putchar exit abort".split())
+
 
 class EditMixin:
     def split_function(self, agent: Agent, project: str | None, function: str, at: str, new_name: str = "") -> str:
@@ -301,6 +308,11 @@ class EditMixin:
             self._sym_override.pop(proj["id"], None)
         if broken:
             listing = "\n".join(f"- {n}: {why}" for n, why in broken[:10])
+            if builtins := sorted({new for _, new in pairs if new in BUILTIN_NAMES}):
+                listing += (f"\n{', '.join(builtins)}: the compiler has its own (a builtin), so a call to it can be "
+                            "built as inline code, and its callers stop matching. Give the function a name the "
+                            f"compiler doesn't know ({builtins[0]}_ or the game's own spelling), and say in a "
+                            "comment what it is.")
             return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
         msg = message.strip() or ", ".join(f"rename {old} -> {new}" for old, new in pairs[:3]) + (" ..." if len(pairs) > 3 else "")
         with self.store.tx() as db:
