@@ -1415,3 +1415,14 @@ def test_a_leftover_file_spelled_with_other_capitals_moves_to_unlisted(project, 
     assert "best/F.c" not in repaired
     assert (folder / "unlisted/best/F.c").read_text(encoding="utf-8") == "void f(void) { /* former spelling */ }\n"
     assert any("moved to unlisted/" in line for line in lines)
+
+
+def test_a_rename_to_a_compiler_builtin_that_breaks_callers_says_why(named, monkeypatch):
+    """Naming a function memcpy lets GCC build its callers' calls as inline code, so they stop matching. The rename
+    was refused with only the list of broken callers; agents tried the name again."""
+    net, _, agent, _ = named
+    monkeypatch.setattr(net, "regression_test", lambda *a, **k: [("caller", "compiles but no longer matches")])
+    out = net.rename_symbol(agent, "game", "f", "memcpy")
+    assert out.startswith("❌ REJECTED") and "memcpy: the compiler has its own (a builtin)" in out
+    assert "builtin" not in net.rename_symbol(agent, "game", "f", "copy_bytes")
+    assert _names(net) == {"f", "g"}
