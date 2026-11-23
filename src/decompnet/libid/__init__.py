@@ -76,6 +76,7 @@ class Code:
     raw: bytes
     wild: frozenset[int] = frozenset()  # byte offsets a relocation fills in
     calls: frozenset[str] = frozenset()  # what its relocations name, undecorated (`called`): a header's wrappers
+    fingerprint: str = ""  # its twins fingerprint (app/twins.py's Print.key), for a console's tables (Fingerprint)
 
 
 @dataclass
@@ -128,11 +129,26 @@ class Signature:
 
 
 @dataclass
+class Fingerprint:
+    """A library function known by its fingerprint: the twins pass's (app/twins.py, `_key`: a SHA-1 of its code with
+    what relocations fill in masked, and their layout) and its size. A console ships tables of them for a library
+    rebuilt byte for byte from public source, so a user without the SDK still has it found (Console.library_prints:
+    the N64's libultra, from decompals/ultralib): hashes, sizes and names, no code."""
+    key: str
+    size: int
+    name: str
+    library: str
+    builds: tuple[str, ...] = ()  # the versions and archives that have it ("2.0K/libgultra")
+    origin: str = ""
+
+
+@dataclass
 class Catalog:
     libraries: list[Library]
     signatures: list[Signature]
     fid: list[Path]  # Ghidra Function ID databases, for Ghidra to read
     files: list[dict]  # what was read from the user's folder: {"file", "kind", "count"} or {"file", "error"}
+    prints: list[Fingerprint] = field(default_factory=list)  # the console's own tables (read_fingerprints)
 
 
 def signature_folder() -> Path:
@@ -214,6 +230,24 @@ def read_signatures(path: Path) -> list[Signature]:
     if suffix == ".sig":
         return flirt.read_sig(path.read_bytes(), path.name)
     raise ValueError(f"{path.name}: not a signature file decompdecomp reads")
+
+
+def read_fingerprints(path: Path, library: str) -> list[Fingerprint]:
+    """A table of fingerprints: a first comment line naming where it's from ("decompals/ultralib <commit>, ..."), then
+    tab-separated fingerprint, size, name and the builds that have it."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    origin = lines[0].lstrip("# ").split(",")[0].strip() if lines and lines[0].startswith("#") else path.name
+    words = origin.split()  # (a commit is shortened: "decompals/ultralib e24c836796df")
+    if len(words) == 2 and re.fullmatch(r"[0-9a-f]{40}", words[1]):
+        origin = f"{words[0]} {words[1][:12]}"
+    out = []
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        key, size, name, *rest = line.split("\t")
+        builds = tuple(b for b in (rest[0] if rest else "").split(",") if b)
+        out.append(Fingerprint(key, int(size), name, library, builds, origin))
+    return out
 
 
 def signature_file(library: str, version: str, functions: list[tuple[str, bytes, frozenset[int]]]) -> dict:
@@ -455,6 +489,30 @@ def identify(program: bytes | None, codes: list[Code], catalog: Catalog, arch: s
                                + (f" {s.version}" if s.version else "") + f" ({s.origin})")
         if len(names) == 1:  # (its code is that function's, by its name: a stripped game's call to it can say so)
             f.real.setdefault(code.key, names[0])
+
+    # fingerprints: the console's tables of a library rebuilt from public source (the N64's libultra), which a user
+    # without the SDK has too. A fingerprint two of its functions share is still the library's code, but says
+    # neither name (n_audio keeps libultra's audio code under n_ names).
+    if catalog.prints:
+        by_print: dict[tuple[str, int], list[Fingerprint]] = defaultdict(list)
+        for p in catalog.prints:
+            by_print[p.key, p.size].append(p)
+        have = {k for f in found.values() for k in f.functions}
+        for code in codes:
+            hits = by_print.get((code.fingerprint, len(code.raw))) if code.fingerprint else None
+            if not hits or code.key in have:
+                continue
+            p = hits[0]
+            hits = [h for h in hits if h.library == p.library]
+            lib = next((lb for lb in catalog.libraries if lb.id == p.library.lower()), None)
+            f = _finding(found, lib, p.library, p.library)
+            names = sorted({h.name for h in hits})
+            versions = sorted({b.split("/")[0] for h in hits for b in h.builds})
+            span = f" {versions[0]}" if len(versions) == 1 else f" {versions[0]}-{versions[-1]}" if versions else ""
+            f.functions.setdefault(code.key, f"{' or '.join(names[:3])} of {f.name}{span}, by its fingerprint "
+                                             f"({p.origin})")
+            if len(names) == 1:  # (its own name: a stripped game's calls to it can say it)
+                f.real.setdefault(code.key, names[0])
 
     # names: a function the user's library copies define by its name is theirs even when no copy has its code (a
     # GameCube game's SDK came between the user's 2001 and 2004 copies: a dozen CARD functions had other bytes in

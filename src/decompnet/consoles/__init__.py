@@ -108,6 +108,9 @@ class Console:
     # PROJECT mode: its import recognises code that isn't the game's own (library code, an SDK, the C runtime) and
     # sets it aside, so the import asks what the project covers and create_project takes `scope` (forks/project.py)
     sets_aside = False
+    # (library id, table) of the fingerprint tables it ships (libid.read_fingerprints): a library rebuilt byte for byte
+    # from public source, as hashes, sizes and names, so a user without its SDK still has it found (the N64's libultra)
+    library_prints: tuple[tuple[str, str], ...] = ()
     # PROJECT mode: choices the import asks about besides the compiler and scope, as (id, question, ((value, text), ...))
     # with the first value the default; create_project takes each as a keyword (Xbox: ltcg)
     import_options: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = ()

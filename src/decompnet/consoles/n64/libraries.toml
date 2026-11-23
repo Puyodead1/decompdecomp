@@ -1,0 +1,22 @@
+# The N64 SDK's own libraries, which games link: the library finder's entries for them (libid/catalog.toml says what
+# each key means; the console hands them over as Console.library_catalog).
+#
+# Their functions are found by their fingerprints (Console.library_prints, signatures.py): libultra's as
+# decompals/ultralib rebuilds it from public source, n_audio's from the SDK's own archives (hashes, sizes and names,
+# no code). The user's own SDK archives (Setup's kits) add to them.
+#
+# Set aside without asking (`aside`): it's Nintendo's code, never the game's, and a decomp links ultralib's (or the
+# SDK's) instead of writing it. The user gives a function back in the Libraries panel, and it stays given back.
+
+[[library]]
+id = "libultra"
+name = "libultra (the N64 SDK's system library)"
+kind = "sdk"
+home = "https://github.com/decompals/ultralib"
+aside = true
+
+[[library]]
+id = "n_audio"
+name = "n_audio (the N64 SDK's audio library, libgn_audio)"
+kind = "sdk"
+aside = true
