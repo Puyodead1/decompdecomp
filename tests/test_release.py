@@ -481,3 +481,44 @@ def test_a_stalled_compile_says_which_locals_differ_from_the_games(tmp_path):
     assert net.locals_note(fn, a.id, src.replace("new_var", "myfread")) == ""  # (nothing differs)
     net.stall_status = lambda function_id, agent_id: {"compiles": 2, "no_better": 1, "after": 4}
     assert net.locals_note(fn, a.id, src) == ""  # (not stalled: not yet)
+
+
+def test_notes_of_a_function_released_without_one_compile_say_so(tmp_path):
+    """A small model released a function it never compiled, with notes saying "no better score in 6 compiles", and
+    those notes are what the next agent starts from: they say no compile checked them."""
+    from decompnet.app.engine.judging import UNTRIED_NOTES
+
+    net, _ = _game(tmp_path, [("f", 10, "open"), ("g", 10, "open")])
+    a, _ = net.local_agent("a")
+    net.claim_row(a, "game", "f")
+    # (an untried release is pushed back, except one that names what it needs first)
+    assert net.release_function(a, "f", "no better score in 6 compiles", "game", needs="g").startswith("Released f")
+    assert net.store.one("SELECT text FROM notes")["text"] == UNTRIED_NOTES + "no better score in 6 compiles"
+    assert _held(net, a) == "g"  # (what f needs, claimed for it)
+    _attempts(net, a, "g", [40])
+    for _ in range(2):  # (pushed back once, having compiled: asked again, it goes through)
+        said = net.release_function(a, "g", "tried the field stores", "game")
+    assert said.startswith("Released g")
+    assert net.store.one("SELECT text FROM notes ORDER BY id DESC")["text"] == "tried the field stores"
+
+
+def test_callees_and_data_in_compile_and_diffs_function_are_told_apart_from_a_batch(tmp_path, monkeypatch):
+    """A small model put its function's callees and data in `function` ("f, g, D_80123456") and read the errors as
+    reasons to give up: one error says what `function` held, compiles nothing, and a batch it claimed still goes."""
+    from decompnet.app import tools
+
+    net, _ = _game(tmp_path, [("f", 10, "open"), ("g", 10, "open"), ("h", 10, "open")])
+    a, _ = net.local_agent("a")
+    net.claim_row(a, "game", "f")
+    judged = []
+    monkeypatch.setattr(net, "attempt_many", lambda agent, names, source, slug: judged.append(names) or "judged")
+    with pytest.raises(NetworkError) as caught:
+        tools._compile(net, a, "game", "f, g, D_80123456", "int f(void) { return g(); }")
+    said = str(caught.value)
+    assert "names 3 things (f, g, D_80123456)" in said and "you don't hold g, D_80123456" in said
+    assert "inside `source`" in said and "Nothing was compiled" in said and not judged
+    with net.store.tx() as db:  # (a batch: both claimed together)
+        db.execute("INSERT INTO claims VALUES((SELECT id FROM functions WHERE name='g'),?,?,?)",
+                   (a.id, time.time(), time.time() + 300))
+    assert tools._compile(net, a, "game", "f, g", "int f(void) { return 0; } int g(void) { return 1; }") == "judged"
+    assert judged == [["f", "g"]]

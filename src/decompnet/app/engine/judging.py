@@ -18,6 +18,9 @@ from .common import _AUTO_TOKEN, BATCH_INSNS
 UNCOMPILED_PUSH_BACKS = 2
 
 
+UNTRIED_NOTES = "[Released without compiling it once; these notes weren't checked by a compile.] "
+
+
 class JudgeMixin:
     def _rom_target(self, fn):
         cfg = self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"]))
@@ -229,6 +232,10 @@ class JudgeMixin:
         if not not_c and need is None and progress is not None and \
                 (push := self._push_back(agent, fn, progress, project)):
             return push
+        if notes.strip() and progress is not None and not progress["compiles"] and not not_c:
+            # A small model released a function it never compiled with notes saying "no better score in 6
+            # compiles", and those notes are what the next agent starts from: say what the app knows.
+            notes = UNTRIED_NOTES + notes
         said = self.release(agent, function, notes, project, not_c)
         if need is not None:
             self.wait_for(agent, fn, need)
