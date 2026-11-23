@@ -14,6 +14,12 @@ os.environ["DECOMP_DETECT_AGENTS"] = "off"
 os.environ["DECOMP_WINDOW"] = "0"
 os.environ.setdefault("BROWSER", "true")
 os.environ.setdefault("DECOMP_TRAY", "0")
+# and no git commit a test makes (in its throwaway projects) is signed: with the user's own commit.gpgsign, each one
+# waited on a passphrase prompt, and a whole test run hung behind one the user never saw (GIT_CONFIG_COUNT: git's
+# `-c` for every git a test starts, above the user's config)
+os.environ["GIT_CONFIG_COUNT"] = "2"
+os.environ["GIT_CONFIG_KEY_0"], os.environ["GIT_CONFIG_VALUE_0"] = "commit.gpgsign", "false"
+os.environ["GIT_CONFIG_KEY_1"], os.environ["GIT_CONFIG_VALUE_1"] = "tag.gpgsign", "false"
 # nor the wine prefix the user's app runs Visual C++ 2017 in (toolchains/.wine, a development copy's .wine-dev: #146):
 # a test that names no prefix of its own (the own_wine_prefix fixture) gets this one, so a wine program it starts,
 # or the server it leaves running, is never in the app's prefix (review of #138: three tests used it). One set before
