@@ -1139,6 +1139,14 @@ details.more[open] > summary::before { content: "− "; }
 .compiler-profile-count { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .compiler-arguments, .pad code.compiler-arguments { display: inline; white-space: normal; overflow-wrap: anywhere; font-size: 12px; font-weight: 400; line-height: 1.6; margin: 0; padding: 0; color: var(--muted); background: none; border: 0; border-radius: 0; }
 .compiler-profile code.compiler-arguments { margin-inline-start: .5em; }
+/* A compiler argument with hover help (compiler-groups.js, compilerFlagsHtml) and its one shared tooltip. */
+.compiler-flag { cursor: help; border-bottom: 1px dotted var(--muted); }
+.compiler-flag:hover, .compiler-flag:focus-visible { color: var(--ink); border-bottom-style: solid; }
+.compiler-flag-tip { position: fixed; z-index: 1000; max-width: min(380px, calc(100vw - 16px)); padding: 10px 12px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--pop); font-size: 12px; line-height: 1.5; pointer-events: none; }
+.compiler-flag-tip[hidden] { display: none; }
+.compiler-flag-tip b { font-family: var(--mono); }
+.compiler-flag-tip p { margin: 4px 0 0; }
+.compiler-flag-tip-label { display: block; margin-top: 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .compiler-default-functions { padding: 0 12px 12px; }
 .compiler-default-functions > p { margin: 0; }
 .compiler-range-list { list-style: none; margin: 0; padding: 0; }
