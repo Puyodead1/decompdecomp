@@ -425,9 +425,10 @@ class Permuter:
 
     def _try_flags(self, agent, proj, fn, st: State) -> None:
         """A near miss the turn didn't match, in a project whose source files each have their flags (a PC game's
-        /Oy-, /O1, /Ob1, /GS): its best C built with each of its file's flag variants (search_flags), once per best
-        attempt. A variant it matches with is kept when the file's other matches hold, as when an agent asks; only
-        agents asked before, and a C that was right but for the file's flags waited for one to think of it."""
+        /Oy-, /O1, /Ob1, /GS): its best C built with the survey's few variants of its file's flags (search_flags,
+        quick: the whole sweep is for agents to ask), once per best attempt. A variant it matches with is kept when the
+        file's other matches hold, as when an agent asks; only agents asked before, and a C that was right but for the
+        file's flags waited for one to think of it."""
         fork = self.net.fork_slug(proj["slug"])
         if not fork or st.stop.is_set() or proj["slug"] in self.net.links:
             return
@@ -440,7 +441,7 @@ class Permuter:
             if db.execute("INSERT OR IGNORE INTO flag_probes VALUES(?,?)", (fn["id"], digest)).rowcount == 0:
                 return  # (this C was tried with them already)
         try:
-            said = self.net.forks.search_flags(agent, fork, fn["name"], source=row["best_source"])
+            said = self.net.forks.search_flags(agent, fork, fn["name"], source=row["best_source"], quick=True)
         except NetworkError as e:  # its project has no flags per file, or the function moved on meanwhile
             log.debug("permuter: %s: no flag search (%s)", fn["name"], str(e).splitlines()[0])
             return

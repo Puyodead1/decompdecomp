@@ -2659,7 +2659,7 @@ def test_files_whose_functions_make_the_gs_cookie_build_with_gs(tmp_path):
     assert scratch_pe.set_gs_flags(root, "game") == 1 and flags()[sources[0]] == ["/Oy-", "/GS"]
     assert scratch_pe.GS_FLAG not in flags().get(sources[1], [])
     assert scratch_pe.set_gs_flags(root, "game") == 0
-    assert ["/Oy-", "/GS"] in consoles.get("pc").flag_variants(["/Oy-"])
+    assert ["/Oy-", "/GS"] in consoles.get("pc").survey_variants(["/Oy-"])
 
 
 # a Visual C++ 6.0 debug build's method that sets two fields (/Od /ZI /GZ): edit-and-continue's 0x40 bytes and `this`'s

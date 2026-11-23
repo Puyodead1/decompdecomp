@@ -653,6 +653,33 @@ def flag_variants(flags: list[str]) -> list[list[str]]:
     return out
 
 
+def named_variants(flags: list[str], named: str) -> list[list[str]]:
+    """The variants an agent's `named` flags make (search_flags(flags="-O1 -frename-registers")): all of them
+    together, then each alone when there are several, a level replacing the file's. Only the levels and options
+    flag_variants tries may be named: anything else reaches no command line."""
+    levels, allowed = ("-O3", *FLAG_LEVELS), ("-O3", *FLAG_LEVELS, *FLAG_OPTIONS)
+    wanted = list(dict.fromkeys(named.split()))
+    if not wanted:
+        raise ForkError("flags: name one or more of GCC's flags, e.g. flags=\"-O1\"")
+    if bad := [f for f in wanted if f not in allowed]:
+        raise ForkError(f"{bad[0]!r} isn't a flag search_flags tries on V.Flash's GCC: name some of {' '.join(allowed)}")
+    if len([f for f in wanted if f in levels]) > 1:
+        raise ForkError(f"{' and '.join(f for f in wanted if f in levels)} are one choice: name one of them")
+
+    def put(have: list[str], flag: str) -> list[str]:
+        if flag in levels:  # (-O3 is the project's: the file's level taken away)
+            return [f for f in have if not f.startswith("-O")] + ([] if flag == "-O3" else [flag])
+        return have if flag in have else [*have, flag]
+    together = list(flags)
+    for flag in wanted:
+        together = put(together, flag)
+    out = [list(flags)]
+    for v in [together, *([put(list(flags), f) for f in wanted] if len(wanted) > 1 else [])]:
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def survey_variants(flags: list[str]) -> list[list[str]]:
     """A file's own flags (first), and the variants the flag survey builds every file with: the other optimisation
     levels only (a game's files are many; the options are left to search_flags). -O0 too: a V.Flash game's file
