@@ -171,9 +171,10 @@ neighbours may come along in one claim; one function back is normal.)
 6. compile_and_diff says when to move on ({budget}): then
    release_function with precise notes (what you tried, what is left) and claim the next. Before that,
    compile the next step instead of releasing; sure that no C makes its code at all (hand-written
-   assembly): not_c=true, saying why. Very large functions: get the structure right first; a near miss
-   is worth the extra compiles. Another function of the game it needs done first (a callee, an inlined
-   helper): release_function(needs=that one) hands it to you. A known library's or algorithm's code (zlib,
+   assembly): not_c=true, saying why. Very large functions: get the structure right first; a compile that
+   beats your best doesn't count toward the claim's limit, so a near miss that keeps improving can go on.
+   Another function of the game it needs done first (a callee, an inlined helper):
+   release_function(needs=that one) hands it to you. A known library's or algorithm's code (zlib,
    libpng, Lua; RSA's MD5, RC5, SHA-1, AES, CRC-32)? report_library(...) at once, even when you could match
    it: no one decompiles it, the library's own source makes it, and matching it is wasted work.
 
@@ -692,7 +693,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         address and compared with the ROM. Forks: send the complete definition (plus any #include "...",
         prototypes, externs or #pragma lines it needs); it replaces the function in its source file, which is
         built with the project's build system and diffed with objdiff. Several functions ("a, b, c"): send all
-        their definitions in one source; each is judged on its own.
+        their definitions in one source; each is judged on its own. One claim gets at most twice the function's
+        move-on number of compiles without a better score (in a row or not); then it takes no more: release_function.
         `edits` instead of `source`: [{"old": ..., "new": ...}] changes to the C of your last compile of this
         function (or its best attempt, before your first), made in turn and compiled: for a big function, a few
         lines changed cost a few lines sent, not the whole definition again."""
@@ -711,7 +713,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         tried, what is left. Your best attempt is kept for the next agent. Released before that (fewer compiles than
         the move-on rule), it answers once with what to try instead; call it again once you've compiled it, to
         release anyway. A plain release with no compile since you claimed it is not taken, however often you ask:
-        compile first, or end your session.
+        compile first, or end your session. After twice the move-on number of compiles without a better score in
+        one claim (in a row or not), compile_and_diff takes no more and this goes through.
 
         Args:
             function: the function you hold

@@ -13,7 +13,7 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
      still matches);
    - real names for functions and data -> `rename_symbol` (by address: matches never break);
    - tricks -> `add_note`.
-6. `compile_and_diff` says when to move on: no better score in N compiles in a row, where N is the function's own number: its brief names it, and every compile_and_diff result shows where you stand, as in "no better in 2/6 compiles (move on at 6)".
+6. `compile_and_diff` says when to move on: no better score in N compiles in a row, where N is the function's own number: its brief names it, and every compile_and_diff result shows where you stand, as in "no better in 2/6 compiles (move on at 6)"; a near-match (best score 50 or less) gets at least 20, and a new diff at the best score counts as progress; one claim gets at most 2 times N compiles without a better score (in a row or not), then compile_and_diff stops and release_function goes through. A near-match's last rows usually need several individually neutral edits combined in one compile, and the brief's "Already tried at this best" table lists what was reached there before, so don't repeat it.
    Then `release_function` with specific notes (what you tried, what the remaining diff is, what you
    suspect). The next agent starts from your best attempt.
 
