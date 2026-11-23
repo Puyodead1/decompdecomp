@@ -1642,32 +1642,55 @@ class Network:
         by helpers that had died with it. Not counted as giving up. Each function freed gets a 'freed' event (one
         without a function when the agent held none), which ends the agent's run: what it released before no longer
         keeps it off those functions (SELF_RELEASE_WINDOW). Returns the functions released."""
-        now, freed = time.time(), []
+        freed = []
         with self.store.tx() as db:
-            own = {r["id"] for r in db.execute(MACHINE_AGENT_IDS, MACHINE_AGENTS)}
             for aid in agent_ids:
-                rows = db.execute("SELECT f.id, f.project_id, f.name FROM claims c JOIN functions f ON f.id=c.function_id "
-                                  "WHERE c.agent_id=?", (aid,)).fetchall()
-                db.execute("DELETE FROM claims WHERE agent_id=?", (aid,))
-                for r in rows:
-                    if aid not in own:  # decompdecomp's own tries leave no notes
-                        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
-                                   (r["project_id"], r["id"], aid, f"Released because its agent stopped ({why}); its "
-                                    "attempts are kept.", now))
-                    self._event(db, r["project_id"], aid, "freed", r["name"])
-                    freed.append(r["name"])
+                rows = db.execute("SELECT f.id, f.project_id, f.name, c.agent_id FROM claims c JOIN functions f "
+                                  "ON f.id=c.function_id WHERE c.agent_id=?", (aid,)).fetchall()
+                freed += self._free_claims(db, rows, why)
                 if not rows:
                     self._event(db, None, aid, "freed", "")
         return freed
 
+    def _free_claims(self, db, rows, why: str) -> list[str]:
+        """Release these claims (rows of function id, project_id, name, agent_id) of agents that stopped, each with
+        its note and 'freed' event (release_stopped); the names freed."""
+        now = time.time()
+        own = {r["id"] for r in db.execute(MACHINE_AGENT_IDS, MACHINE_AGENTS)}
+        for r in rows:
+            db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (r["id"], r["agent_id"]))
+            if r["agent_id"] not in own:  # decompdecomp's own tries leave no notes
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (r["project_id"], r["id"], r["agent_id"], f"Released because its agent stopped ({why}); "
+                            "its attempts are kept.", now))
+            self._event(db, r["project_id"], r["agent_id"], "freed", r["name"])
+        return [r["name"] for r in rows]
+
     def release_local_claims(self, why: str) -> list[str]:
         """When the app starts: none of its own helpers (origin 'local') is running yet, so whatever they hold is left
         over from the last run. Agents that run elsewhere (a room's members, an agent using the MCP server) may still
-        be working: theirs keep the CLAIM_TTL rule; so do the user's own claims and decompdecomp's workers'."""
-        ids = [r["id"] for r in self.store.all("SELECT id FROM agents WHERE origin='local' AND name NOT IN "
-                                               f"({', '.join('?' * (1 + len(MACHINE_AGENTS)))})",
-                                               "you", *MACHINE_AGENTS)]
-        return self.release_stopped(ids, why)
+        be working: theirs keep the CLAIM_TTL rule; so do the user's own claims and decompdecomp's workers'.
+        Set-based, and only for the helpers that need it: helper names pile up over the months, and release_stopped
+        wrote a 'freed' event for every one of them on every launch. A helper gets one only when it still holds
+        something, or released something in the last SELF_RELEASE_WINDOW with no 'freed' or 'stopped' event after
+        it (all that event changes: _own_release_cutoff). Ported from RetroReversing 1f4be9014."""
+        ids = json.dumps([r["id"] for r in self.store.all(
+            "SELECT id FROM agents WHERE origin='local' AND name NOT IN "
+            f"({', '.join('?' * (1 + len(MACHINE_AGENTS)))})", "you", *MACHINE_AGENTS)])
+        with self.store.tx() as db:
+            rows = db.execute("SELECT f.id, f.project_id, f.name, c.agent_id FROM claims c JOIN functions f "
+                              "ON f.id=c.function_id WHERE c.agent_id IN (SELECT value FROM json_each(?)) "
+                              "ORDER BY c.agent_id, f.id", (ids,)).fetchall()
+            freed = self._free_claims(db, rows, why)
+            reset = {r["agent_id"] for r in rows}
+            for r in db.execute("SELECT DISTINCT e.agent_id FROM events e WHERE e.created_at > ? AND e.kind='release' "
+                                "AND e.agent_id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (SELECT 1 FROM "
+                                "events b WHERE b.agent_id=e.agent_id AND b.kind IN ('freed', 'stopped') "
+                                "AND b.created_at >= e.created_at)",
+                                (time.time() - SELF_RELEASE_WINDOW, ids)).fetchall():
+                if r["agent_id"] not in reset:
+                    self._event(db, None, r["agent_id"], "freed", "")
+        return freed
 
     def get_function(self, function: str, project: str | None = None, agent: Agent | None = None,
                      part: int = 1, show: str = "") -> str:

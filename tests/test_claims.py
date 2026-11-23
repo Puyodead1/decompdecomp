@@ -571,6 +571,39 @@ def test_an_agent_doesnt_get_back_what_it_just_released_until_its_run_ends(tmp_p
     assert net.claim_row(a, "game", None)["name"] == "x"
 
 
+def test_the_app_starting_writes_only_for_helpers_that_hold_or_just_released_something(tmp_path):
+    """Helper names pile up over the months, and every launch wrote a 'freed' event for each one ever used. Only a
+    helper still holding a function, or kept off one it released lately, needs one (RetroReversing 1f4be9014)."""
+    import time
+
+    net, _ = _game(tmp_path, [("held", 4, "open"), ("given_back", 6, "open")])
+    holding, _ = net.local_agent("claude-haiku-1")
+    released, _ = net.local_agent("claude-haiku-2")
+    historic, _ = net.local_agent("claude-haiku-3")
+    already, _ = net.local_agent("claude-haiku-4")
+    elsewhere = net.authenticate(net.register_agent("elsewhere", "you", origin="cli"))
+    net.claim_row(holding, "game", "held")
+    now = time.time()
+    with net.store.tx() as db:
+        # (one model's helpers: one release of given_back, or three would leave it to other models, MODEL_GIVE_UPS)
+        db.executemany("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(1,?,?,?,?)",
+                       [(released.id, "release", "given_back", now - 5), (historic.id, "release", "gone", 1),
+                        (already.id, "release", "gone", now - 5), (already.id, "stopped", "", now - 1)])
+    assert net.claim_row(released, "game", None) is None  # kept off what it gave back, and "held" is held
+    assert net.release_local_claims("the app restarted") == ["held"]
+    assert net.release_local_claims("the app restarted") == []  # nothing more to write
+    freed = net.store.all("SELECT agent_id, project_id, detail FROM events WHERE kind='freed' ORDER BY id")
+    assert [(r["agent_id"], r["project_id"], r["detail"]) for r in freed] == [(holding.id, 1, "held"),
+                                                                                (released.id, None, "")]
+    assert _held(net, holding) is None
+    assert net.claim_row(historic, "game", None)["name"] == "held"
+    assert net.claim_row(released, "game", None)["name"] == "given_back"  # its run ended: nothing keeps it off
+    net.release(released, "given_back", "", "game")
+    net.claim_row(elsewhere, "game", "given_back")
+    net.release_local_claims("the app restarted")
+    assert _held(net, elsewhere) == "given_back"  # an agent running elsewhere keeps its lease
+
+
 def test_nothing_to_claim_says_who_holds_what_and_what_you_set_aside(tmp_path):
     net, _ = _game(tmp_path, [("mine", 4, "open"), ("theirs", 6, "open"), ("done", 8, "matched")])
     a, _ = net.local_agent("a")
