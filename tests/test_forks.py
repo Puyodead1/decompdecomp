@@ -1649,6 +1649,8 @@ def test_a_lost_build_file_is_written_again(tmp_path):
     assert fp.build_all()[0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="sessions are POSIX (no os.getsid): on Windows a build's "
+                    "commands are in a job object instead (limits.attach_job)")
 def test_builds_run_in_a_session_of_their_own(tmp_path):
     """So Ctrl-C (SIGINT) or a hangup in the app's terminal, sent to its whole process group, doesn't reach them."""
     import os

@@ -362,7 +362,8 @@ def test_the_libraries_in_libs_give_their_headers_to_every_compile(tmp_path, mon
                    capture_output=True, timeout=30)
     text = (root / "build.ninja").read_text()
     cl = text.split("build build/TEST/raw/src/auto/new.obj", 1)[1].split("\nbuild ", 1)[0]
-    assert cl.index("6.0/Include") < cl.index("libs/glut-3.7.6/include") < cl.index("libs/openal-1.1/include")
+    # (Visual C++'s own folder is this computer's, as it writes paths; the libraries' are the project's, with '/')
+    assert cl.index(str(Path("6.0/Include"))) < cl.index("libs/glut-3.7.6/include") < cl.index("libs/openal-1.1/include")
     assert "config/TEST/library_includes.txt" in text.split("build build.ninja", 1)[1]
 
 
@@ -2695,12 +2696,21 @@ def test_a_debug_builds_program_database_is_each_objects_own(tmp_path):
     made one of them fail. compile.py names one beside each object."""
     compile_py = Path(scratch_pe.__file__).with_name("project_template") / "tools" / "compile.py"
     said = tmp_path / "args.txt"
-    fake = tmp_path / "fake.sh"
-    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {said}\nexit 1\n')  # (failing: names.py doesn't run)
-    fake.chmod(0o755)
+    # a compiler that writes down what it was given and fails (so names.py doesn't run): a Python script, run
+    # through a .cmd on Windows, where there's no shebang
+    script = tmp_path / "fake.py"
+    script.write_text(f"#!{sys.executable}\nimport sys\nopen({str(said)!r}, 'w').write('\\n'.join(sys.argv[1:]) + "
+                      "'\\n')\nsys.exit(1)\n")
+    if sys.platform == "win32":
+        fake = tmp_path / "fake.cmd"
+        fake.write_text(f'@"{sys.executable}" "{script}" %*\n')
+    else:
+        fake = script
+        fake.chmod(0o755)
     common = ["--config", "c.json", "--compiler", "cl.exe", "--include", "inc", "--wrapper", str(fake),
               "--output", "build/x/y.obj", "--source", "x.cpp", "--"]
-    for extra, pdb in ((["/O2", "/Od", "/ZI", "/GZ"], "/Fdbuild/x/y.pdb"), (["/O2"], None), (["/Zi", "/Fdz.pdb"], None)):
+    beside = f"/Fd{Path('build/x/y.pdb')}"  # (as the system writes paths: cl.exe takes either on Windows)
+    for extra, pdb in ((["/O2", "/Od", "/ZI", "/GZ"], beside), (["/O2"], None), (["/Zi", "/Fdz.pdb"], None)):
         subprocess.run([sys.executable, str(compile_py), *common, *extra], cwd=tmp_path, timeout=30)
         args = said.read_text().split("\n")
         assert (pdb in args) if pdb else not any(a.startswith("/Fdbuild") for a in args), args

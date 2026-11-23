@@ -62,7 +62,9 @@ def test_a_browser_gets_in_by_pairing_once(server):
     assert edge.post("/api/settings", json={"per_session": 3}, headers={"X-Decomp": "1"}).status_code == 200
     # only a hash of the session's token is kept, in a file only its owner reads
     saved = home / "browsers.json"
-    assert edge.cookies[browsers.COOKIE] not in saved.read_text() and os.stat(saved).st_mode & 0o077 == 0
+    assert edge.cookies[browsers.COOKIE] not in saved.read_text()
+    if os.name != "nt":  # (Windows has no such mode bits: chmod sets only read-only there)
+        assert os.stat(saved).st_mode & 0o077 == 0
 
 
 def test_a_removed_browser_is_out(server):

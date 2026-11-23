@@ -148,8 +148,10 @@ def has_headers_below(folder: Path) -> bool:
 
 
 def library_includes(root: Path) -> list[str]:
-    """Every library's include folders, relative to the project's root (what `library_includes` keeps)."""
-    return [str(d.relative_to(root)) for lib in library_folders(root) for d in include_dirs(lib)]
+    """Every library's include folders, relative to the project's root (what `library_includes` keeps), with '/'
+    on Windows too: they're written into the project (config/<version>/library_includes.txt, then build.ninja), and a
+    project set up on Windows is built on Linux as well."""
+    return [d.relative_to(root).as_posix() for lib in library_folders(root) for d in include_dirs(lib)]
 
 
 def _in(meta: dict) -> str:
