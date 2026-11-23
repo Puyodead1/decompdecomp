@@ -64,6 +64,29 @@ def capped(argv: list[str], memory: int | None = None, stop_all: bool = True) ->
     return [exe, "--user", "--scope", "--quiet", "-p", f"MemoryMax={mb}M", "-p", "MemorySwapMax=0", *keep, "--", *argv]
 
 
+OPEN_FILES = 8192  # what the app asks for: its database readers, compilers' pipes and helpers' streams at once
+
+
+def raise_open_file_limit(target: int = OPEN_FILES) -> int | None:
+    """Raise this process's soft limit on open files, which what it starts inherits: an app started from the macOS
+    Dock or Finder gets 256, and long work ran out ("Too many open files"). Never lowers a limit or touches the hard
+    one; None when the system has no such limit (Windows) or refuses."""
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft == resource.RLIM_INFINITY or soft >= target:
+            return soft
+        wanted = target if hard == resource.RLIM_INFINITY else min(target, hard)
+        if wanted > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ValueError, OSError):
+        return None
+
+
 def no_core_dumps() -> None:
     """No core dumps from this process or anything it starts: a compiler run through wibo aborts on a Windows
     function wibo doesn't have, and a period compiler can crash on odd C, so the desktop's crash reporter put up a

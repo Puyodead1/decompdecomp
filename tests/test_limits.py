@@ -199,3 +199,52 @@ def test_a_mac_build_over_its_memory_limit_in_all_is_stopped(tmp_path, monkeypat
     ok, said = ForkProject(tmp_path).run([sys.executable, "-c", build], timeout=60)
     assert not ok and "more than 96 MiB of memory in all" in said
     assert time.monotonic() - started < 30
+
+
+def test_the_open_file_limit_is_raised_without_touching_the_hard_one(monkeypatch):
+    """An app started from the macOS Dock gets 256 open files, and long work ran out of them."""
+    resource = pytest.importorskip("resource")
+    current, seen = [256, 65536], []
+    monkeypatch.setattr(resource, "getrlimit", lambda kind: tuple(current))
+
+    def setlimit(kind, value):
+        seen.append(value)
+        current[:] = value
+
+    monkeypatch.setattr(resource, "setrlimit", setlimit)
+    assert limits.raise_open_file_limit() == 8192 and seen == [(8192, 65536)]
+    assert limits.raise_open_file_limit() == 8192 and len(seen) == 1
+    current[:] = [256, 1024]
+    assert limits.raise_open_file_limit() == 1024 and seen[-1] == (1024, 1024)
+
+
+def test_a_refused_open_file_limit_is_no_error_and_a_higher_one_stays(monkeypatch):
+    resource = pytest.importorskip("resource")
+    monkeypatch.setattr(resource, "getrlimit", lambda kind: (256, resource.RLIM_INFINITY))
+
+    def refused(*args):
+        raise OSError("not permitted")
+
+    monkeypatch.setattr(resource, "setrlimit", refused)
+    assert limits.raise_open_file_limit() is None
+    monkeypatch.setattr(resource, "getrlimit", lambda kind: (65536, 65536))
+    assert limits.raise_open_file_limit() == 65536
+
+
+def test_a_cancelled_compiler_leaves_no_pipe_open(tmp_path, monkeypatch):
+    """A cancelled compile whose exception is kept (a job's error, a traceback) must not keep the compiler's pipes."""
+    popen, started = subprocess.Popen, []
+
+    def start(*args, **kwargs):
+        started.append(popen(*args, **kwargs))
+        return started[-1]
+
+    def cancel():
+        raise RuntimeError("cancelled")
+
+    monkeypatch.setattr(compiler.subprocess, "Popen", start)
+    with compiler.cancellable(cancel), pytest.raises(RuntimeError, match="cancelled"):
+        compiler._exec(compiler.CompilerConfig(cmd=[], sandbox="none"), tmp_path,
+                       [sys.executable, "-c", "import time; time.sleep(30)"], 10)
+    assert started[0].poll() is not None
+    assert started[0].stdout.closed and started[0].stderr.closed
