@@ -319,10 +319,15 @@ class _Linker:
         if length <= 0:
             return
         mine = bytearray(sec.data()[off:off + length])
+        width = self.widths.get((shndx, off))
         for at, rtype, s in self._relocs_in(shndx):  # relocated words inside the data, e.g. jump tables
             at -= off
             if rtype != R_MIPS_32 or not 0 <= at <= length - 4:
                 continue
+            if width and at >= width:
+                # A table of pointers read through an index (GCC's switch: `addu $at, $at, $v0; lw $at,
+                # %lo(jtbl)($at)`): the load's width is one entry, but every entry is the candidate's.
+                width = None
             dest, own = self._pointee(s, int.from_bytes(mine[at:at + 4], self.target.order))
             if own is not None:
                 dest = self.local_map.get(own)
@@ -330,7 +335,7 @@ class _Linker:
                 self.problem(f"can't place a pointer inside your data at {sec.name}+0x{off + at:X}")
                 return
             mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, self.target.order)
-        n = self.significant(bytes(mine), addr, self.widths.get((shndx, off)))
+        n = self.significant(bytes(mine), addr, width)
         rom = self.read(addr, n)
         if rom is None:
             return  # the ROM has no bytes there (e.g. .bss in the ROM): nothing to compare

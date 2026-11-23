@@ -32,6 +32,7 @@ class Core(Network):
         self._syms: dict[int, SymbolTable] = {}
         self._sym_override: dict[int, SymbolTable] = {}
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
+        self._images: dict[int, list[tuple[int, int, int]]] = {}  # project id -> split.load_images of its config
         self._xrefs: dict[int, dict] = {}
         self._draft_locks: dict[int, threading.Lock] = {}  # function id -> held while its machine draft is made
         self._recheck_locks: dict[str, threading.Lock] = {}  # project -> held while recheck looks at it
@@ -256,8 +257,29 @@ class Core(Network):
             if candidates:
                 at = candidates[0].rom_start + addr - candidates[0].vram
                 return rom[at:at + n]
+            # Data after the code, in the image its code segment loads (a candidate's jump table, strings,
+            # constants): the code segments stop short of it, and a None here skipped the check, so switches with
+            # wrong case labels matched. Overlays loaded at one address read from the caller's own image; when that
+            # can't pick one, None as before. BSS is past every image's end: still no bytes.
+            images = [(start, vram) for start, vram, end in self._load_images(proj)
+                      if vram <= addr and addr + n <= end and start + addr - vram + n <= len(rom)]
+            if fn is not None and fn["rom_offset"] is not None and len(images) > 1:
+                own = [(start, vram) for start, vram, end in self._load_images(proj)
+                       if vram <= fn["vram"] < end and start + fn["vram"] - vram == fn["rom_offset"]]
+                images = [image for image in images if image in own]
+            if len({start + addr - vram for start, vram in images}) == 1:
+                at = images[0][0] + addr - images[0][1]
+                return rom[at:at + n]
             return None
         return read
+
+    def _load_images(self, proj) -> list[tuple[int, int, int]]:
+        """split.load_images of the project's splat config, read once (a reimport drops it with the ROM)."""
+        cache = self.__dict__.setdefault("_images", {})
+        if proj["id"] not in cache:
+            root = dict(proj).get("root")
+            cache[proj["id"]] = split.load_images_of(Path(root)) if root else []
+        return cache[proj["id"]]
 
     def _function(self, name: str, project: str | None):
         """Functions can also be named by address (0x80001234), handy for agents reading assembly, and the way

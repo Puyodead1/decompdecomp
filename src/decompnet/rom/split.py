@@ -121,6 +121,37 @@ def segments_from_config(path: Path) -> list[Segment]:
     return out
 
 
+def load_images(cfg: dict) -> list[tuple[int, int, int]]:
+    """(rom_start, vram, vram_end) of each loaded image a splat config describes: a code segment whose BSS has an
+    address loads everything from its start to its BSS at one offset, its data included. The judge reads a
+    candidate's own data (jump tables, strings, constants) from these when no code segment holds the address: the
+    code segments stop where the next one starts, and the segments found inside a game's main image (n64/code.py)
+    leave its data after the last of them, so a matched function's wrong jump table went unchecked."""
+    out = []
+    for seg in cfg.get("segments", []):
+        if not isinstance(seg, dict) or seg.get("type") != "code" or "vram" not in seg or "start" not in seg:
+            continue
+        bss = [sub["vram"] for sub in seg.get("subsegments") or [] if isinstance(sub, dict)
+               and sub.get("type") == "bss" and isinstance(sub.get("vram"), int)]
+        if bss and bss[0] > seg["vram"]:
+            out.append((int(seg["start"]), int(seg["vram"]), int(bss[0])))
+    return out
+
+
+def load_images_of(root: Path) -> list[tuple[int, int, int]]:
+    """load_images of the splat config in a ROM project's folder (none: no images)."""
+    import yaml
+
+    for config in sorted(root.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(config.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("segments"), list):
+            return load_images(data)
+    return []
+
+
 def code_ranges(path: Path) -> list[tuple[int, int, int]]:
     """(rom_start, rom_end, vram) of what splat's config disassembles as code: the code subsegments, not the data
     after them (create_config can file a whole segment's tail as data: GoldenEye's game code is in there)."""
