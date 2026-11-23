@@ -42,6 +42,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Libraries found and set aside (`libid/`: the game's text, the catalog's constants, the DLLs and .so files it loads (`Console.linked_libraries`) and their headers' inline wrappers, your signature files: ours, FLIRT `.pat`/`.sig`, Ghidra `.fidb`; agents' `report_library`); their source fetched into `libs/` | ✓ (same code as Linux; not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (not run on a game yet) | — | ✓ (not run on a game yet) | ✓ (not run on a game yet) | ✓ (CodeWarrior's runtime, MSL and MetroTRK by their names: 306 of a 20,000-function GameCube game's set aside; 20 at the seams between them left open) | ✓ (RSA's MD5 set aside on three games; zlib, libpng, libjpeg, FMOD, Bink named; OpenGL, GLUT and its glut.h wrappers, OpenAL, DirectX from the DLLs loaded) | ✓ (not run on a game yet) | ✓ (ran; the SDK's own code is the import's) | ✓ (a 2008 program: zlib, libpng, Lua, Theora, Vorbis, TinyXML, SDL_mixer, Scaleform named; OpenGL, SDL, OGRE, Cg from the .so files loaded) | — | listed only: the project says what's its game's |
 | Function-end reports (`report_boundary`) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ (2-byte boundaries) | — | ✓ (agents agree, the rebuild checks) | ✓ | — | ✓ (approved on the project page; a cut on an instruction's start) | — | — |
 | Your own compiler (Setup: another build of one it has) | ✓ | ✓ | ✓ | ✓ your SDK | — | ✓ | ✓ | — | ✓ your Visual C++ (x86 and x64 copies): 32-bit and 64-bit games the pack's build doesn't match exactly | ✓ your XDK | — | — | — | the project's own build |
+| Additional period compiler profiles (SN64 GCC, SGI IDO, GNU variants) | ✓ (IDO 4.1 and the SGI kits: Linux only; EGCS 1.1.2-4 and GCC 4.4.0: Linux, Windows through WSL 2; the rest: Linux, macOS, Windows through WSL 2, but the SN64 2.8.1 and 0004 kits not on Windows) | — | — | — | — | — | — | — | — | — | — | — | — | — |
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | — | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | from scratch: per source file (`try_compiler`, Settings); else the project's build | ✓ (`try_compiler`, suggestions) | flags file by file | the project's build |
 | Flag search (`search_flags`) | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | — (the project's flags only) | per source file (/Oy- on 32-bit, /O1, /Ob1) | per source file | — (the project's flags only) | ✓ | ✓ file by file | the project's build |
 | Find better compiler settings from saved C | ✓ | ✓ | ✓ | ✓ | — project mode | ✓ | ✓ | — project mode | — project mode | — project mode | — project mode | not run yet | — project mode | — public builds |
@@ -255,6 +256,17 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   Globals tab lists the game's variables, tables and strings from its symbols table, each beside the address
   name it started as, searchable by either name, its address or its value, filterable by named or not and
   sortable. Project mode says why its tab is empty ("Globals in project mode", under Next).
+
+- **More N64 compilers (#198).** Nine pinned community builds beside KMC GCC and IDO 5.3 / 7.1: SN64 GCC 2.7.2
+  builds 0001 and 0006 (the original programs, through wibo and a pinned PsyQ-to-ELF converter built on install) and
+  the reconstructed 970404, the patched GCC 2.8.1 alone and paired with SN's ASN64 2.56, EGCS 2.91.66 and the original
+  EGCS 1.1.2-4, GCC 4.4.0 and IDO 4.1 (in its own IRIX emulator). Six builds nobody may publish (SN64 2.8.1 and 2.7.2
+  build 0004, IDO 5.2, 6.0 and 5.3 C++, MIPSpro 7.4.4) are kits: Setup takes your own folder, one card each
+  (`kits/n64legacy.py`). Each is a compiler of the N64's like the others (flag search and the permuter go by its
+  declared family, agents read the SN64 or GCC-variants guide). Checked on Windows through WSL 2: the free ones
+  (GCC 2.8.1, both EGCSes, GCC 4.4.0, the reconstructed SN64) installed, compiled and linked; the proprietary packs
+  and the six kits weren't run there (see "N64 compilers on every computer").
+
 - **CodeWarrior's own libraries found in GameCube and Wii games.** Every GameCube and Wii game links CodeWarrior's
   runtime (`__save_gpr`, `__div2i`, the C++ runtime), MSL (its C library and fdlibm's math: `__pformatter`,
   `__two_exp`, `__ieee754_exp`) and most link MetroTRK, the debugger's kernel (`TRKDoWriteMemory`); none of it was in
@@ -1087,6 +1099,16 @@ with its `defines`; only the Dolphin kit has them so far. Next: the Nitro kit's 
 functions are C, which agents can write, but its CP15 and IRQ helpers are asm), the XDK's for Xbox (`__asm` in
 d3d8's push-buffer inlines), the PS3 SDK's (its `__asm__` intrinsics); and ROM mode, where it would go into the
 context header (edit_context) instead of a source file. A public decomp has its own SDK headers in its tree.
+
+### N64 compilers on every computer
+
+IDO 4.1 and the four SGI kits (IDO 5.2, 6.0 and 5.3 C++, MIPSpro 7.4.4) run in an IRIX emulator that is a Linux
+x86-64 program: IDO 4.1's pack can't be unpacked on Windows (its archive needs a case-sensitive folder) and the kits'
+command has no WSL or macOS way yet, so on Windows and macOS their cards say they aren't available there. The SN64
+2.8.1 and build 0004 kits run on Linux and macOS through wibo, but not yet on Windows, where `cc1n64.exe` could run
+natively or, like the 0001 and 0006 packs, in WSL 2 (a kit's folder staged there as `wsl.prepare_tools` stages
+packs). The ROM-mode features (flag search, compiler ranges, the survey) haven't been run on a game with the new
+compilers on Windows: the demo ROM needs ld.lld.
 
 ### Your own compiler for GameCube, Wii and DS
 

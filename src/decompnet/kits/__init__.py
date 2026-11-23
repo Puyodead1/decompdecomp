@@ -63,6 +63,9 @@ class Kit:
     description = ""  # one sentence for Setup: what it gives
     files: tuple[str, ...] = ()  # what its folder holds (paths in it, any case: kits are often Windows folders)
     places: tuple[str, ...] = ()  # folders inside the one the user picked where it may be ("XDK/xbox")
+    # the computers its compilers run on (toolchains.current_platform(): "linux-x86_64"); () every one. Setup shows the
+    # kit as not available elsewhere, and won't take a folder there
+    hosts: tuple[str, ...] = ()
     versions: tuple[str, ...] = ()  # the versions of its compilers (OwnCompiler.version), before a copy is set up
     # SHA-256 of a file of a copy (the first of known_files it has) -> which build of the kit that is
     known_files: tuple[str, ...] = ()
@@ -121,7 +124,7 @@ class Kit:
         """The kit as toolchains.toml would write it (toolchains.registry adds it): Setup's card for it."""
         return {"name": self.name, "kind": "local", "platform": self.platform, "license": self.license,
                 "source": "your own copy: nothing is downloaded", "description": self.description,
-                "local_files": list(self.files), "local_places": list(self.places)}
+                "local_files": list(self.files), "local_places": list(self.places), "local_hosts": list(self.hosts)}
 
 
 def find(folder: Path, rel: str, dirs: bool = False) -> Path | None:
@@ -221,6 +224,7 @@ def own_compiler(cid: str) -> OwnCompiler | None:
 def _registry() -> list[Kit]:
     from .dolphin import DOLPHIN
     from .dsbios import DSBIOS
+    from .n64legacy import N64_LEGACY
     from .nitro import NITRO
     from .owncompiler import OWN_COMPILERS
     from .ps2sdk import PS2SDK
@@ -228,7 +232,7 @@ def _registry() -> list[Kit]:
     from .visualcpp import VISUALCPP
     from .xdk import XDK
 
-    return [XDK, VISUALCPP, PS3SDK, DSBIOS, NITRO, DOLPHIN, PS2SDK, *OWN_COMPILERS]
+    return [XDK, VISUALCPP, PS3SDK, DSBIOS, NITRO, DOLPHIN, PS2SDK, *OWN_COMPILERS, *N64_LEGACY]
 
 
 KITS: list[Kit] = _registry()
