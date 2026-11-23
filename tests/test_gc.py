@@ -353,3 +353,31 @@ def test_codewarriors_runtime_is_found_by_its_names_and_the_games_own_libc_is_no
         if syms.get(r["vram"]) in ("malloc", "memcpy", "strlen", "exit", "main", "clamp_s32", "adler32", "inflate"):
             assert name not in taken, syms[r["vram"]]
     assert rows["__save_gpr"]["status"] != "open"
+
+
+def test_files_with_only_code_get_their_data(gc):
+    """A game started from scratch gave its files only .text: their data stayed in dtk's auto units, so objdiff compared
+    none of it, every file whose functions matched was linked, and each link failed (its C's constants and globals
+    defined twice). give_data gives each file its stretch of each data section, and the game still builds identically."""
+    from decompnet.forks import dtkdata, dtksplits
+
+    net, slug = gc
+    fp = net.forks.get(slug)[1]
+    proj = net.project_row(slug)
+    mod = dtksplits.modules(fp.root, json.loads(proj["config"])["version"])["main"]
+    pid = proj["id"]
+    matched = net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='matched'", pid)["n"]
+
+    def with_data():
+        return {f.name for f in dtksplits.Splits.parse(mod.splits.read_text()).files
+                if set(f.sections) & set(dtkdata.DATA)}
+
+    res = net.forks.give_data(slug, log=lambda *_: None)
+    assert not res.get("error"), res
+    # (given here, or already by an earlier test's link: a file whose functions all match asks for it first)
+    assert re.search(r"^Give \d+ files their data", fp.git("log", "--format=%s")[1], re.M)
+    assert {f.split("/", 1)[1] for f in res["files"]} <= with_data() and len(with_data()) > 1
+    assert fp.verify()[0]
+    assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='matched'", pid)["n"] >= matched
+    assert not fp.git("status", "--porcelain", "--", "config")[1].strip()  # (committed)
+    assert net.forks.give_data(slug, log=lambda *_: None)["files"] == []  # (nothing left that the rules can place)

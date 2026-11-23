@@ -37,6 +37,7 @@ from ..forks import (
     csource,
     datadiff,
     drafts,
+    dtkdata,
     dtksplits,
     ghidra,
     ltcg,
@@ -1684,6 +1685,13 @@ class ForkEngine:
             fp.build_all()
             rep = fp.report()
             todo = self.link_candidates(proj, fp, rep)
+            bare = self._code_only(fp, cfg, todo)
+            if bare and not set(bare) <= set(cfg.get("data_tried") or ()):
+                # a file whose data is still dtk's (auto units) compares 0 bytes of data and looks finished: its C's
+                # constants and globals would be defined twice. It gets its data first, then has to match it too.
+                self._give_data(proj, fp, cfg, log, agent, tried=bare)
+                rep = fp.report()
+                todo = self.link_candidates(proj, fp, rep)
             if not todo:
                 return {"linked": [], "failed": {}}
             conf = fp.root / "configure.py"
@@ -1835,6 +1843,119 @@ class ForkEngine:
                     state["again"] = False
 
         threading.Thread(target=run, daemon=True, name=f"link-{slug}").start()
+
+    # ------------------------------------------------------------------ each file's data
+    # A game started from scratch gives its files only code (.text): its data stays in dtk's auto units, so a file's
+    # data can be neither compared nor linked. forks/dtkdata.py works out which stretch of each data section is whose;
+    # decompdecomp gives it to them and keeps the change only if the game still builds byte for byte and no function
+    # stops matching.
+
+    def _code_only(self, fp: ForkProject, cfg: dict, sources: list[str]) -> list[str]:
+        """The source files among these whose splits give them no data section."""
+        if not sources or fp.kind() not in ("dtk", "manifest") or not fp.linkable():
+            return []
+        try:
+            mods = self._modules(fp, cfg)
+        except NetworkError:
+            return []
+        src = fp.src_dir()
+        out = []
+        for mod in mods.values():
+            try:
+                files = dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8")).files
+            except OSError:
+                continue
+            out += [f"{src}/{f.name}" for f in files
+                    if f"{src}/{f.name}" in sources and ".text" in f.sections and not set(f.sections) & set(dtkdata.DATA)]
+        return sorted(out)
+
+    def _data_plan(self, fp: ForkProject, cfg: dict) -> dict:
+        """module -> (its Module, its parsed splits, {file: {section: (start, end)}}) for the modules with data to give."""
+        mods = self._modules(fp, cfg)
+        src = fp.src_dir()
+        states = fp.link_states()
+        units = {u.name: u for u in fp.units()}
+        plans = {}
+        for module, mod in mods.items():
+            sp = dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8"))
+            uses = {}
+            for f in sp.files:
+                u = units.get(f"{module}/{PurePosixPath(f.name).with_suffix('')}")
+                if ".text" not in f.sections or u is None or u.target is None or not u.target.exists():
+                    continue
+                try:  # (the original's object: what its code refers to)
+                    uses[f.name] = dtkdata.code_refs(u.target)
+                except (ELFError, OSError):
+                    continue
+            # a linked file's object is built from its C, which defines its own data: it keeps what it has
+            linked = {f.name for f in sp.files if states.get(f"{src}/{f.name}", ("NonMatching",))[0] != "NonMatching"}
+            given = dtkdata.parts(sp.files, dtksplits.symbols(mod.symbols), uses, skip=linked)
+            if given:
+                plans[module] = (mod, sp, given)
+        return plans
+
+    def give_data(self, slug: str, log=print, agent: Agent | None = None) -> dict:
+        """Give every file that has only code its part of the game's data (see _data_plan)."""
+        proj, fp, cfg = self.get(slug)
+        self._modules(fp, cfg)  # (says why when the project isn't dtk-template)
+        with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)
+            fp.build_all()
+            return self._give_data(proj, fp, cfg, log, agent)
+
+    def _give_data(self, proj, fp: ForkProject, cfg: dict, log, agent: Agent | None, tried: list[str] = ()) -> dict:
+        """give_data, with the tree held alone and the project built. tried: the files that asked for it (link), so a
+        change that doesn't build isn't tried again for them."""
+        if tried:
+            fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+            fresh["data_tried"] = sorted(set(fresh.get("data_tried") or ()) | set(tried))
+            self._save_cfg(proj, fresh)
+            cfg["data_tried"] = fresh["data_tried"]
+        try:
+            plans = self._data_plan(fp, cfg)
+        except (NetworkError, OSError, ValueError) as e:
+            return {"files": [], "error": str(e)}
+        if not plans:
+            return {"files": []}
+        src = fp.src_dir()
+        before = int((fp.report().get("measures") or {}).get("matched_functions") or 0)
+        saved: dict[Path, str] = {}
+        given: list[str] = []
+        size = 0
+        try:
+            for mod, sp, parts in plans.values():
+                saved[mod.splits] = mod.splits.read_text(encoding="utf-8")
+                dtkdata.apply(sp.header, sp.files, parts)
+                mod.splits.write_text(sp.render(), encoding="utf-8")
+                given += [f"{src}/{name}" for name in parts]
+                size += sum(b - a for secs in parts.values() for a, b in secs.values())
+            log(f"giving {len(given)} file(s) their data ({size:,} bytes); the build splits the game again")
+            ok, out = fp.verify()
+            if not ok:
+                raise ForkError(f"the game didn't build identically with the files' data:\n{_tail(out)}")
+            fp.build_all()
+            after = int((fp.report().get("measures") or {}).get("matched_functions") or 0)
+            if after < before:
+                raise ForkError(f"{before - after} function(s) stopped matching once their files had their data")
+        except (ForkError, OSError, ValueError) as e:
+            for path, old in saved.items():
+                path.write_text(old, encoding="utf-8")
+            fp.verify()
+            fp.build_all()
+            log(f"the files keep only their code: {e}")
+            return {"files": [], "error": f"nothing was changed: {e}"}
+        paths = [p.relative_to(fp.root).as_posix() for p in saved]
+        self._commit_paths(proj, fp, paths, f"Give {len(given)} files their data ({size:,} bytes)\n\n"
+                           "Each file covered only its code; the data its functions use is now its own (in link order, "
+                           "the way the linker laid it out), so it can be compared and linked. The game still builds "
+                           "byte for byte.\n\nSplit by decompdecomp.")
+        self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+        self.sync(proj["slug"], log=lambda *_: None, rep=fp.report())
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], agent.id if agent else None, "files",
+                            f"{len(given)} files given their data ({size:,} bytes)")
+        log(f"{len(given)} file(s) now have their data")
+        return {"files": given, "bytes": size}
 
     # ------------------------------------------------------------------ source files for all the code
     # A stretch is cut into files of at most FILE_FUNCTIONS functions: a GameCube game's one stretch of 16,695 in one
