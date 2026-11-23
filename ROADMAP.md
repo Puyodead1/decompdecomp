@@ -231,6 +231,15 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
 
 ## Recently done
 
+- **Compiled objects are kept across searches and restarts.** The permuter compiles the same variant again (its
+  rewrites undo each other, a new turn starts from the same base) and a room's host compiles every attempt its members
+  send again: `compile_cache.py` keeps each object a function's compile built on disk in the data home, keyed by
+  everything that decides it (the compiler's pinned manifest and the SHA-256 of every program it runs, the whole
+  command line, the prelude, the shared header, the C, the extra header folders' files, the code that writes the
+  compiler's input). Objects only, never a verdict: a cached one is linked and judged byte for byte like a fresh one.
+  Entries are checksummed and written whole; a damaged one is a miss. Bounded by `DECOMP_OBJECT_CACHE_MB` (default
+  512, 0 off), least recently used first. ROM mode on every console whose compiler is pinned; project mode below.
+
 - **CodeWarrior's own libraries found in GameCube and Wii games.** Every GameCube and Wii game links CodeWarrior's
   runtime (`__save_gpr`, `__div2i`, the C++ runtime), MSL (its C library and fdlibm's math: `__pformatter`,
   `__two_exp`, `__ieee754_exp`) and most link MetroTRK, the debugger's kernel (`TRKDoWriteMemory`); none of it was in
@@ -1441,6 +1450,14 @@ note: a file's language (`set_file_language`), a template instance's name (`name
 In ROM and project rooms alike, a compiler range an agent suggests is checked (`app/rangecheck.py`) and kept on the
 host, but the range checks' results and the judge's compiler survey aren't shown on a member's screen: the member's
 Compilers panel says the host decides, with nothing of what the host found.
+
+### Compiled objects kept in project mode, and for WSL's and the VM's compilers
+
+The object cache (`compile_cache.py`) serves `compiler.compile_source`, which ROM mode uses for every compile. A
+project's attempts are built by the project's own build (ninja, make), one unit at a time, so a fork's permuter
+still compiles a variant it built before again: its key would be the unit's whole source after the edit and the
+unit's command. Compilers run in WSL or the macOS Linux VM, a kit the user brought, and a Linux game's library
+headers (folders no manifest pins) compile fresh every time too: fingerprinting their copies would include them.
 
 ### A list of open rooms (to investigate)
 

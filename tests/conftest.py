@@ -13,6 +13,9 @@ os.environ["DECOMP_DETECT_AGENTS"] = "off"
 # nothing a test runs opens a window on the user's screen (app/window.py), a browser tab (webbrowser), or a tray icon
 os.environ["DECOMP_WINDOW"] = "0"
 os.environ.setdefault("BROWSER", "true")
+# tests count compiles and change compilers under one key: one test's stored objects must not answer another's
+# (tests/test_compile_cache.py turns the persistent object cache on for itself)
+os.environ["DECOMP_OBJECT_CACHE_MB"] = "0"
 os.environ.setdefault("DECOMP_TRAY", "0")
 # and no git commit a test makes (in its throwaway projects) is signed: with the user's own commit.gpgsign, each one
 # waited on a passphrase prompt, and a whole test run hung behind one the user never saw (GIT_CONFIG_COUNT: git's
