@@ -195,3 +195,26 @@ def test_a_polishing_helper_cannot_go_decompiling(tmp_path, monkeypatch):
         assert tools._invoke(net, decompiler, 'game', 'compile_and_diff', {'function': 'f', 'source': ''}) == 'compiled'
     finally:
         manager.shutdown()
+
+
+def test_a_matching_helper_is_not_offered_polishings_queue(tmp_path):
+    """The other way round: claim_readable and make_readable went in every matching helper's tool definitions, every
+    turn, for work that takes it off its claimed function (RetroReversing ea54b2b06). An agent the app didn't start
+    (an MCP client, a room's member) keeps them."""
+    net, _ = _game(tmp_path, [('f', 10, 'open'), ('g', 10, 'matched')])
+    polisher, _ = net.local_agent('claude-polish')
+    decompiler, _ = net.local_agent('claude-1')
+    outside, _ = net.local_agent('elsewhere')
+    manager = Manager(net, tmp_path, 'http://localhost/mcp')
+    manager._record('game', 'claude', polisher.name, 'Polisher', {'task': 'readable'})
+    manager._record('game', 'claude', decompiler.name, 'Decompiler', {})
+    try:
+        for name in tool_policy.MATCHING_HIDDEN:
+            assert name in tools.project_tools(net, 'game', polisher)
+            assert name not in tools.project_tools(net, 'game', decompiler)
+            assert name in tools.project_tools(net, 'game', outside)
+        with pytest.raises(NetworkError, match='for helpers started to polish matched code'):
+            tools._invoke(net, decompiler, 'game', 'claim_readable', {})
+        assert 'MAKE READABLE: g' in tools._invoke(net, outside, 'game', 'claim_readable', {})
+    finally:
+        manager.shutdown()
