@@ -1036,3 +1036,27 @@ def test_decomp_permuter_reads_a_function_of_a_file_with_old_style_definitions()
     finally:
         gen.close()
     assert variants
+
+
+def test_a_files_declarations_are_read_in_time_whatever_the_file():
+    """Polishing a GameCube game's file held the whole app for minutes (no request answered, the room's members
+    cut off): every `{` that wasn't a function's body read the file before it for an old-style definition, with a
+    pattern that backtracked through every way of splitting each declaration's indentation. Eight indented
+    declarations after `(a, b)` took minutes alone."""
+    import time
+
+    from decompnet.app.forkengine import _without_bodies
+
+    head = "f(a, b)" + "".join(f"\n        u8 *v{i};" for i in range(24)) + "\n        int tail"
+    parts = [head, " = 1;\n"]
+    for k in range(400):
+        parts += [f"typedef struct S{k} {{\n    int a;\n    int b;\n}} S{k};\n",
+                  f"static int table{k}[4] = {{ 1, 2, 3, 4 }};\n",
+                  f"void f{k}(int x) {{\n    if (x) {{ g(x); }}\n}}\n"]
+    file = "".join(parts)
+    t = time.perf_counter()
+    header = _without_bodies(file)
+    assert time.perf_counter() - t < 2
+    assert "void f399(int x) ;" in header and "typedef struct S399 {\n    int a;" in header
+    # (an old-style definition still becomes its prototype)
+    assert _without_bodies("int Pause(arg0)\n    u8 arg0;\n    s32 b;\n{\n    return arg0;\n}\n") == "int Pause();\n"

@@ -604,7 +604,11 @@ MAX_HEADERS = 64  # headers permuter_header follows from one file
 
 
 # an old-style definition's head: its parameters by name, then their declarations (`f(a, b) u8 *a; s32 b;`)
-_OLD_STYLE = re.compile(r"\(\s*\w+(?:\s*,\s*\w+)*\s*\)(?:\s*[^;{}()]+;)+\s*$")
+# (possessive `\s*+`: with `\s*` before `[^;{}()]+`, which takes spaces too, a head that isn't one backtracked through
+# every way of splitting each declaration's indentation, and the polishing of a GameCube game's file held the app for
+# minutes: _without_bodies)
+_OLD_STYLE = re.compile(r"\(\s*+\w+(?:\s*+,\s*+\w+)*\s*+\)(?:\s*+[^;{}()]+;)+\s*$")
+OLD_STYLE_HEAD = 4096  # characters of a head looked at for an old-style definition: its parameters' declarations
 
 
 def _without_bodies(text: str) -> str:
@@ -612,21 +616,26 @@ def _without_bodies(text: str) -> str:
     a parser needs them to read one of its functions. An old-style definition becomes `f();`: its head cut short
     (`f(a, b) u8 *a; s32 b;`) is no declaration, and pycparser refused every function of a GameCube game's file
     that had two ("Syntax error in base.c"), so Deep search ended at once with nothing tried."""
-    clean, out, i, depth, start, old = csource._blank(text), [], 0, 0, None, None
+    # A head is read from the end of what came before at file scope (the last `}`), and at most OLD_STYLE_HEAD of it:
+    # each `{` read the whole file before it, twice over, and a file of 6,000 lines took minutes.
+    clean, out, i, depth, start, old, after = csource._blank(text), [], 0, 0, None, None, 0
     for k, c in enumerate(clean):
         if c == "{":
             if depth == 0:
-                head = clean[:k].rstrip()
+                at = max(after, k - OLD_STYLE_HEAD)
+                head = clean[at:k].rstrip()
                 if head.endswith(")"):  # a body, not a struct's or an initializer's
                     start, old = k, None
                 elif (m := _OLD_STYLE.search(head)) is not None:
-                    start, old = k, m
+                    start, old = k, at + m.start()
             depth += 1
         elif c == "}":
             depth -= 1
-            if depth == 0 and start is not None:
-                out += [text[i:old.start()] + "()" if old is not None else text[i:start], ";"]
-                i, start, old = k + 1, None, None
+            if depth == 0:
+                after = k + 1
+                if start is not None:
+                    out += [text[i:old] + "()" if old is not None else text[i:start], ";"]
+                    i, start, old = k + 1, None, None
     return "".join(out) + text[i:]
 
 
@@ -745,6 +754,13 @@ def _closer(rows: dict, before: dict, after: dict) -> float | None:
     steps = [(after[n] or 0) - (before[n] or 0) for n in opened]
     gain = sum(steps) / len(steps)
     return gain if gain >= CLOSER and sum(d > 0 for d in steps) * 2 > len(steps) else None
+
+
+def _problem_kind(m) -> str:
+    """What kind of difference objdiff's 100% didn't see, for the diff view's list."""
+    if getattr(m, "jump_table", False):  # (forks/jumptables.py)
+        return "a switch case goes elsewhere"
+    return "a reference differs" if isinstance(m, MappingConflict) else "a loaded constant differs"
 
 
 def progress_moved(before: dict | None, now: dict) -> str | None:
@@ -4475,7 +4491,7 @@ class ForkEngine:
                     self.net._record(fn, agent, score, code, 0)
                 if not matched:
                     undo()
-                    why = "loads other constants" if d.literals else f"is {percent_text(pct)}"
+                    why = f"isn't a match ({d.why_not()})" if d.literals else f"is {percent_text(pct)}"
                     return {"text": f"❌ {fn['name']} already matches; your version {why}, so the matching one was "
                                     "kept. Call claim_function for a function that still needs work.",
                             "score": score, "matched": False}
@@ -6019,7 +6035,8 @@ class ForkEngine:
         neither the source nor the object it built stays changed. Cached by what it was built from."""
         meta = self._meta(fn)
         unit = fp.unit(fn["unit"])
-        source = fn["best_source"]
+        # (with the renames made since: the old name of a global is undeclared now, and the best "didn't compile")
+        source = self._with_renames(proj["slug"], fn, fn["best_source"])
         names = self._names(meta, fn)
         _, span = self._find(source, names)
         if span:  # the definition alone: a polishing comment above it isn't placed again
@@ -6046,8 +6063,7 @@ class ForkEngine:
                         if d.match_percent is None:
                             out = {"kind": "best", "rows": None}
                         else:
-                            problems = [f"{'a reference differs' if isinstance(m, MappingConflict) else 'a loaded constant differs'}: "
-                                        f"{m.describe()}" for m in d.literals]
+                            problems = [f"{_problem_kind(m)}: {m.describe()}" for m in d.literals]
                             problems += [f"refers to `{mine}` where the original refers to `{orig}`"
                                          for orig, mine in d.renamed]
                             out = {"kind": "best", "rows": [list(r) for r in d.rows], "score": None,

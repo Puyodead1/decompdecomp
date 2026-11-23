@@ -69,6 +69,33 @@ def test_a_stored_best_follows_the_renames_made_since(tmp_path, monkeypatch):
     assert forks._with_renames("game", fn, None) is None
 
 
+def test_the_best_attempts_diff_builds_it_with_the_renames_made_since(tmp_path, monkeypatch):
+    """The diff view built a GameCube function's best as stored, and showed "The best attempt didn't compile":
+    undefined identifier, a global's old name."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from decompnet.network import NetworkError
+
+    placed = []
+
+    def place(proj, fp, unit, fn, source, names):
+        placed.append(source)
+        raise NetworkError("stop here")
+
+    forks = ForkEngine.__new__(ForkEngine)
+    forks._with_renames = lambda slug, fn, text: text.replace("D_80301234", "g_identity")
+    forks._place = place
+    forks._tree = lambda proj: SimpleNamespace(shared=nullcontext, exclusive=nullcontext)
+    forks._unit_lock = lambda proj, name: nullcontext()
+    forks._meta = lambda fn: {}
+    fp = SimpleNamespace(unit=lambda name: SimpleNamespace(name=name, complete=False, target=None))
+    fn = {"name": "EventSeq_Move", "unit": "u", "best_source": "void EventSeq_Move(void) { m = D_80301234; }"}
+    out = forks._best_diff({"slug": "game"}, fp, fn)
+    assert out["error"] == "stop here"
+    assert placed == ["void EventSeq_Move(void) { m = g_identity; }"]
+
+
 def test_a_rename_rewrites_the_stored_c_too(tmp_path):
     """ROM mode's rename rewrote every best attempt and matched C (network.rename_symbol); project mode's only the
     files, so the stale best went back into its file at the next claim."""
