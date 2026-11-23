@@ -34,6 +34,9 @@ from .symbols import AUTO_NAME, SymbolTable
 
 R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16 = 2, 4, 5, 6, 7
 _REF = re.compile(r"%(hi|lo|gp_rel)\(\s*([A-Za-z_.$][\w.$]*)\s*(?:([+-])\s*(0x[0-9A-Fa-f]+|\d+))?\s*\)")
+# spimdisasm's `%lo(sym + (0x12340 & 0xFFFF))`: an addend past 64 KB, masked, which alone names several addresses
+_MASKED_LO = re.compile(r"%lo\(\s*([A-Za-z_.$][\w.$]*)\s*([+-])\s*\(\s*(0x[0-9A-Fa-f]+|\d+)\s*&\s*(?:0x[fF]{4}|65535)"
+                        r"\s*\)\s*\)")
 _KIND = {"hi": 5, "lo": 6, "gp_rel": 7}
 _JUMPS = {"jal", "j"}
 # Bytes a load or store moves, by opcode (lwl/lwr/swl/swr read parts of words, so they don't say)
@@ -120,6 +123,16 @@ def target_from_split(fn: RomFunction, resolve: Callable[[str], int | None], big
                 addend = (int(num, 0) if num else 0) * (-1 if sign == "-" else 1)
                 relocs.append((off, _KIND[kind], (base + addend) & 0xFFFFFFFF))
             continue
+        if m := _MASKED_LO.search(ln.operands):
+            # the full address is the one a %hi before it names (`%hi(sym + 0x12340)`), when this instruction's
+            # own immediate is that address's low half: otherwise the address stays unknown (no relocation)
+            sym, sign, num = m.groups()
+            if (base := resolve(sym)) is not None:
+                addr = (base + int(num, 0) * (-1 if sign == "-" else 1)) & 0xFFFFFFFF
+                if (any(kind == R_MIPS_HI16 and at < off and a == addr for at, kind, a in relocs)
+                        and ln.word & 0xFFFF == addr & 0xFFFF):
+                    relocs.append((off, R_MIPS_LO16, addr))
+            continue
         if ln.mnemonic in _JUMPS:
             op = ln.operands.strip()
             if label := re.fullmatch(r"\.?L([0-9A-Fa-f]{8})", op):  # not a function named L... (`j LoadBTF`)
@@ -132,9 +145,35 @@ def target_from_split(fn: RomFunction, resolve: Callable[[str], int | None], big
     return RomTarget(fn.name, fn.vram, code, relocs, big_endian, gp)
 
 
+def _adjacent_low_address(high: int, low: int) -> int | None:
+    """The address a `lui reg, hi` and the load, store or addiu right after it through the same register make."""
+    register = (high >> 16) & 31
+    if high >> 26 != mips.LUI or not register or (low >> 21) & 31 != register:
+        return None
+    if low >> 26 != mips.ADDIU and low >> 26 not in _WIDTH:
+        return None
+    return (((high & 0xFFFF) << 16) + mips.signed_immediate(low)) & 0xFFFFFFFF
+
+
+def _display_relocs(t: RomTarget) -> list[tuple[int, int, int]]:
+    """A target imported before masked %lo annotations were read lacks the %lo of a pair: its diff showed the low
+    half as a number against the candidate's relocation. Only for the diff (the linked target stays as stored), and
+    only where the raw pair right after the annotated %hi proves the address."""
+    result = list(t.relocs)
+    taken = {off for off, _, _ in result}
+    for off, kind, addr in t.relocs:
+        if kind != R_MIPS_HI16 or off % 4 or off + 8 > len(t.code) or off + 4 in taken:
+            continue
+        high = int.from_bytes(t.code[off:off + 4], t.order)
+        low = int.from_bytes(t.code[off + 4:off + 8], t.order)
+        if _adjacent_low_address(high, low) == addr:
+            result.append((off + 4, R_MIPS_LO16, addr))
+    return sorted(result)
+
+
 def canonical_target(t: RomTarget, symbols: SymbolTable) -> FunctionObj:
     relocs = []
-    for off, rtype, addr in t.relocs:
+    for off, rtype, addr in _display_relocs(t):
         name, residual = symbols.name_at(addr)
         if t.vram <= addr < t.vram + len(t.code):
             name, residual = t.name, addr - t.vram

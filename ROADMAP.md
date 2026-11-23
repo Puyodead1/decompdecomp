@@ -312,6 +312,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **A masked `%lo` is read as the relocation it is.** spimdisasm writes the low half of an address 64 KB or more
+  past its symbol as `%lo(sym + (0x12340 & 0xFFFF))`, which the ROM target didn't read: the diff showed it as a
+  number against the candidate's relocation (a copied 251-instruction function scored 62 for 2 wrong words). It's
+  read when a `%hi` before it names the full address and its own bits agree; a target imported before shows the
+  pair completed in its diff only.
+
 - **A helper in a section of its own is relocated before it's compared.** The ROM judge compares a region the
   candidate defines with the ROM's bytes, but applied only the pointers in it: a helper the compiler kept in a
   section of its own (C++'s inline functions in `.gnu.linkonce.t.*`, a function with `-ffunction-sections`)
