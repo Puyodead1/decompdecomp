@@ -338,7 +338,34 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
         raise NetworkError("send the function's definition as `source`, or `edits` to change your last C of it")
     if len(names) <= 1:
         return net.compile_and_diff(agent, names[0] if names else function, source, slug)
+    _one_function_or_a_batch(net, agent, slug, names)
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
+
+
+def _one_function_or_a_batch(net: RomNetwork, agent: Agent, slug: str, names: list[str]) -> None:
+    """Several names in compile_and_diff's `function` are a batch the agent claimed together. A small model put the
+    function's callees and data there ("func_A, func_B, D_8010..."), got an error per name it couldn't act on, and gave
+    the function up without compiling it once: say what `function` held and how to send it instead."""
+    held = None
+    if net.links.get(slug) is None:  # (in a room the host holds the claims)
+        held = {r["name"] for r in net.store.all(
+            "SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id JOIN projects p ON p.id=f.project_id "
+            "WHERE c.agent_id=? AND p.slug=?", agent.id, slug)}
+    strays = []
+    for name in names:
+        try:
+            resolved = net.resolve_function(agent, slug, name)
+        except NetworkError:
+            strays.append(name)  # (data, or nothing of this game's)
+            continue
+        if held is not None and resolved not in held:
+            strays.append(name)
+    if strays:
+        listed = ", ".join(names[:4]) + (", …" if len(names) > 4 else "")
+        raise NetworkError(f"`function` names {len(names)} things ({listed}), and you don't hold "
+                           f"{', '.join(strays[:4])}: give only the function you're compiling, and declare its "
+                           "callees and data inside `source`. Nothing was compiled; send it again. (Several names "
+                           "are for a batch of functions you claimed together.)")
 
 
 def _add_note(net: RomNetwork, agent: Agent, slug: str, text: str, function: str = "") -> str:
