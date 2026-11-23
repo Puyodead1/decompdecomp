@@ -47,8 +47,10 @@ def test_a_build_set_up_on_windows_is_found_out_on_linux(tmp_path, monkeypatch):
     root = _project(tmp_path, fixes=True)
     win = r"C:\Users\someone\AppData\Local\Programs\decompdecomp\python\pythonw.exe"
     (root / "build.ninja").write_text(f"rule cl\n  command = $\n      {win} $\n      tools/compile.py --output $out\n")
-    monkeypatch.setattr(project_mod.os, "name", "posix")
-    why = ForkProject(root).build_problem()
+    project = ForkProject(root)
+    with monkeypatch.context() as m:  # (only for the check: on Windows, os.name "posix" makes every new Path a
+        m.setattr(project_mod.os, "name", "posix")  # PosixPath, which can't be made there)
+        why = project.build_problem()
     assert why is not None and win in why
     wrapped = f"rule cc\n  command = $\n      {GONE} $\n      tools/x.py\n"  # (wrapped, on Linux too)
     (root / "build.ninja").write_text(wrapped)

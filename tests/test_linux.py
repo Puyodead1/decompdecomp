@@ -1281,7 +1281,7 @@ def test_a_librarys_include_folders_are_where_its_users_include_from(tmp_path):
                           "libs/ois/includes"}
     assert "libs/boost_1_36_0/boost" not in found and not any("Tools" in f for f in found)
     # a library's own sources: not its tests', examples' or tools' (boost's 4,698 files are mostly those)
-    sources = {str(p.relative_to(tmp_path / "libs")) for lib in libraries.library_folders(tmp_path)
+    sources = {p.relative_to(tmp_path / "libs").as_posix() for lib in libraries.library_folders(tmp_path)
                for p in libraries.library_sources(lib)}
     assert sources == {"boost_1_36_0/libs/thread/src/thread.cpp", "ogre/OgreMain/src/OgreRoot.cpp",
                        "lua-5.1.4/src/lapi.c", "tinyxml/tinyxml.cpp"}

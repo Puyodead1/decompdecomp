@@ -7,7 +7,8 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const base = fs.readFileSync(path.join(__dirname, "../src/decompnet/app/static/js/base.js"), "utf8");
+const base = fs.readFileSync(path.join(__dirname, "../src/decompnet/app/static/js/base.js"), "utf8")
+  .replace(/\r\n/g, "\n");  // (a Windows checkout's lines end in \r\n: `take` looks for "\n}\n")
 const take = (name) => base.slice(base.indexOf(`function ${name}(`), base.indexOf("\n}\n", base.indexOf(`function ${name}(`)) + 2);
 const esc = base.match(/^const esc = .*$/m)[0];
 
