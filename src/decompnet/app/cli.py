@@ -152,8 +152,6 @@ def _open_when_ready(port: int) -> None:
 
 
 def run(args) -> int:
-    import uvicorn
-
     from . import cleanup
     from .engine import RomNetwork
     from .server import build
@@ -209,13 +207,20 @@ def run(args) -> int:
     if not restarted or restarted.get("window", True):
         _open_when_ready(port)
     try:
-        uvicorn.Server(server_config(app)).run(sockets=[sock])
+        serve_app(app, sock)
     except Exception:  # quit_app ends the process at once: say why first, or the app just vanishes
         log.exception("the server stopped")
         traceback.print_exc()
     finally:
         quit_app()
     return 0
+
+
+def serve_app(app, sock: socket.socket) -> None:
+    """Serve the window and the helpers' MCP on the socket _listen reserved."""
+    import uvicorn
+
+    hostenv.run_server(uvicorn.Server(server_config(app)), sockets=[sock])
 
 
 def server_config(app):
