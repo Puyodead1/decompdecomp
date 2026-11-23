@@ -11,7 +11,7 @@ function element() {
   return {
     disabled: false, hidden: false, value: "", checked: true, files: [], textContent: "", innerHTML: "", attrs: {}, dataset: {}, children: [],
     setAttribute(key, value) { this.attrs[key] = value; },
-    append(child) { this.children.push(child); },
+    append(...children) { this.children.push(...children); },
     before(child) {
       if (child.className === "workbar") this.bar = child;
       child.previousElementSibling = this.previousElementSibling; this.previousElementSibling = child;
@@ -58,6 +58,7 @@ function setup(file, marker, end, logId, buttonId, ranges = "") {
     renderHost() {}, renderTools() {}, renderStats() {}, renderSource() {}, renderProjectSettings() {},
     showAgentsPage() {}, loadState: async () => {}, refreshMap: async () => {},
     sleep: async () => {},
+    setTimeout: (fn) => 0, clearTimeout() {},  // a Copy button's "Copied" reverts later; the test needn't wait
     api(url) {
       if (url.startsWith("/api/job?")) { polls++; return poll.promise; }
       if (url.startsWith("/api/project?") || url.startsWith("/api/collab?")) return Promise.resolve({});
@@ -216,14 +217,45 @@ async function main() {
   copyTest.ctx.showJobError(copyTest.log, "setup step failed: make\nMissing preprocessor.\n\nBuild output:\n" + raw);
   assert.equal(copyTest.log._errorBox.textContent, "setup step failed: make");
   assert.equal(copyTest.log.textContent.split("mips-linux-gnu-cpp: missing").length - 1, 1);
-  assert.equal(copyTest.log._copyToolbar.children[0].textContent, "Job log");
-  const toolbar = copyTest.log._copyToolbar;
-  await toolbar.children[1].onclick();
+  // Every log box's own Copy button (the shared component) copies what the box shows and says so.
+  const copyButton = element(); copyButton.textContent = "Copy";
+  assert.equal(await copyTest.ctx.copyJoblog(copyTest.log, copyButton), true);
   assert.equal(copied, copyTest.log.textContent);
   assert.ok(copied.includes("Missing preprocessor."));
+  assert.equal(copyButton.textContent, "Copied");
+  assert.equal(copyButton.dataset.state, "done");
   copyTest.ctx.showJobError(copyTest.log, "");
-  assert.equal(toolbar.hidden, true);
   assert.equal(copyTest.log.textContent, "");
+  // A log box on the page gets its frame and Copy button once; status lines and bars go beside the frame, not in it.
+  {
+    const pre = element(); let replacement = null;
+    pre.parentNode = {}; pre.replaceWith = (node) => { replacement = node; };
+    copyTest.ctx.frameJoblog(pre);
+    const frame = replacement;
+    assert.equal(frame.className, "joblog-frame");
+    assert.equal(pre._frame, frame);
+    assert.equal(frame.children[0], pre);
+    assert.equal(frame.children[1].className, "joblog-copy");
+    pre.replaceWith = () => assert.fail("a framed log is framed again");
+    copyTest.ctx.frameJoblog(pre);
+  }
+  {
+    const pre = element(), frame = element(); pre._frame = frame;
+    copyTest.ctx.beginWork(pre, "Working")();
+    assert.ok(frame.bar && !pre.bar);
+    copyTest.ctx.showJobError(pre, "failed");
+    assert.ok(pre._errorBox && frame.previousElementSibling === pre._errorBox);
+    const button = element(); button.textContent = "Copy"; pre.textContent = "build output";
+    await copyTest.ctx.copyJoblog(pre, button);
+    assert.equal(copied, "build output");
+  }
+  // A failed copy says so and leaves the button as it was.
+  copyTest.ctx.copyText = async () => false;
+  let warned = null; copyTest.ctx.toast = (text, kind) => { warned = kind; };
+  const failButton = element(); failButton.textContent = "Copy";
+  assert.equal(await copyTest.ctx.copyJoblog(copyTest.log, failButton), false);
+  assert.equal(failButton.textContent, "Copy");
+  assert.equal(warned, "err");
   // A range-only compiler setting remains immediate and has no progress bar.
   const range = setup(...cases[10], "0x1000-0x2000");
   const running = range.ctx.run();
