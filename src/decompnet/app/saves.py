@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -36,7 +38,10 @@ FORMAT = 1
 MANIFEST = "decompdecomp.json"
 SAVE_FOLDER = "progress"  # in the project's folder, unless the user picks another
 SET_ASIDE_META = ("asm_code", "not_c", "asm_twin")  # why an agent or user set a function aside
-SOURCE_COMPONENT_BYTES = 249  # leaves room for the publisher's .c.tmp suffix under common 255-byte limits
+SOURCE_COMPONENT_BYTES = 249  # under common 255-byte limits (it once left room for a `.c.tmp` suffix: kept, since
+# changing it would rename the files of long names in existing saves)
+TEMPORARY_NAME_BYTES = 6  # a write's own temporary file, `.<12 hex digits>.tmp` (_replace_text)
+REPLACE_TRIES, REPLACE_WAIT_SECONDS = 50, 0.02  # ~1 s for another write's rename onto the same file to finish
 SOURCE_PREFIX_BYTES = 80  # readable hint; the SHA-256 suffix distinguishes symbols with the same prefix
 GIT_TIMEOUT = 300
 log = logging.getLogger("decompdecomp")
@@ -46,7 +51,7 @@ def _source_file(name: str) -> str:
     """Keep C++ template symbols intact, but fit their source files on Windows and Unix filesystems.
 
     The layout retains the full symbol; its digest makes the shortened filename stable across computers and
-    different from another template with the same prefix. Leave room for the publisher's .c.tmp suffix.
+    different from another template with the same prefix.
     """
     if len(name.encode("utf-8")) <= SOURCE_COMPONENT_BYTES:
         return name + ".c"
@@ -211,10 +216,39 @@ def _publish(folder: Path, files: dict[str, str], previous: dict[str, str] | Non
         if path.exists() and path.read_text(encoding="utf-8") == text:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        _replace_text(path, text)
     return True
+
+
+def _replace_text(path: Path, text: str) -> None:
+    """Write `path` whole through a temporary file of this write's own, then rename it into place.
+
+    Every save wrote `<name>.tmp`: two saves of one project at once opened the same temporary file, each writing from
+    the start through its own handle, so a shorter manifest written over a longer one kept the longer one's last bytes.
+    A ROM project's decompdecomp.json ended in a stray `}`, and every later sync refused it ("Extra data"). The name is
+    random and short (it fits beside a long source name) and still ends in .tmp; created with 0666, so the umask, not
+    the temporary file, sets the saved file's permissions. Text mode, like write_text: Windows saves keep CRLF."""
+    while True:
+        temporary = path.with_name(f".{secrets.token_hex(TEMPORARY_NAME_BYTES)}.tmp")
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:  # Windows refuses a rename onto a file another write is renaming onto right now
+                if attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(REPLACE_WAIT_SECONDS)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _manifest_revision(manifest: dict) -> int:
