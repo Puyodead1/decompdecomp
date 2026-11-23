@@ -119,6 +119,15 @@ def test_the_function_view_opens_on_best_and_switches_to_latest_after_a_manual_c
                    capture_output=True, text=True, encoding='utf-8', timeout=GUI_TIMEOUT_SECONDS)
 
 
+def test_a_helpers_log_keeps_each_line_once():
+    """Two polls in flight at once (the timer's and one after a click) both answered with the same lines of a helper's
+    log, and the page added both, so a local model's every step showed two or three times (tests/gui_agent_log.js)."""
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_agent_log.js"))], check=True,
+                   capture_output=True, text=True, encoding='utf-8', timeout=GUI_TIMEOUT_SECONDS)
+
+
 @pytest.fixture(scope="module")
 def gui():
     if NODE is None:
