@@ -866,3 +866,31 @@ def test_you_choose_close_c_for_the_plain_build(tmp_path, monkeypatch):
         raise AssertionError("no C was kept")
     except network.NetworkError as e:
         assert "no C yet" in str(e)
+
+
+def _matched_meanwhile(net, monkeypatch, fid):
+    """_expire_claims runs first inside a claim's transaction: a helper's match landing just before it."""
+    real = net._expire_claims
+
+    def expire(db):
+        real(db)
+        db.execute("UPDATE functions SET status='matched', best_score=0 WHERE id=?", (fid,))
+    monkeypatch.setattr(net, "_expire_claims", expire)
+
+
+def test_a_quick_try_does_not_claim_a_function_matched_after_it_was_read(tmp_path, monkeypatch):
+    """Autopilot's and a project's quick tries read the function, then claimed it in a transaction of their own: a
+    match between the two let a late draft hold, and be judged on, a function already done (RetroReversing
+    7459ce9eb)."""
+    net, _ = _game(tmp_path, [("f", 4, "open"), ("g", 4, "open")])
+    auto, _ = net.local_agent("autopilot")
+    fn = net._function("f", "game")
+    _matched_meanwhile(net, monkeypatch, fn["id"])
+    with pytest.raises(NetworkError, match="no longer open"):
+        net._try_quietly(auto, net.store.one("SELECT * FROM projects"), fn, "int f(void) { return 0; }")
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
+    assert net.store.one("SELECT COUNT(*) AS n FROM attempts")["n"] == 0
+    # project mode's hold for a try reads it again too
+    _matched_meanwhile(net, monkeypatch, net._function("g", "game")["id"])
+    assert net.forks._hold_for_try("game", "g", auto) is None
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
