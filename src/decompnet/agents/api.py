@@ -64,6 +64,13 @@ FOLDED = 2  # messages a fold leaves: one call and its result
 ANTHROPIC_MAX_TOKENS = 16000
 ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ANTHROPIC_BETAS = ["thinking-binding-controls-2026-08-01"]
+# Which models take which thinking: the Claude 5 models' thinking is bound to the conversation it was made in (the
+# binding beta and `drop_block` above); older ones with adaptive thinking (4.6 on) take it plain, and refuse the beta's
+# setting; Claude 3 and 4.0-4.5 (by name or dated snapshot) have no adaptive thinking, and get no thinking settings.
+ANTHROPIC_BOUND = re.compile(r"^claude-(?:fable|mythos|(?:opus|sonnet|haiku)-5)")
+ANTHROPIC_NO_ADAPTIVE = re.compile(r"^claude-(?:3|instant)|-4(?:-[0-5])?(?:-\d{8})?$")
+# The result a tool call gets when its own never came: the API refuses a request with a call left unanswered
+ANTHROPIC_NO_RESULT = "error: no result: the session was interrupted before this call finished"
 ANTHROPIC_RETRIES = 3
 # Dollars per million tokens (input, output, cache read) of Anthropic's models, so the budget in Settings stops an
 # Anthropic key's helpers too (the API says tokens, not dollars). A cache write costs 1.25 times the input (its 5-minute
@@ -459,17 +466,51 @@ def anthropic_request(model: str, messages: list[dict], schema: list[dict], effo
         else:
             out.append({"role": "user", "content": m.get("content") or ""})
     flush()
+    _pair(out)
     request = {"model": model, "max_tokens": ANTHROPIC_MAX_TOKENS, "messages": out,
                "system": "\n\n".join(m["content"] for m in messages if m["role"] == "system"),
                "tools": [{"name": t["function"]["name"], "description": t["function"]["description"],
                           "input_schema": t["function"]["parameters"]} for t in schema],
-               "tool_choice": {"type": "auto"}, "cache_control": {"type": "ephemeral"},
-               "thinking": {"type": "adaptive", "display": "summarized",
-                            "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
-               "betas": ANTHROPIC_BETAS}
+               "tool_choice": {"type": "auto"}, "cache_control": {"type": "ephemeral"}}
+    if ANTHROPIC_BOUND.search(model):
+        request["thinking"] = {"type": "adaptive", "display": "summarized",
+                               "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
+        request["betas"] = ANTHROPIC_BETAS
+    elif not ANTHROPIC_NO_ADAPTIVE.search(model):
+        request["thinking"] = {"type": "adaptive", "display": "summarized"}
     if effort:
         request["output_config"] = {"effort": effort if effort in ANTHROPIC_EFFORTS else "low"}
     return request
+
+
+def _pair(turns: list[dict]) -> None:
+    """Every tool call answered in the turn after it, and no result without its call, as the Messages API requires
+    (it refuses the whole request otherwise, a 400 the helper can't get past): a call cut off before its result gets
+    one saying so (ANTHROPIC_NO_RESULT), and a result whose call is gone (folded or trimmed away) is dropped."""
+    def calls(turn: dict | None) -> list:
+        if turn is None or turn["role"] != "assistant" or not isinstance(turn["content"], list):
+            return []
+        return [b.get("id") for b in turn["content"] if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+    i = 0
+    while i < len(turns):
+        ids = calls(turns[i])
+        if ids:
+            nxt = turns[i + 1] if i + 1 < len(turns) else None
+            if nxt is None or nxt["role"] != "user" or not isinstance(nxt["content"], list):
+                nxt = {"role": "user", "content": []}
+                turns.insert(i + 1, nxt)
+            have = {b.get("tool_use_id") for b in nxt["content"] if b.get("type") == "tool_result"}
+            nxt["content"][:0] = [{"type": "tool_result", "tool_use_id": x, "content": ANTHROPIC_NO_RESULT,
+                                   "is_error": True} for x in ids if x not in have]
+        elif turns[i]["role"] == "user" and isinstance(turns[i]["content"], list):
+            asked = set(calls(turns[i - 1] if i else None))
+            turns[i]["content"] = [b for b in turns[i]["content"]
+                                   if b.get("type") != "tool_result" or b.get("tool_use_id") in asked]
+            if not turns[i]["content"]:
+                turns.pop(i)
+                continue
+        i += 1
 
 
 def _anthropic_blocks(m: dict) -> list[dict]:
