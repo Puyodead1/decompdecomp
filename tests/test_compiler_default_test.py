@@ -156,6 +156,31 @@ def test_commit_rejects_concurrent_changes(net, monkeypatch):
     assert net._project('game')['config'] == proj['config']
 
 
+def test_a_helper_saving_an_attempt_mid_check_is_rescored_not_refused(net, monkeypatch):
+    """A helper saving a better attempt during the check only makes that function's score stale: the change is
+    saved and the newer attempt is judged again with the new settings."""
+    from decompnet.app.compiler_cleanup import commit_config
+
+    proj = net._project('game')
+    proposed = copy.deepcopy(net.cfg(proj))
+    proposed['compiler_ranges'] = []  # f2 and f3 move from -O1 to the default -O2
+    judged = []
+
+    def judge(proj, fn, tc, flags, source):
+        judged.append((fn['name'], source, flags))
+        if fn['name'] == 'f3' and source == 'draft':
+            with net.store.tx() as db:
+                db.execute("UPDATE functions SET best_source='better', best_score=3, attempts=attempts+1 WHERE name='f3'")
+        return True, NS(score=7 if source == 'better' else 40), ''
+
+    monkeypatch.setattr(net, '_judge_with', judge)
+    commit_config(net, proj, proposed)
+    assert net.cfg(net._project('game'))['compiler_ranges'] == []
+    f3 = net.store.one("SELECT * FROM functions WHERE name='f3'")
+    assert f3['best_source'] == 'better' and f3['best_score'] == 7  # not the old attempt's 40, nor the old settings' 3
+    assert judged[-1] == ('f3', 'better', ['-O2'])
+
+
 def test_replace_default_preserves_failed_matches_and_other_profiles(net, monkeypatch):
     from decompnet.project import compiler_for
 
