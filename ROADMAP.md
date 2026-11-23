@@ -312,6 +312,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **N64 code a boot stub maps through the TLB is found.** splat filed such a stub and all the compiled code after
+  it as one main segment at the boot address, where the code's calls land on nothing: hundreds of functions became
+  one, set aside for the stub's COP0 instructions. The code after a stub that writes the TLB and returns becomes a
+  segment of its own at the address its calls agree on, when one address made by known code clearly wins; any
+  other layout stays as splat made it. A project imported before gets it by a reimport.
+
 - **N64 code found later keeps its long last function whole.** A code segment found outside the main one ended at
   its last return rounded up to 16 bytes; when the search stopped inside a long function, that rounding kept its
   first instructions and its body went to a bin no one saw. The segment is completed to that function's return

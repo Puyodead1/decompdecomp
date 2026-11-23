@@ -102,7 +102,11 @@ def segments_from_config(path: Path) -> list[Segment]:
     """Code segments (ROM range + load address) from a splat config."""
     import yaml
 
-    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return segments_from_config_data(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def segments_from_config_data(cfg: dict) -> list[Segment]:
+    """segments_from_config of a splat config already read."""
     raw = cfg.get("segments", [])
 
     def start_of(seg):

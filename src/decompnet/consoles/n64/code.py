@@ -297,6 +297,68 @@ def unpack_code(rom: bytes) -> list[tuple[int, bytes]]:
     return sorted(found)
 
 
+# ---------------------------------------------------------------------------------------------- the boot stub
+
+BOOT_CALLED_FRAMES = 8  # calls landing on stack frames a load address needs before main is moved to it
+BOOT_ADVANTAGE = 4  # ... and how many times more than any other address
+BOOT_BYTES = 0x1000  # the longest boot stub, from the entry point
+TLBWI = 0x42000002  # tlbwi: the stub maps the address the code after it runs at
+
+
+def separate_boot(config: Path, rom: bytes, found: list[tuple[int, int, int]], log=print) -> bool:
+    """A game whose start-up code maps its code through the TLB and returns: splat's create_config files the stub and
+    all the compiled code after it as one main segment at the boot address, the code's calls land on nothing there,
+    and hundreds of functions are one assembly function (the stub's COP0 instructions set it aside). The code after
+    the stub becomes a segment of its own at the address its calls agree on, only in splat's plain layout (main
+    right after entry, nothing else said about it), only when one address beats every other one made by known code
+    (BOOT_CALLED_FRAMES calls on frame starts, BOOT_ADVANTAGE times more), and only right after a stub that writes
+    the TLB and returns. Returns whether the config changed."""
+    import yaml
+
+    cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
+    segments = split.segments_from_config_data(cfg)
+    entry = next((s for s in segments if s.name == "entry"), None)
+    main = next((s for s in segments if s.name == "main"), None)
+    if entry is None or main is None or not (0x1000 <= entry.rom_start < main.rom_start < 0x2000):
+        return False
+    raw = next(s for s in cfg["segments"] if isinstance(s, dict) and s.get("name") == "main")
+    old = main.vram - main.rom_start
+    if (raw.get("follows_vram") != "entry" or entry.vram - entry.rom_start != old or raw.get("bss_size")
+            or raw.get("subsegments") != [[main.rom_start, "c", "main"]]
+            or not main.rom_end <= len(rom) or (main.rom_end - main.rom_start) % 4):
+        return False
+    words = struct.unpack(f">{(main.rom_end - main.rom_start) // 4}I", rom[main.rom_start:main.rom_end])
+    frames = {main.rom_start + i * 4 for i, w in enumerate(words) if is_frame(w)}
+    calls = set(jal_targets(words, main.vram))
+    mappings = {v - s for s, _, v in found} | {s.vram - s.rom_start for s in segments if s.name not in ("entry", "main")}
+    scores = collections.Counter({m: sum(at + m in calls for at in frames) for m in mappings | {old}})
+    ranked = scores.most_common()
+    mapping, hits = ranked[0]
+    if (mapping == old or hits < BOOT_CALLED_FRAMES or hits < BOOT_ADVANTAGE * max(1, scores[old])
+            or len(ranked) > 1 and hits < BOOT_ADVANTAGE * max(1, ranked[1][1])):
+        return False
+    called = sorted(t - mapping for t in calls if main.rom_start <= t - mapping < main.rom_end)
+    if not called:
+        return False
+    start = called[0]  # (the first thing called: a leaf before the first frame stays in the code, never the stub)
+    index = (start - main.rom_start) // 4
+    if (start not in frames or start - entry.rom_start > BOOT_BYTES or index < 2 or words[index - 2] != JR_RA
+            or TLBWI not in words[:index] or any(is_frame(w) for w in words[:index])):
+        return False
+    vram, end_vram = start + mapping, main.rom_end + mapping
+    others = [(s.vram, s.vram + s.rom_end - s.rom_start) for s in segments if s.name != "main"]
+    others += [(main.vram, main.vram + start - main.rom_start), *((v, v + e - s) for s, e, v in found)]
+    if any(lo < end_vram and vram < hi for lo, hi in others):
+        return False
+    name = f"code_{vram:08X}"
+    cfg["segments"].insert(cfg["segments"].index(raw) + 1, {"name": name, "type": "code", "start": start,
+                                                            "vram": vram, "subsegments": [[start, "c", name]]})
+    config.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=None), encoding="utf-8")
+    log(f"separated the boot code from {main.rom_end - start} bytes of code it maps to 0x{vram:08X} "
+        f"({hits} calls agree)")
+    return True
+
+
 # ---------------------------------------------------------------------------------------------- into splat's config
 
 def add_segments(config: Path, workdir: Path, image: str, log=print) -> str:
@@ -323,6 +385,7 @@ def add_segments(config: Path, workdir: Path, image: str, log=print) -> str:
         log(f"unpacked {len(packed)} compressed code block{'s' if len(packed) != 1 else ''} ({kib} KiB)")
     taken = split.code_ranges(config)
     found = find_segments(rom, taken, tuple(s.rom_end for s in split.segments_from_config(config))) if taken else []
+    separate_boot(config, rom, found, log)
     if not found:
         return original
     cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
