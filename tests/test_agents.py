@@ -1840,3 +1840,30 @@ def test_a_long_diff_comes_a_page_at_a_time(tmp_path):
     assert f"rows 0-{network.LAST_DIFF_PAGE - 1} of {len(rows)}" in first and f"start={network.LAST_DIFF_PAGE}" in first
     rest = net.last_diff(agent, "f0", "game", 0, network.LAST_DIFF_PAGE)
     assert f"mov eax, {len(rows) - 1}" in rest and "more:" not in rest and "mov eax, 3 " not in rest
+
+
+def test_a_helper_whose_compiler_isnt_installed_pauses_instead_of_spending_turns(tmp_path, monkeypatch):
+    """Every compile said the project's compiler wasn't installed, and the helper went on trying other C for its whole
+    (paid) session, then started another. It pauses at the first such compile, until the user installs it; trying
+    another compiler on purpose (try_compiler) doesn't."""
+    _no_agent_settings(monkeypatch)
+    net = _game(tmp_path)
+    m = agents.Manager(net, tmp_path, URL)
+    s = m._record("game", "claude", "claude-1", "claude-1", {})
+    s.stop = Quick()
+    agent, _ = net.local_agent(s.agent_name)
+    missing = ("error: toolchain 'gcc-2.7.2-kmc' is not installed: install it in decompdecomp, under Compilers & "
+               "tools")
+    runs = []
+
+    def run(session, token, workdir):
+        runs.append(1)
+        m.record_tool(agent, "game", "try_compiler", {}, missing)  # (another compiler, on purpose)
+        assert session.state == "working" and not session.stop.is_set()
+        m.record_tool(agent, "game", "compile_and_diff", {"function": "f0"}, missing)
+        return True
+
+    monkeypatch.setattr(m, "_run_cli", run)
+    m._run(s)
+    assert runs == [1] and s.state == "paused" and "gcc-2.7.2-kmc" in s.why and "Install it" in s.todo
+    assert [r["outcome"] for r in net.store.all("SELECT outcome FROM helper_sessions")] == ["paused"]

@@ -126,6 +126,10 @@ GIVEN_UP_RETRY = 10 * 60
 CONNECTION_CHECK_TIMEOUT = 15
 CONNECTION_WAIT_FIRST = 5
 CONNECTION_WAIT_LONGEST = 60
+# The tools that compile with the project's own compiler (try_compiler and search_flags try others on purpose): one
+# that says it isn't installed can't work until the user installs it, so the helper pauses instead of spending turns
+COMPILING_TOOLS = frozenset({"compile_and_diff", "make_readable", "redraft", "edit_file"})
+_NO_TOOLCHAIN = re.compile(r"toolchain '[\w.+-]+' is not installed: install it in decompdecomp, under Compilers & tools")
 PREP_WAIT = 15 * 60  # longest wait for start_files before the helpers start anyway
 ORDER_WAIT = 2 * 60  # longest wait for the twins' first ordering
 STOP_GRACE = 5  # seconds between asking a helper's processes to end (SIGTERM) and ending them (SIGKILL)
@@ -1280,6 +1284,10 @@ class Manager:
                 s.error = f"{type(e).__name__}: {e}"
                 s.push("error", s.error)
                 ok = False
+            if s.state == "paused" and s.stop.is_set():  # (paused during the session: _pause_for_toolchain)
+                self._session_end(s, row, agent, began, "paused")
+                s.record = None
+                break
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = "the session ended without compiling anything (its messages are in its details)"
                 s.push("error", s.error)
@@ -1425,6 +1433,21 @@ class Manager:
         if s is not None:
             s.record("call", {"tool": name, "arguments": args})
             s.record("result", said)
+        if name in COMPILING_TOOLS and said.startswith("error:") and (m := _NO_TOOLCHAIN.search(said)):
+            self._pause_for_toolchain(agent, slug, m.group(0))
+
+    def _pause_for_toolchain(self, agent, slug: str, why: str) -> None:
+        """The project's compiler isn't installed: every compile of the helper's would say so, and it spent its
+        session's turns (paid ones) on trying other C. Its session ends, and it pauses until the user installs it."""
+        with self._lock:
+            s = next((x for x in self.sessions.values() if x.agent_name == agent.name and x.slug == slug), None)
+            if s is None or s.state != "working" or s.stop.is_set():
+                return
+            s.stop.set()
+            s.error = why
+            self._pause(s, why, "Install it, then press Start on this helper.")
+            if s.proc is not None and s.proc.poll() is None:
+                _terminate(s.proc)
 
     def transcript(self, sid: str, session: int = 0, after: int = 0) -> dict:
         s = self.sessions.get(sid)
