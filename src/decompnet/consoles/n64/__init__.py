@@ -1,7 +1,8 @@
 """Nintendo 64: the VR4300's MIPS (big-endian), KMC GCC, IDO and SN64 GCC, ROM mode.
 
 - rom.py: the ROM file: its byte order (.z64, .v64, .n64), header and a first guess at the compiler.
-- code.py: code splat's own look misses: segments the game loads later, and code kept compressed in the ROM.
+- code.py: code splat's own look misses: segments the game loads later, code kept compressed in the ROM, and code
+  a TLB boot stub maps elsewhere.
 - guides/: what agents read about the N64 and its compilers (KMC, IDO, SN64 and GCC variants).
 
 Its demo game is projects/demo-rom (the Demo Quest game in projects/demo-n64/original, built with KMC GCC).
