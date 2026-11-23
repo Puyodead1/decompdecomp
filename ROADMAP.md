@@ -312,6 +312,15 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **MIPS functions splat left as data are found by the calls into them.** When a word in a stretch of text isn't
+  an instruction, spimdisasm files the rest of the stretch as `.word`s, every function after the word with it. A
+  call from compiled code into such a stretch now says where a function is; where it's plainly one compiled
+  function (`Arch.called_code_extent`: one frame given back in each return's delay slot, every way out returning,
+  nothing hand-written), its start and end become source-file boundaries and splat splits again (up to 3 times,
+  undone if a function found before moves). Explicit data, switch pieces and addresses overlays share are left
+  alone. N64, PS1, PS2 and PSP imports alike (rabbitizer's plain MIPS reading: R5900 or Allegrex-only words stop
+  it).
+
 - **N64 code a boot stub maps through the TLB is found.** splat filed such a stub and all the compiled code after
   it as one main segment at the boot address, where the code's calls land on nothing: hundreds of functions became
   one, set aside for the stub's COP0 instructions. The code after a stub that writes the TLB and returns becomes a
