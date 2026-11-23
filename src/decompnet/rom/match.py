@@ -41,6 +41,18 @@ _WIDTH = {0x20: 1, 0x24: 1, 0x28: 1, 0x21: 2, 0x25: 2, 0x29: 2, 0x23: 4, 0x27: 4
 
 ReadFn = Callable[[int, int], "bytes | None"]
 
+# Names a compiler writes into code the programmer never called by that name: the C library's math and string
+# routines it calls for a builtin (sqrtf), libgcc's helpers (__divdi3, __fixunsdfsi), libultra's for IDO's long longs
+# (__ll_div, __d_to_ull), and the assembler-level helpers older compilers reference (MULT_HI).
+_LIBRARY_CALLS = frozenset("sqrt sqrtf sin sinf cos cosf tan tanf fabs fabsf memcpy memmove memset memcmp strlen "
+                           "bcopy bzero bcmp abort".split())
+_HELPER = re.compile(r"__(?:[a-z]+(?:[sdtx][if]|[sdx]f)\d?|u?ll_\w+|[dfu]+_to_u?ll|u?ll_to_[df])|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+
+
+def compiler_library_name(name: str) -> bool:
+    """Whether a compiler, not the programmer, wrote this call (a builtin's library routine, a helper)."""
+    return not AUTO_NAME.match(name) and (name in _LIBRARY_CALLS or bool(_HELPER.fullmatch(name)))
+
 
 @dataclass
 class RomTarget:
@@ -159,6 +171,7 @@ class _Linker:
         self.name, self.target, self.symbols, self.read = name, target, symbols, read
         self.symtab = self.elf.get_section_by_name(".symtab")
         self.problems: list[str] = []
+        self.library_names: dict[str, int] = {}  # a compiler-written library call -> the address the game's call has
         self.local_map: dict[tuple[int, int], int] = {}  # (section index, offset) -> ROM address
         self.target_at = {off: (rtype, addr) for off, rtype, addr in target.relocs}
         self.data: dict[tuple[int, int], int] = {}  # every datum of its own the candidate uses -> ROM address
@@ -189,6 +202,27 @@ class _Linker:
                          f"func_80001234), or give that address this name first with rename_symbol.")
         return addr
 
+    def library_call(self, name: str, r: dict, residual: int) -> int | None:
+        """The address a compiler-written library call (`sqrtf`, a libgcc helper) means, from the game's own call.
+        The game reaches that routine under its automatic name (func_80055B40), so `sqrtf` is no symbol of the
+        table, and the C that calls it can't spell it otherwise (a builtin's own name is how the compiler calls it).
+        The target has a `jal` at this very place: its address is what the name means here, and the judge still
+        compares the linked bytes. A name the table has, or one two calls place differently, is resolve_name's."""
+        if r["type"] != R_MIPS_26 or self.symbols.resolve(name) is not None or not compiler_library_name(name):
+            return None
+        want = self.target_at.get(r["off"])
+        if want is None or want[0] != R_MIPS_26:
+            return None
+        base = (want[1] - residual) & 0xFFFFFFFF
+        known, at = self.symbols.name_at(base)
+        if at == 0 and not AUTO_NAME.match(known):  # (the routine has a real name: `sinf` isn't called `sqrtf`)
+            return None
+        if self.library_names.setdefault(name, base) != base:
+            self.problem(f"`{name}` is called at two different ROM addresses (0x{self.library_names[name]:08X} and "
+                         f"0x{base:08X}): call them by the names the assembly shows")
+            return None
+        return base
+
     def address(self, raw: list[dict], k: int, fn_shndx: int, fn_start: int) -> int | None:
         r = raw[k]
         if r["type"] == R_MIPS_GPREL16:
@@ -206,7 +240,9 @@ class _Linker:
         if r["type"] == R_MIPS_GPREL16 and sym["st_info"]["bind"] == "STB_LOCAL":
             residual += self.gp0  # (a C static, or C++'s definitions: global data a C file only declares)
         if shndx in ("SHN_UNDEF", "SHN_COMMON") or shndx in (0xFF03, 0xFF04):  # + MIPS small common / small undefined
-            base = self.resolve_name(canonical_symbol(sym.name, sym["st_info"]["bind"]))
+            name = canonical_symbol(sym.name, sym["st_info"]["bind"])
+            if (base := self.library_call(name, r, residual)) is None:
+                base = self.resolve_name(name)
             return None if base is None else (base + residual) & 0xFFFFFFFF
         off = residual if sym["st_info"]["type"] == "STT_SECTION" else sym["st_value"] + residual
         named = symbol_at(self.symtab, shndx, off)
@@ -381,7 +417,7 @@ class _Linker:
         for (dshndx, off), addr in self.local_map.items():
             placements.setdefault(self.elf.get_section(dshndx).name, {})[off] = addr
         return LinkResult(FunctionObj(self.name, "mips", self.target.big_endian, code, relocs), exact, self.problems,
-                          placements)
+                          placements, dict(self.library_names))
 
 
 def link(obj: bytes, name: str, target: RomTarget, symbols: SymbolTable, read: ReadFn) -> LinkResult:
