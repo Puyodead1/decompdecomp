@@ -33,6 +33,24 @@ from .routes import forks, life, pages, projects, rooms, setup, state
 from .support import Jobs, Settings, session_options
 
 START_PAUSE_SECONDS = 0.02  # between projects in the console work at start (consoles_start)
+# A quit that started ends the process by then, whatever still hangs: helpers get agents.STOP_GRACE, and saving every
+# project's progress folder is most of the rest. Every write there goes through a file of its own (saves._replace_text)
+# and the database has the work, so a save cut short is finished at the next start.
+QUIT_DEADLINE_SECONDS = 90
+
+
+def exit_after(seconds: float) -> None:
+    """End the process `seconds` from now, whatever is still running: a quit, or a SIGTERM, that never finished left
+    an app that answered nothing and needed SIGKILL."""
+    def watch():
+        time.sleep(seconds)
+        try:
+            os.write(2, b"[quit] Quitting took too long; ending now. The work in the database is kept.\n")
+        except OSError:
+            pass  # (no terminal)
+        os._exit(1)
+
+    threading.Thread(target=watch, daemon=True, name="quit-deadline").start()
 
 
 def build(net: RomNetwork, home: Path, port: int, secret: str):
@@ -66,8 +84,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         jobs.logger.info("window closed; quitting")
         quit_app()
 
+    quitting = threading.Lock()
+
     def quit_app() -> None:
-        """Quit means quit: the window, every helper with everything it started, then the server."""
+        """Quit means quit: the window, every helper with everything it started, then the server, within
+        QUIT_DEADLINE_SECONDS. A second quit (the server's own once a signal's has started, the window closing during
+        one) waits for the first, which ends the process: returning would let the main thread end it half-saved."""
+        quitting.acquire()
+        exit_after(QUIT_DEADLINE_SECONDS)
         window.close_app()
         manager.shutdown()
         flush_progress()

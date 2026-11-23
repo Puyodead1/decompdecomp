@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -29,6 +30,8 @@ OLD_COOKIE = "decomp_live"  # 1.0.2 and older took the secret in this cookie
 HEALTH_TIMEOUT_SECONDS = 1.5
 QUIT_WAIT_SECONDS = 10
 QUIT_POLL_SECONDS = 0.1
+KILL_WAIT_SECONDS = 5  # after SIGKILL, how long the app's port may take to close
+CLOSING_SECONDS = 5  # once the app is quitting, how long the web server waits for open connections (MCP streams)
 READY_WAIT_SECONDS = 20
 READY_POLL_SECONDS = 0.2
 REQUEST_BODY_LIMIT = 80 * 1024 * 1024  # a game file sent by the GUI's import
@@ -97,6 +100,62 @@ def _alone(state_file: Path, restarted: dict | None) -> bool:
     return bool(restarted) or _state(state_file) is None
 
 
+def _listening(port: int) -> bool:
+    """Whether something accepts connections on this port: a hung app's socket still does (the system accepts for
+    it), though nothing answers."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=HEALTH_TIMEOUT_SECONDS):
+            return True
+    except OSError:
+        return False
+
+
+def _hung(state_file: Path) -> dict | None:
+    """This home's app from its server.json, {port, secret, pid}, when its port is still open but its server doesn't
+    answer (or didn't quit when asked): the one `decomp stop` may end. Only this home's (edition.home_dir: a
+    development copy's ~/Decomp-dev never names the installed app), and only while the port it wrote there is still
+    open: once the app has ended, its pid may be another program's."""
+    try:
+        info = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(info, dict):
+        return None
+    pid, port = info.get("pid"), info.get("port")
+    if not isinstance(pid, int) or pid <= 1 or pid == os.getpid() or not isinstance(port, int):
+        return None
+    return info if _listening(port) else None
+
+
+def _end(info: dict, grace: float, log=print) -> bool:
+    """End a hung app: SIGTERM first (its quit, bounded by server.QUIT_DEADLINE_SECONDS, saves what it can), then
+    SIGKILL after `grace` seconds. Windows has no SIGTERM (os.kill ends a process outright), so it ends at once,
+    and its helpers with it (winprocess: their jobs close with the app). Whether its port has closed."""
+    import signal
+
+    pid, port = info["pid"], info["port"]
+    steps = [(None, KILL_WAIT_SECONDS)] if os.name == "nt" else [(signal.SIGTERM, grace), (signal.SIGKILL, KILL_WAIT_SECONDS)]
+    for sig, wait in steps:
+        if sig is None:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                           creationflags=hostenv.NO_WINDOW)
+        else:
+            if sig == signal.SIGKILL:
+                log(f"it didn't stop within {grace:.0f} s; ending it (pid {pid})")
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            except OSError:
+                return False
+        for _ in range(int(wait / QUIT_POLL_SECONDS)):
+            if not _listening(port):
+                return True
+            time.sleep(QUIT_POLL_SECONDS)
+    return not _listening(port)
+
+
 def replace_older(state_file: Path, log=print) -> dict | None:
     """The running app's {port, secret} when it's this version or newer. An older one (still running after an
     upgrade) is stopped, so the new version starts in its place: returns None then, and when nothing runs. One
@@ -117,6 +176,10 @@ def replace_older(state_file: Path, log=print) -> dict | None:
         if not _alive(prev["port"]):
             break
         time.sleep(QUIT_POLL_SECONDS)
+    else:  # it didn't quit: this one would start beside it, on another port, with the same projects
+        if (hung := _hung(state_file)) is not None:
+            log(f"decompdecomp {running} didn't quit when asked; ending it (pid {hung['pid']})")
+            _end(hung, QUIT_WAIT_SECONDS, log=log)
     return None
 
 
@@ -218,7 +281,7 @@ def run(args) -> int:
     if not restarted or restarted.get("window", True):
         _open_when_ready(port)
     try:
-        serve_app(app, sock)
+        serve_app(app, sock, quit_app)
     except Exception:  # quit_app ends the process at once: say why first, or the app just vanishes
         log.exception("the server stopped")
         traceback.print_exc()
@@ -227,11 +290,13 @@ def run(args) -> int:
     return 0
 
 
-def serve_app(app, sock: socket.socket) -> None:
-    """Serve the window and the helpers' MCP on the socket _listen reserved."""
+def serve_app(app, sock: socket.socket, quit_app=None) -> None:
+    """Serve the window and the helpers' MCP on the socket _listen reserved (quitting the app at Ctrl-C, when given
+    how: quitting_server)."""
     import uvicorn
 
-    hostenv.run_server(uvicorn.Server(server_config(app)), sockets=[sock])
+    config = server_config(app)
+    hostenv.run_server(quitting_server(config, quit_app) if quit_app else uvicorn.Server(config), sockets=[sock])
 
 
 def server_config(app):
@@ -243,7 +308,30 @@ def server_config(app):
     import uvicorn
 
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    return uvicorn.Config(app, log_config=None, access_log=False)
+    # (an MCP stream stays open as long as its helper runs: the server waited for every one before quitting)
+    return uvicorn.Config(app, log_config=None, access_log=False, timeout_graceful_shutdown=CLOSING_SECONDS)
+
+
+def quitting_server(config, quit_app):
+    """The web server, quitting the app as soon as Ctrl-C or SIGTERM comes: uvicorn first waited for every open
+    connection to end, and helpers' MCP streams don't until the helpers stop, which is what quitting does. The quit
+    runs beside the server; its own call when the server returns waits for it (server.quit_app)."""
+    import uvicorn
+
+    class Quitting(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            # (a signal handler: no lock, no logging, no database here; the quit's thread does all that)
+            if self.should_exit:
+                self.force_exit = True  # a second Ctrl-C: stop waiting for connections at all
+                return
+            self.should_exit = True
+            try:
+                os.write(2, b"Quitting: stopping helpers and saving progress...\n")
+            except OSError:
+                pass  # (no terminal)
+            threading.Thread(target=quit_app, daemon=True, name="quit").start()
+
+    return Quitting(config)
 
 
 def update_cmd(args) -> int:
@@ -312,22 +400,33 @@ def setup(args) -> int:
 
 def stop(args) -> int:
     """Quit the running app of this home, and say so only once it has: it used to say "stopped" to a 1.0.2 app
-    that refused the request and kept running."""
-    running = _state(home_dir() / ".decomp" / "server.json")
+    that refused the request and kept running. One that doesn't answer, or doesn't quit when asked, is ended
+    (_end): an app that hung kept its port and every relaunch found it "already running"."""
+    state_file = home_dir() / ".decomp" / "server.json"
+    running = _state(state_file)
     if running is None:
-        print(f"{edition.NAME} is not running")
-        return 0
-    try:
-        _call(running, "/api/quit", {}, timeout=5)
-    except OSError:
-        pass
-    for _ in range(int(QUIT_WAIT_SECONDS / QUIT_POLL_SECONDS)):
-        if not _alive(running["port"]):
-            print(f"{edition.NAME} stopped")
+        if (hung := _hung(state_file)) is None:
+            print(f"{edition.NAME} is not running")
             return 0
-        time.sleep(QUIT_POLL_SECONDS)
-    pid = running.get("pid")
-    print(f"{edition.NAME} didn't stop" + (f": end it with `kill {pid}`" if pid else ""), file=sys.stderr)
+        print(f"{edition.NAME} is running (pid {hung['pid']}) but doesn't answer; ending it")
+    else:
+        try:
+            _call(running, "/api/quit", {}, timeout=5)
+        except OSError:
+            pass
+        for _ in range(int(QUIT_WAIT_SECONDS / QUIT_POLL_SECONDS)):
+            if not _alive(running["port"]):
+                print(f"{edition.NAME} stopped")
+                return 0
+            time.sleep(QUIT_POLL_SECONDS)
+        if (hung := _hung(state_file)) is None:
+            print(f"{edition.NAME} didn't stop", file=sys.stderr)
+            return 1
+        print(f"{edition.NAME} didn't quit when asked; ending it (pid {hung['pid']})")
+    if _end(hung, QUIT_WAIT_SECONDS):
+        print(f"{edition.NAME} stopped")
+        return 0
+    print(f"{edition.NAME} didn't stop: end it with `kill -9 {hung['pid']}`", file=sys.stderr)
     return 1
 
 
