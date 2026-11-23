@@ -124,6 +124,20 @@ through [Tailscale](https://tailscale.com). It stays reachable only from your ow
 Everything works from the browser, except what opens on the server's own screen: there you type paths instead of
 picking them, and **Open folder** tells you where the project is.
 
+From a terminal (a script, or a server without its window), the running app can import a game you own, as dropping it
+on the home page does, and start its helpers:
+
+```bash
+decomp import "/path/to/game.z64"                           # asks you to confirm it's your own copy; --yes to skip
+decomp agents list a-game                                   # id, state, agent, model and why, per helper
+decomp agents start a-game --agent claude --model haiku     # --count 3 for three
+decomp agents restart a-game                                # every stopped or paused one; --paused, or name ids
+```
+
+`decomp import` prints the import's log and the new project's slug; `--name` names the project, `--toolchain` picks
+the compiler to start with, and `--no-wait` returns once the import has started. Both talk to the app of the same
+home (`DECOMP_HOME`), which must be running.
+
 ## Platforms
 
 | Console | Status | Start from |
