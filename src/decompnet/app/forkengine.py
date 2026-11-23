@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath
 from elftools.common.exceptions import ELFError
 
 from .. import arch, classes, coffobj, consoles, similarity, structs, toolchains
+from ..arch import advice as arch_advice
 from ..forks import (
     convention,
     csource,
@@ -721,6 +722,14 @@ def _with_includes(text: str, includes: list[str], prelude: str = "") -> str:
         last = m
     block = "".join(ln + "\n" for ln in includes) + (prelude.rstrip("\n") + "\n\n" if prelude else "")
     return text[:last.end()] + block + text[last.end():] if last else block + text
+
+
+def _observed(cfg: dict, d) -> list[str]:
+    """What a project's diff shows beyond its rows (the frame's size, registers moved along a chain, a delay slot),
+    from its console's processor (arch/advice.py), as ROM mode says it. A fork's projects row names no processor:
+    its console does."""
+    return arch_advice.diff_lines(consoles.of(cfg).arch, d.rows, objdiff=True,
+                                   addresses=getattr(d, "addresses", (None, None)))
 
 
 def _renamed_note(d) -> str:
@@ -3682,7 +3691,7 @@ class ForkEngine:
                 lines += ["", d.literals_note()]
             elif d.match_percent is not None and not d.matched:
                 d.rows = with_constant_values(d.rows, consoles.get(cfg.get("platform")), fp)
-                diff_block = ["", "### Diff against the current build", d.render()]
+                diff_block = ["", "### Diff against the current build", d.render(), *_observed(cfg, d)]
                 diff_rows = len(d.rows)
                 if agent is not None:  # (last_diff shows it, where a long brief leaves it out)
                     self.net.keep_diff(agent.id, fn["id"], d.rows, objdiff.LEGEND)
@@ -4482,7 +4491,7 @@ class ForkEngine:
                 stall = self.net.stall_note(fn["id"], agent.id)
                 text = remembered(f"{percent_text(pct)} match (score {score}), worse than the best so far (score "
                                   f"{best}), so {unit.source} keeps what it had; your attempt is recorded.\n"
-                                  f"{d.render()}", score)
+                                  f"{d.render()}" + "\n".join(_observed(cfg, d)), score)
                 return {"text": text + stall, "score": score, "matched": False, "percent": pct}
             self._keep_scores(proj, unit, after, d.unit_scores)
             self._hold(fn, code if d.literals else None)
@@ -4518,7 +4527,8 @@ class ForkEngine:
         if d.literals:
             text = f"score {score} (0 = identical). {d.literals_note()}{missing}"
         else:
-            text = f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{missing}"
+            observed = "\n".join(_observed(cfg, d))
+            text = f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{observed}{missing}"
         return {"text": remembered(text, score) + stall, "score": score, "matched": False}
 
     def try_compiler(self, agent: Agent, slug: str, function: str, compiler: str, flags: str = "",

@@ -1919,3 +1919,22 @@ def test_a_brief_too_long_to_read_points_to_its_parts(fork, monkeypatch):
     assert "```asm" in net.get_function("entity_default_hp", slug, agent, show="asm")
     with pytest.raises(NetworkError, match="show is"):
         net.get_function("entity_default_hp", slug, agent, show="everything")
+
+
+@needs_tools
+def test_project_briefs_and_compiles_get_the_consoles_processor_observations(fork):
+    """A MIPS project's compile feedback and brief say what its diff shows beyond the rows, as ROM mode's do: its
+    projects row names no processor, its console does. An unused array on the stack only grows the frame."""
+    net, slug, agent = fork
+    name = "entity_collides"
+    if net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] != "open":
+        pytest.skip(f"{name} isn't open in this run")
+    padded = _ref(name).replace("{", "{\n    s32 pad[4];\n", 1)
+    res = net.attempt(agent, name, padded, slug)
+    try:
+        assert not res["matched"] and "Processor observations" in res["text"], res["text"]
+        assert "Stack frame: the target's is" in res["text"], res["text"]
+        brief = net.forks.get_function(agent, slug, name)
+        assert "Processor observations" in brief, brief
+    finally:
+        net.release(agent, name, "testing processor observations", slug)

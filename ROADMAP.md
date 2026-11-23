@@ -49,6 +49,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | — | ✓ | — | ✓ from scratch: per source file; else the project's build | ✓ over source files | ✓ | ✓ from scratch: per source file; else the project's build | — | — | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | — | ✓ | — | — | ✓ (named by RTTI where the program has it) | ✓ (RTTI where the program has it) | — | ✓ (x86 reader; the demo is C) | — | — |
 | Struct layouts from loads and stores (`guess_struct`) | ✓ | ✓ | ✓ | — | — | ✓ | — | — | ✓ | ✓ | — | ✓ (and the STABS prototypes) | — | — |
+| Processor observations in compile feedback and briefs (frame size, register chains and swaps, delay slots) | ✓ ROM and project mode | ✓ (not run on a PS1 game yet) | ✓ (not run on a PS2 game yet) | — | — | ✓ (not run on a PSP game yet) | — | — | — | — | — | — | — | MIPS projects |
 | The game's own debug symbols: names, types, prototypes | — | — | ✓ symbol table, STABS, DWARF 1; the compiler of each object file | names (types and prototypes: —) | — | ✓ symbol table, DWARF 1 | — | — | ✓ PDB (Visual C++ 6.0's PDB 2.0, MSF 7.00), linker map, COFF symbols (64-bit games': untested) | — (an XBE has none) | — | ✓ symbol table, STABS or DWARF 2+: source files, types, prototypes, locals | — | — |
 | Twins across your games | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | ✓ (between project-mode games; not run on two GameCube games yet) | ✓ (between PC projects) | ✓ (as PC's; not run on two Xbox games yet) | ✓ (between project-mode games; not run on two DS games yet) | ran (a game's programs shared only functions under 32 bytes) | — | — |
 | Named Claude accounts, assigned per helper; recorded usage per account | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -230,6 +231,15 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   classes and methods).
 
 ## Recently done
+
+- **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
+  16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
+  (`arch/mips_observations.py`, `Arch.diff_observations`) adds a few lines: the frames' sizes, and when only the frame
+  and its slots differ, all by one amount, that a local of that size is missing or extra; registers shifted along a
+  chain or swapped; a delay slot filled with another instruction; branches that land elsewhere (only with as many
+  instructions on both sides). Project mode reads objdiff's rows in the judge's terms first (registers with their
+  dollar, "i" sorted into register and stack differences, branch destinations from the function's start). Advice
+  only: the score and the verdict are the judge's. Run on the N64 demo in ROM and project mode.
 
 - **Compiled objects are kept across searches and restarts.** The permuter compiles the same variant again (its
   rewrites undo each other, a new turn starts from the same base) and a room's host compiles every attempt its members
@@ -1458,6 +1468,13 @@ project's attempts are built by the project's own build (ninja, make), one unit 
 still compiles a variant it built before again: its key would be the unit's whole source after the edit and the
 unit's command. Compilers run in WSL or the macOS Linux VM, a kit the user brought, and a Linux game's library
 headers (folders no manifest pins) compile fresh every time too: fingerprinting their copies would include them.
+
+### Processor observations for PowerPC, x86 and ARM
+
+The observations under compile feedback (`Arch.diff_observations`) read MIPS only. PowerPC's frame (`stwu r1, -N(r1)`
+and the saved GPRs above it), x86's (`sub esp, N`, the pushes) and ARM's (`push {...}`, `sub sp, #N`) say the same
+things in their own words, and their register chains read alike; ARM has no delay slots. Each needs its reader and
+the objdiff spelling of its rows (`Arch.objdiff_rows`).
 
 ### A list of open rooms (to investigate)
 
