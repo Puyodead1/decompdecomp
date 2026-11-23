@@ -422,6 +422,35 @@ def test_a_thunk_name_renames_only_the_games_symbols(tmp_path):
         eng.rename_symbol(None, "p", "fn_80295FCC", thunk)
 
 
+def test_a_refused_rename_that_changed_nothing_does_not_set_the_project_up_again(tmp_path):
+    """A rename the game's config refuses (the old name isn't one of its symbols) wrote no file: setting the project
+    up again put nothing back, and held the tree and build locks for a whole configure run while every compile of the
+    game waited."""
+    import threading
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from decompnet.app.forkengine import ForkEngine
+
+    (tmp_path / "config" / "v").mkdir(parents=True)
+    (tmp_path / "config" / "v" / "symbols.txt").write_text("fn_80001000 = .text:0x80001000; // type:function\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.c").write_text("void fn_80001000(void) {}\n")
+    setups = []
+    fp = SimpleNamespace(root=tmp_path, manifest={"version": "v"},
+                         setup_commands=lambda version: setups.append(version) or [["configure"]],
+                         run=lambda cmd, log=None: pytest.fail(f"set up again: {cmd}"))
+    net = SimpleNamespace(links={}, store=SimpleNamespace(all=lambda *args: [], one=lambda *args: None))
+    tree = SimpleNamespace(exclusive=lambda: nullcontext())
+    eng = ForkEngine.__new__(ForkEngine)
+    eng.net, eng._build_locks, eng._tree = net, {1: threading.Lock()}, lambda proj: tree
+    eng._mlock = threading.Lock()
+    eng.get = lambda slug: ({"id": 1}, fp, {"platform": "wii", "version": "v"})
+    with pytest.raises(NetworkError, match="not renamed, nothing changed"):
+        eng.rename_symbol(None, "p", "fn_80009999", "initGame")
+    assert setups == []
+
+
 def test_not_in_your_build_names_the_symbol_not_the_rows_unique_name():
     """A function whose row name was made unique with a trailing "'" (a re-sync after a split) was reported as "its
     object doesn't define _f@4'": agents spent days saying no C makes a name with a quote, and never looked further."""
