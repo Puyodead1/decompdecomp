@@ -41,7 +41,7 @@ def test_each_file_gets_the_stretch_its_code_uses_in_link_order():
 
 def test_a_linked_file_gets_nothing_and_its_data_stays_out_of_the_others():
     """A linked file's object is built from its C: data given to it was defined twice (an undefined RTTI record when
-    the Hot Wheels experiment gave a linked file some)."""
+    a GameCube game's first try gave a linked file some)."""
     given = dtkdata.parts(files(), SYMS, USES, skip={"b.c"})
     assert "b.c" not in given
     assert given["a.c"][".data"] == (0x1000, 0x1010) and given["c.c"][".data"] == (0x1018, 0x1020)
