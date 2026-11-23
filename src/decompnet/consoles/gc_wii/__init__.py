@@ -4,6 +4,7 @@ a dtk-template project (decomp-toolkit splits the game) built with Metrowerks Co
 - scratch.py: a dtk-template project for the user's game, from a disc image (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ)
   or a program (DOL): the game's id, its modules (RELs), the first build that must rebuild it byte for byte. It also
   reads and writes configure.py for each source file's own CodeWarrior version (issue #26).
+- template_paths.py: the new project's build generator patched to quote its tools' paths (which may have spaces).
 - guides/mwcc.md: what agents read about matching CodeWarrior's code.
 - libraries.toml: CodeWarrior's own libraries every game links (its runtime, MSL, MetroTRK), for the library finder.
 

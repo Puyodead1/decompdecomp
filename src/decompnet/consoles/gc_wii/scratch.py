@@ -40,7 +40,7 @@ from ... import toolchains
 from ...forks import dtksplits
 from ...forks.project import ForkError, ForkProject
 from ...limits import capped
-from . import GAMECUBE, WII
+from . import GAMECUBE, WII, template_paths
 
 GC_DEFAULT, WII_DEFAULT = GAMECUBE.usual, WII.usual
 REL_EMPTY = "REL/empty.c"
@@ -827,6 +827,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     compiler = compiler or (WII_DEFAULT if platform == "wii" else GC_DEFAULT)
     template = toolchains.ensure("dtk-template", log=log)
     shutil.copytree(template, root, ignore=shutil.ignore_patterns(".decompnet-toolchain.json"))
+    template_paths.prepare(root)  # (its tools' paths quoted: they may have spaces)
     for placeholder in ("orig/GAMEID", "config/GAMEID"):
         shutil.rmtree(root / placeholder, ignore_errors=True)
     orig, config = root / "orig" / gid, root / "config" / gid
