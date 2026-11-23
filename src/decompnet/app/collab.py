@@ -93,7 +93,7 @@ COMMIT_HEADER = "x-decomp-commit"
 # changes to those, and two copies on one protocol share a room whatever their versions and commits. Bump it with any
 # such change (CONTRIBUTING.md, "Rooms"); tests/test_room_protocol.py fails when a call or a key it sends changes
 # without a bump. A copy from before the protocol sends none, and is held to the exact version as before.
-ROOM_PROTOCOL = 1
+ROOM_PROTOCOL = 2  # 2: the ROM judge reads data past the code, library calls, tables, region relocations, masked %lo
 PROTOCOL_HEADER = "x-decomp-room-protocol"
 
 
