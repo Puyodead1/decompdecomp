@@ -270,7 +270,7 @@ def test_the_counts_marks_follow_meta_and_come_to_an_older_database_once(tmp_pat
     assert marks(store) == {"lib": ("the C runtime", None), "own": (None, "1"), "odd": (None, None)}
     # a database from before the marks: its functions get theirs when it opens
     store.conn.executescript("DROP TRIGGER functions_marks_insert; DROP TRIGGER functions_marks_update; "
-                             "DROP INDEX idx_functions_totals; DROP INDEX idx_functions_map; "
+                             "DROP INDEX idx_functions_summary; DROP INDEX idx_functions_map; "
                              "ALTER TABLE functions DROP COLUMN aside_mark; ALTER TABLE functions DROP COLUMN gone_mark; "
                              "ALTER TABLE functions DROP COLUMN copy_mark")
     store.conn.close()
@@ -306,7 +306,7 @@ def test_a_copys_mark_follows_meta_and_comes_to_a_database_from_before_it(tmp_pa
     marks = lambda s: {r["name"]: r["copy_mark"] for r in s.all("SELECT * FROM functions")}  # noqa: E731
     assert marks(store) == {"copy": "func_a", "own": None}
     store.conn.executescript("DROP TRIGGER functions_marks_insert; DROP TRIGGER functions_marks_update; "
-                             "DROP INDEX idx_functions_totals; ALTER TABLE functions DROP COLUMN copy_mark")
+                             "DROP INDEX idx_functions_summary; ALTER TABLE functions DROP COLUMN copy_mark")
     store.conn.close()
     assert marks(Store(tmp_path / "app.db")) == {"copy": "func_a", "own": None}
 
