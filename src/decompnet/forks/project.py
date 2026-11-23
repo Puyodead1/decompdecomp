@@ -1061,7 +1061,8 @@ class ForkProject:
 
     def diff(self, unit: Unit, symbol: str) -> objdiff.FunctionDiff:
         return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
-                            project=self.root if unit.mappings else None, unit=unit.name)
+                            project=self.root if unit.mappings else None, unit=unit.name,
+                            others=[u.target for u in self._config_entry()[2].values() if u.target is not None])
 
     # ------------------------------------------------------------------ linking (dtk-template projects)
     # A file whose code and data match is linked into the game: configure.py marks it Matching, the build then

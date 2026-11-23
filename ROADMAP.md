@@ -231,6 +231,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
 
 ## Recently done
 
+- **The judge reads switch jump tables.** objdiff compares a function's instructions, and the ones that load a jump
+  table read the same whatever the table holds, so a switch whose case labels sent cases to the wrong bodies read
+  100% (a GameCube function's cases 28 to 30 ran the code of 29, 25 and 26). A project's 100% now also compares
+  each table's entries with the original's (forks/jumptables.py), in the per-function diff and in the progress
+  report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
+  them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
+
 - **Browse compiler profiles.** Group applied ranges by compiler and arguments, compiler family, or address;
   sort by range count, verification status, compiler name, or address. Expand profiles and the default settings to see function links,
   argument lists and verification details. ROM profiles can be compared with the default, tested as a replacement,
@@ -1391,6 +1398,15 @@ In a fork built with ninja, a unit whose build fails at a step before its object
 generated source) counts as not building: `ninja -t query` says what each failed step goes into. A make-built fork
 has no such query, so only the failed target itself is counted, and an edit that breaks such a step there can still
 be kept as breaking nothing. Make's own dry run (`make -n -W <file>`) or its database (`make -p`) could say the same.
+
+### Jump tables in COFF objects
+
+A project's judge compares switch jump tables only in ELF objects (GameCube, Wii, DS, V.Flash, PS2 and PSP forks):
+a PC or Xbox game's COFF objects give no verdict. Visual C++ keeps a switch's tables in the function's own .text,
+after its code, which objdiff shows as part of the function, but whether a table sending cases elsewhere can still
+read 100% with relocation targets left uncompared hasn't been checked. A delinked PC unit with a switch, its cases
+swapped in the C, would say; if it does read 100%, the same comparison of entries (offsets in the function) reads
+COFF's relocations.
 
 ### What a project room's member can't ask the host for yet
 

@@ -63,7 +63,7 @@ def report(project: Path, out: Path) -> dict:
     missing = [u for u in cfg.get("units", []) if u.get("base_path") and not (project / u["base_path"]).is_file()]
     if not missing:
         _run(["report", "generate", "-p", str(project), "-o", str(out)], cwd=project, timeout=1800)
-        return subtract_conflicts(project, json.loads(out.read_text(encoding="utf-8")))
+        return _judged(project, json.loads(out.read_text(encoding="utf-8")))
     for unit in cfg.get("units", []):
         for key in ("target_path", "base_path"):
             if unit.get(key):
@@ -73,7 +73,13 @@ def report(project: Path, out: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="decompwtf-report-") as tmp:
         (Path(tmp) / "objdiff.json").write_text(json.dumps(cfg), encoding="utf-8")
         _run(["report", "generate", "-p", tmp, "-o", str(out.resolve())], cwd=project, timeout=1800)
-    return subtract_conflicts(project, json.loads(out.read_text(encoding="utf-8")))
+    return _judged(project, json.loads(out.read_text(encoding="utf-8")))
+
+
+def _judged(project: Path, rep: dict) -> dict:
+    """The progress report with what objdiff's 100% doesn't check checked: LTCG units' mapping and data, and every
+    function's switch jump tables."""
+    return subtract_jump_tables(project, subtract_conflicts(project, rep))
 
 
 @dataclass
@@ -97,6 +103,8 @@ class FunctionDiff:
 
     def why_not(self) -> str:
         """Why a function every instruction of which matches isn't a match, in a few words."""
+        if self.literals and all(getattr(m, "jump_table", False) for m in self.literals):
+            return "every instruction matches, but its switch sends cases to other code than the original's"
         if self.literals and all(isinstance(m, MappingConflict) for m in self.literals):
             return "every instruction matches, but it refers to other globals or callees than the original"
         return "every instruction matches, but loaded constants differ"
@@ -104,6 +112,12 @@ class FunctionDiff:
     def literals_note(self) -> str:
         if not self.literals:
             return ""
+        if any(getattr(m, "jump_table", False) for m in self.literals):  # (forks/jumptables.py)
+            listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
+            return ("NOT A MATCH YET: every instruction matches, but a switch's jump table sends cases to other code "
+                    f"than the original's (offsets in the function):\n{listing}\nGive each case value the body the "
+                    "original runs for it: which cases share a body, which fall through to the next, which go to "
+                    "default. Swapped case labels compile to the same instructions and only the table shows them.")
         if all(isinstance(m, MappingConflict) for m in self.literals):  # an LTCG unit's address and data checks
             listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
             kinds = []
@@ -263,6 +277,42 @@ def subtract_conflicts(project: Path, rep: dict) -> dict:
     return rep
 
 
+def subtract_jump_tables(project: Path, rep: dict) -> dict:
+    """The progress report with 100% functions whose switch jump tables send cases elsewhere than the original's
+    counted as not matched (forks/jumptables.py): `report generate` doesn't compare the tables, which are data."""
+    from . import jumptables
+
+    try:
+        cfg = json.loads((project / "objdiff.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return rep
+    paths = {name: (t, b) for name, t, b in unit_objects(project, cfg) if t is not None and b is not None}
+    others = originals(project, cfg)
+    fns, code, per = jumptables.subtract(rep.get("units", []), paths, others)
+    for unit in rep.get("units", []):
+        if unit.get("name") in per:
+            _lose(unit.get("measures"), *per[unit["name"]])
+    if fns:
+        _lose(rep.get("measures"), fns, code)
+    return rep
+
+
+def unit_objects(project: Path, cfg: dict) -> list[tuple[str, Path | None, Path | None]]:
+    """(name, original's object, yours) of each unit of an objdiff.json, in either of its layouts."""
+    tdir, bdir = cfg.get("target_dir"), cfg.get("base_dir")
+    out = []
+    for u in cfg.get("units") or cfg.get("objects") or []:
+        t = u.get("target_path") or (str(Path(tdir) / u["path"]) if tdir and u.get("path") else None)
+        b = u.get("base_path") or (str(Path(bdir) / u["path"]) if bdir and u.get("path") else None)
+        out.append((u.get("name") or u.get("path") or "?", project / t if t else None, project / b if b else None))
+    return out
+
+
+def originals(project: Path, cfg: dict) -> list[Path]:
+    """Every original object of a project, data-only units too: a code-only unit's jump tables may be in one."""
+    return [t for _, t, _ in unit_objects(project, cfg) if t is not None]
+
+
 def _lose(measures: dict | None, fns: int, code: int) -> None:
     """Take matched functions and code off a report's measures (proto JSON writes 64-bit counts as strings)."""
     if not measures:
@@ -353,7 +403,7 @@ def _renamed(left: dict | None, right: dict | None, lrows: list[dict], rrows: li
 
 
 def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, options: dict | None = None,
-         project: Path | None = None, unit: str | None = None) -> FunctionDiff:
+         project: Path | None = None, unit: str | None = None, others: list[Path] = ()) -> FunctionDiff:
     """Diff one function between the target (expected) and base (yours) objects; symbol None measures the whole
     unit (unit_scores) without one function's rows.
 
@@ -416,6 +466,9 @@ def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, 
             at += int(ins.get("size") or 4)
         wrong = literals.mismatches(target, base, symbol, insns)
         wrong += mapping_conflicts(base, symbol)  # (an LTCG unit's address and data checks, tools/dll2coff.py)
+        from . import jumptables
+
+        wrong += jumptables.conflicts(target, base, symbol, others)
     refs = list(dict.fromkeys(n for lr in lrows if (n := _reloc_name(data.get("left"), lr))))
     return FunctionDiff(symbol, float(pct) if pct is not None else None, rows, int(left.get("size", 0)), scores, order, ops,
                         renamed, wrong, refs)
