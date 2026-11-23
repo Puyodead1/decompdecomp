@@ -1938,3 +1938,81 @@ def test_project_briefs_and_compiles_get_the_consoles_processor_observations(for
         assert "Processor observations" in brief, brief
     finally:
         net.release(agent, name, "testing processor observations", slug)
+
+
+def test_a_build_command_is_split_as_the_system_runs_it():
+    """ninja runs a command with CreateProcess on Windows (quotes, backslashes only before a quote) and with sh
+    elsewhere; a line that's more than one program isn't one command a try can be compiled with alone."""
+    from decompnet.forks.project import split_command
+
+    line = r'C:\mw\mwcceppc.exe -pragma "cats off" -i include -c src\a b.c -o build\x -DQ=\"v\"'
+    assert split_command(line, windows=True) == [r"C:\mw\mwcceppc.exe", "-pragma", "cats off", "-i", "include", "-c",
+                                                 r"src\a", "b.c", "-o", r"build\x", '-DQ="v"']
+    assert split_command(r'"C:\Program Files\cc.exe" -c "C:\dir\\" x', windows=True) == [
+        r"C:\Program Files\cc.exe", "-c", "C:\\dir\\", "x"]
+    assert split_command(r"cmd /c C:\mw\mwcceppc.exe -c a.c && dtk extab", windows=True) is None
+    assert split_command("/mw/wibo /mw/mwcceppc.exe -pragma 'cats off' -c src/a.c -o build/x", windows=False) == [
+        "/mw/wibo", "/mw/mwcceppc.exe", "-pragma", "cats off", "-c", "src/a.c", "-o", "build/x"]
+    for line in ("cc -c a.c && python tools/transform_dep.py a.d", "cc -c a.c | tee log", "cc -c a.c > out",
+                 "cc -c $SRC", "cc -c `x`", "cc -c (a.c)", "cc -c 'a.c"):
+        assert split_command(line, windows=False) is None, line
+
+
+def test_a_units_compile_command_is_read_from_ninja_until_build_ninja_is_out_of_date(tmp_path):
+    """A try compiled alone runs the unit's own command from build.ninja (`ninja -t commands -s`), read once for
+    each writing of build.ninja. When what build.ninja is written from is newer (a try's compiler or flags written
+    to configure.py), ninja would write it again first: no command, and the try is built in the project."""
+    import os
+    import sys
+
+    from decompnet.forks.project import _tool
+
+    if _tool("ninja") is None:
+        pytest.skip("needs ninja")
+    py = sys.executable.replace("\\", "/")
+    (tmp_path / "configure.py").write_text("")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.c").write_text("int a;\n")
+    (tmp_path / "src" / "b.c").write_text("int b;\n")
+    (tmp_path / "build.ninja").write_text(
+        f'rule configure\n  command = "{py}" configure.py\n  generator = 1\n'
+        f'build build.ninja: configure | configure.py\n'
+        f'rule cc\n  command = "{py}" cc.py -pragma "cats off" -c $in -o $out\n'
+        f'rule chain\n  command = cmd /c "{py}" cc.py -c $in -o $out && "{py}" dep.py\n'  # (dtk-template's chain)
+        "build build/a.o: cc src/a.c\nbuild build/b.o: chain src/b.c\n")
+    (tmp_path / "objdiff.json").write_text(json.dumps({"custom_make": "ninja", "units": [
+        {"name": n, "target_path": f"expected/{n}.o", "base_path": f"build/{n}.o",
+         "metadata": {"source_path": f"src/{n}.c"}} for n in "ab"]}))
+    old = (tmp_path / "build.ninja").stat().st_mtime_ns - 10**9
+    os.utime(tmp_path / "configure.py", ns=(old, old))
+    fp = ForkProject(tmp_path)
+    command = fp.compile_command(fp.unit("a"))
+    assert command is not None and Path(command[0]).name.startswith("python")
+    assert command[1:] == ["cc.py", "-pragma", "cats off", "-c", "src/a.c", "-o", "build/a.o"]
+    assert fp.compile_command(fp.unit("b")) is None  # (two programs: the build's)
+    new = (tmp_path / "build.ninja").stat().st_mtime_ns + 10**9
+    os.utime(tmp_path / "configure.py", ns=(new, new))
+    assert fp.compile_command(fp.unit("a")) is None
+    cfg = json.loads((tmp_path / "objdiff.json").read_text())
+    (tmp_path / "objdiff.json").write_text(json.dumps({**cfg, "custom_args": ["-f", "build.ninja"]}))
+    os.utime(tmp_path / "configure.py", ns=(old, old))
+    assert ForkProject(tmp_path).compile_command(fp.unit("a")) is None  # (another build file: not read)
+
+
+def test_codewarriors_command_compiles_a_copy_of_the_file_in_a_folder_of_its_own(tmp_path):
+    """GameCube and Wii: the unit's CodeWarrior command run on a copy of the file with the try in it, its object
+    written in the try's own folder, the file's folder searched first for its includes, no dependency file."""
+    from decompnet import consoles
+
+    gc = consoles.get("gc")
+    copy, folder, out = tmp_path / "try" / "a.c", tmp_path / "src" / "game", tmp_path / "try"
+    command = ["/t/wibo", "/t/sjiswrap.exe", "/t/mwcceppc.exe", "-O4,p", "-pragma", "cats off", "-i", "include",
+               "-i", "build/GALE01/include", "-MMD", "-c", "src/game/a.c", "-o", "build/GALE01/src/game"]
+    args, obj = gc.trial_command(command, copy, folder, out)
+    assert args == ["/t/wibo", "/t/sjiswrap.exe", "/t/mwcceppc.exe", "-O4,p", "-pragma", "cats off",
+                    "-i", str(folder), "-i", "include", "-i", "build/GALE01/include", "-c", str(copy), "-o", str(out)]
+    assert obj == out / "a.o"
+    assert gc.trial_command(["/t/mwcceppc.exe", "-cwd", "explicit", "-c", "a.c", "-o", "b"], copy, folder, out) is None
+    assert gc.trial_command(["/t/mwcceppc.exe", "-c", "a.c"], copy, folder, out) is None
+    assert gc.trial_command(["/t/mwccarm.exe", "-c", "a.c", "-o", "b"], copy, folder, out) is None
+    assert consoles.get("pc").trial_command(command, copy, folder, out) is None  # (the default: the build's)

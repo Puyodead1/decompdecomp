@@ -196,6 +196,28 @@ class GameCube(Console):
         fp.update_manifest(compiler=compiler)
         return ["configure.py", ".decomp.wtf.json"]
 
+    def trial_command(self, command: list[str], copy: Path, folder: Path, out: Path) -> tuple[list[str], Path] | None:
+        """CodeWarrior's compile of a file (mwcceppc, through sjiswrap or wibo or neither: dtk-template's, scratch
+        projects' and published ones' alike) run on a copy of it: a try the permuter, search_flags or an agent's
+        trial doesn't keep then builds in a folder of its own, and the project's file is neither rewritten nor built
+        twice (written, then put back). The copy keeps the file's name (CodeWarrior's __FILE__ is the name alone),
+        and the file's folder is searched first for its includes, where CodeWarrior looks first for the file itself
+        (its default `-cwd include`). Not without one -c and one -o, or where the build chose its own include
+        semantics (-cwd, -gccinc, -I-): the try is built in the project."""
+        names = [Path(a.replace("\\", "/")).name.lower() for a in command]
+        if not any(n.startswith("mwcceppc") for n in names) or command.count("-c") != 1 or command.count("-o") != 1:
+            return None
+        if any(a.lower().startswith(("-cwd", "-gccinc", "-i-")) for a in command):
+            return None
+        at_c, at_o = command.index("-c"), command.index("-o")
+        if max(at_c, at_o) + 1 >= len(command):
+            return None
+        args = list(command)
+        args[at_c + 1], args[at_o + 1] = str(copy), str(out)
+        first = next((k for k, a in enumerate(args) if a in ("-i", "-I", "-ir") or a.startswith("-I")), at_c)
+        args[first:first] = ["-i", str(folder)]
+        return [a for a in args if a != "-MMD"], out / (copy.stem + ".o")
+
 
 class Wii(GameCube):
     id = "wii"
