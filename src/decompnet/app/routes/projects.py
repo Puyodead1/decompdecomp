@@ -167,6 +167,11 @@ def register(app: App) -> None:
             return net.scan_libraries(slug)
         return {"job": jobs.start("libraries", lambda log: net.match_libraries(slug, log=log))}
 
+    def p_globals(slug, request, data):
+        """The Globals tab: the game's data symbols beside the D_ address names they started as (globals_view)."""
+        from ..globals_view import globals_list
+        return globals_list(net, slug)
+
     def p_libraries_found(slug, request, data):
         """Which libraries the game has built in (engine/libraryid.py). GET: the last report, with the user's
         signatures folder; POST: find them again (a job); `op` "aside": set a found library's functions aside as its
@@ -456,6 +461,7 @@ def register(app: App) -> None:
         "/api/libraries/found": (p_libraries_found, ["GET", "POST"]), "/api/parts": (p_parts, ["POST"]),
         "/api/suggestion": (p_suggestion, ["POST"]), "/api/boundary": (p_boundary, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
+        "/api/globals": (p_globals, ["GET"]),
         "/api/compilermap": (p_compilermap, ["GET", "POST"]),
     }
     for path, (fn, methods) in routes.items():

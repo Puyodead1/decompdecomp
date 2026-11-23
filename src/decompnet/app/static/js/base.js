@@ -6,8 +6,8 @@
    theme, state and routing, bug reports), sidebar (the project list, New project, the notification centre), home,
    project (overview, decompiling together, public decomps), map, prompt-settings, tool-catalog, tool-settings,
    agents (who's working, the launcher, what
-   happens), function (the drawer, the function list), steering (drawers and keys, instructions, export, project
-   settings and the compiler), pages (the app's own pages, updates, and starting the app). Functions can be called
+   happens), function (the drawer, the function list), globals (the Globals tab), steering (drawers and keys,
+   instructions, export, project settings and the compiler), pages (the app's own pages, updates, and starting the app). Functions can be called
    across files once all have loaded; code that runs while a file loads may only use what this file or an earlier
    one defines. Not ES modules: they would need an import for every name used across files. */
 
@@ -307,7 +307,7 @@ const S = {
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "workPage"];
 /* A project's views. Activity is in Agents now, Team and Source are the header's Decompile together and Export:
    seven tabs were too many to tell apart. */
-const TABS = ["overview", "functions", "agents", "settings"];
+const TABS = ["overview", "functions", "globals", "agents", "settings"];
 
 /* The project folder in the computer's file manager (decompdecomp in Docker says where it is instead). */
 function openFolder() {

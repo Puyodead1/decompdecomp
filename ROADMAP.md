@@ -57,6 +57,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Tidy each source file once it's polished (shared types in one header, names, dead declarations) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | the functions' own declarations, into the shared header | ✓ | ✓ |
 | Polish matched code (still matching) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Real names for the game's symbols (`rename_symbol`) | ✓ | ✓ | ✓ | ✓ | ✓ functions | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | dtk and ds-decomp projects |
+| Globals tab: the game's data symbols beside their `D_` address names | ✓ shared path | ✓ shared path | ✓ shared path | ✓ shared path | — | ✓ shared path | ✓ shared path | — | — | — | — | ✓ shared path | — | — |
 | Save and restore (`progress/`, Open a saved project); remember each project's save destination | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | partly: the project's git, best attempts saved; a new copy starts without them | partly: the project's git, best attempts saved; a new copy starts without them | the project's git; best attempts saved; the PE view made again from your XBE or disc | partly: the project's git, best attempts saved; a new copy starts without them | ✓ | partly: the project's git, best attempts saved; a new copy starts without them | the project's git; best attempts saved |
 | Saved README preserves notes, with completion bar and function map | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Reimport: a new split, matched work kept (Settings) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ (Ghidra again, the newest rules) | ✓ | — | ✓ | — | — |
@@ -250,6 +251,10 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   Entries are checksummed and written whole; a damaged one is a miss. Bounded by `DECOMP_OBJECT_CACHE_MB` (default
   512, 0 off), least recently used first. ROM mode on every console whose compiler is pinned; project mode below.
 
+- **A Globals tab.** Data symbols (`D_800A4DFC` → `sDirectKey`) had no list: only functions did. A ROM project's
+  Globals tab lists the game's variables, tables and strings from its symbols table, each beside the address
+  name it started as, searchable by either name, its address or its value, filterable by named or not and
+  sortable. Project mode says why its tab is empty ("Globals in project mode", under Next).
 - **CodeWarrior's own libraries found in GameCube and Wii games.** Every GameCube and Wii game links CodeWarrior's
   runtime (`__save_gpr`, `__div2i`, the C++ runtime), MSL (its C library and fdlibm's math: `__pformatter`,
   `__two_exp`, `__ieee754_exp`) and most link MetroTRK, the debugger's kernel (`TRKDoWriteMemory`); none of it was in
@@ -1362,6 +1367,13 @@ Twins across your games already match library code you matched once. The next st
 libgcc/newlib, built on your computer with the project's compiler (libultra on N64, the PS2 SDK libraries), and try
 them as twins. Library sources are fetched only when you ask, never bundled: SDK code is the console maker's
 copyright.
+
+### Globals in project mode
+
+The Globals tab lists a ROM project's data symbols from its symbols table. A project-mode game (GameCube, Wii,
+Windows PC, Xbox, DS, V.Flash, PS4, public decomps) keeps its data in the project's own files, so its tab says
+so and lists nothing yet. It needs a reader for dtk's and ds-decomp's symbols and for the PC project's data,
+through the console's connector.
 
 ### Names from another build you own
 
