@@ -61,10 +61,29 @@ def fail(msg: str) -> None:
     sys.exit(f"error: {msg}")
 
 
-def run(argv: list[str]) -> None:
-    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def run(argv: list[str], *, mixed_abis: bool = False) -> None:
+    """Run a tool in the build's folder; its failure ends the build. `mixed_abis` (the link): ld refusing only to
+    mix MIPS ABIs or register widths is run again with --no-warn-mismatch. A game's period compilers tag their
+    objects as they did (KMC GCC's 32-bit code beside the assembler's 64-bit, an EABI library beside o32 code);
+    the addresses are the game's own, and the image must still match the original byte for byte."""
+    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                         env={**os.environ, "LC_ALL": "C"} if mixed_abis else None)  # (ld's messages in English)
+    if res.returncode != 0 and mixed_abis and only_abi_mismatch(res.stderr):
+        return run([argv[0], "--no-warn-mismatch", *argv[1:]])
     if res.returncode != 0:
         fail(f"{' '.join(argv[:3])} ...\n{(res.stdout + res.stderr)[-3000:]}")
+
+
+_ABI_MISMATCH = re.compile(r": linking (?:32-bit code with 64-bit code|64-bit code with 32-bit code)$"
+                           r"|: ABI mismatch: linking \w+ module with previous \w+ modules$")
+_MERGE_FAILED = re.compile(r": failed to merge target specific data of file .+$")
+
+
+def only_abi_mismatch(stderr: str) -> bool:
+    """Whether everything ld said is about MIPS ABIs or register widths not matching (and so not merging)."""
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    return (any(_ABI_MISMATCH.search(line) for line in lines)
+            and all(_ABI_MISMATCH.search(line) or _MERGE_FAILED.search(line) for line in lines))
 
 
 def binutils(tool: str) -> str:
@@ -347,7 +366,8 @@ def build() -> bool:
     objs = sorted({obj for _, _, obj in todo} | {obj for _, obj in gaps})
     # the objects in a response file: a PSP game with its modules has 48,000 functions, past the command line's limit
     (ROOT / "build" / "objects.txt").write_text("\n".join(objs) + "\n", encoding="utf-8")
-    run([binutils("ld"), *B["ld_flags"], "-T", "build/game.ld", "-o", "build/game.elf", "@build/objects.txt"])
+    run([binutils("ld"), *B["ld_flags"], "-T", "build/game.ld", "-o", "build/game.elf", "@build/objects.txt"],
+        mixed_abis=True)
     run([binutils("objcopy"), "-O", "binary", "build/game.elf", B["output"]])
     out, base = (ROOT / B["output"]).read_bytes(), (ROOT / B["image"]).read_bytes()
     c_count = sum(1 for fn in B["functions"] if c_source(fn))

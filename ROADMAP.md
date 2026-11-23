@@ -312,6 +312,11 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   report the sync reads; a function whose tables differ says which entries go where. ROM mode always compared
   them, as data the candidate defines. ELF objects only: see "Jump tables in COFF objects".
 
+- **The rebuildable export links objects of mixed MIPS ABIs.** A game's period compilers tag their objects with
+  the ABI and register width they used, and GNU ld refused to mix them, so the export's build stopped before
+  comparing anything. A link that fails only for that is run again with `--no-warn-mismatch`; every other failure
+  still stops it, and the image is still compared with the original byte for byte.
+
 - **Machine drafts for labels m2c finds on a delay slot.** m2c refused a label right after a call's delay slot
   that a branch-likely also targets ("add a nop to the delay slot"), and 48 open functions of an N64 game had no
   draft. The nop it asks for is added and m2c runs again; a draft that failed before is tried once more, ROM and
