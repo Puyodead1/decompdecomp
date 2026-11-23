@@ -57,6 +57,9 @@ def register(app: App) -> None:
 
     def p_live(slug, request, data):
         q = request.query_params
+        if q.get("only") == "sessions":  # `decomp agents`: the project's helpers, not its feed (no page is open)
+            net.project_row(slug)
+            return {"sessions": [s for s in manager.snapshot() if s["slug"] == slug]}
         net.progress.touch(slug)  # its page is open (this is its poll): Progress.hot
         out = net.live(slug, int(q.get("e", 0) or 0), int(q.get("a", 0) or 0))
         try:

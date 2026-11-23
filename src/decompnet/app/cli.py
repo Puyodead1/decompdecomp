@@ -1,7 +1,8 @@
 """`decomp`: open decompdecomp in its window (starting the app, or bringing the running one's window to the front).
 
 That's the one way to run it. The other commands act on the app: `decomp stop`, `decomp update`, `decomp setup` (the
-free compilers and tools), `decomp shortcut` (the apps menu entry). A development copy (run from a git checkout) is
+free compilers and tools), `decomp shortcut` (the apps menu entry), `decomp import` (a game made a project by the
+running app) and `decomp agents` (its helpers: list, start, restart). A development copy (run from a git checkout) is
 a separate app with its own home, port and wine prefix, and never touches the installed one (edition.py).
 """
 
@@ -346,6 +347,152 @@ def pair(args) -> int:
     return 0
 
 
+IMPORT_POLL_SECONDS = 0.5
+AGENTS_WAIT_SECONDS = 30.0
+
+
+def _listening(port: int) -> bool:
+    """Whether anything still accepts connections on the port (the app, however busy)."""
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=2).close()
+        return True
+    except OSError:
+        return False
+
+
+def _refused(e: urllib.error.HTTPError) -> str:
+    """The sentence the app answered a refused request with (its `error`), else the HTTP status."""
+    try:
+        return json.loads(e.read() or b"{}").get("error") or str(e)
+    except ValueError:
+        return str(e)
+
+
+def import_cmd(args) -> int:
+    """A game the user owns made a project by the running app, as dropping it on the home page does: the app imports
+    it from where it is (a ROM, a disc image, a PC game's folder), and this prints the import's log as it goes and the
+    project's slug at the end. The app must be running (this asks it, with server.json's secret, as `decomp stop`
+    does): an import is the app's work, its database and its jobs, and two processes writing them would collide. It's
+    always the app of this home (edition.home_dir: DECOMP_HOME, or the edition's own), never another edition's."""
+    import urllib.parse
+    game = Path(args.path).expanduser().resolve()
+    if not game.exists():
+        print(f"no file or folder at {game}", file=sys.stderr)
+        return 2
+    running = _state(home_dir() / ".decomp" / "server.json")
+    if running is None:
+        print(f"{edition.NAME} isn't running for {home_dir()}: start it (`decomp`, or `decomp serve`), then import "
+              "again", file=sys.stderr)
+        return 1
+    if not args.yes:
+        answer = input(f"Is {game.name} your own legally obtained copy of the game? [y/N] ") if sys.stdin.isatty() else ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("not imported: confirm that the game is your own copy (or pass --yes)", file=sys.stderr)
+            return 1
+    query = {"path": str(game), "confirmed": "1"}
+    if args.name:
+        query["name"] = args.name
+    if args.toolchain:
+        query["toolchain"] = args.toolchain
+    try:
+        started = _call(running, "/api/import?" + urllib.parse.urlencode(query), {}, timeout=60)
+    except urllib.error.HTTPError as e:
+        print(f"not imported: {_refused(e)}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"{edition.NAME} didn't answer: {e}", file=sys.stderr)
+        return 1
+    job_id = started.get("job")
+    print(f"importing {game.name} into {home_dir()} (job {job_id})")
+    if args.no_wait:
+        return 0
+    shown = 0
+    while True:
+        try:
+            job = _call(running, "/api/job?id=" + urllib.parse.quote(str(job_id)), timeout=30)
+        except urllib.error.HTTPError as e:
+            print(f"{edition.NAME} lost the import: {_refused(e)}", file=sys.stderr)
+            return 1
+        except OSError as e:
+            # a busy app (an import's heaviest steps) can answer late, /health too: ask again while it still listens
+            if _listening(running["port"]):
+                time.sleep(IMPORT_POLL_SECONDS)
+                continue
+            print(f"{edition.NAME} stopped answering ({e}); the import may not have finished", file=sys.stderr)
+            return 1
+        log = job.get("log") or []
+        for line in log[shown:]:
+            print(line)
+        shown = len(log)
+        state = job.get("state")
+        if state == "done":
+            print(f"imported: {(job.get('result') or {}).get('slug', '')}")
+            return 0
+        if state in ("error", "cancelled"):
+            print(f"not imported: {job.get('error') or state}", file=sys.stderr)
+            return 1
+        time.sleep(IMPORT_POLL_SECONDS)
+
+
+def agents_cmd(args) -> int:
+    """The running app's helpers, from a terminal: list them, start new ones, restart stopped or paused ones. It asks
+    the app as the window does (server.json's secret, as `decomp stop` and `decomp import`), through the window's own
+    routes: the helpers are the app's processes, and only it starts them."""
+    import urllib.parse
+    state_file = home_dir() / ".decomp" / "server.json"
+    # A busy app (just started, or at work) can take seconds to answer /health: wait for it, up to AGENTS_WAIT.
+    deadline = time.monotonic() + AGENTS_WAIT_SECONDS
+    while (running := _state(state_file)) is None and time.monotonic() < deadline:
+        if not state_file.is_file():
+            break
+        time.sleep(1)
+    if running is None:
+        print(f"{edition.NAME} isn't running for {home_dir()} (or didn't answer in {AGENTS_WAIT_SECONDS:.0f} s): "
+              "start it (`decomp`, or `decomp serve`) first", file=sys.stderr)
+        return 1
+
+    def ask(path, body=None, timeout=60):
+        try:
+            return _call(running, path, body, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"{edition.NAME} refused: {_refused(e)}") from None
+        except OSError as e:
+            raise SystemExit(f"{edition.NAME} didn't answer: {e}") from None
+
+    def helpers(slug):
+        return ask("/api/live?" + urllib.parse.urlencode({"slug": slug, "only": "sessions"})).get("sessions") or []
+
+    try:
+        if args.action == "list":
+            shown = helpers(args.project)
+            for h in shown:
+                print(f"{h['id']}\t{h['state']:<8}\t{h.get('agent') or h.get('kind_name')}\t{h.get('model') or ''}\t"
+                      f"{(h.get('why') or '')[:100]}")
+            if not shown:
+                print(f"no helpers on {args.project}")
+            return 0
+        if args.action == "start":
+            options = {"model": args.model} if args.model else {}
+            started = ask("/api/agents/start", {"kind": args.agent, "slug": args.project, "count": args.count,
+                                                "options": options}, timeout=300)
+            ids = started.get("started") or []
+            print(f"started {len(ids)} {args.agent} helper{'s' if len(ids) != 1 else ''} on {args.project}: "
+                  + ", ".join(map(str, ids)))
+            return 0
+        # restart: the ones named, else every stopped or paused one on the project (--paused: paused only)
+        chosen = list(args.ids) or [h["id"] for h in helpers(args.project)
+                                    if h["state"] == "paused" or (h["state"] == "stopped" and not args.paused)]
+        for helper in chosen:
+            ask("/api/agents/restart", {"id": str(helper)})
+            print(f"restarted {helper}")
+        if not chosen:
+            print(f"nothing to restart on {args.project}")
+        return 0
+    except SystemExit as refused:
+        print(refused, file=sys.stderr)
+        return 1
+
+
 def shortcut(args) -> int:
     from .launcher import install_launcher
 
@@ -364,6 +511,25 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("shortcut", help="add decompdecomp to your apps menu")
     sub.add_parser("serve", help="run without a window, for browsers on other computers (see `decomp pair`)")
     sub.add_parser("pair", help="a one-time link that lets a browser on another computer in (through Tailscale)")
+    im = sub.add_parser("import", help="make a project of a game you own (the running app imports it)")
+    im.add_argument("path", help="the game: a ROM, a disc image, or a PC game's folder")
+    im.add_argument("--name", help="the project's name (default: the file's)")
+    im.add_argument("--toolchain", help="the compiler to start with (default: the app finds it)")
+    im.add_argument("--yes", action="store_true", help="confirm it's your own legally obtained copy without asking")
+    im.add_argument("--no-wait", action="store_true", help="start the import and return (the app shows its progress)")
+    ag = sub.add_parser("agents", help="list, start or restart the running app's helpers on a project")
+    ag_sub = ag.add_subparsers(dest="action", required=True)
+    ag_list = ag_sub.add_parser("list", help="the project's helpers: id, state, agent, model, why")
+    ag_list.add_argument("project", help="the project's slug")
+    ag_start = ag_sub.add_parser("start", help="start new helpers, as Start agents does")
+    ag_start.add_argument("project", help="the project's slug")
+    ag_start.add_argument("--agent", default="claude", help="the agent's kind (claude, codex, opencode, ...; default claude)")
+    ag_start.add_argument("--model", default="", help="its model, as the window lists it (e.g. haiku); default the agent's own")
+    ag_start.add_argument("--count", type=int, default=1, help="how many (default 1)")
+    ag_restart = ag_sub.add_parser("restart", help="start stopped or paused helpers again")
+    ag_restart.add_argument("project", help="the project's slug")
+    ag_restart.add_argument("ids", nargs="*", help="the helpers' ids (default: every stopped or paused one)")
+    ag_restart.add_argument("--paused", action="store_true", help="only paused ones, not ones stopped by hand")
     up = sub.add_parser("update", help="install the newest decompdecomp (the running app restarts into it)")
     up.add_argument("--check", action="store_true", help="only say whether there is one")
     ii = sub.add_parser("install-info", help=argparse.SUPPRESS)  # the installers: where updates come from
@@ -376,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
     __import__("decompnet").utf8_output()
     __import__("decompnet.limits").limits.no_core_dumps()
     return {"setup": setup, "stop": stop, "shortcut": shortcut, "update": update_cmd, "serve": serve, "pair": pair,
-            "install-info": install_info}.get(args.cmd, run)(args)
+            "import": import_cmd, "agents": agents_cmd, "install-info": install_info}.get(args.cmd, run)(args)
 
 
 if __name__ == "__main__":
