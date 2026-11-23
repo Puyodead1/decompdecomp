@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from .. import agents as kinds
 from .. import hostenv, wine
 from ..network import NetworkError
-from . import agents, browsers, collab, routes, saves, tools, updates, window
+from . import agents, browsers, collab, edition, routes, saves, tools, updates, window
 from .engine import RomNetwork
 from .routes import browsers as browser_routes
 from .routes import forks, life, pages, projects, rooms, setup, state
@@ -46,7 +46,20 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     def window_ended():
         """The window ended without the app asking (the page found nothing working, or it crashed): quit, unless
-        helpers or a job are working; they carry on, and the tray icon or `decomp` opens the window again."""
+        helpers or a job are working; they carry on, and the tray icon or `decomp` opens the window again.
+
+        WebView2's browser process dying isn't the user closing the window (#154: it died on a copy of a big disc
+        image): a new window opens and the app keeps everything it was doing. One that keeps dying is a crash loop
+        no window can fix, so then the app stays up without one, and the log and a desktop message say so."""
+        if window.WINDOW.exit_code == window.BROWSER_FAILED:
+            if window.WINDOW.reopen_after_browser_failure():
+                jobs.logger.warning("the window's browser died; a new window opened (#154)")
+            else:
+                jobs.logger.error("the window's browser keeps dying; not opening another (#154)")
+                window.tell_desktop(f"{edition.NAME}'s window keeps crashing",
+                                    "Its browser engine (WebView2) died again and again, so it was left closed. Your "
+                                    "projects and helpers keep running: the tray icon or `decomp` opens a window again.")
+            return
         if busy():
             jobs.logger.info("window closed; helpers or a job keep working in the background")
             return

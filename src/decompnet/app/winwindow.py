@@ -26,6 +26,7 @@ site.addsitedir(str(Path(__file__).resolve().parents[2]))
 
 import webview
 
+BROWSER_FAILED = 75  # this program's exit code when WebView2's browser process died: window.BROWSER_FAILED
 ASK_PAGE = 'typeof decompClose === "function" ? String(decompClose()) : "close"'
 
 
@@ -41,13 +42,14 @@ def navigation(event, origin: str) -> None:
 
 def process_failed(sender, event) -> None:
     """#154: a WebView2 process that dies leaves the window black and says nothing (the log held only startup lines).
-    Say which one died; a page's renderer is reloaded, a dead browser process can't be, so the window ends and the app
-    (which keeps its jobs running) opens a new one from the tray."""
+    Say which one died; a page's renderer is reloaded, a dead browser process can't be, so the window ends with
+    BROWSER_FAILED and the app opens a new one (window.Window.reopen_after_browser_failure) instead of quitting: the
+    app, its jobs and its helpers carry on."""
     kind = str(event.ProcessFailedKind)
     logging.getLogger("decompdecomp").warning("WebView2 process failed: %s, reason %s, exit code %s", kind,
                                               getattr(event, "Reason", "?"), getattr(event, "ExitCode", "?"))
     if kind.startswith("Browser"):
-        os._exit(1)
+        os._exit(BROWSER_FAILED)
     if "Render" in kind:
         sender.Reload()
 

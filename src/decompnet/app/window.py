@@ -3,7 +3,8 @@
 The window is a program of its own: gtkwindow.py uses system Python and WebKitGTK on Linux, macwindow.py uses
 Cocoa/WebKit through the app's Python on macOS. The app starts it, talks to it on its stdin, and watches it: when it ends without
 the app asking (it crashed, or the page couldn't answer a close), the app quits, unless helpers or a job are still
-working; then they carry on in the background, the tray icon or `decomp` opens the window again.
+working; then they carry on in the background, the tray icon or `decomp` opens the window again. A Windows window
+whose WebView2 browser process died isn't the user closing it: a new one opens (#154).
 
 No browser is involved: the page is served only to a window whose user agent carries the per-launch secret.
 """
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +32,9 @@ WIN_WINDOW_PROGRAM = Path(__file__).with_name("winwindow.py")
 TOKEN_AGENT = "decompdecomp-window/"  # gtkwindow.py puts this, then the secret, in its user agent
 CHECK_SECONDS = 20
 CLOSE_SECONDS = 5  # a window told to close that's still there after this long is ended
+BROWSER_FAILED = 75  # winwindow.py's exit code when WebView2's browser process died (#154): a new window, not a quit
+REOPEN_SECONDS = 60  # browser failures this close together are a crash loop: a window that keeps dying isn't reopened
+REOPEN_TRIES = 3
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 MAC_WINDOW_PROGRAM = Path(__file__).with_name("macwindow.py")
@@ -153,6 +158,8 @@ class Window:
     def __init__(self, internal: Path, url: str, secret: str, on_close: Callable[[], None]):
         self.internal, self.url, self.secret, self.on_close = internal, url, secret, on_close
         self.proc: subprocess.Popen | None = None
+        self.exit_code: int | None = None  # how the window last ended by itself (BROWSER_FAILED: its browser died)
+        self.browser_failures: list[float] = []  # when those happened, to tell a crash loop from a one-off
         self._lock = threading.Lock()
 
     def is_open(self) -> bool:
@@ -221,11 +228,23 @@ class Window:
         for line in proc.stdout:
             log.info("window: %s", line.rstrip())
 
+    def reopen_after_browser_failure(self) -> bool:
+        """A new window after WebView2's browser process died (#154: it died while a big disc image was copied in):
+        the app and its jobs carry on and the user gets a window back, instead of watching the app vanish. False when
+        the window keeps dying (a crash loop, which reopening would only repeat): the app then stays up without one,
+        and the tray icon or `decomp` opens it."""
+        now = time.monotonic()
+        self.browser_failures = [t for t in self.browser_failures if now - t < REOPEN_SECONDS] + [now]
+        if len(self.browser_failures) > REOPEN_TRIES:
+            return False
+        return self.open()
+
     def _watch(self, proc: subprocess.Popen) -> None:
         proc.wait()
         if proc.returncode:
             log.warning("the window ended with exit code %s", proc.returncode)
         if proc is self.proc:
+            self.exit_code = proc.returncode
             self.proc = None
             self.on_close()
 

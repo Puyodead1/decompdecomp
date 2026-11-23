@@ -203,6 +203,28 @@ def test_in_a_wsl_distribution_of_your_own_it_keeps_updating(tmp_path, monkeypat
     build(RomNetwork(home / ".decomp" / "decomp.db", home), home / ".decomp", PORT, SECRET)
     assert json.loads((home / ".decomp" / "settings.json").read_text()) == {"auto_update": True}
 
+def test_the_app_opens_a_new_window_when_the_windows_browser_dies(app, monkeypatch):
+    """#154: WebView2's browser process dying ended the window, and the app quit with it (`window closed; quitting`)
+    when nothing was running. A new window opens instead, and the app keeps its projects and helpers."""
+    quits, reopened = [], []
+    monkeypatch.setattr(os, "_exit", lambda code=0: quits.append(code))
+    monkeypatch.setattr(window.WINDOW, "reopen_after_browser_failure", lambda: reopened.append(1) or True)
+    monkeypatch.setattr(window.WINDOW, "exit_code", window.BROWSER_FAILED)
+    window.WINDOW.on_close()  # what Window._watch calls when the window program ends by itself
+    assert reopened == [1] and quits == []
+
+
+def test_a_window_that_keeps_dying_leaves_the_app_up_without_one(app, monkeypatch):
+    """A crash loop no window can fix: the app stays up (its jobs and helpers keep working), and says so."""
+    quits, told = [], []
+    monkeypatch.setattr(os, "_exit", lambda code=0: quits.append(code))
+    monkeypatch.setattr(window.WINDOW, "reopen_after_browser_failure", lambda: False)
+    monkeypatch.setattr(window.WINDOW, "exit_code", window.BROWSER_FAILED)
+    monkeypatch.setattr(window, "tell_desktop", lambda title, text: told.append(title))
+    window.WINDOW.on_close()
+    assert quits == [] and told and "crash" in told[0]
+
+
 def test_only_the_apps_own_window_gets_the_gui(app):
     """The page and its API answer only the app's window, whose user agent carries the per-launch secret: the
     address alone, pasted in a browser, opens nothing (the old ?k= link and its cookie are gone)."""
