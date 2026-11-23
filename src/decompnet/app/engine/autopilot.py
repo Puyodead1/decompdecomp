@@ -176,6 +176,12 @@ class AutopilotMixin:
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
+            # again inside the claim's transaction: a helper's match between the read above and this claim left the
+            # function matched, and the draft judged after it would have been recorded on a matched function
+            fn = db.execute("SELECT * FROM functions WHERE id=?", (fn["id"],)).fetchone()
+            if fn is None or fn["status"] != "open":
+                raise NetworkError("This function is no longer open. Read the updated project before trying another "
+                                   "draft.")
             if db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
                 raise NetworkError(f"{fn['name']} is claimed")
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))

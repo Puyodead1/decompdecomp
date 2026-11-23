@@ -4212,7 +4212,11 @@ class ForkEngine:
         now = time.time()
         with self.net.store.tx() as db:
             self.net._expire_claims(db)
-            if fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
+            # its status read again inside the claim's transaction: one read before it let a try claim a function a
+            # helper matched meanwhile
+            now_status = db.execute("SELECT status FROM functions WHERE id=?", (fn["id"],)).fetchone()
+            if now_status is None or now_status["status"] != "open" or db.execute(
+                    "SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
                 return None
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
         return fn["id"]
