@@ -312,6 +312,9 @@ class LibraryIdMixin:
         for f in catalog.files:
             if "error" in f:
                 log(f"your signatures: {f['file']} wasn't read: {f['error']}")
+        if (own := console.library_signatures()):  # (its libraries' code, from a tool it installs: dtk's)
+            catalog.signatures += own
+            log(f"{console.name}'s libraries: {len(own):,} functions' signatures")
         named = {}
         if (archives := kits.libraries(console.kits)):  # (the console's SDK, the user's own copy: Setup)
             own = kit_signatures(archives)

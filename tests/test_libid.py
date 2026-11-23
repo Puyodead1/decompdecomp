@@ -589,7 +589,8 @@ def test_only_codewarriors_consoles_have_its_libraries(tmp_path):
     catalog, not the one every console reads."""
     from decompnet import consoles
 
-    assert {lib.id for lib in consoles.get("wii").library_catalog()} == {"mw-runtime", "msl", "metrotrk"}
+    assert {lib.id for lib in consoles.get("wii").library_catalog()} == {"mw-runtime", "msl", "metrotrk",
+                                                                     "dolphin-sdk"}
     for other in ("ps2", "n64", "pc"):
         assert consoles.get(other).library_catalog() == []
     report = libid.identify(None, _gamecube_runtime(), libid.load(tmp_path / "none"), arch="ppc", big_endian=True)
@@ -640,3 +641,81 @@ def test_find_libraries_sets_metrotrk_aside_in_a_gamecube_project_by_where_its_f
     assert status["fn_803BD764"] == "asm" and status["Game_Update"] == status["fn_803BD900"] == "open"
     aside = json.loads((Path(proj["root"]) / "config" / "V" / "set_aside.json").read_text())
     assert "fn_803BD74C" in aside and "MetroTRK" in aside["fn_803BD74C"]
+
+
+def _dtk_entry(name: str, words: list[tuple[int, int]], relocs: list[tuple[int, str, int]], newline: bool = True) -> bytes:
+    """One entry of dtk's signature files, as its program carries it: (instruction, mask) words, base64, their SHA-1."""
+    import base64
+    import hashlib
+
+    code = b"".join(struct.pack(">II", w, m) for w, m in words)
+    lines = ["- symbol: 0", f"  hash: {hashlib.sha1(code).hexdigest()}",
+             f"  signature: {base64.b64encode(code).decode()}", "  symbols:", "  - kind: Function", f"    name: {name}",
+             f"    size: {4 * len(words)}", "    flags: 1", "    section: .text", "  - kind: Function",
+             "    name: OSReport", "    size: 0", "    flags: 1", "    section: null"]
+    lines += ["  relocations:"] if relocs else ["  relocations: []"]
+    for offset, kind, symbol in relocs:
+        lines += [f"  - offset: {offset}", f"    kind: {kind}", f"    symbol: {symbol}", "    addend: 0"]
+    return ("\r\n".join(lines) + ("\r\n" if newline else "")).encode()
+
+
+def test_dtks_signatures_are_read_from_its_program_and_only_whole_entries_kept():
+    """dtk carries its signature files in its program, one after another without a newline between them: an entry
+    starts at its "- symbol: " wherever that is, its code is (instruction, mask) pairs whose SHA-1 it gives, and one
+    whose code isn't that hash (or that names a relocation kind not known) is left out."""
+    from decompnet.consoles.gc_wii import sdk
+
+    words = [(0x9421FFF0, 0xFFFFFFFF), (0x7C0802A6, 0xFFFFFFFF), (0x48000001, 0xFC000003), (0x38600000, 0xFFFFFFFF)]
+    first = _dtk_entry("OSFirst", words, [(8, "PpcRel24", 1)], newline=False)
+    second = _dtk_entry("__init_cpp", words, [])
+    bad = _dtk_entry("OSBroken", words, []).replace(b"  hash: ", b"  hash: f", 1)  # (not its code's hash)
+    odd = _dtk_entry("OSOdd", words, [(8, "PpcRel32", 1)])
+    blob = b"\x7fELF...binary..." + first + second + bad + odd + b"\0\0more of the program"
+    entries = {name: (code, relocs) for name, code, relocs in sdk.read_entries(blob)}
+    assert set(entries) == {"OSFirst", "__init_cpp"}
+    (pattern, bits), relocs = entries["OSFirst"]
+    assert pattern == struct.pack(">IIII", *(w for w, _ in words)) and bits[8:12] == b"\xfc\x00\x00\x03"
+    assert relocs == [(8, "PpcRel24")] and entries["__init_cpp"][1] == []
+
+
+def test_a_signature_with_a_bit_mask_and_relocations_matches_only_that_code():
+    """dtk's signatures keep an instruction's opcode and registers and clear what a relocation fills in: code is the
+    function's when the kept bits are the same and its relocations fill the same bytes (a game's own code that only
+    looks the same, a `bl` where the SDK's had none, isn't)."""
+    pattern = struct.pack(">II", 0x48000001, 0x38600001)
+    sig = libid.Signature("dolphin-sdk", "", "OSThing", 8, pattern, b"\1" * 8, bits=b"\xfc\0\0\3\xff\xff\xff\xff",
+                          wild=frozenset(range(0, 4)))
+    code = libid.Code(1, "fn_80001000", 0x80001000, struct.pack(">II", 0x48001235, 0x38600001), frozenset(range(4)))
+    assert libid.signature_matches(sig, code)
+    assert not libid.signature_matches(sig, libid.Code(1, "f", None, struct.pack(">II", 0x4BFFFFF1, 0x38600002),
+                                                       frozenset(range(4))))
+    assert not libid.signature_matches(sig, libid.Code(1, "f", None, code.raw, frozenset()))  # (no relocation there)
+
+
+@pytest.mark.skipif(__import__("decompnet").toolchains.installed("dtk") is None, reason="needs dtk")
+def test_the_installed_dtks_signatures_find_nintendos_sdk_and_codewarriors_libraries():
+    """The GameCube's and Wii's library finder reads dtk's signatures from the dtk decompdecomp installs (its pinned
+    version: nothing of them is in decompdecomp): CodeWarrior's runtime, MSL and MetroTRK by the names their catalog
+    gives, the rest Nintendo's SDK, set aside. A stripped game's function with an entry's code is found and gets its
+    name; the same code with another relocation, or one kept bit changed, isn't."""
+    from decompnet import consoles
+
+    gc = consoles.get("gc")
+    sigs = gc.library_signatures()
+    by_lib = {lib: {s.name for s in sigs if s.library == lib} for lib in {s.library for s in sigs}}
+    assert len(sigs) > 500 and set(by_lib) == {"dolphin-sdk", "mw-runtime", "msl", "metrotrk"}
+    assert {"OSInit", "DVDInit", "__start"} <= by_lib["dolphin-sdk"] and "TRK_main" in by_lib["metrotrk"]
+    assert "__init_cpp_exceptions" in by_lib["mw-runtime"] and "__pformatter" in by_lib["msl"]
+    assert all(len(s.pattern) >= 32 for s in sigs)
+    sig = next(s for s in sigs if s.name == "DVDInit")
+    catalog = libid.load(Path("none"), console=gc.library_catalog())
+    catalog.signatures += sigs
+    own = libid.Code(1, "fn_80300000", 0x80300000, sig.pattern, sig.wild)
+    moved = libid.Code(2, "fn_80400000", 0x80400000, sig.pattern, frozenset())
+    k = next(i for i, b in enumerate(sig.bits) if b and i not in sig.wild)
+    flipped = bytes([sig.pattern[k] ^ (sig.bits[k] & -sig.bits[k])])  # (its lowest kept bit)
+    changed = libid.Code(3, "fn_80500000", 0x80500000, sig.pattern[:k] + flipped + sig.pattern[k + 1:], sig.wild)
+    report = libid.identify(None, [own, moved, changed], catalog, arch="ppc", big_endian=True)
+    found = {lib["id"]: lib for lib in report["libraries"]}
+    assert set(found) == {"dolphin-sdk"} and found["dolphin-sdk"]["aside"] and found["dolphin-sdk"]["kind"] == "sdk"
+    assert [(f["name"], f.get("real")) for f in found["dolphin-sdk"]["functions"]] == [("fn_80300000", "DVDInit")]

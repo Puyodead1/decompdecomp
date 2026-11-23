@@ -1,8 +1,10 @@
 # CodeWarrior's own libraries, which every GameCube and Wii game links: the library finder's entries for them
 # (libid/catalog.toml says what each key means; the console hands them over as Console.library_catalog).
 #
-# No one may publish their code, so no signature can find them: their names do. A game that kept its symbols has
-# them, and dtk's own analysis names a few dozen in a stripped one (memcpy, __save_gpr, __pformatter, TRKNubMainLoop).
+# No one may publish their code, so no signature file of ours can find them: their names do. A game that kept its
+# symbols has them, and dtk's own analysis names a few dozen in a stripped one (memcpy, __save_gpr, __pformatter,
+# TRKNubMainLoop). dtk's own signatures (masked code, read from the installed dtk: sdk.py) find a few hundred more,
+# CodeWarrior's and Nintendo's SDK's, by their code: each goes to the library below its name is in, the rest to the SDK.
 # Each library is linked whole, one archive after the other: in five public decomps (GameCube and Wii) the runtime,
 # MSL and MetroTRK are each one run of functions with nothing else inside, so the functions between two of one
 # library's own named ones are its too, as far as `reach`. Their names here are the ones those decomps give the
@@ -121,4 +123,15 @@ companion_names = ['CBGetBytesAvailableForRead', 'CircleBuffer\w+', 'OutputData'
                    'WriteUART1', 'WriteUARTFlush', '__read_console', '__write_console', '__close_console']
 reach = 48
 span = 0x4000
+aside = true
+
+# Nintendo's SDK (OS, DVD, EXI, SI, NAND ... and its __start): found by dtk's signatures alone (sdk.py), no names (a
+# game's own code calls its functions OSReport or DVDOpen too). Each of its libraries says which it is and when it was
+# built: "<< Dolphin SDK - OS\trelease build: Apr  5 2004 04:14:49 (0x2301) >>", "<< RVL_SDK - DVD \trelease build:
+# ...". Set aside as CodeWarrior's are: the decomps link Nintendo's, and agents spent time on it otherwise.
+[[library]]
+id = "dolphin-sdk"
+name = "Nintendo's SDK (Dolphin and Revolution)"
+kind = "sdk"
+strings = ['<< (?:Dolphin SDK|RVL_SDK) - \w+\s+(?:release|debug) build: (?P<version>\w{3} [ \d]\d \d{4})']
 aside = true
