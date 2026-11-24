@@ -77,3 +77,55 @@ def test_link_asks_for_data_only_for_files_that_have_none(tmp_path, monkeypatch)
     monkeypatch.setattr(ForkEngine, "_modules", lambda self, fp, cfg: {"main": SimpleNamespace(splits=Path(splits))})
     assert forks._code_only(fp, {}, ["src/a.c", "src/d.c", "src/x.c"]) == ["src/a.c"]
     assert forks._code_only(fp, {}, []) == []
+
+
+def test_a_function_dtk_names_back_is_renamed_in_its_c(tmp_path):
+    """dtk names a local symbol name_<address> while another object refers to it and plain name once that data is
+    the file's own: a GameCube game's long2str_8009C164 became long2str, its C kept the old name, objdiff paired
+    nothing, and the data step took every file's data back without a word."""
+    from types import SimpleNamespace
+
+    from decompnet.app import forkengine as fe
+
+    rep = {"units": [{"name": "main/text", "functions": [{"name": "long2str", "fuzzy_match_percent": 0},
+                                                        {"name": "other", "fuzzy_match_percent": 100}]}]}
+    lost = {("main/text", "long2str_8009C164"), ("main/text", "gone_80001234"), ("main/text", "plain")}
+    assert fe._named_back(lost, rep) == {("main/text", "long2str_8009C164"): "long2str"}
+    assert fe._matched_in(rep) == {("main/text", "other")}
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "include").mkdir()
+    (tmp_path / "src" / "text.c").write_text("void long2str_8009C164(void) {}\nint long2str_8009C1640;\n")
+    (tmp_path / "include" / "text.h").write_text("void long2str_8009C164(void);\n")
+    (tmp_path / "src" / "other.c").write_text("void other(void) {}\n")
+    saved = fe.ForkEngine.__new__(fe.ForkEngine)._rename_words(SimpleNamespace(root=tmp_path),
+                                                               {"long2str_8009C164": "long2str"})
+    assert sorted(p.name for p in saved) == ["text.c", "text.h"]
+    assert (tmp_path / "src" / "text.c").read_text() == "void long2str(void) {}\nint long2str_8009C1640;\n"
+    assert (tmp_path / "include" / "text.h").read_text() == "void long2str(void);\n"
+
+
+def test_the_data_step_is_tried_again_by_a_new_copy_of_the_app(monkeypatch):
+    """A failed data step was recorded once and never tried again: the update that fixed it changed nothing."""
+    import json
+    from types import SimpleNamespace
+
+    from decompnet import __version__
+    from decompnet.app.forkengine import ForkEngine
+
+    assert ForkEngine._data_tried({"data_tried": ["src/a.c"]})["files"] == set()  # (what earlier copies recorded)
+    assert ForkEngine._data_tried({"data_tried": {"version": "0.1", "files": ["src/a.c"]}})["files"] == set()
+
+    state = {"config": {}}
+    forks = ForkEngine.__new__(ForkEngine)
+    forks.net = SimpleNamespace(store=SimpleNamespace(one=lambda q, i: {"config": json.dumps(state["config"])}))
+    monkeypatch.setattr(ForkEngine, "_save_cfg", lambda self, proj, cfg: state.update(config=cfg))
+    cfg = {}
+    forks._note_data_try({"id": 1}, cfg, ["src/a.c", "src/b.c"])
+    forks._note_data_try({"id": 1}, cfg, ["src/a.c", "src/b.c"], error="2 function(s) stopped matching")
+    t = ForkEngine._data_tried(state["config"])
+    assert t == {"files": {"src/a.c", "src/b.c"}, "failed": {"src/a.c", "src/b.c"},
+                 "error": "2 function(s) stopped matching"}
+    assert cfg["data_tried"]["version"] == __version__
+    forks._note_data_try({"id": 1}, cfg, ["src/a.c"], error="")
+    assert ForkEngine._data_tried(state["config"])["failed"] == {"src/b.c"}
