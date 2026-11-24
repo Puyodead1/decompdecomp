@@ -20,6 +20,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 
 _SKIP = (".comment", ".note", ".debug", ".line", ".mwcats", ".gnu", ".reginfo", ".mdebug", ".pdr", ".MIPS")
+PADDING = 32  # zero bytes at a data section's end the linker's alignment may add before the next file's
 
 
 @dataclass
@@ -92,6 +93,55 @@ def _items(path: Path) -> dict[str, list[Item]]:
 def _padding(item: Item) -> bool:
     """Alignment the original's split names (gap_...) or zero bytes between data: not something to write."""
     return item.data is not None and not any(item.data) and (item.name.startswith("gap_") or "+0x" in item.name)
+
+
+def _layout(path: Path) -> dict[str, tuple[int, bytes | None, frozenset]]:
+    """Each allocated data section of an object: (its size, its bytes (None: .bss), its relocations as (offset, type,
+    what they point at)). A pointer into the object itself is its section and offset, whatever symbol it names; one
+    to anything else is that thing's name."""
+    elf = ELFFile(BytesIO(path.read_bytes()))
+    secs = list(elf.iter_sections())
+    out: dict[str, list] = {}
+    for sec in secs:
+        flags = sec["sh_flags"]
+        if (not sec.name or sec.name.startswith(_SKIP) or not flags & 0x2 or flags & 0x4
+                or sec["sh_type"] not in ("SHT_PROGBITS", "SHT_NOBITS") or not sec["sh_size"]):
+            continue
+        out[sec.name] = [sec["sh_size"], None if sec["sh_type"] == "SHT_NOBITS" else sec.data(), set()]
+    for rs in secs:
+        if not isinstance(rs, RelocationSection) or (into := secs[rs["sh_info"]].name) not in out:
+            continue
+        symtab = elf.get_section(rs["sh_link"])
+        for r in rs.iter_relocations():
+            s = symtab.get_symbol(r["r_info_sym"])
+            addend = r["r_addend"] if r.is_RELA() else 0
+            if isinstance(s["st_shndx"], int) and 0 < s["st_shndx"] < len(secs):
+                what = ("here", secs[s["st_shndx"]].name, s["st_value"] + addend)
+            else:
+                what = ("name", s.name, addend)
+            out[into][2].add((r["r_offset"], r["r_info_type"], what))
+    return {k: (size, data, frozenset(rel)) for k, (size, data, rel) in out.items()}
+
+
+def same_layout(target: Path, base: Path | None) -> bool:
+    """Whether your object's data is the original's byte for byte, only named or cut differently: each data section
+    the same size, with the same bytes and the same pointers. A GameCube game's file whose .bss was one 1,632-byte
+    variable in the project's symbols and four in its C, and one whose strings were one 72-byte label in the project
+    and five literals in its C, waited as data jobs no C could finish: what links is bytes, and the link decides."""
+    if base is None or not base.exists():
+        return False
+    theirs, yours = _layout(target), _layout(base)
+    if set(theirs) != set(yours):
+        return False
+    for name, (size, data, rel) in theirs.items():
+        mine, mdata, mrel = yours[name]
+        # the original's section runs on to where the next file's starts: alignment the linker adds (a GameCube
+        # game's strings, 72 bytes in the split and 68 compiled, the last 4 zeros)
+        if rel != mrel or not 0 <= size - mine < PADDING:
+            return False
+        if data is not None and (mdata is None or data[:mine] != mdata or any(data[mine:])):
+            return False
+    return True
 
 
 def compare(target: Path, base: Path | None) -> list[Section]:

@@ -1688,8 +1688,25 @@ class ForkEngine:
         tc, td = int(m.get("total_code") or 0), int(m.get("total_data") or 0)
         return bool(tc or td) and int(m.get("matched_code") or 0) == tc and int(m.get("matched_data") or 0) == td
 
+    @staticmethod
+    def _code_done(unit: dict) -> bool:
+        m = unit.get("measures") or {}
+        return int(m.get("matched_code") or 0) == int(m.get("total_code") or 0)
+
+    @staticmethod
+    def _data_alike(fp: ForkProject, name: str) -> bool:
+        """Whether a unit's data is the original's byte for byte, only named or cut differently (datadiff.same_layout:
+        objdiff pairs data by name, and a file whose strings were one label in the project's symbols and five literals
+        in its C never counted as matching)."""
+        try:
+            u = fp.unit(name)
+            return u.target is not None and u.target.exists() and datadiff.same_layout(u.target, u.base)
+        except (ForkError, ELFError, OSError, ValueError):
+            return False
+
     def link_candidates(self, proj, fp: ForkProject, rep: dict) -> list[str]:
-        """Source files not linked yet whose every unit matches in code and data (and loads the original's constants)."""
+        """Source files not linked yet whose every unit matches in code and data (and loads the original's constants):
+        data objdiff counts as matching, or the original's bytes named or cut differently. The link decides."""
         states = fp.link_states()
         units: dict[str, list[dict]] = defaultdict(list)
         for u in rep.get("units", []):
@@ -1697,7 +1714,8 @@ class ForkEngine:
             if src:
                 units[src].append(u)
         return sorted(src for src, us in units.items() if states.get(src, ("",))[0] == "NonMatching"
-                      and all(self._finished(u) and not self._held(proj, u["name"]) for u in us))
+                      and all((self._finished(u) or (self._code_done(u) and self._data_alike(fp, u["name"])))
+                              and not self._held(proj, u["name"]) for u in us))
 
     def link(self, slug: str, log=print, agent: Agent | None = None) -> dict:
         """Link every finished file into the game, keeping only what the project's checksum check accepts."""
@@ -1795,6 +1813,8 @@ class ForkEngine:
         if unit.target is None or not unit.target.exists():
             return ""
         try:
+            if datadiff.same_layout(unit.target, unit.base):  # (named or cut differently: the same bytes link)
+                return ""
             return datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
         except ELFError:  # "Magic number does not match" was shown as "data: differs" (legobatman, PC)
             return None
