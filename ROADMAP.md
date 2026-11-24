@@ -251,7 +251,13 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   host's list of jobs comes with its state, so a member's helpers don't stop at "nothing left" while files wait (a
   GameCube room's guests did). Tested in `tests/test_datajobs.py`, `tests/test_collab_connection.py` and, a real host
   and member, `tests/test_fork_rooms.py`; the counts checked on that game's copy (all 12 files are jobs, 149 to
-  2,144 bytes to write).
+  2,144 bytes to write). A file whose data is already the original's bytes, only named or cut differently (one
+  1,632-byte .bss variable in the project's symbols that the C declares as four; one 72-byte string label the
+  compiler emits as five literals), is no job: objdiff pairs data by name and never counted it matched, so it's
+  linked and the link decides (`datadiff.same_layout`: each section the same bytes, pointers to the same places,
+  the original's trailing alignment allowed). Only if that link fails is it a job, the failure in its brief, and an
+  agent never gets back a job it released. On that game, 3 of the files its helpers called unfinishable from C.
+  Tested in `tests/test_data_layout.py`.
 
 - **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
   code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a

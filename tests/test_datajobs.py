@@ -40,16 +40,16 @@ def jobs(tmp_path, monkeypatch):
                              ("main/open", "open"), ("main/linked", "matched")]:
             db.execute("INSERT INTO functions(project_id, name, unit, status) VALUES(1, ?, ?, ?)",
                        (f"f{db.execute('SELECT COUNT(*) FROM functions').fetchone()[0]}", unit, status))
-        for i, name in enumerate(["agent-1", "agent-2"], 1):
+        for i, name in enumerate(["agent-1", "agent-2", "agent-3"], 1):
             db.execute("INSERT INTO agents(id, name, token_hash) VALUES(?, ?, ?)", (i, name, name))
     units = [SimpleNamespace(name=n, source=f"src/{n[5:]}.c", target=None, base=None)
              for n in ["main/a", "main/b", "main/c", "main/big", "main/done", "main/open", "main/linked"]]
     states = {u.source: ("Matching" if u.name == "main/linked" else "NonMatching",) for u in units}
     fp = SimpleNamespace(linkable=lambda: True, link_states=lambda: states, units=lambda: units,
                          units_for=lambda s: [u for u in units if u.source == s])
-    net = Net(store)
-    forks = SimpleNamespace(net=net, get=lambda slug: (net._project(slug), fp, {}))
-    monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u: LEFT.get(u.name, 0))
+    net, cfg = Net(store), {}
+    forks = SimpleNamespace(net=net, get=lambda slug: (net._project(slug), fp, cfg))
+    monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u, alike=True: LEFT.get(u.name, 0))
     return DataJobs(forks)
 
 
@@ -83,9 +83,27 @@ def test_a_release_keeps_the_notes_for_the_next_agent(jobs):
 
 def test_a_file_handed_out_its_tries_without_matching_is_left(jobs):
     for n in range(datajobs.TRIES):
-        assert jobs.claim(agent(1 + n % 2), "game").startswith("DATA JOB (claimed): src/a.c")
-        jobs.release(agent(1 + n % 2), "game", "src/a.c", "no luck")
+        assert jobs.claim(agent(1 + n), "game").startswith("DATA JOB (claimed): src/a.c")
+        jobs.release(agent(1 + n), "game", "src/a.c", "no luck")
     assert [s for s, _ in jobs.todo("game")] == ["src/c.c", "src/b.c"]
+
+
+def test_a_released_job_goes_to_another_agent_not_back_to_the_one_that_gave_it_up(jobs):
+    """A GameCube game's helper got the job it had just released back from every claim_function."""
+    jobs.claim(agent(1), "game")
+    jobs.release(agent(1), "game", "src/a.c", "one variable in the project's symbols, four in the C")
+    assert jobs.claim(agent(1), "game").startswith("DATA JOB (claimed): src/c.c")
+    assert jobs.claim(agent(2), "game").startswith("DATA JOB (claimed): src/a.c")
+
+
+def test_the_originals_bytes_named_differently_are_a_job_only_once_their_link_failed(jobs, monkeypatch):
+    """Alike data (datadiff.same_layout) is the link's to decide; a failed link makes it a job again, its brief saying
+    why the game didn't build."""
+    monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u, alike=True: 0 if alike else LEFT.get(u.name, 0))
+    assert jobs.todo("game") == []
+    jobs.forks.get("game")[2]["link_failed"] = {"src/a.c": "main.dol differs at 0x80401000"}
+    assert jobs.todo("game") == [("src/a.c", 32)]
+    assert "main.dol differs at 0x80401000" in jobs.claim(agent(1), "game")
 
 
 def test_an_edit_renews_the_job_and_says_when_it_is_done(jobs):

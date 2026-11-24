@@ -85,16 +85,19 @@ class DataJobs:
 
         return f"{link.member}.{member_label(agent.name)}"
 
-    def _bytes_left(self, unit) -> int | None:
+    def _bytes_left(self, unit, alike: bool = True) -> int | None:
         """How much of a unit's data is left to write (bytes_left; None: its objects can't be compared, COFF or none
-        built)."""
+        built). `alike`: none when it's the original's bytes, only named or cut differently (datadiff.same_layout):
+        the link decides, and a GameCube game's helpers got jobs no C could finish, a symbol's size in the project's
+        config. Not for a file whose link failed: what's left is then the names its job's brief shows."""
         if unit.target is None or not unit.target.exists():
             return None
         base = unit.base if unit.base is not None and unit.base.exists() else None
-        key = (unit.target, base, unit.target.stat().st_mtime_ns, base.stat().st_mtime_ns if base else 0)
+        key = (unit.target, base, unit.target.stat().st_mtime_ns, base.stat().st_mtime_ns if base else 0, alike)
         if key not in self._left:
             try:
-                self._left[key] = bytes_left(datadiff.compare(unit.target, base))
+                self._left[key] = 0 if alike and datadiff.same_layout(unit.target, base) else \
+                    bytes_left(datadiff.compare(unit.target, base))
             except (ELFError, OSError, ValueError):
                 self._left[key] = None
         return self._left[key]
@@ -102,9 +105,10 @@ class DataJobs:
     def todo(self, slug: str) -> list[tuple[str, int]]:
         """(source file, bytes of data left) of each file whose functions all match and whose data doesn't, not
         linked, with at most MOST_BYTES left and its tries not used up: the least left first."""
-        proj, fp, _ = self.forks.get(slug)
+        proj, fp, cfg = self.forks.get(slug)
         if slug in self.forks.net.links or not fp.linkable():
             return []
+        failed = cfg.get("link_failed") or {}
         rows = self.forks.net.store.all(
             "SELECT unit FROM functions WHERE project_id=? AND unit != '' AND " + IN_BUILD + " GROUP BY unit "
             "HAVING SUM(status='matched') = COUNT(*)", proj["id"])
@@ -119,7 +123,7 @@ class DataJobs:
             u = units.get(r["unit"])
             if u is None or not u.source or states.get(u.source, ("",))[0] != "NonMatching":
                 continue
-            n = self._bytes_left(u)
+            n = self._bytes_left(u, alike=u.source not in failed)
             if n is None:
                 left.pop(u.source, None)  # (no verdict for one of its units: none for the file)
                 continue
@@ -193,6 +197,10 @@ class DataJobs:
                 mine = None
             if mine is None:
                 taken = {s for (pid, s) in self._held if pid == proj["id"]}
+                # (not one this agent gave back: every claim handed a helper the job it had just released)
+                taken |= {r["detail"].split(": ", 1)[0] for r in self.forks.net.store.all(
+                    "SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='data_release'",
+                    proj["id"], agent.id)}
                 mine = next((s for s in todo if s not in taken), None)
                 if mine is None:
                     return None
@@ -203,7 +211,7 @@ class DataJobs:
         return self.brief(slug, mine, todo[mine])
 
     def brief(self, slug: str, source: str, left: int) -> str:
-        proj, fp, _ = self.forks.get(slug)
+        proj, fp, cfg = self.forks.get(slug)
         notes = self.forks.net.store.all(
             "SELECT e.detail, a.name FROM events e LEFT JOIN agents a ON a.id=e.agent_id WHERE e.project_id=? AND "
             "e.kind='data_release' AND e.detail LIKE ? ORDER BY e.id DESC LIMIT 3", proj["id"], f"{source}: %")
@@ -215,6 +223,8 @@ class DataJobs:
                     diff.append(datadiff.render(datadiff.compare(u.target, u.base), DIFF_ROWS))
                 except (ELFError, OSError, ValueError) as e:
                     diff.append(f"(couldn't compare the data: {e})")
+        if why := (cfg.get("link_failed") or {}).get(source):  # (its data is the original's bytes, and it still didn't)
+            said += f"\n- decompdecomp's last try to link it failed (the game didn't build identically):\n{why[-1500:]}"
         return BRIEF.format(source=source, left=left, zeroed=ZEROED, diff="\n".join(d for d in diff if d) or "(nothing differs)",
                             notes=f"\nWhat agents before you said:{said}\n" if said else "")
 
