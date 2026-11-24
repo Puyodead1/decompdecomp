@@ -130,6 +130,9 @@ def same_layout(target: Path, base: Path | None) -> bool:
     and five literals in its C, waited as data jobs no C could finish: what links is bytes, and the link decides."""
     if base is None or not base.exists():
         return False
+    known = {n for _, _, n in _functions(target)}
+    if any(n not in known for _, _, n in _functions(base)):
+        return False  # (a function only yours has moves all code after it: 20 files' copy of a static helper)
     theirs, yours = _layout(target), _layout(base)
     if set(theirs) != set(yours):
         return False
@@ -142,6 +145,94 @@ def same_layout(target: Path, base: Path | None) -> bool:
         if data is not None and (mdata is None or data[:mine] != mdata or any(data[mine:])):
             return False
     return True
+
+
+def _functions(path: Path) -> list[tuple[int, int, str]]:
+    """(offset, size, name) of each function in an object's code, in order."""
+    elf = ELFFile(BytesIO(path.read_bytes()))
+    symtab = elf.get_section_by_name(".symtab")
+    return sorted((s["st_value"], s["st_size"], s.name) for s in (symtab.iter_symbols() if symtab else [])
+                  if s["st_info"]["type"] == "STT_FUNC" and isinstance(s["st_shndx"], int) and s.name)
+
+
+def _pointer_lines(name: str, rel: frozenset, mrel: frozenset) -> tuple[int, list[str]]:
+    """Pointers that point elsewhere in yours: (how many, what to say). Pointers into the object that all moved by
+    the same amount say the code or data before them grew or shrank."""
+    theirs = {at: what for at, _, what in rel}
+    yours = {at: what for at, _, what in mrel}
+    moved: dict[tuple[str, int], list[int]] = {}
+    other = []
+    for at in sorted(set(theirs) | set(yours)):
+        a, b = theirs.get(at), yours.get(at)
+        if a == b:
+            continue
+        if a and b and a[0] == b[0] == "here" and a[1] == b[1]:
+            moved.setdefault((a[1], b[2] - a[2]), []).append(a[2])
+        else:
+            other.append(f"{name}+0x{at:X} points at {_what(a)} in the original, {_what(b)} in yours")
+    lines = []
+    for (sec, by), starts in sorted(moved.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"{name}: {len(starts)} pointer{'s' * (len(starts) != 1)} into {sec} point {abs(by)} bytes "
+                     f"{'further' if by > 0 else 'less far'} in yours (the first to {sec}+0x{min(starts):X}): yours has "
+                     f"{abs(by)} bytes {'more' if by > 0 else 'fewer'} before there")
+    return sum(len(s) for s in moved.values()) + len(other), lines + other[:3]
+
+
+def _what(what) -> str:
+    if what is None:
+        return "nothing"
+    kind, sym, value = what
+    return f"{sym}+0x{value:X}" if kind == "here" else sym + (f"+0x{value:X}" if value else "")
+
+
+def layout(target: Path, base: Path | None) -> tuple[int, list[str]]:
+    """What still differs between your object and the original's once names are set aside (same_layout's terms):
+    (about how many bytes, the differences in plain words). A GameCube game's files with every function matched and
+    no data left to write by name were nobody's job and never linked: strings 4-aligned in the original and packed in
+    yours, tables of function pointers 56 bytes further into yours' code (a function only yours has)."""
+    if base is None or not base.exists():
+        return 1, ["your object hasn't been built"]
+    theirs, yours = _layout(target), _layout(base)
+    cost, out = 0, []
+    mine_fns, their_fns = _functions(base), _functions(target)
+    known = {n for _, _, n in their_fns}
+    if extra := [(at, size, n) for at, size, n in mine_fns if n not in known]:
+        cost += sum(size for _, size, _ in extra)
+        out.append("functions only yours has (they move all code after them): "
+                   + ", ".join(f"{n} ({size} bytes at 0x{at:X})" for at, size, n in extra[:5]))
+    order = [n for _, _, n in mine_fns if n in known]
+    if order != [n for _, _, n in their_fns if n in set(order)]:
+        cost += 4
+        out.append("your functions are in another order than the original's: " + ", ".join(order[:8]))
+    for name in [*theirs, *(n for n in yours if n not in theirs)]:
+        if name not in yours or name not in theirs:
+            size = (theirs.get(name) or yours[name])[0]
+            cost += size
+            out.append(f"{name}: the original has {size} bytes of it, yours none" if name in theirs
+                       else f"{name}: only yours has it ({size} bytes)")
+            continue
+        (size, data, rel), (mine, mdata, mrel) = theirs[name], yours[name]
+        if size != mine:
+            cost += abs(size - mine)
+            padded = data is not None and mdata is not None and size > mine and data[:mine] == mdata and not any(data[mine:])
+            out.append(f"{name}: {size} bytes in the original, {mine} in yours"
+                       + (f" (the original's last {size - mine} are zeros: alignment the link may not add back)" if padded else ""))
+        if data is not None and mdata is not None:
+            at = next((i for i, (a, b) in enumerate(zip(data, mdata)) if a != b), None)
+            if at is not None:
+                cost += sum(a != b for a, b in zip(data[at:], mdata[at:]))
+                line = (f"{name}+0x{at:X} is the first byte that differs: original {data[at:at + 8].hex(' ')}, "
+                        f"yours {mdata[at:at + 8].hex(' ')}")
+                zeros = len(data[at:]) - len(data[at:].lstrip(b"\0"))
+                if zeros and data[at + zeros:at + zeros + 8] == mdata[at:at + 8]:
+                    line += (f": the original has {zeros} zero bytes there before the same bytes as yours (it aligns "
+                             "what follows, a string or table: give it the original's alignment or size)")
+                out.append(line)
+        if rel != mrel:
+            n, lines = _pointer_lines(name, rel, mrel)
+            cost += 4 * n
+            out += lines
+    return (max(cost, 1) if out else 0), out
 
 
 def compare(target: Path, base: Path | None) -> list[Section]:

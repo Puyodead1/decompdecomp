@@ -96,8 +96,14 @@ class DataJobs:
         key = (unit.target, base, unit.target.stat().st_mtime_ns, base.stat().st_mtime_ns if base else 0, alike)
         if key not in self._left:
             try:
-                self._left[key] = 0 if alike and datadiff.same_layout(unit.target, base) else \
-                    bytes_left(datadiff.compare(unit.target, base))
+                if alike and datadiff.same_layout(unit.target, base):
+                    n = 0
+                elif not (n := bytes_left(datadiff.compare(unit.target, base))):
+                    # nothing to write by name, and still not the original's layout: strings aligned differently, a
+                    # table pointing into code that moved. A GameCube game's such files were nobody's job and never
+                    # linked; one whose link failed is a job too, the failure in its brief.
+                    n = datadiff.layout(unit.target, base)[0] or (0 if alike else 1)
+                self._left[key] = n
             except (ELFError, OSError, ValueError):
                 self._left[key] = None
         return self._left[key]
@@ -221,6 +227,9 @@ class DataJobs:
             if u.target is not None and u.target.exists():
                 try:
                     diff.append(datadiff.render(datadiff.compare(u.target, u.base), DIFF_ROWS))
+                    if lines := datadiff.layout(u.target, u.base)[1]:
+                        diff.append("How the object differs from the original's, names aside:\n"
+                                    + "\n".join(f"- {line}" for line in lines[:12]))
                 except (ELFError, OSError, ValueError) as e:
                     diff.append(f"(couldn't compare the data: {e})")
         if why := self.forks.link_failures(fp.root, cfg).get(source):  # (its data is the original's bytes, and it still didn't)

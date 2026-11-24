@@ -1815,7 +1815,10 @@ class ForkEngine:
         try:
             if datadiff.same_layout(unit.target, unit.base):  # (named or cut differently: the same bytes link)
                 return ""
-            return datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
+            shown = datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
+            if not shown and (lines := datadiff.layout(unit.target, unit.base)[1]):  # (its layout, then)
+                shown = "\n".join(["differs from the original's, names aside:", *(f"- {line}" for line in lines[:12])])
+            return shown
         except ELFError:  # "Magic number does not match" was shown as "data: differs" (legobatman, PC)
             return None
         except Exception as e:  # an object pyelftools can't read: say so rather than fail the tool
