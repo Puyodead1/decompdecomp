@@ -34,7 +34,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Hand-written assembly set aside | ✓ | ✓ | ✓ | ✓ (`sc` stubs) | — | ✓ | ✓ (`_call_via` helpers, `svc`/`swi` stubs) | ✓ | Visual C++'s exception-handling stubs (64-bit: the funclets its exception data names) | Visual C++'s exception-handling stubs | BIOS call stubs, pieces of functions | the C runtime's start-up code | the CPU's mode and caches, pieces of functions | MIPS, PowerPC, ARM's BIOS stubs and pieces of functions |
 | Source splitting (`split_file`) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ (`split_unit`) | by project |
 | Each file's data given to it, so it can link (files that cover only code) | — | — | — | — | — | — | — | ✓ from scratch (`give_data`, before a file links) | — | — | — | — | — | the project's own |
-| A finished file's data handed out as a job (`claim_function`: every function matches, its data doesn't) | — | — | — | — | — | — | — | ✓ (up to 16 KiB left; not a room's members) | — | — | — | — | — | ✓ where files link |
+| A finished file's data handed out as a job (`claim_function`: every function matches, its data doesn't) | — | — | — | — | — | — | — | ✓ (up to 16 KiB left to write, a zeroed global counting as one definition; not a room's members) | — | — | — | — | — | ✓ where files link |
 | Pieces of functions joined to their function | — | — | — | — | — | — | — | — | ✓ (`scratch.merge_pieces`; 64-bit: .pdata's extents, none to join) | ✓ (`scratch.merge_pieces`) | ✓ (`recover.merge_pieces`) | — | — | — |
 | Agents' verdict "no C makes this" (3 agents of 2 models: set aside, red in the map) | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | The SDK's own inline functions from your copy (`sdk_inline`: an asm block like OSInitFastCast, no agent asm) | — | — | — | — | — | — | — | ✓ | — | — | — | — | — | — their own headers |
@@ -242,9 +242,12 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   least data left first, under forks' default "finish" order (else once no function is left), with `file_status`'s
   comparison in the brief; the agent writes the data with `edit_file`, which says when it matches, and the file is
   linked. `release_function(file, notes)` gives it up with notes for the next agent; three hand-outs and it's left.
-  Helpers keep working while jobs are left. Files with more than 16 KiB left wait (below), and so do a room's
-  members (the host's agents take the jobs). Tested in `tests/test_datajobs.py`; the byte counts checked on that
-  game's copy (6 of the 12 files are jobs).
+  Helpers keep working while jobs are left, and one whose open functions are all held by others starts its session
+  for a job instead of waiting. What's left is counted in what an agent writes: initialised bytes, and a zeroed
+  global (.bss) as one definition whatever its size (that game's six "big" files were a 20 KiB thread stack, a
+  256 KiB buffer and the like, with at most 2 KiB of initialised data). Files with more than 16 KiB left to write
+  wait (below), and so do a room's members (the host's agents take the jobs). Tested in `tests/test_datajobs.py`;
+  the counts checked on that game's copy (all 12 files are jobs, 149 to 2,144 bytes to write).
 
 - **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
   code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a
@@ -1218,10 +1221,11 @@ its versions (`Console.kit_compilers`), as Windows PC does for Visual C++ throug
 
 ### A finished file's big data, and data jobs in rooms
 
-A data job (`app/datajobs.py`) is for a file with at most 16 KiB of data left to write. More is a table no agent
-writes through `edit_file` (a GameCube game's 38 to 81 KiB ones) or not C at all (an embedded GBA program of
-264 KiB): such data wants a binary file the source includes, read from the user's copy at build time, the way
-community decomps do. A room's host hands its members functions only (`/collab` claims), so only the host's agents
+A data job (`app/datajobs.py`) is for a file with at most 16 KiB of initialised data left to write (a zeroed global
+counts as one definition). More is a table no agent writes through `edit_file`, or not C at all (an embedded
+program): such data wants a binary file the source includes, read from the user's copy at build time, the way
+community decomps do. No game has needed it yet: a GameCube game's files that looked like it (up to 264 KiB) were
+zeroed globals, with at most 2 KiB to write. A room's host hands its members functions only (`/collab` claims), so only the host's agents
 take data jobs: the room protocol needs a data job of its own.
 
 ### Each file's data on the other project-mode consoles

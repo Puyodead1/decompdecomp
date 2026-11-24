@@ -24,24 +24,30 @@ from ..forks import datadiff
 from ..network import IN_BUILD, Agent, NetworkError
 
 CLAIM_SECONDS = 30 * 60  # a job is held this long from its claim or its holder's last edit of the file
-# Files with more data than this left wait: a table of 81 KiB or a GBA program of 264 KiB in a GameCube game isn't a
-# job for edit_file (ROADMAP: binary data as a file the source includes)
+# Files with more than this left to write wait (ROADMAP: binary data as a file the source includes). What's left is
+# counted in what an agent writes: initialised bytes, and ZEROED for each zeroed global (.bss), one definition whatever
+# its size. Counted by size, a GameCube game's six files with 23 to 264 KiB "left" waited, all of it .bss but 2 KiB
 MOST_BYTES = 16 * 1024
+ZEROED = 8
 TRIES = 3  # handed out this often (to another agent, or after a release) with its data still short: left as it is
 DIFF_ROWS = 40
 
 
 def bytes_left(sections: list[datadiff.Section]) -> int:
-    """How much of a file's data isn't the original's yet: what's missing, different or only in yours."""
-    return sum((x.size if x is not None else 0) + (y.size if y is not None and x is None else 0)
-               for sec in sections for mark, x, y in sec.rows if mark != " ")
+    """How much of a file's data is left to write: what's missing, different or only in yours, in bytes for
+    initialised data and ZEROED for each zeroed global."""
+    def cost(item: datadiff.Item) -> int:
+        return ZEROED if item.data is None else item.size
+
+    return sum(cost(x) if x is not None else cost(y) for sec in sections for mark, x, y in sec.rows
+               if mark != " " and (x or y) is not None)
 
 
 BRIEF = """DATA JOB (claimed): {source}
 
 Every function in {source} matches. What keeps the file from being linked into the game (the goal: the game built
-from this C, byte for byte) is its data: {left:,} bytes of it aren't the original's yet. Make its object hold the
-original's data, in the same sections and order:
+from this C, byte for byte) is its data, about {left:,} bytes of it left to write (a zeroed global counts {zeroed}: one
+definition, whatever its size). Make its object hold the original's data, in the same sections and order:
 1. file_status("{source}") shows the file's data next to the original's (< missing from yours, > only yours,
    | different). Run it after each change.
 2. read_data(name) reads what a global holds in the original: its bytes, as numbers, floats and strings.
@@ -65,7 +71,8 @@ class DataJobs:
         self._left: dict[tuple, int | None] = {}  # (target, base, their mtimes) -> bytes left (None: no verdict)
 
     def _bytes_left(self, unit) -> int | None:
-        """How much of a unit's data is short (None: its objects can't be compared, COFF or none built)."""
+        """How much of a unit's data is left to write (bytes_left; None: its objects can't be compared, COFF or none
+        built)."""
         if unit.target is None or not unit.target.exists():
             return None
         base = unit.base if unit.base is not None and unit.base.exists() else None
@@ -173,7 +180,7 @@ class DataJobs:
                     diff.append(datadiff.render(datadiff.compare(u.target, u.base), DIFF_ROWS))
                 except (ELFError, OSError, ValueError) as e:
                     diff.append(f"(couldn't compare the data: {e})")
-        return BRIEF.format(source=source, left=left, diff="\n".join(d for d in diff if d) or "(nothing differs)",
+        return BRIEF.format(source=source, left=left, zeroed=ZEROED, diff="\n".join(d for d in diff if d) or "(nothing differs)",
                             notes=f"\nWhat agents before you said:{said}\n" if said else "")
 
     def release(self, agent: Agent, slug: str, source: str, notes: str) -> str | None:
@@ -202,7 +209,7 @@ class DataJobs:
             short = [n for u in fp.units_for(source) if (n := self._bytes_left(u))]
             if short:
                 self._held[key] = (agent.id, time.time() + CLAIM_SECONDS)
-                return f"\nData job: {sum(short):,} bytes of {source}'s data still aren't the original's (file_status shows which)."
+                return f"\nData job: about {sum(short):,} bytes of {source}'s data are still left to write (file_status shows which)."
             del self._held[key]
         with self.forks.net.store.tx() as db:
             self.forks.net._event(db, proj["id"], agent.id, "data_done", source)
