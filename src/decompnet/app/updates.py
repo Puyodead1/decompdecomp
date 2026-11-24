@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -222,6 +223,7 @@ def install(found: dict, log=print) -> dict:
         if os.environ.get("DECOMP_PACKAGE") == "windows":
             packages = Path(sys.executable).resolve().parent.parent / "packages"
             cmd.extend(["--target", str(packages)])
+            _clear_unfinished(packages, log)
         cmd.extend(["--reinstall-package", "decompnet", found["spec"]])
     else:
         cmd = [uv(), "tool", "install", "--force", "--python", "3.12", found["spec"]]
@@ -246,6 +248,16 @@ def install(found: dict, log=print) -> dict:
     info_file().parent.mkdir(parents=True, exist_ok=True)
     info_file().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return data
+
+
+def _clear_unfinished(packages: Path, log) -> None:
+    """decompdecomp's own package record left without its RECORD by an update that stopped partway: uv can't
+    uninstall it, so every update after warned ("Failed to uninstall package ... missing RECORD file", a Windows
+    room guest's) and left it next to the new one. The new version's files are installed over the old either way."""
+    for old in packages.glob("decompnet-*.dist-info"):
+        if not (old / "RECORD").exists():
+            shutil.rmtree(old, ignore_errors=True)
+            log(f"  removed {old.name}, left by an update that didn't finish")
 
 
 def _stream(cmd: list[str], log, failure: str) -> None:
