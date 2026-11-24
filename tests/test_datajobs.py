@@ -45,10 +45,11 @@ def jobs(tmp_path, monkeypatch):
     units = [SimpleNamespace(name=n, source=f"src/{n[5:]}.c", target=None, base=None)
              for n in ["main/a", "main/b", "main/c", "main/big", "main/done", "main/open", "main/linked"]]
     states = {u.source: ("Matching" if u.name == "main/linked" else "NonMatching",) for u in units}
-    fp = SimpleNamespace(linkable=lambda: True, link_states=lambda: states, units=lambda: units,
+    fp = SimpleNamespace(root=tmp_path, linkable=lambda: True, link_states=lambda: states, units=lambda: units,
                          units_for=lambda s: [u for u in units if u.source == s])
     net, cfg = Net(store), {}
-    forks = SimpleNamespace(net=net, get=lambda slug: (net._project(slug), fp, cfg))
+    forks = SimpleNamespace(net=net, get=lambda slug: (net._project(slug), fp, cfg),
+                            link_failures=lambda root, cfg: cfg.get("link_failed") or {})
     monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u, alike=True: LEFT.get(u.name, 0))
     return DataJobs(forks)
 

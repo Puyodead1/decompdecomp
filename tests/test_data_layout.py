@@ -2,6 +2,7 @@
 helpers were handed data jobs no C could finish, one 1,632-byte .bss variable in the project's symbols that the C
 declares as four, and one 72-byte string label that the compiler emits as five literals. The link decides those."""
 
+import os
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,3 +99,18 @@ def test_a_file_whose_data_is_the_originals_bytes_is_linked(tmp_path):
     fp = SimpleNamespace(link_states=lambda: {f"src/{n}.c": ("NonMatching",) for n in units}, unit=units.get)
     rep = _report(("alike", 100, 0), ("differs", 100, 0), ("code", 90, 0), ("done", 100, 72))
     assert _engine().link_candidates({"id": 1}, fp, rep) == ["src/alike.c", "src/done.c"]
+
+
+def test_a_link_failure_from_before_the_split_config_changed_is_forgotten(tmp_path):
+    """A GameCube game's briefs kept "multiply-defined ... in auto_08_..._bss.o" from before its files were given their
+    data, an object no longer built, and its helpers took it for a link step they had to fix."""
+    splits = tmp_path / "config" / "GAME" / "splits.txt"
+    splits.parent.mkdir(parents=True)
+    splits.write_text("input.c:\n")
+    os.utime(splits, (1000, 1000))
+    cfg = {"link_failed": {"src/input.c": "multiply-defined: 'ngcPad'", "src/math3d.c": "multiply-defined",
+                           "src/old.c": "recorded before failures had a time"},
+           "link_failed_at": {"src/input.c": 900.0, "src/math3d.c": 1100.0}}
+    assert ForkEngine.link_failures(tmp_path, cfg) == {"src/math3d.c": "multiply-defined"}
+    assert ForkEngine.link_failures(tmp_path / "elsewhere", {"link_failed": {"a.c": "x"}, "link_failed_at": {"a.c": 1}}) \
+        == {"a.c": "x"}  # (no split config: every failure stands)

@@ -108,7 +108,7 @@ class DataJobs:
         proj, fp, cfg = self.forks.get(slug)
         if slug in self.forks.net.links or not fp.linkable():
             return []
-        failed = cfg.get("link_failed") or {}
+        failed = self.forks.link_failures(fp.root, cfg)
         rows = self.forks.net.store.all(
             "SELECT unit FROM functions WHERE project_id=? AND unit != '' AND " + IN_BUILD + " GROUP BY unit "
             "HAVING SUM(status='matched') = COUNT(*)", proj["id"])
@@ -223,7 +223,7 @@ class DataJobs:
                     diff.append(datadiff.render(datadiff.compare(u.target, u.base), DIFF_ROWS))
                 except (ELFError, OSError, ValueError) as e:
                     diff.append(f"(couldn't compare the data: {e})")
-        if why := (cfg.get("link_failed") or {}).get(source):  # (its data is the original's bytes, and it still didn't)
+        if why := self.forks.link_failures(fp.root, cfg).get(source):  # (its data is the original's bytes, and it still didn't)
             said += f"\n- decompdecomp's last try to link it failed (the game didn't build identically):\n{why[-1500:]}"
         return BRIEF.format(source=source, left=left, zeroed=ZEROED, diff="\n".join(d for d in diff if d) or "(nothing differs)",
                             notes=f"\nWhat agents before you said:{said}\n" if said else "")
