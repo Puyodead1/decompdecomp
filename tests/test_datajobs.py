@@ -17,7 +17,10 @@ LEFT = {"main/a": 32, "main/b": 495, "main/c": 64, "main/big": datajobs.MOST_BYT
 
 class Net:
     def __init__(self, store):
-        self.store, self.links = store, {}
+        self.store, self.links, self.selections = store, {}, {}
+
+    def selection(self, slug, name):
+        return self.selections.get(name, {})
 
     def _project(self, slug):
         return self.store.one("SELECT * FROM projects WHERE slug=?", slug)
@@ -111,3 +114,28 @@ def test_bytes_left_counts_what_is_missing_different_or_only_yours():
     sec = Section(".data", [a, b, c], [a], rows=[(" ", a, a), ("<", b, None), ("|", c, Item("c", None, 8)),
                                                  (">", None, Item("x", b"zz", 2))])
     assert datajobs.bytes_left([sec]) == 8 + 16 + 2
+
+
+def test_a_helper_with_no_function_to_claim_sees_a_data_job_waiting(jobs):
+    """Manager._all_given_up asks this before a session: helpers whose open functions were all held by others waited,
+    "nothing to claim", with three files' data waiting."""
+    assert jobs.takeable(agent(1), "game")
+    jobs.claim(agent(1), "game")
+    jobs.claim(agent(2), "game")
+    assert jobs.takeable(agent(1), "game")  # (its own)
+    jobs.claim(agent(2), "game")  # (agent 2 keeps src/c.c; src/b.c is still free)
+    assert jobs.takeable(agent(3), "game")
+    jobs.claim(agent(3), "game")
+    assert not jobs.takeable(agent(4), "game")  # (every one held by another)
+    jobs.forks.net.selections["agent-1"] = {"units": ["main/a"]}
+    assert not jobs.takeable(agent(1), "game")  # (a work selection gets functions only)
+
+
+def test_a_helper_with_a_data_job_waiting_starts_its_session(jobs):
+    """Manager._all_given_up: the helper starts instead of waiting with "nothing to claim"."""
+    from decompnet.app.agents import Manager
+
+    net = SimpleNamespace(claimable=lambda a, slug: 0, fork_slug=lambda slug: slug,
+                          forks=SimpleNamespace(data_jobs=jobs))
+    s = SimpleNamespace(slug="game")
+    assert Manager._all_given_up(SimpleNamespace(net=net), s, agent(1), "") is False
