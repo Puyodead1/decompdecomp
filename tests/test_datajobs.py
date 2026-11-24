@@ -113,7 +113,14 @@ def test_bytes_left_counts_what_is_missing_different_or_only_yours():
     a, b, c = Item("a", b"\0\0\0\1", 4), Item("b", b"abcdefgh", 8), Item("c", None, 16)
     sec = Section(".data", [a, b, c], [a], rows=[(" ", a, a), ("<", b, None), ("|", c, Item("c", None, 8)),
                                                  (">", None, Item("x", b"zz", 2))])
-    assert datajobs.bytes_left([sec]) == 8 + 16 + 2
+    assert datajobs.bytes_left([sec]) == 8 + datajobs.ZEROED + 2
+
+
+def test_a_zeroed_global_counts_as_one_definition_whatever_its_size():
+    """A GameCube game's files with a 20 KiB thread stack or a 256 KiB buffer to define waited as too big to write."""
+    stack = Item("ThreadStack", None, 20480)
+    sec = Section(".bss", [stack], None, rows=[("<", stack, None)])
+    assert datajobs.bytes_left([sec]) == datajobs.ZEROED < datajobs.MOST_BYTES
 
 
 def test_a_helper_with_no_function_to_claim_sees_a_data_job_waiting(jobs):
