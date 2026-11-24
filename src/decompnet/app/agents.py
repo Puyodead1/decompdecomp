@@ -241,11 +241,12 @@ _RESET_AT = re.compile(r"(?:resets?|try again|available again)(?:\s+at)?\s+(\d{1
 _RESET_ISO = re.compile(r"(?:reset|again|until|after)\D{0,40}?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?"
                         r"(?:Z|[+-]\d{2}:?\d{2})?)", re.I)
 # A weekly limit says the day too: Claude Code's "resets Nov 9 at 5pm (Europe/London)", "available again Nov 9, 2026 at
-# 17:00". The month is read from English names, never the locale's.
+# 17:00", Codex's "try again at Nov 24th, 2026 8:43 PM" (its local time). The month is read from English names, never
+# the locale's.
 _RESET_DATE = re.compile(
     r"(?:resets?|try again|available again)(?:\s+at)?\s+"
     r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
-    r"Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})"
+    r"Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?"
     r"(?:,?\s+(\d{4}))?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\b\.?"
     r"(?:\s*\(([^()\r\n]*)\))?", re.I)
 _MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split()

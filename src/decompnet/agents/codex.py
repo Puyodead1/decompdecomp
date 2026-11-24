@@ -17,8 +17,9 @@ SERVER = "decomp_agent"  # the app's server, by the name the run gives it
 # Codex's words when a required server didn't come up: it stops before any model turn
 _STARTUP_FAILED = re.compile(r"required MCP servers?.*(?:failed|not ready|did not start)|MCP startup failed", re.I)
 # Codex's own words for a used-up plan, at the start of an error or a stderr line; anywhere else (its model writing
-# "within the session limit") they aren't a limit
-PROVIDER_QUOTA = re.compile(r"^(?:Error:\s*)?(?:You(?:'ve| have) hit your usage limit\b|"
+# "within the session limit") they aren't a limit. Codex writes "You’ve" with a typographic apostrophe: read only as
+# "You've", every limit was an ordinary failure, and five in a row paused the helper until the user started it again
+PROVIDER_QUOTA = re.compile(r"^(?:Error:\s*)?(?:You(?:['’]ve| have) hit your usage limit\b|"
                             r"(?:usage_limit_reached|insufficient_quota)\b)", re.I)
 QUOTA_CODES = ("usage_limit_reached", "insufficient_quota")
 COMMAND_SHOWN = 80  # characters of a shell command the feed shows

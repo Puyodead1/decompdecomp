@@ -78,3 +78,22 @@ def test_weekly_reset_flows_into_one_manager_wait_before_retry(tmp_path, monkeyp
     assert max(w for w in session.stop.waits if w) == pytest.approx(expected, abs=5)  # (the workers' stagger adds a few)
     assert runs == [1, 1]
     assert [r["outcome"] for r in net.store.all("SELECT outcome FROM helper_sessions")] == ["limit", "stopped"]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+def test_codex_usage_limit_is_a_limit_and_says_when_it_resets(apostrophe):
+    """Codex writes "You’ve hit your usage limit ... or try again at Nov 24th, 2026 8:43 PM." (a typographic
+    apostrophe, an ordinal day, its local time): read as an ordinary failure, five in a row paused the helper."""
+    from decompnet.agents.codex import CODEX
+    from decompnet.app.agents import LIMIT
+
+    said = (f"You{apostrophe}ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+            "https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 24th, 2026 8:43 PM.")
+    state = {}
+    CODEX.parse({"type": "turn.failed", "error": {"message": said}}, state)
+    assert CODEX.quota_error(state, 1, [], said if LIMIT.search(said) else "") == said
+    assert CODEX.quota_error({}, 1, [said], "") == said  # (on stderr alone too)
+    now = datetime(2026, 11, 23, 20, 19).astimezone().timestamp()
+    assert limit_reset(said, now) == datetime(2026, 11, 24, 20, 43).astimezone().timestamp()
+    assert limit_reset("You’ve hit your usage limit. Try again at Nov 1st, 2026 9:05 AM.",
+                       datetime(2026, 10, 31, 12).astimezone().timestamp()) == datetime(2026, 11, 1, 9, 5).astimezone().timestamp()
