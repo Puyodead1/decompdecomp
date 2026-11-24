@@ -74,6 +74,7 @@ from ..rom import RomError
 from ..scoring import percent_text
 from ..textedit import replace_once
 from .collab import Refused
+from .datajobs import DataJobs
 from .engine.compilers import ROOM_COMPILER
 
 _REPO = re.compile(r"^(https://(github\.com|gitlab\.com|codeberg\.org|git\.[\w.-]+)/[\w.-]+/[\w.-]+?)(\.git)?/?$")
@@ -809,6 +810,7 @@ def progress_moved(before: dict | None, now: dict) -> str | None:
 class ForkEngine:
     def __init__(self, net):
         self.net = net
+        self.data_jobs = DataJobs(self)  # a file whose functions all match, handed out for its data (app/datajobs.py)
         self._trees: dict[int, _TreeLock] = defaultdict(_TreeLock)  # project id -> its source tree's lock
         self._unit_locks: dict[tuple[int, str], _UnitLock] = defaultdict(_UnitLock)
         self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
@@ -4285,7 +4287,16 @@ class ForkEngine:
         if (link := self.net.links.get(slug)) is not None:
             return self._claim_in_room(link, agent, slug, function, strategy)
         still = self.net.still_holding(agent, function)
+        # a file whose every function matches and whose data doesn't is the closest to linked of all: under the
+        # "finish" order (forks' default) it comes first, else once there's no function left. Not for a helper the user
+        # gave a work selection (functions by size, by score...).
+        jobs = not function and not self.net.selection(slug, agent.name)
+        if jobs and (self.data_jobs.held(agent, slug) or (strategy == "finish" and not still)):
+            if (job := self.data_jobs.claim(agent, slug)) is not None:
+                return job
         fn = self.net.claim_row(agent, slug, function, strategy)
+        if fn is None and jobs and (job := self.data_jobs.claim(agent, slug)) is not None:
+            return job
         if fn is not None and still:
             said = self._best_in_file(agent, slug, fn)
             return still + (said + "\n\n" if said else "") + self.brief(self._fn(slug, fn["name"]), agent, "CLAIMED")
@@ -5960,7 +5971,7 @@ class ForkEngine:
         if any(v is None for v in after.values()):
             return f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured."
         done = "".join(self._file_done(proj["slug"], proj, fp, u, after[u.name] or {}, agent) for u in units[:1])
-        return f"✅ {rel} updated; every matched function still matches.{done}"
+        return f"✅ {rel} updated; every matched function still matches.{done}{self.data_jobs.after_edit(agent, proj['slug'], rel)}"
 
     def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str,
                      edits: list[tuple[str, str]], message: str) -> str:

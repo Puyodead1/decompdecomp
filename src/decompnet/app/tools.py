@@ -306,6 +306,13 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
         return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
 
 
+def _release(net: RomNetwork, agent: Agent, slug: str, function: str, notes: str, needs: str, not_c: bool) -> str:
+    """release_function: a function, or the source file of the data job the agent holds (app/datajobs.py)."""
+    if (fork := net.fork_slug(slug)) and (said := net.forks.data_jobs.release(agent, fork, function.strip(), notes)):
+        return said
+    return net.release_function(agent, function, notes, slug, needs or "", bool(not_c))
+
+
 def _edited_source(net: RomNetwork, agent: Agent, slug: str, function: str, edits: list) -> tuple[str, str]:
     """(the C, what it was made from) for compile_and_diff's `edits`: each {"old", "new"} made in turn on the C of the
     agent's last compile of the function, or on its best attempt before it compiled one. A GameCube game's
@@ -391,7 +398,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "last_diff": lambda net, agent, slug, function, context=2, start=0: net.last_diff(agent, function, slug, context,
                                                                                     start),
     "release_function": lambda net, agent, slug, function, notes, needs="", not_c=False:
-        net.release_function(agent, function, notes, slug, needs or "", bool(not_c)),
+        _release(net, agent, slug, function, notes, needs, not_c),
     "get_context": lambda net, agent, slug, function="", search="", start=0: net.get_context(
         slug, function or None, search or "", int(start or 0)),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -653,7 +660,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1) -> str:
-        """Claim the next function to decompile (or a specific one by name or address).
+        """Claim the next function to decompile (or a specific one by name or address). In a project that links
+        its files, a file whose functions all match but whose data doesn't may come instead, as a DATA JOB: its
+        brief says what to do.
 
         Returns its assembly, the best previous attempt and notes from earlier agents, plus (ROM projects)
         calls, data and a machine-made draft or (forks) the current diff and its source file. Each compile
