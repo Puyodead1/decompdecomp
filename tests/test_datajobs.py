@@ -146,3 +146,37 @@ def test_a_helper_with_a_data_job_waiting_starts_its_session(jobs):
                           forks=SimpleNamespace(data_jobs=jobs))
     s = SimpleNamespace(slug="game")
     assert Manager._all_given_up(SimpleNamespace(net=net), s, agent(1), "") is False
+
+
+def test_the_host_lists_its_jobs_and_who_holds_each_for_a_rooms_members(jobs):
+    """Room._fork_state sends this: a GameCube room's guests found "nothing left" while the host's files waited."""
+    assert [j["agent"] for j in jobs.listing("game")] == [None, None, None]
+    jobs.claim(agent(2), "game")
+    assert jobs.listing("game")[0] == {"source": "src/a.c", "left": 32, "agent": "agent-2"}
+
+
+class Link:
+    """A member's link to the host: the host's list of jobs from its last state, and what it sent the host."""
+    member = "alex"
+
+    def __init__(self):
+        self.data_jobs, self.sent = [], []
+
+    def call(self, route, agent, /, **data):
+        self.sent.append((route, agent.name, data))
+        return "Released the data job for src/a.c"
+
+
+def test_a_rooms_member_counts_takes_and_gives_back_the_hosts_jobs(jobs):
+    link = jobs.forks.net.links["game"] = Link()
+    link.data_jobs = [{"source": "src/a.c", "left": 32, "agent": "alex.agent-1"},
+                      {"source": "src/c.c", "left": 64, "agent": "sam.agent-1"}]
+    assert jobs.left("game") == 2  # (a helper's session goes on while the host has jobs)
+    assert jobs.takeable(agent(1), "game")  # (its own, by the name the host knows it by)
+    assert not jobs.takeable(agent(2), "game")  # (both held by others)
+    link.data_jobs.append({"source": "src/b.c", "left": 495, "agent": None})
+    assert jobs.takeable(agent(2), "game")
+    assert jobs.release(agent(1), "game", "src/a.c", "the table's last row is short").startswith("Released")
+    assert link.sent == [("/collab/release", "agent-1",
+                          {"function": "src/a.c", "notes": "the table's last row is short", "data_job": True})]
+    assert jobs.release(agent(1), "game", "func_80001234", "x") is None  # (no such file: a function's release)
