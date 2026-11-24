@@ -1859,18 +1859,35 @@ class ForkEngine:
                                      + " (split_file divides it)")
         except (NetworkError, OSError):
             pass
-        why = (cfg.get("link_failed") or {}).get(rel)
+        why = self.link_failures(fp.root, cfg).get(rel)
         if why and state != "Matching":
             lines += ["", "The last try to link it failed (the game didn't build identically):", why]
         return "\n".join(lines)
 
+    @staticmethod
+    def link_failures(root: Path, cfg: dict) -> dict[str, str]:
+        """{source: why} of each file's last failed link, only those since the project's split config (config/) last
+        changed: what failed before is about objects that aren't built any more. A GameCube game's briefs kept a
+        "multiply-defined ... in auto_08_..._bss.o" from before its files were given their data, and its helpers took
+        it for a link step they had to fix."""
+        failed = cfg.get("link_failed") or {}
+        if not failed:
+            return {}
+        at = cfg.get("link_failed_at") or {}  # (none for one recorded before this: when, unknown, so stale)
+        config = Path(root) / "config"
+        changed = max((p.stat().st_mtime for p in config.rglob("*") if p.is_file()), default=0.0) \
+            if config.is_dir() else 0.0
+        return {src: why for src, why in failed.items() if at.get(src, 0.0) >= changed}
+
     def _remember_link_failures(self, proj, linked: list[str], failed: dict[str, str]) -> None:
         cfg = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
-        known = cfg.get("link_failed") or {}
+        known, at = cfg.get("link_failed") or {}, cfg.get("link_failed_at") or {}
         for src in linked:
             known.pop(src, None)
+            at.pop(src, None)
         known.update(failed)
-        cfg["link_failed"] = known
+        at.update(dict.fromkeys(failed, time.time()))
+        cfg["link_failed"], cfg["link_failed_at"] = known, {s: t for s, t in at.items() if s in known}
         self._save_cfg(proj, cfg)
 
     def link_soon(self, slug: str, agent: Agent | None = None) -> None:
@@ -4004,7 +4021,7 @@ class ForkEngine:
         if done:
             lines += ["", "Already matched in this file (read them for the codebase's style): "
                       + ", ".join(r["name"] for r in done)]
-        why = (cfg.get("link_failed") or {}).get(unit.source or "")
+        why = self.link_failures(fp.root, cfg).get(unit.source or "")
         if why and not unit.complete:
             lines += ["", f"### {unit.source} didn't link yet (file_status shows its data)", why]
         lines += self.net.dependency_brief(fn)
