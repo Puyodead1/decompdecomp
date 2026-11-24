@@ -93,7 +93,8 @@ COMMIT_HEADER = "x-decomp-commit"
 # changes to those, and two copies on one protocol share a room whatever their versions and commits. Bump it with any
 # such change (CONTRIBUTING.md, "Rooms"); tests/test_room_protocol.py fails when a call or a key it sends changes
 # without a bump. A copy from before the protocol sends none, and is held to the exact version as before.
-ROOM_PROTOCOL = 2  # 2: the ROM judge reads data past the code, library calls, tables, region relocations, masked %lo
+ROOM_PROTOCOL = 3  # 2: the ROM judge reads data past the code, library calls, tables, region relocations, masked %lo
+# 3: a project room's data jobs (/collab/claim's "job", /collab/release's "data_job", the state's "data_jobs")
 PROTOCOL_HEADER = "x-decomp-room-protocol"
 
 
@@ -501,6 +502,12 @@ class Room:
         # what the host set aside (assembly, a library's code, what agents agreed no C makes): never sent, a GameCube
         # room's guest counted it as open code, and its progress read well below the host's
         out.update(self._set_aside(aside))
+        # the files whose data is left to write, and who holds each: a member's helpers keep working while there are
+        # some (Manager._left, DataJobs.takeable); its claims get them from the host (/collab/claim)
+        try:
+            out["data_jobs"] = net.forks.data_jobs.listing(self.slug)
+        except (NetworkError, OSError):
+            out["data_jobs"] = []
         return out
 
 
@@ -721,7 +728,14 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
                 net.set_selection(room.slug, agent.name, d["selection"])
             except NetworkError:
                 pass  # (one this version can't read: the agent's own strategy, as before)
-        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
+        strategy = str(d.get("strategy") or "easiest")
+        if room.fork:  # (a file's data, handed out as the host's own agents get it: app/datajobs.py)
+            fn, job = net.forks.claim_work(agent, room.slug, d.get("function") or None, strategy,
+                                           net.still_holding(agent, d.get("function") or None))
+            if job is not None:
+                return {"function": None, "vram": None, "job": job}
+        else:
+            fn = net.claim_row(agent, room.slug, d.get("function") or None, strategy)
         if fn is None:  # what's left and why, as the host's own agents hear it (functions this agent said no C makes,
             # its own releases; the user told when only verdicts are left): a guest got a bare "nothing left"
             return {"function": None, "vram": None, "why": net.nothing_to_claim(agent, net._project(room.slug))}
@@ -745,6 +759,11 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def release(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
+        if d.get("data_job"):  # (a data job the host handed out: the file's source, not a function)
+            if not room.fork or (said := net.forks.data_jobs.release(agent, room.slug, str(d.get("function", "")),
+                                                                    str(d.get("notes", "")))) is None:
+                raise NetworkError(f"you hold no data job for {d.get('function')}: claim_function for one")
+            return {"text": said}
         return {"text": net.release(agent, str(d.get("function", "")), str(d.get("notes", "")), room.slug,
                                      bool(d.get("not_c")))}
 
@@ -1040,6 +1059,7 @@ class Link:
         self.saved = dict(self.cursor)
         self.claims: list[dict] = []
         self.members: list[dict] = []
+        self.data_jobs: list[dict] = []  # the host's data jobs, from its last state (a git project's room)
         self.error = ""
         self.refused = False  # the host's last answer to our sync was no (`error` says why)
         self.host_version = ""  # the host's decompdecomp, as its heartbeat says (the guest's screen)
@@ -1128,11 +1148,12 @@ class Link:
 
     def claim(self, agent: Agent, function: str | None, strategy: str,
               selection: dict | None = None) -> tuple[str | None, str]:
-        """(the function the host handed out, or None; and then why: what the host says is left, "" from a host
-        that doesn't say). `selection`: the agent's work selection on this computer, which the host applies."""
+        """(the function the host handed out, or None; and then a data job's brief the host handed out instead, or
+        why: what the host says is left, "" from a host that doesn't say). `selection`: the agent's work selection
+        on this computer, which the host applies."""
         said = self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy,
                                                    **({"selection": selection} if selection is not None else {})})
-        return said["function"], ("" if said["function"] else str(said.get("why") or ""))
+        return said["function"], ("" if said["function"] else str(said.get("job") or said.get("why") or ""))
 
     def attempt(self, agent: Agent, function: str, source: str, prelude: str = "") -> dict:
         return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source,
@@ -1331,6 +1352,7 @@ class Link:
             self.cursor["s"] = st["set_aside"]["digest"]
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
+        self.data_jobs = st.get("data_jobs") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
 
     def pull(self, ref: str) -> bool:

@@ -4290,15 +4290,8 @@ class ForkEngine:
         if (link := self.net.links.get(slug)) is not None:
             return self._claim_in_room(link, agent, slug, function, strategy)
         still = self.net.still_holding(agent, function)
-        # a file whose every function matches and whose data doesn't is the closest to linked of all: under the
-        # "finish" order (forks' default) it comes first, else once there's no function left. Not for a helper the user
-        # gave a work selection (functions by size, by score...).
-        jobs = not function and not self.net.selection(slug, agent.name)
-        if jobs and (self.data_jobs.held(agent, slug) or (strategy == "finish" and not still)):
-            if (job := self.data_jobs.claim(agent, slug)) is not None:
-                return job
-        fn = self.net.claim_row(agent, slug, function, strategy)
-        if fn is None and jobs and (job := self.data_jobs.claim(agent, slug)) is not None:
+        fn, job = self.claim_work(agent, slug, function, strategy, still)
+        if job is not None:
             return job
         if fn is not None and still:
             said = self._best_in_file(agent, slug, fn)
@@ -4358,11 +4351,26 @@ class ForkEngine:
         return (f"⚠️ The best attempt (score {fn['best_score']}) isn't what {unit.source} holds, and putting it there "
                 f"didn't work: {why}. The file's version is another one: start from the best attempt below.")
 
+    def claim_work(self, agent: Agent, slug: str, function: str | None, strategy: str,
+                   still: str | None = None) -> tuple[dict | None, str | None]:
+        """(the function claimed, None) or (None, a data job's brief): an agent's claim here, or a room member's
+        agent's on the host (/collab/claim). A file whose every function matches and whose data doesn't is the
+        closest to linked of all: under the "finish" order (forks' default) it comes first, else once there's no
+        function left. Not for a helper the user gave a work selection (functions by size, by score...)."""
+        jobs = not function and not self.net.selection(slug, agent.name)
+        if jobs and (self.data_jobs.held(agent, slug) or (strategy == "finish" and not still)):
+            if (job := self.data_jobs.claim(agent, slug)) is not None:
+                return None, job
+        fn = self.net.claim_row(agent, slug, function, strategy)
+        if fn is None and jobs and (job := self.data_jobs.claim(agent, slug)) is not None:
+            return None, job
+        return fn, None
+
     def _claim_in_room(self, link, agent: Agent, slug: str, function: str | None, strategy: str) -> str:
         """A member of a room: the host hands out functions (nobody does one twice); the brief comes from this copy."""
         name, why = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy,
                                self.net.selection(slug, agent.name))
-        if name is None:  # (the host's word: what's left and why, as its own agents hear it)
+        if name is None:  # (the host's word: a data job's brief, or what's left and why, as its own agents hear it)
             return why or "Nothing left to claim in this room: every function with a source file matches or someone is on it. 🎉"
         try:
             fn = self.net.claim_row(agent, slug, name, strategy)

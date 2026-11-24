@@ -9,8 +9,10 @@ with edit_file, checks it with file_status, and once it matches, decompdecomp li
 from edit_file's _file_done) and the job is done.
 
 Only where files are linked one by one and their data can be compared (a dtk-template project, GameCube and Wii):
-COFF objects (PC, Xbox) give no data verdict. A room's members claim from the host, which hands out functions only:
-the host's own agents do the data jobs (ROADMAP).
+COFF objects (PC, Xbox) give no data verdict. In a room the host holds the jobs: /collab/claim hands a member's agent
+one as it does its own (ForkEngine.claim_work), the member's edits are made on the host already (/collab/edit), its
+release goes there too, and the host's list of jobs comes with its state (the member's link.data_jobs), so a member's
+helpers keep working while jobs are left. A room's guests found "nothing left" while the host's files waited.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ MOST_BYTES = 16 * 1024
 ZEROED = 8
 TRIES = 3  # handed out this often (to another agent, or after a release) with its data still short: left as it is
 DIFF_ROWS = 40
+LISTED_SECONDS = 10  # a room's members get the host's list of jobs this fresh
 
 
 def bytes_left(sections: list[datadiff.Section]) -> int:
@@ -69,6 +72,18 @@ class DataJobs:
         self._held: dict[tuple[int, str], tuple[int, float]] = {}  # (project, source) -> (agent, until)
         self._lock = threading.Lock()
         self._left: dict[tuple, int | None] = {}  # (target, base, their mtimes) -> bytes left (None: no verdict)
+        self._listed: dict[str, tuple[float, list[dict]]] = {}  # slug -> (when, listing): a room's state asks often
+
+    def _link(self, slug: str):
+        """The room this copy is a member of, for this project (None: it holds its own jobs)."""
+        return self.forks.net.links.get(slug)
+
+    @staticmethod
+    def _host_name(link, agent: Agent) -> str:
+        """The name the host knows one of this member's agents by (Room.agent_for)."""
+        from .collab import member_label
+
+        return f"{link.member}.{member_label(agent.name)}"
 
     def _bytes_left(self, unit) -> int | None:
         """How much of a unit's data is left to write (bytes_left; None: its objects can't be compared, COFF or none
@@ -112,8 +127,25 @@ class DataJobs:
         return sorted(((s, n) for s, n in left.items() if 0 < n <= MOST_BYTES and tried.get(s, 0) < TRIES),
                       key=lambda x: (x[1], x[0]))
 
+    def listing(self, slug: str) -> list[dict]:
+        """The jobs, for a room's members: {"source", "left", "agent": who holds it, None for nobody}. Kept for
+        LISTED_SECONDS: every member's state asks."""
+        now = time.time()
+        if (got := self._listed.get(slug)) is not None and now - got[0] < LISTED_SECONDS:
+            return got[1]
+        proj = self.forks.net._project(slug)
+        with self._lock:
+            held = {s: who for (pid, s), (who, until) in self._held.items() if pid == proj["id"] and until > now}
+        names = {r["id"]: r["name"] for r in self.forks.net.store.all(
+            f"SELECT id, name FROM agents WHERE id IN ({','.join('?' * len(held)) or 'NULL'})", *held.values())}
+        out = [{"source": s, "left": n, "agent": names.get(held[s]) if s in held else None} for s, n in self.todo(slug)]
+        self._listed[slug] = (now, out)
+        return out
+
     def left(self, slug: str) -> int:
         """How many data jobs there are, held ones included (a helper's session isn't over while one is)."""
+        if (link := self._link(slug)) is not None:
+            return len(link.data_jobs)
         try:
             return len(self.todo(slug))
         except (NetworkError, OSError):
@@ -134,6 +166,8 @@ class DataJobs:
         waiting for them."""
         if self.forks.net.selection(slug, agent.name):
             return False
+        if (link := self._link(slug)) is not None:  # (the host's jobs, from its last state)
+            return any(j.get("agent") in (None, self._host_name(link, agent)) for j in link.data_jobs)
         try:
             todo = self.todo(slug)
         except (NetworkError, OSError):
@@ -165,6 +199,7 @@ class DataJobs:
                 with self.forks.net.store.tx() as db:
                     self.forks.net._event(db, proj["id"], agent.id, "data_job", mine)
             self._held[(proj["id"], mine)] = (agent.id, now + CLAIM_SECONDS)
+            self._listed.pop(slug, None)
         return self.brief(slug, mine, todo[mine])
 
     def brief(self, slug: str, source: str, left: int) -> str:
@@ -185,6 +220,13 @@ class DataJobs:
 
     def release(self, agent: Agent, slug: str, source: str, notes: str) -> str | None:
         """An agent gives up its data job (None when it holds no job for this file: a function's release, then)."""
+        if (link := self._link(slug)) is not None:  # (the host holds the room's jobs)
+            _, fp, _ = self.forks.get(slug)
+            if not fp.units_for(source):
+                return None
+            said = link.call("/collab/release", agent, function=source, notes=notes, data_job=True)
+            self._listed.pop(slug, None)
+            return said
         proj = self.forks.net._project(slug)
         with self._lock:
             held = self._held.get((proj["id"], source))
@@ -193,6 +235,7 @@ class DataJobs:
             if not notes.strip():
                 raise NetworkError("say in notes what you tried and what's left of the file's data, for the next agent")
             del self._held[(proj["id"], source)]
+            self._listed.pop(slug, None)
         with self.forks.net.store.tx() as db:
             self.forks.net._event(db, proj["id"], agent.id, "data_release", f"{source}: {notes.strip()[:800]}")
         return f"Released the data job for {source}; your notes are kept for the next agent. claim_function for the next."
@@ -211,6 +254,7 @@ class DataJobs:
                 self._held[key] = (agent.id, time.time() + CLAIM_SECONDS)
                 return f"\nData job: about {sum(short):,} bytes of {source}'s data are still left to write (file_status shows which)."
             del self._held[key]
+            self._listed.pop(slug, None)
         with self.forks.net.store.tx() as db:
             self.forks.net._event(db, proj["id"], agent.id, "data_done", source)
         return f"\n✅ Data job done: {source}'s data matches. claim_function for the next."

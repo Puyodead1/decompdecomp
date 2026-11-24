@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -284,3 +285,28 @@ def test_what_the_host_sets_aside_is_set_aside_in_the_members_copy(room):
         db.execute("UPDATE functions SET status=?, meta=json_remove(meta, '$.not_c') WHERE id=?", (status, hid))
     guest.links[gslug].sync()
     assert guest._function(fn, gslug)["status"] == status
+
+
+def test_a_members_agent_gets_a_data_job_from_the_host_and_gives_it_back_there(room, monkeypatch):
+    """The host hands a member's agent a file's data to finish when it has no function for it (the "finish" order:
+    the job first), the member's copy hears of the host's jobs with its state, and its release reaches the host. A
+    GameCube room's guests found "nothing left" while the host's files waited. (A PC project's COFF objects give no
+    data verdict, so the host's list of jobs is set here.)"""
+    from decompnet.app.tools import _release
+
+    host, slug, guest, gslug, client, link, said = room
+    source = next(u.source for u in host.forks.get(slug)[1].units() if u.source)
+    monkeypatch.setattr(host.forks.data_jobs, "todo", lambda s: [(source, 32)])
+    host.forks.data_jobs._listed.clear()
+    agent, _ = guest.local_agent("claude-4")
+    brief = guest.forks.claim(agent, gslug, None, "finish")
+    assert brief.startswith(f"DATA JOB (claimed): {source}"), brief[:300]
+    guest.links[gslug].sync()
+    assert guest.links[gslug].data_jobs == [{"source": source, "left": 32, "agent": "alex.claude-4"}]
+    assert guest.forks.data_jobs.left(gslug) == 1 and guest.forks.data_jobs.takeable(agent, gslug)
+    other, _ = guest.local_agent("claude-5")
+    assert not guest.forks.data_jobs.takeable(other, gslug)
+    assert _release(guest, agent, gslug, source, "the jump table is short", "", False).startswith("Released")
+    on_host = host.store.one("SELECT id, name FROM agents WHERE name='alex.claude-4'")
+    assert host.forks.data_jobs.held(SimpleNamespace(id=on_host["id"], name=on_host["name"]), slug) is None
+    assert "the jump table is short" in host.forks.data_jobs.brief(slug, source, 32)  # (for the next agent)

@@ -287,6 +287,19 @@ def test_a_guest_with_nothing_to_claim_says_what_the_host_says(connection, fork,
     assert link.claim(agent, None, "easiest") == (None, "")
 
 
+
+def test_a_guest_gets_the_data_job_the_host_hands_out(connection):
+    """The host hands a room member's agent a file's data to finish (/collab/claim's "job"): its brief is what the
+    agent hears, as the host's own agents do. A GameCube room's guests found "nothing left" while files waited."""
+    from decompnet.app.forkengine import ForkEngine
+
+    job = "DATA JOB (claimed): src/input.c\n\nEvery function in src/input.c matches."
+    link = connection(lambda request: httpx.Response(200, json={"function": None, "vram": None, "job": job}), True)
+    agent = SimpleNamespace(name="claude-1")
+    engine = ForkEngine.__new__(ForkEngine)
+    engine.net = SimpleNamespace(selection=lambda slug, name: {})
+    assert engine._claim_in_room(link, agent, "game", None, "finish") == job
+
 def test_the_host_answers_a_heartbeat_while_its_threads_are_busy():
     """A GameCube room went "waiting for the host" whenever its guest's polishing helpers ran, and came back when they
     stopped: their requests and the host's own helpers' tool calls, all waiting for the project's rebuild, held every

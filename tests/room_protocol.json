@@ -1,5 +1,5 @@
 {
- "protocol": 2,
+ "protocol": 3,
  "routes": [
   "GET /collab/bundle",
   "GET /collab/hello",
@@ -65,6 +65,8 @@
   "created_at",
   "cursor",
   "data",
+  "data_job",
+  "data_jobs",
   "detail",
   "digest",
   "e",
