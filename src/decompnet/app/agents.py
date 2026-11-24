@@ -1249,6 +1249,8 @@ class Manager:
         change to the shared header or the compiler gives some back. True when it waited."""
         if task == "readable" or self.net.claimable(agent, s.slug):
             return False
+        if self.net.fork_slug(s.slug) and self.net.forks.data_jobs.takeable(agent, s.slug):
+            return False  # (a file's data to finish: claim_function gives it, app/datajobs.py)
         if self.net.store.one("SELECT 1 FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=? "
                               "AND f.status='open'", agent.id):
             return False  # (it holds one: its next session works on that, and claimable counts no held function)

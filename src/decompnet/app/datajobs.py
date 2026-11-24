@@ -120,6 +120,24 @@ class DataJobs:
             return next((s for (pid, s), (who, until) in self._held.items()
                          if pid == proj["id"] and who == agent.id and until > now), None)
 
+    def takeable(self, agent: Agent, slug: str) -> bool:
+        """Whether a claim by this agent would get a data job now: it holds one, or one nobody holds is waiting (not
+        for a helper with a work selection: ForkEngine.claim hands those functions only). Helpers whose open functions
+        were all held by others or given up waited for one instead (Manager._all_given_up), with six files' data
+        waiting for them."""
+        if self.forks.net.selection(slug, agent.name):
+            return False
+        try:
+            todo = self.todo(slug)
+        except (NetworkError, OSError):
+            return False
+        proj = self.forks.net._project(slug)
+        now = time.time()
+        with self._lock:
+            others = {s for (pid, s), (who, until) in self._held.items()
+                      if pid == proj["id"] and who != agent.id and until > now}
+        return any(s not in others for s, _ in todo)
+
     def claim(self, agent: Agent, slug: str) -> str | None:
         """A data job for this agent (the one it holds, or the next nobody does), as its brief; None when there's
         none."""
