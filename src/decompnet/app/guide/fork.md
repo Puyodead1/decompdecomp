@@ -37,6 +37,9 @@ shows that any time. The usual fixes:
   (A linker error "undefined: 'lbl_…'" in file_status means the file uses a label its own data should provide.)
 <!-- end -->
 - Once linked, a file must keep building the same game: a change that alters it is undone.
+A file whose functions all match and whose data doesn't is a job of its own: `claim_function` hands it out as a DATA
+JOB (the files closest to linked first). Write its data with `edit_file`, check it with `file_status`; `edit_file`
+says when it matches, and the file is linked. Stuck: `release_function(<the file>, notes)`.
 
 Files decompdecomp made (text_<offset>.c)
 Code that had no source file gets one per stretch of code (`text_<offset>.c`, `.cpp` for C++ code); it often holds
