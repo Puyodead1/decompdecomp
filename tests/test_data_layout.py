@@ -7,26 +7,29 @@ import struct
 from pathlib import Path
 from types import SimpleNamespace
 
+from decompnet.app.datajobs import DataJobs
 from decompnet.app.forkengine import ForkEngine
-from decompnet.forks.datadiff import same_layout
+from decompnet.forks.datadiff import layout, same_layout
 
 STRINGS = b"Loading\0Pause\0\0\0Quit\0\0\0\0Options\0Continue\0\0\0\0Retry\0\0\0\0\0\0\0\0\0\0\0"  # 68 bytes
 R_PPC_ADDR32 = 1
 
 
-def _obj(path: Path, rodata: bytes, bss: int, syms, relocs=()) -> Path:
-    """A small big-endian PowerPC ELF object: .rodata (its bytes), .bss (a size), global symbols (name, section: 1
-    .rodata, 2 .bss, 0 undefined; value; size) and .rodata's relocations (offset, symbol's index from 1, type, addend)."""
-    shstr = b"\0.rodata\0.bss\0.rela.rodata\0.symtab\0.strtab\0.shstrtab\0"
+def _obj(path: Path, rodata: bytes, bss: int, syms, relocs=(), text: bytes = b"") -> Path:
+    """A small big-endian PowerPC ELF object: .rodata (its bytes), .bss (a size), .text, global symbols (name, section:
+    1 .rodata, 2 .bss, 7 .text (a function), 0 undefined; value; size) and .rodata's relocations (offset, symbol's
+    index from 1, type, addend)."""
+    shstr = b"\0.rodata\0.bss\0.rela.rodata\0.symtab\0.strtab\0.shstrtab\0.text\0"
     strtab, symtab = b"\0", bytes(16)
     for name, shndx, value, size in syms:
-        symtab += struct.pack(">IIIBBH", len(strtab), value, size, 0x11 if shndx else 0x10, 0, shndx)
+        info = 0x12 if shndx == 7 else 0x11 if shndx else 0x10
+        symtab += struct.pack(">IIIBBH", len(strtab), value, size, info, 0, shndx)
         strtab += name.encode() + b"\0"
     rela = b"".join(struct.pack(">IIi", at, sym << 8 | kind, add) for at, sym, kind, add in relocs)
     # (name, type, flags, data, link, info, entsize); .bss's data is only its size
     sections = [(".rodata", 1, 2, rodata, 0, 0, 0), (".bss", 8, 3, bss, 0, 0, 0), (".rela.rodata", 4, 0, rela, 4, 1, 12),
                 (".symtab", 2, 0, symtab, 5, 1, 16), (".strtab", 3, 0, strtab, 0, 0, 0),
-                (".shstrtab", 3, 0, shstr, 0, 0, 0)]
+                (".shstrtab", 3, 0, shstr, 0, 0, 0), (".text", 1, 6, text, 0, 0, 0)]
     body, headers = b"", [bytes(40)]
     for name, kind, flags, data, link, info, entsize in sections:
         size = data if isinstance(data, int) else len(data)
@@ -35,7 +38,7 @@ def _obj(path: Path, rodata: bytes, bss: int, syms, relocs=()) -> Path:
         if not isinstance(data, int):
             body += data + bytes(-len(data) % 4)
     head = b"\x7fELF\x01\x02\x01" + bytes(9) + struct.pack(">HHIIIIIHHHHHH", 1, 20, 1, 0, 0, 52 + len(body), 0, 52, 0, 0,
-                                                            40, len(headers), len(headers) - 1)
+                                                            40, len(headers), 6)
     path.write_bytes(head + body + b"".join(headers))
     return path
 
@@ -75,6 +78,41 @@ def test_pointers_must_point_at_the_same_place_whatever_they_name(tmp_path):
     target = _original(tmp_path, relocs=[(4, 3, R_PPC_ADDR32, 0)], syms=out)
     assert same_layout(target, _yours(tmp_path, relocs=[(4, 10, R_PPC_ADDR32, 0)], syms=out))
     assert not same_layout(target, _yours(tmp_path, relocs=[(4, 10, R_PPC_ADDR32, 0)], syms=[("printf", 0, 0, 0)]))
+
+
+def test_a_function_only_yours_has_moves_the_code_after_it(tmp_path):
+    """20 files of a GameCube game each emitted a 56-byte copy of a static helper the original only ever inlined: every
+    function matched, and the tables of function pointers after it pointed 56 bytes further into the code."""
+    code = [("Draw", 7, 0, 8), ("Step", 7, 8, 8)]
+    target = _obj(tmp_path / "t.o", bytes(4), 0, code, [(0, 2, R_PPC_ADDR32, 0)], text=bytes(16))
+    base = _obj(tmp_path / "b.o", bytes(4), 0, [("Draw", 7, 8, 8), ("Step", 7, 16, 8), ("PlayerManager_Link", 7, 0, 8)],
+                [(0, 2, R_PPC_ADDR32, 0)], text=bytes(24))
+    assert not same_layout(target, base)
+    cost, lines = layout(target, base)
+    assert cost >= 8 and "functions only yours has" in lines[0] and "PlayerManager_Link (8 bytes at 0x0)" in lines[0]
+    assert any("1 pointer into .text point 8 bytes further in yours" in line for line in lines), lines
+
+
+def test_a_string_the_original_aligns_is_said_plainly(tmp_path):
+    target = _obj(tmp_path / "t.o", b"HI\0\0" + bytes(4) + b"ERR\0", 0, [])
+    base = _obj(tmp_path / "b.o", b"HI\0\0ERR\0", 0, [])
+    cost, lines = layout(target, base)
+    assert cost and lines[0] == ".rodata: 12 bytes in the original, 8 in yours"
+    assert lines[1].startswith(".rodata+0x4 is the first byte that differs") and "4 zero bytes there before" in lines[1]
+
+
+def test_a_file_with_nothing_to_write_by_name_and_another_layout_is_a_job(tmp_path):
+    """A GameCube game's such files were nobody's job and never linked; the original's bytes are no job until their
+    link fails."""
+    jobs = DataJobs(None)
+    alike = SimpleNamespace(target=_original(tmp_path), base=_yours(tmp_path))
+    assert jobs._bytes_left(alike) == 0
+    assert jobs._bytes_left(alike, alike=False) > 0  # (its link failed: a job again)
+    other = tmp_path / "other"
+    other.mkdir()
+    aligned = SimpleNamespace(target=_obj(other / "t.o", b"HI\0\0" + bytes(4) + b"ERR\0", 0, []),
+                              base=_obj(other / "b.o", b"HI\0\0ERR\0", 0, []))
+    assert jobs._bytes_left(aligned) > 0
 
 
 def _engine():
