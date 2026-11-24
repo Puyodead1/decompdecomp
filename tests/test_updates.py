@@ -250,6 +250,34 @@ def test_a_windows_setup_reinstalls_its_bundle_and_runs_setup(monkeypatch, tmp_p
                         str(Path(updates.sys.executable).resolve().parent.parent / "decomp-launch.pyw"), "setup"]
 
 
+def test_a_windows_update_clears_a_package_record_an_unfinished_update_left(monkeypatch, tmp_path):
+    """A Windows room guest's update warned that uv couldn't uninstall decompnet: its dist-info had lost its RECORD."""
+    from decompnet.app import edition
+
+    root = tmp_path / "decompdecomp"
+    python = root / "python" / "python.exe"
+    packages = root / "packages"
+    for name, record in [("decompnet-1.0.10a2.dist-info", False), ("decompnet-1.0.10a3.dist-info", True),
+                         ("capstone-5.0.dist-info", False)]:
+        (packages / name).mkdir(parents=True)
+        (packages / name / "METADATA").write_text("Name: x\n")
+        if record:
+            (packages / name / "RECORD").write_text("")
+    monkeypatch.setenv("DECOMP_PACKAGE", "windows")
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+    monkeypatch.setattr(updates.sys, "executable", str(python))
+    monkeypatch.setattr(edition, "DEV", False)
+    monkeypatch.setattr(updates, "uv", lambda: "uv.exe")
+    monkeypatch.setattr(updates, "_stream", lambda cmd, _log, _failure: None)
+    monkeypatch.setattr(updates, "info_file", lambda: tmp_path / "update.json")
+    said = []
+
+    updates.install({"current": {"channel": "release"}, "latest": {"version": "1.2.3"}, "spec": "new-wheel"}, said.append)
+
+    assert sorted(p.name for p in packages.iterdir()) == ["capstone-5.0.dist-info", "decompnet-1.0.10a3.dist-info"]
+    assert any("decompnet-1.0.10a2.dist-info" in line for line in said)
+
+
 def test_an_install_from_main_updates_on_releases_only():
     """Installed from a checkout of main, every commit used to be offered as an update (a website edit too)."""
     updates.record("branch", branch="main", commit="abc123")
