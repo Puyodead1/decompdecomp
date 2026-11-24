@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 
 from elftools.common.exceptions import ELFError
 
-from .. import arch, classes, coffobj, consoles, similarity, structs, toolchains
+from .. import __version__, arch, classes, coffobj, consoles, similarity, structs, toolchains
 from ..arch import advice as arch_advice
 from ..forks import (
     convention,
@@ -332,6 +332,26 @@ class _UnitBuilds:
 
 
 _BUILD_ERROR = re.compile(r"\berror\b|^FAILED:|fatal|undefined reference|unresolved external", re.I)
+
+
+def _matched_in(rep: dict) -> set[tuple[str, str]]:
+    """(unit, function) of every function an objdiff report has matching."""
+    return {(u["name"], f["name"]) for u in rep.get("units", []) for f in u.get("functions", [])
+            if float(f.get("fuzzy_match_percent") or 0) >= 100}
+
+
+_ADDRESS_NAMED = re.compile(r"(\w+)_([0-9A-F]{8})")
+
+
+def _named_back(lost: set[tuple[str, str]], rep: dict) -> dict[tuple[str, str], str]:
+    """{(unit, name_<address>): name} for each lost function whose unit now has it under its plain name: dtk's name for
+    a local symbol another object referred to, given back when that reference became the file's own."""
+    names = {(u["name"], f["name"]) for u in rep.get("units", []) for f in u.get("functions", [])}
+    out = {}
+    for unit, name in lost:
+        if (m := _ADDRESS_NAMED.fullmatch(name)) and (unit, m.group(1)) in names:
+            out[(unit, name)] = m.group(1)
+    return out
 
 
 def _tail(log: str, lines: int = 14) -> str:
@@ -1687,12 +1707,19 @@ class ForkEngine:
             rep = fp.report()
             todo = self.link_candidates(proj, fp, rep)
             bare = self._code_only(fp, cfg, todo)
-            if bare and not set(bare) <= set(cfg.get("data_tried") or ()):
+            if bare and not set(bare) <= self._data_tried(cfg)["files"]:
                 # a file whose data is still dtk's (auto units) compares 0 bytes of data and looks finished: its C's
                 # constants and globals would be defined twice. It gets its data first, then has to match it too.
                 self._give_data(proj, fp, cfg, log, agent, tried=bare)
                 rep = fp.report()
                 todo = self.link_candidates(proj, fp, rep)
+            tried = self._data_tried(cfg)
+            if stuck := sorted(set(self._code_only(fp, cfg, todo)) & tried["failed"]):
+                # its data couldn't be given to it: linked without it, its C defines what dtk's units define too, and
+                # the build fails every time. A GameCube game's link backed out with no word anywhere of why.
+                todo = [s for s in todo if s not in stuck]
+                self._remember_link_failures(proj, [], {s: "Its data couldn't be given to it, so it wasn't linked: "
+                                                           f"{tried['error']}" for s in stuck})
             if not todo:
                 return {"linked": [], "failed": {}}
             conf = fp.root / "configure.py"
@@ -1837,8 +1864,8 @@ class ForkEngine:
             while True:
                 try:
                     self.link(slug, log=lambda *_: None, agent=agent)
-                except Exception:  # a background tidy-up: the next match tries again
-                    pass
+                except Exception:  # a background tidy-up: the next match tries again (the log says why this one failed)
+                    logging.getLogger("decompdecomp").exception("%s: linking failed", slug)
                 with self._mlock:
                     if not state["again"]:
                         state["running"] = False
@@ -1910,10 +1937,7 @@ class ForkEngine:
         """give_data, with the tree held alone and the project built. tried: the files that asked for it (link), so a
         change that doesn't build isn't tried again for them."""
         if tried:
-            fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
-            fresh["data_tried"] = sorted(set(fresh.get("data_tried") or ()) | set(tried))
-            self._save_cfg(proj, fresh)
-            cfg["data_tried"] = fresh["data_tried"]
+            self._note_data_try(proj, cfg, tried)
         try:
             plans = self._data_plan(fp, cfg)
         except (NetworkError, OSError, ValueError) as e:
@@ -1921,9 +1945,10 @@ class ForkEngine:
         if not plans:
             return {"files": []}
         src = fp.src_dir()
-        before = int((fp.report().get("measures") or {}).get("matched_functions") or 0)
+        matched = _matched_in(fp.report())
         saved: dict[Path, str] = {}
         given: list[str] = []
+        renames: dict[tuple[str, str], str] = {}
         size = 0
         try:
             for mod, sp, parts in plans.values():
@@ -1937,28 +1962,104 @@ class ForkEngine:
             if not ok:
                 raise ForkError(f"the game didn't build identically with the files' data:\n{_tail(out)}")
             fp.build_all()
-            after = int((fp.report().get("measures") or {}).get("matched_functions") or 0)
-            if after < before:
-                raise ForkError(f"{before - after} function(s) stopped matching once their files had their data")
-        except (ForkError, OSError, ValueError) as e:
+            rep = fp.report()
+            if renames := _named_back(matched - _matched_in(rep), rep):
+                # dtk names a file's local symbol name_<address> once another object refers to it, and its plain name
+                # again once that reference (the data) is the file's own: a GameCube game's long2str_8009C164 became
+                # long2str, its C still defined the old name, objdiff paired nothing and the data was taken back
+                log(f"{len(renames)} function(s) have their own names again: "
+                    + ", ".join(f"{old} → {new}" for (_, old), new in list(renames.items())[:6]))
+                saved.update(self._rename_words(fp, {old: new for (_, old), new in renames.items()}))
+                fp.build_all()
+                rep = fp.report()
+            now = _matched_in(rep)
+            if lost := sorted(k for k in matched - now if (k[0], renames.get(k)) not in now):
+                raise ForkError(f"{len(lost)} function(s) stopped matching once their files had their data: "
+                                + ", ".join(f"{name} ({unit})" for unit, name in lost[:8]))
+        except (ForkError, ObjdiffError, OSError, ValueError) as e:
             for path, old in saved.items():
                 path.write_text(old, encoding="utf-8")
             fp.verify()
             fp.build_all()
             log(f"the files keep only their code: {e}")
+            logging.getLogger("decompdecomp").warning("%s: the files keep only their code: %s", proj["slug"], e)
+            if tried:
+                self._note_data_try(proj, cfg, tried, error=str(e))
             return {"files": [], "error": f"nothing was changed: {e}"}
+        if tried:
+            self._note_data_try(proj, cfg, tried, error="")
         paths = [p.relative_to(fp.root).as_posix() for p in saved]
         self._commit_paths(proj, fp, paths, f"Give {len(given)} files their data ({size:,} bytes)\n\n"
                            "Each file covered only its code; the data its functions use is now its own (in link order, "
                            "the way the linker laid it out), so it can be compared and linked. The game still builds "
-                           "byte for byte.\n\nSplit by decompdecomp.")
-        self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
-        self.sync(proj["slug"], log=lambda *_: None, rep=fp.report())
+                           "byte for byte."
+                           + (f"\n\n{len(renames)} function(s) dtk named after their address while another file referred "
+                              "to them have their own names again: " + ", ".join(
+                                  f"{old} → {new}" for (_, old), new in renames.items()) if renames else "")
+                           + "\n\nSplit by decompdecomp.")
         with self.net.store.tx() as db:
+            if renames:
+                self._renamed_rows(db, proj, renames)
             self.net._event(db, proj["id"], agent.id if agent else None, "files",
                             f"{len(given)} files given their data ({size:,} bytes)")
+        self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+        self.sync(proj["slug"], log=lambda *_: None, rep=rep)
         log(f"{len(given)} file(s) now have their data")
-        return {"files": given, "bytes": size}
+        return {"files": given, "bytes": size, "renamed": {old: new for (_, old), new in renames.items()}}
+
+    @staticmethod
+    def _data_tried(cfg: dict) -> dict:
+        """The files the data step was tried for by this copy of the app, and those it failed for (with why). A try
+        by an earlier copy doesn't count: the fix that makes it work is what an update brings."""
+        t = cfg.get("data_tried")
+        if not isinstance(t, dict) or t.get("version") != __version__:
+            return {"files": set(), "failed": set(), "error": ""}
+        return {"files": set(t.get("files") or ()), "failed": set(t.get("failed") or ()), "error": t.get("error") or ""}
+
+    def _note_data_try(self, proj, cfg: dict, tried, error: str | None = None) -> None:
+        """Record a data step for these files: begun (error None), done (""), or backed out (why)."""
+        fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+        t = self._data_tried(fresh)
+        t["files"] |= set(tried)
+        if error:
+            t["failed"] |= set(tried)
+            t["error"] = error
+        elif error is not None:
+            t["failed"] -= set(tried)
+        fresh["data_tried"] = cfg["data_tried"] = {"version": __version__, "files": sorted(t["files"]),
+                                                   "failed": sorted(t["failed"]), "error": t["error"]}
+        self._save_cfg(proj, fresh)
+
+    def _rename_words(self, fp: ForkProject, names: dict[str, str]) -> dict[Path, str]:
+        """Each old name as a whole word in the project's sources and headers, as the new; {file: its old text}."""
+        word = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b")
+        saved = {}
+        for d in ("src", "include"):
+            if not (fp.root / d).is_dir():
+                continue
+            for p in sorted((fp.root / d).rglob("*")):
+                if p.is_file() and p.suffix in self.SOURCE_SUFFIXES:
+                    text = p.read_text(errors="replace", encoding="utf-8")
+                    if word.search(text):
+                        saved[p] = text
+                        p.write_text(word.sub(lambda m: names[m.group(1)], text), encoding="utf-8")
+        return saved
+
+    def _renamed_rows(self, db, proj, renames: dict[tuple[str, str], str]) -> None:
+        """Functions dtk named back keep their rows (matches, attempts, notes) and their stored C, under the new name."""
+        names = {old: new for (_, old), new in renames.items()}
+        word = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b")
+        used = {r["name"] for r in db.execute("SELECT name FROM functions WHERE project_id=?", (proj["id"],))}
+        for r in db.execute("SELECT id, best_source, matched_source FROM functions WHERE project_id=? AND "
+                            "(best_source IS NOT NULL OR matched_source IS NOT NULL)", (proj["id"],)).fetchall():
+            best, done = (word.sub(lambda m: names[m.group(1)], t) if t else t for t in (r["best_source"], r["matched_source"]))
+            if (best, done) != (r["best_source"], r["matched_source"]):
+                db.execute("UPDATE functions SET best_source=?, matched_source=? WHERE id=?", (best, done, r["id"]))
+        for (unit, old), new in renames.items():
+            name = new if new not in used else f"{new}@{unit}"
+            used.add(name)
+            db.execute("UPDATE functions SET name=?, meta=json_set(COALESCE(meta, '{}'), '$.symbol', ?) WHERE "
+                       "project_id=? AND unit=? AND json_extract(meta, '$.symbol')=?", (name, new, proj["id"], unit, old))
 
     # ------------------------------------------------------------------ source files for all the code
     # A stretch is cut into files of at most FILE_FUNCTIONS functions: a GameCube game's one stretch of 16,695 in one
