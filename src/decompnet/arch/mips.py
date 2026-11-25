@@ -29,13 +29,22 @@ JUMP_TARGET_BITS = 0x03FFFFFF  # j/jal: the target's word address, inside the 25
 REGION_BITS = 0xF0000000  # what a j/jal keeps of the address it's at
 UPPER_SHIFT, ADDRESS_BITS = 16, 0xFFFFFFFF  # lui sets an address's upper half; addresses are 32-bit
 
-R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16, R_MIPS_GOT16 = 4, 5, 6, 7, 21
-RELOC_MASKS = {  # relocation type -> (byte offset from r_offset, length, big-endian bitmask to clear)
+R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16, R_MIPS_GOT16, R_MIPS_CALL16 = 4, 5, 6, 7, 9, 11
+R_MIPS_GOT_DISP, R_MIPS_GOT_PAGE, R_MIPS_GOT_OFST = 19, 20, 21
+# Relocation type -> (byte offset from r_offset, length, big-endian bitmask to clear). A type not listed clears the
+# whole word (elfobj.mask_relocs). R_MIPS_GOT16 was listed as 21 (R_MIPS_GOT_OFST), so IDO -KPIC code's real GOT16
+# loads had their opcode and registers cleared too, and another instruction there still compared equal.
+RELOC_MASKS = {
     R_MIPS_26: (0, 4, JUMP_TARGET_BITS),
     R_MIPS_HI16: (0, 4, IMMEDIATE_BITS),
     R_MIPS_LO16: (0, 4, IMMEDIATE_BITS),
     R_MIPS_GPREL16: (0, 4, IMMEDIATE_BITS),
-    R_MIPS_GOT16: (0, 4, IMMEDIATE_BITS),  # IDO -KPIC
+    # position-independent code (IDO -KPIC, GCC -fpic): a 16-bit GOT offset in the instruction's immediate
+    R_MIPS_GOT16: (0, 4, IMMEDIATE_BITS),
+    R_MIPS_CALL16: (0, 4, IMMEDIATE_BITS),
+    R_MIPS_GOT_DISP: (0, 4, IMMEDIATE_BITS),
+    R_MIPS_GOT_PAGE: (0, 4, IMMEDIATE_BITS),
+    R_MIPS_GOT_OFST: (0, 4, IMMEDIATE_BITS),
 }
 
 # opcodes (the word's top six bits)
