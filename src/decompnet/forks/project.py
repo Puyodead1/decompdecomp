@@ -51,6 +51,17 @@ EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.I)
 FORBIDDEN_PARTS = {".git", STATE, "orig", "build", "asm", "expected", "tools", "config", ".github", "assets", "bin"}
 
 
+def config_changed(root: Path) -> float:
+    """When the project's split config (config/) last changed: what was found or tried before is about objects that
+    aren't built any more (a link's failure, a data job's tries). 0 when it has none."""
+    config = Path(root) / "config"
+    try:
+        return max((p.stat().st_mtime for p in config.rglob("*") if p.is_file()), default=0.0) \
+            if config.is_dir() else 0.0
+    except OSError:
+        return 0.0
+
+
 def _sha1(path: Path) -> str:
     h = hashlib.sha1()
     with open(path, "rb") as f:

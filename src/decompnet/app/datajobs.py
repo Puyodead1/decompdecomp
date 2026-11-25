@@ -23,6 +23,7 @@ import time
 from elftools.common.exceptions import ELFError
 
 from ..forks import datadiff
+from ..forks.project import config_changed
 from ..network import IN_BUILD, Agent, NetworkError
 
 CLAIM_SECONDS = 30 * 60  # a job is held this long from its claim or its holder's last edit of the file
@@ -31,9 +32,22 @@ CLAIM_SECONDS = 30 * 60  # a job is held this long from its claim or its holder'
 # its size. Counted by size, a GameCube game's six files with 23 to 264 KiB "left" waited, all of it .bss but 2 KiB
 MOST_BYTES = 16 * 1024
 ZEROED = 8
-TRIES = 3  # handed out this often (to another agent, or after a release) with its data still short: left as it is
+# Agents (each counted once) a job is handed to, since the project's split config last changed, before it's left as
+# it is. Counted by claim, a GameCube game's files ran out of tries on leases that ran out and on the app's restarts,
+# for good, and its helpers stopped with files unlinked.
+TRIES = 3
 DIFF_ROWS = 40
 LISTED_SECONDS = 10  # a room's members get the host's list of jobs this fresh
+# The start of a link failure that is the data step's (ForkEngine.link): decompdecomp couldn't give the file its data,
+# which no edit of the file's C fixes. A GameCube game's helpers were handed such files as data jobs, three times each.
+NOT_GIVEN = "Its data couldn't be given to it"
+# Why a file whose functions are all matched or set aside isn't linked and isn't a job (Verdict.why's kinds), as the
+# helpers' stop message says it
+BLOCKED = {"set_aside": "hold set-aside code (a file with set-aside code doesn't link yet)",
+           "no_data": "couldn't be given their data by decompdecomp (the files' page says why)",
+           "too_big": f"have more than {MOST_BYTES // 1024} KiB of data left to write (more than a data job holds)",
+           "tries": f"had their data job tried by {TRIES} agents without matching",
+           "unbuilt": "have no object to compare (the project's last build didn't make it)"}
 
 
 def bytes_left(sections: list[datadiff.Section]) -> int:
@@ -108,34 +122,96 @@ class DataJobs:
                 self._left[key] = None
         return self._left[key]
 
-    def todo(self, slug: str) -> list[tuple[str, int]]:
-        """(source file, bytes of data left) of each file whose functions all match and whose data doesn't, not
-        linked, with at most MOST_BYTES left and its tries not used up: the least left first."""
+    def verdicts(self, slug: str) -> dict[str, tuple[str, int, str]]:
+        """What each file not linked yet with no open function waits for, one answer every caller reads (the jobs,
+        the helpers' stop, the files' page): source -> (state, bytes of data left, why). state: "job" (an agent's to
+        write), "link" (nothing left to write: the link decides), or a BLOCKED kind. A GameCube game's helpers said
+        "nothing left to decompile here 🎉" with 49 of its 80 files unlinked: files with set-aside code, out of tries
+        or too big were no job and nobody's word."""
         proj, fp, cfg = self.forks.get(slug)
         if slug in self.forks.net.links or not fp.linkable():
-            return []
+            return {}
         failed = self.forks.link_failures(fp.root, cfg)
         rows = self.forks.net.store.all(
-            "SELECT unit FROM functions WHERE project_id=? AND unit != '' AND " + IN_BUILD + " GROUP BY unit "
-            "HAVING SUM(status='matched') = COUNT(*)", proj["id"])
+            "SELECT unit, COUNT(*) AS n, SUM(status='matched') AS won FROM functions WHERE project_id=? AND unit != '' "
+            "AND " + IN_BUILD + " GROUP BY unit HAVING SUM(status='open' AND aside_mark IS NULL AND copy_mark IS NULL) = 0",
+            proj["id"])
         if not rows:
-            return []
+            return {}
         states = fp.link_states()
         units = {u.name: u for u in fp.units()}
-        tried = {r["detail"]: r["n"] for r in self.forks.net.store.all(
-            "SELECT detail, COUNT(*) AS n FROM events WHERE project_id=? AND kind='data_job' GROUP BY detail", proj["id"])}
-        left: dict[str, int] = {}
+        tries = self._tries(proj, fp.root)
+        out: dict[str, tuple[str, int, str]] = {}
         for r in rows:
             u = units.get(r["unit"])
             if u is None or not u.source or states.get(u.source, ("",))[0] != "NonMatching":
                 continue
-            n = self._bytes_left(u, alike=u.source not in failed)
-            if n is None:
-                left.pop(u.source, None)  # (no verdict for one of its units: none for the file)
+            was = out.get(u.source, ("job", 0, ""))
+            if was[0] not in ("job", "link"):
+                continue  # (blocked by another of its units)
+            why = failed.get(u.source, "")
+            if r["won"] < r["n"]:
+                aside = r["n"] - r["won"]
+                out[u.source] = ("set_aside", 0, f"{aside} of its functions {'are' if aside != 1 else 'is'} set aside")
                 continue
-            left[u.source] = left.get(u.source, 0) + n
-        return sorted(((s, n) for s, n in left.items() if 0 < n <= MOST_BYTES and tried.get(s, 0) < TRIES),
+            if why.startswith(NOT_GIVEN):
+                out[u.source] = ("no_data", 0, why)
+                continue
+            n = self._bytes_left(u, alike=not why)
+            if n is None:
+                out[u.source] = ("unbuilt", 0, "its object or the original's couldn't be read")
+                continue
+            out[u.source] = ("job", was[1] + n, "")
+        for source, (state, n, why) in out.items():
+            if state != "job":
+                continue
+            if not n:
+                out[source] = ("link", 0, "")
+            elif n > MOST_BYTES:
+                out[source] = ("too_big", n, f"{n:,} bytes of data left to write")
+            elif tries.get(source, 0) >= TRIES:
+                out[source] = ("tries", n, f"{tries[source]} agents had its data job")
+        return out
+
+    def _tries(self, proj, root) -> dict[str, int]:
+        """How many agents each file's data job was handed to since the split config last changed (TRIES)."""
+        return {r["detail"]: r["n"] for r in self.forks.net.store.all(
+            "SELECT detail, COUNT(DISTINCT agent_id) AS n FROM events WHERE project_id=? AND kind='data_job' "
+            "AND created_at >= ? GROUP BY detail", proj["id"], config_changed(root))}
+
+    def todo(self, slug: str) -> list[tuple[str, int]]:
+        """(source file, bytes of data left) of each file whose functions all match and whose data doesn't, not
+        linked, with at most MOST_BYTES left and its tries not used up: the least left first."""
+        return sorted(((s, n) for s, (state, n, _) in self.verdicts(slug).items() if state == "job"),
                       key=lambda x: (x[1], x[0]))
+
+    def blocked(self, slug: str) -> dict[str, list[tuple[str, str]]]:
+        """The files that can't be linked and are no job, by BLOCKED kind: [(source, why)]."""
+        out: dict[str, list[tuple[str, str]]] = {}
+        try:
+            verdicts = self.verdicts(slug)
+        except (NetworkError, OSError):
+            return out
+        for source, (state, _, why) in sorted(verdicts.items()):
+            if state in BLOCKED:
+                out.setdefault(state, []).append((source, why))
+        return out
+
+    def _free(self, proj, agent: Agent, sources) -> list[str]:
+        """The jobs among these a claim by this agent may get: none held by another, none it released itself lately
+        (network.SELF_RELEASE_WINDOW, as for functions). claim and takeable both ask this: takeable said a released
+        job was waiting, claim kept the agent off it for good, and a GameCube game's helpers started sessions that
+        found nothing, then paused after five."""
+        now = time.time()
+        with self._lock:
+            others = {s for (pid, s), (who, until) in self._held.items()
+                      if pid == proj["id"] and who != agent.id and until > now}
+        with self.forks.net.store.tx() as db:
+            cutoff = self.forks.net._own_release_cutoff(db, agent.id, now)
+            released = {r["detail"].split(": ", 1)[0] for r in db.execute(
+                "SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='data_release' AND created_at > ?",
+                (proj["id"], agent.id, cutoff))}
+        return [s for s in sources if s not in others and s not in released]
 
     def listing(self, slug: str) -> list[dict]:
         """The jobs, for a room's members: {"source", "left", "agent": who holds it, None for nobody}. Kept for
@@ -182,12 +258,7 @@ class DataJobs:
             todo = self.todo(slug)
         except (NetworkError, OSError):
             return False
-        proj = self.forks.net._project(slug)
-        now = time.time()
-        with self._lock:
-            others = {s for (pid, s), (who, until) in self._held.items()
-                      if pid == proj["id"] and who != agent.id and until > now}
-        return any(s not in others for s, _ in todo)
+        return bool(self._free(self.forks.net._project(slug), agent, [s for s, _ in todo]))
 
     def claim(self, agent: Agent, slug: str) -> str | None:
         """A data job for this agent (the one it holds, or the next nobody does), as its brief; None when there's
@@ -201,13 +272,13 @@ class DataJobs:
             if mine is not None and mine not in todo:  # (its data matches now, or it's out of tries)
                 del self._held[(proj["id"], mine)]
                 mine = None
+        if mine is None:
+            # (not one this agent gave back lately: every claim handed a helper the job it had just released)
+            free = self._free(proj, agent, list(todo))
+        with self._lock:
             if mine is None:
                 taken = {s for (pid, s) in self._held if pid == proj["id"]}
-                # (not one this agent gave back: every claim handed a helper the job it had just released)
-                taken |= {r["detail"].split(": ", 1)[0] for r in self.forks.net.store.all(
-                    "SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='data_release'",
-                    proj["id"], agent.id)}
-                mine = next((s for s in todo if s not in taken), None)
+                mine = next((s for s in free if s not in taken), None)
                 if mine is None:
                     return None
                 with self.forks.net.store.tx() as db:
@@ -262,13 +333,15 @@ class DataJobs:
     def after_edit(self, agent: Agent, slug: str, source: str) -> str:
         """After an edit of a file: the job renewed while its data is short, done once it matches. '' when this
         agent holds no job for it."""
-        proj, fp, _ = self.forks.get(slug)
+        proj, fp, cfg = self.forks.get(slug)
         key = (proj["id"], source)
+        # judged as todo judges it: a job only because its link failed isn't done when its bytes are the original's
+        alike = source not in self.forks.link_failures(fp.root, cfg)
         with self._lock:
             held = self._held.get(key)
             if held is None or held[0] != agent.id:
                 return ""
-            short = [n for u in fp.units_for(source) if (n := self._bytes_left(u))]
+            short = [n for u in fp.units_for(source) if (n := self._bytes_left(u, alike=alike))]
             if short:
                 self._held[key] = (agent.id, time.time() + CLAIM_SECONDS)
                 return f"\nData job: about {sum(short):,} bytes of {source}'s data are still left to write (file_status shows which)."

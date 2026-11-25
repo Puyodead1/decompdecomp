@@ -48,7 +48,18 @@ from ..forks import (
     unresolved,
 )
 from ..forks.objdiff import MappingConflict, ObjdiffError
-from ..forks.project import EDITABLE, GAME, PROGRAM, SCOPES, STATE, UNIT_SECONDS, ForkError, ForkProject, project_macro
+from ..forks.project import (
+    EDITABLE,
+    GAME,
+    PROGRAM,
+    SCOPES,
+    STATE,
+    UNIT_SECONDS,
+    ForkError,
+    ForkProject,
+    config_changed,
+    project_macro,
+)
 from ..hostenv import NO_WINDOW
 from ..network import (
     ASM_PAGE,
@@ -73,6 +84,7 @@ from ..network import (
 from ..rom import RomError
 from ..scoring import percent_text
 from ..textedit import replace_once
+from . import datajobs
 from .collab import Refused
 from .datajobs import DataJobs
 from .engine.compilers import ROOM_COMPILER
@@ -1738,7 +1750,7 @@ class ForkEngine:
                 # its data couldn't be given to it: linked without it, its C defines what dtk's units define too, and
                 # the build fails every time. A GameCube game's link backed out with no word anywhere of why.
                 todo = [s for s in todo if s not in stuck]
-                self._remember_link_failures(proj, [], {s: "Its data couldn't be given to it, so it wasn't linked: "
+                self._remember_link_failures(proj, [], {s: f"{datajobs.NOT_GIVEN}, so it wasn't linked: "
                                                            f"{tried['error']}" for s in stuck})
             if not todo:
                 return {"linked": [], "failed": {}}
@@ -1877,9 +1889,7 @@ class ForkEngine:
         if not failed:
             return {}
         at = cfg.get("link_failed_at") or {}  # (none for one recorded before this: when, unknown, so stale)
-        config = Path(root) / "config"
-        changed = max((p.stat().st_mtime for p in config.rglob("*") if p.is_file()), default=0.0) \
-            if config.is_dir() else 0.0
+        changed = config_changed(root)
         return {src: why for src, why in failed.items() if at.get(src, 0.0) >= changed}
 
     def _remember_link_failures(self, proj, linked: list[str], failed: dict[str, str]) -> None:

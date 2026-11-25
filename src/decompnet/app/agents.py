@@ -43,7 +43,7 @@ from decompnet.hostenv import NO_WINDOW
 
 from .. import agents, consoles, network
 from ..network import NetworkError
-from . import tools
+from . import datajobs, tools
 from .engine import RomNetwork
 
 log = logging.getLogger("decompdecomp")
@@ -105,6 +105,7 @@ BACKOFF_FIRST = 10
 BACKOFF_LONGEST = 10 * 60
 FAST_FAILURE = 2 * 60
 FAST_FAILURES_TO_PAUSE = 5
+CHECKS_TO_PAUSE = 5  # the checks before a session failed this often in a row (an exception): the helper pauses, saying it
 # the provider's limit of requests at once (HTTP 429): not the helper's failure, so waited out, this many times
 THROTTLE_WAIT = 60
 THROTTLES_IN_A_ROW = 10
@@ -1277,33 +1278,27 @@ class Manager:
             self._set(s, "starting", "first setting hand-written assembly aside and putting the functions in order "
                                      "(seconds; a minute the first time)")
             twins.ordered.wait(ORDER_WAIT)
-        failures = fast = throttles = limits = auths = unreachable = cut_off = 0
+        failures = fast = throttles = limits = auths = unreachable = cut_off = checks = 0
         while not s.stop.is_set():
-            if self._left(s.slug, task := s.options.get("task") or "") == 0:
-                self._finish(s, f"nothing left to {'polish' if task == 'readable' else 'decompile'} here 🎉")
-                break
-            if task != "readable" and (ruled := self._ruled_out(s.slug, agent.name)):
-                self._finish(s, f"nothing left it can do: the {ruled} open function{'s' * (ruled != 1)} "
-                                f"{'are ones' if ruled != 1 else 'is one'} it found no C makes. Set "
-                                f"{'them' if ruled != 1 else 'it'} aside in {'their' if ruled != 1 else 'its'} panel, "
-                                "or start a helper of another model to look")
-                break
-            if (cap := self.over_budget(s.slug)) is not None:
-                self._finish(s, f"the agents on this project have spent the ${cap:.2f} budget (Setup)")
-                break
-            if task != "readable" and self.net.selection_left(agent, s.slug) == 0 and not self.net.store.one(
-                    "SELECT 1 FROM claims WHERE agent_id=?", agent.id):
-                self._pause(s, "nothing open is left within its work selection",
-                            "Change its work selection on its card, then start it again.")
-                break
-            if self._room_away(s):
+            task = s.options.get("task") or ""
+            try:
+                ready = self._ready(s, agent, task)
+            except Exception as e:  # (a locked database, an object read mid-build: the helper waits, it doesn't die)
+                log.exception("helper %s: checking for work failed", s.agent_name)
+                checks += 1
+                s.error = f"{type(e).__name__}: {e}"
+                if checks >= CHECKS_TO_PAUSE:
+                    self._pause(s, f"looking for work failed {checks} times in a row: {s.error}",
+                                "The app's log says more; press Start again once it's fixed.")
+                    break
+                self._wait(s, f"looking for work failed, trying again: {s.error}",
+                           time.time() + min(BACKOFF_LONGEST, BACKOFF_FIRST * 2 ** (checks - 1)))
                 continue
-            if self._all_given_up(s, agent, task):
-                continue
-            if (broken := self._build_problem(s.slug)) is not None:
-                self._pause(s, f"the project doesn't build on this computer, so no session starts: {broken}",
-                            "Fix the project's setup (its page says what's wrong), then press Start again.")
+            checks = 0
+            if ready is None:
                 break
+            if not ready:
+                continue
             kind = agents.get(s.kind)
             if kind.command and self.check_tools:  # (the built-in API agent calls the tools in this process)
                 try:
@@ -1415,6 +1410,55 @@ class Manager:
         s.proc = None
         self._save(s)
         self._release(s, agent)
+
+    def _ready(self, s: Session, agent, task: str) -> bool | None:
+        """Before each session: True to start one, False to look again (it waited), None when the helper is done (it
+        was finished or paused, saying why)."""
+        if self._left(s.slug, task) == 0:
+            if task != "readable" and (stuck := self._unlinked(s.slug)):
+                self._pause(s, stuck, "Each file's line on the project's Files page says what it waits for.")
+            else:
+                self._finish(s, f"nothing left to {'polish' if task == 'readable' else 'decompile'} here 🎉")
+            return None
+        if task != "readable" and (ruled := self._ruled_out(s.slug, agent.name)):
+            self._finish(s, f"nothing left it can do: the {ruled} open function{'s' * (ruled != 1)} "
+                            f"{'are ones' if ruled != 1 else 'is one'} it found no C makes. Set "
+                            f"{'them' if ruled != 1 else 'it'} aside in {'their' if ruled != 1 else 'its'} panel, "
+                            "or start a helper of another model to look")
+            return None
+        if (cap := self.over_budget(s.slug)) is not None:
+            self._finish(s, f"the agents on this project have spent the ${cap:.2f} budget (Setup)")
+            return None
+        if task != "readable" and self.net.selection_left(agent, s.slug) == 0 and not self.net.store.one(
+                "SELECT 1 FROM claims WHERE agent_id=?", agent.id):
+            self._pause(s, "nothing open is left within its work selection",
+                        "Change its work selection on its card, then start it again.")
+            return None
+        if self._room_away(s):
+            return False
+        if self._all_given_up(s, agent, task):
+            return False
+        if (broken := self._build_problem(s.slug)) is not None:
+            self._pause(s, f"the project doesn't build on this computer, so no session starts: {broken}",
+                        "Fix the project's setup (its page says what's wrong), then press Start again.")
+            return None
+        return True
+
+    def _unlinked(self, slug: str) -> str:
+        """With no function or data job left: why files are still not linked (app/datajobs.py's verdicts), "" when
+        none is. A GameCube game's helpers stopped with "nothing left to decompile here 🎉" at 49 of its 80 files
+        unlinked."""
+        if not self.net.fork_slug(slug):
+            return ""
+        blocked = self.net.forks.data_jobs.blocked(slug)
+        if not blocked:
+            return ""
+        n = sum(len(v) for v in blocked.values())
+        parts = [f"{len(files)} {datajobs.BLOCKED[kind]}" + (f" ({', '.join(Path(s).name for s, _ in files[:4])}"
+                                                              f"{', ...' if len(files) > 4 else ''})")
+                 for kind, files in sorted(blocked.items(), key=lambda kv: -len(kv[1]))]
+        return (f"no function or data job is left, and {n} file{'s' * (n != 1)} still "
+                f"{'aren' if n != 1 else 'isn'}'t linked: " + "; ".join(parts))
 
     def _build_problem(self, slug: str) -> str | None:
         """Before each session: why the project can't build here, after its setup ran again (ForkEngine.preflight),

@@ -1,6 +1,7 @@
 """A file whose functions all match, handed out for its data (app/datajobs.py): a GameCube game's twelve such files sat
 unlinked, since agents only ever claimed functions."""
 
+import os
 import time
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ import pytest
 from decompnet.app import datajobs
 from decompnet.app.datajobs import DataJobs
 from decompnet.forks.datadiff import Item, Section
-from decompnet.network import NetworkError
+from decompnet.network import Network, NetworkError
 from decompnet.store import Store
 
 LEFT = {"main/a": 32, "main/b": 495, "main/c": 64, "main/big": datajobs.MOST_BYTES + 1, "main/done": 0, "main/open": 8}
@@ -25,6 +26,8 @@ class Net:
     def _project(self, slug):
         return self.store.one("SELECT * FROM projects WHERE slug=?", slug)
 
+    _own_release_cutoff = Network._own_release_cutoff
+
     def _event(self, db, project_id, agent_id, kind, detail):
         db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
                    (project_id, agent_id, kind, detail, time.time()))
@@ -37,13 +40,15 @@ def jobs(tmp_path, monkeypatch):
         db.execute("INSERT INTO projects(id, slug, root, config) VALUES(1, 'game', ?, '{}')", (str(tmp_path),))
         for unit, status in [("main/a", "matched"), ("main/b", "matched"), ("main/b", "matched"), ("main/c", "matched"),
                              ("main/big", "matched"), ("main/done", "matched"), ("main/open", "matched"),
-                             ("main/open", "open"), ("main/linked", "matched")]:
+                             ("main/open", "open"), ("main/linked", "matched"), ("main/aside", "matched"),
+                             ("main/aside", "asm")]:
             db.execute("INSERT INTO functions(project_id, name, unit, status) VALUES(1, ?, ?, ?)",
                        (f"f{db.execute('SELECT COUNT(*) FROM functions').fetchone()[0]}", unit, status))
         for i, name in enumerate(["agent-1", "agent-2", "agent-3"], 1):
             db.execute("INSERT INTO agents(id, name, token_hash) VALUES(?, ?, ?)", (i, name, name))
     units = [SimpleNamespace(name=n, source=f"src/{n[5:]}.c", target=None, base=None)
-             for n in ["main/a", "main/b", "main/c", "main/big", "main/done", "main/open", "main/linked"]]
+             for n in ["main/a", "main/b", "main/c", "main/big", "main/done", "main/open", "main/linked",
+                       "main/aside"]]
     states = {u.source: ("Matching" if u.name == "main/linked" else "NonMatching",) for u in units}
     fp = SimpleNamespace(root=tmp_path, linkable=lambda: True, link_states=lambda: states, units=lambda: units,
                          units_for=lambda s: [u for u in units if u.source == s])
@@ -62,6 +67,79 @@ def test_the_files_whose_functions_all_match_and_whose_data_is_short_least_left_
     """Not a file with a function still open, one already linked, one whose data matches, or one too big to write."""
     assert jobs.todo("game") == [("src/a.c", 32), ("src/c.c", 64), ("src/b.c", 495)]
     assert jobs.left("game") == 3
+
+
+def test_every_file_not_linked_says_what_it_waits_for(jobs):
+    """One verdict the jobs, the helpers' stop and the files' page all read: a GameCube game's helpers said "nothing
+    left to decompile here 🎉" with 49 of its 80 files unlinked, none of them a job."""
+    jobs.forks.get("game")[2]["link_failed"] = {"src/c.c": f"{datajobs.NOT_GIVEN}, so it wasn't linked: x"}
+    v = jobs.verdicts("game")
+    assert v["src/a.c"] == ("job", 32, "")
+    assert v["src/done.c"] == ("link", 0, "")
+    assert v["src/aside.c"][0] == "set_aside" and "1 of its functions is set aside" in v["src/aside.c"][2]
+    assert v["src/big.c"][0] == "too_big"
+    assert v["src/c.c"][0] == "no_data"  # (the data step's failure: no edit of the C fixes it, so no job)
+    assert "src/open.c" not in v and "src/linked.c" not in v
+    assert jobs.todo("game") == [("src/a.c", 32), ("src/b.c", 495)]
+    assert sorted(jobs.blocked("game")) == ["no_data", "set_aside", "too_big"]
+
+
+def test_tries_are_agents_since_the_split_config_changed(jobs, tmp_path):
+    """Counted by claim, a GameCube game's files ran out of tries on leases that ran out and on restarts."""
+    for _ in range(datajobs.TRIES + 1):  # (the same agent claiming again after a restart: one try)
+        jobs._held.clear()
+        jobs.claim(agent(1), "game")
+    assert jobs.verdicts("game")["src/a.c"][0] == "job"
+    with jobs.forks.net.store.tx() as db:  # (two more agents had it)
+        for n in (2, 3):
+            jobs.forks.net._event(db, 1, n, "data_job", "src/a.c")
+    assert jobs.verdicts("game")["src/a.c"][0] == "tries"
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "splits.txt").write_text("a.c:\n")  # (its files cut again: what was tried was about other objects)
+    later = time.time() + 5
+    os.utime(config / "splits.txt", (later, later))
+    assert jobs.verdicts("game")["src/a.c"][0] == "job"
+
+
+def test_a_job_the_agent_released_is_neither_takeable_nor_claimed_by_it_for_a_while(jobs, monkeypatch):
+    """takeable said a job was waiting, claim kept the agent off it for good: a GameCube game's lone helper started
+    sessions that found nothing, and paused after five."""
+    for n in (2, 3):  # (the other jobs held by others)
+        jobs.claim(agent(n), "game")
+    jobs.claim(agent(1), "game")
+    jobs.release(agent(1), "game", "src/b.c", "one table is short")
+    assert not jobs.takeable(agent(1), "game")
+    assert jobs.claim(agent(1), "game") is None
+    monkeypatch.setattr(Net, "_own_release_cutoff", lambda self, db, agent_id, now: now + 1)  # (the window is over)
+    assert jobs.takeable(agent(1), "game")
+    assert jobs.claim(agent(1), "game").startswith("DATA JOB (claimed): src/b.c")
+
+
+def test_an_edit_judges_the_file_as_its_job_was_judged(jobs, monkeypatch):
+    """A job only because its link failed isn't done once the bytes are the original's: the link failed again, and
+    another try was gone."""
+    monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u, alike=True: 0 if alike else LEFT.get(u.name, 0))
+    jobs.forks.get("game")[2]["link_failed"] = {"src/a.c": "main.dol differs at 0x80401000"}
+    jobs.claim(agent(1), "game")
+    assert "32 bytes of src/a.c's data are still left" in jobs.after_edit(agent(1), "game", "src/a.c")
+
+
+def test_helpers_with_nothing_left_but_files_unlinked_pause_and_say_why(jobs):
+    from decompnet.app.agents import Manager
+
+    said = {}
+    m = SimpleNamespace(_left=lambda slug, task: 0, _pause=lambda s, why, hint="": said.update(pause=why),
+                        _finish=lambda s, why: said.update(finish=why),
+                        net=SimpleNamespace(fork_slug=lambda slug: slug, forks=SimpleNamespace(data_jobs=jobs)))
+    m._unlinked = lambda slug: Manager._unlinked(m, slug)
+    assert Manager._ready(m, SimpleNamespace(slug="game"), agent(1), "") is None
+    assert "finish" not in said
+    assert "2 files still aren't linked" in said["pause"] and "aside.c" in said["pause"] and "big.c" in said["pause"]
+    jobs.forks.net.links["game"] = object()  # (a room's member: the host's files aren't its to judge)
+    said.clear()
+    assert Manager._ready(m, SimpleNamespace(slug="game"), agent(1), "") is None
+    assert "🎉" in said["finish"]
 
 
 def test_one_job_one_agent_and_it_keeps_its_own(jobs):
