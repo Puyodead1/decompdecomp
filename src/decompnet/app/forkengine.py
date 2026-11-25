@@ -41,6 +41,7 @@ from ..forks import (
     dtkdata,
     dtksplits,
     ghidra,
+    identity,
     ltcg,
     methods,
     objdiff,
@@ -553,6 +554,10 @@ _PRAGMA = re.compile(r"^#\s*pragma\b")
 TRY_ALL_SECONDS = 120  # try_compiler "all" stops trying more versions after this (Codex gives a tool call 180)
 COMPARE_SECONDS = 900  # a comparison of every compiler and flag variant on one function stops after this
 FILE_FUNCTIONS = 200  # functions a file decompdecomp gives code holds at most (start_files)
+COMMIT_TRIES = 5  # a commit waits out a locked index this often
+# Files a link tries one at a time, in one run: each is a whole build and check, with every helper's compile waiting
+# on it. A GameCube game retried the same 40 failing files after every match, and never got to the rest.
+LINK_ONE_BY_ONE = 10
 
 
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
@@ -988,6 +993,36 @@ class ForkEngine:
         self._keep_scores(proj, unit, text, d.unit_scores)
         return d.unit_scores, True
 
+    def same_object(self, proj, fp: ForkProject, unit, path: Path, new_text: str) -> tuple[bool, str]:
+        """Write `new_text` to the unit's source file and keep it only if the unit builds to the same object
+        (forks/identity.py): the check every machine pass over the source is judged by. objdiff's scores can't be:
+        an extra function, another order or a constant read through a symbol keep every one. Returns (kept, why
+        not). The caller commits."""
+        with self._tree(proj).shared(), self._units_locked(proj, [unit.name]):
+            try:
+                text = path.read_text(errors="replace", encoding="utf-8")
+            except OSError as e:
+                return False, f"its source can't be read: {e}"
+            if text == new_text:
+                return True, ""
+            ok, _ = self._build_unit(proj, fp, unit)
+            before = identity.fingerprint(unit.base) if ok and unit.base is not None else None
+            if before is None:
+                return False, ("it doesn't build as it is" if not ok else
+                               "its object isn't one decompdecomp compares (not ELF)")
+            _rewrite(path, new_text)
+            ok, log = self._build_unit(proj, fp, unit)
+            after = identity.fingerprint(unit.base) if ok else None
+            if after == before:
+                if hit := self._scores.get((proj["id"], unit.name)):
+                    self._keep_scores(proj, unit, new_text, hit[2])
+                return True, ""
+            _rewrite(path, text)
+            self._build_unit(proj, fp, unit)
+            if not ok:
+                return False, f"it doesn't compile so: {_tail(log, 6)}"
+            return False, "its object differs: " + "; ".join(before.differences(after) if after else ["unreadable"])
+
     def _trying_units(self) -> set[str]:
         """The units this thread is trying compilers on (try_compiler, compare_compilers): their file's compiler is
         meant to differ from the committed one while they build."""
@@ -1085,9 +1120,7 @@ class ForkEngine:
 
     def _commit(self, proj, fp: ForkProject, rel: str, message: str) -> None:
         """Commit one file (agents work side by side: never sweep up another one's change)."""
-        with self._git_lock(proj):
-            fp.git("add", "--", rel)
-            fp.git("commit", "-q", "-m", message, "--", rel)
+        self._commit_paths(proj, fp, [rel], message)
 
     # ------------------------------------------------------------------ helpers
 
@@ -1752,14 +1785,16 @@ class ForkEngine:
                 todo = [s for s in todo if s not in stuck]
                 self._remember_link_failures(proj, [], {s: f"{datajobs.NOT_GIVEN}, so it wasn't linked: "
                                                            f"{tried['error']}" for s in stuck})
+            todo = self._fresh_first(fp, cfg, todo)
             if not todo:
                 return {"linked": [], "failed": {}}
             conf = fp.root / "configure.py"
             original = conf.read_text(errors="replace", encoding="utf-8")
             ok, out = fp.verify()
             if not ok:
-                return {"linked": [], "failed": {}, "error": "the project's checksum check fails before linking "
-                        f"anything, so nothing was linked:\n{_tail(out)}"}
+                error = f"the project's checksum check fails before linking anything, so nothing was linked:\n{_tail(out)}"
+                self._note_link(proj, error=error)
+                return {"linked": [], "failed": {}, "error": error}
 
             def build_with(sources: list[str]) -> tuple[bool, str]:
                 conf.write_text(fp.marked_matching(original, sources, cfg.get("version")), encoding="utf-8")
@@ -1768,30 +1803,41 @@ class ForkEngine:
             log(f"linking {len(todo)} finished file(s)")
             linked: list[str] = []
             failed: dict[str, str] = {}
-            ok, out = build_with(todo)
-            if ok:
-                linked = todo
-            else:  # one at a time, so one file that doesn't link keeps none of the others out
-                for src in todo[:40]:
-                    ok, out = build_with([*linked, src])
-                    if ok:
-                        linked.append(src)
-                    else:
-                        failed[src] = _tail(out)
-                        if "FAILED" in out:  # (the checksum's one line says nothing to fix: say where it differs)
-                            failed[src] += "\n" + dolcheck.report(fp.root, cfg.get("version") or (fp.versions() or [""])[0])
-                ok, out = build_with(linked)
-                if not ok:
-                    linked = []
-            self._remember_link_failures(proj, linked, failed)
-            if not linked:
-                conf.write_text(original, encoding="utf-8")
-                fp.verify()
-                return {"linked": [], "failed": failed}
-            names = ", ".join(Path(s).name for s in linked[:6]) + (f" and {len(linked) - 6} more" if len(linked) > 6 else "")
-            who = f"\n\nLinked by decompdecomp after {agent.name}'s match." if agent else "\n\nLinked by decompdecomp."
-            self._commit(proj, fp, "configure.py", f"Link {names}\n\nEvery function and all data match, and the game "
-                                                   f"still builds byte for byte from the C.{who}")
+            kept, together = False, ""
+            try:
+                ok, out = build_with(todo)
+                if ok:
+                    linked = todo
+                else:  # one at a time, so one file that doesn't link keeps none of the others out
+                    for src in todo[:LINK_ONE_BY_ONE]:
+                        ok, out = build_with([*linked, src])
+                        if ok:
+                            linked.append(src)
+                        else:
+                            failed[src] = _tail(out)
+                            if "FAILED" in out:  # (the checksum's one line says nothing to fix: say where it differs)
+                                failed[src] += "\n" + dolcheck.report(fp.root, cfg.get("version") or (fp.versions() or [""])[0])
+                    ok, out = build_with(linked)
+                    if not ok:  # (it built a moment ago with these: no file's failure, but said)
+                        together = f"the files that linked one by one didn't build again together:\n{_tail(out)}"
+                        linked = []
+                self._remember_link_failures(proj, linked, failed)
+                if not linked:
+                    self._note_link(proj, failed=failed, error=together)
+                    return {"linked": [], "failed": failed}
+                names = ", ".join(Path(s).name for s in linked[:6]) + (f" and {len(linked) - 6} more" if len(linked) > 6 else "")
+                who = f"\n\nLinked by decompdecomp after {agent.name}'s match." if agent else "\n\nLinked by decompdecomp."
+                self._commit(proj, fp, "configure.py", f"Link {names}\n\nEvery function and all data match, and the "
+                                                       f"game still builds byte for byte from the C.{who}")
+                kept = True
+            except (ForkError, OSError) as e:
+                self._note_link(proj, error=f"linking stopped: {e}")
+                raise
+            finally:
+                if not kept:  # (whatever stopped it: configure.py as it was, and the game built from it)
+                    conf.write_text(original, encoding="utf-8")
+                    fp.verify()
+            self._note_link(proj, linked=linked, failed=failed)
             with self.net.store.tx() as db:
                 for src in linked:
                     self.net._event(db, proj["id"], agent.id if agent else None, "link", src)
@@ -1891,6 +1937,40 @@ class ForkEngine:
         at = cfg.get("link_failed_at") or {}  # (none for one recorded before this: when, unknown, so stale)
         changed = config_changed(root)
         return {src: why for src, why in failed.items() if at.get(src, 0.0) >= changed}
+
+    def _fresh_first(self, fp: ForkProject, cfg: dict, todo: list[str]) -> list[str]:
+        """The candidates a link tries: a file whose last link failed waits until something it's built from changed
+        since (its source, a header, the split config), and those that never failed come first. The same 40 failing
+        files of a GameCube game were tried after every match."""
+        at = cfg.get("link_failed_at") or {}
+        failed = self.link_failures(fp.root, cfg)
+        if not failed:
+            return todo
+        src_dir = fp.root / fp.src_dir()
+        shared = max([config_changed(fp.root), *(p.stat().st_mtime for p in (fp.root / "include").rglob("*")
+                                                 if p.is_file())] if (fp.root / "include").is_dir() else [0.0])
+
+        def changed(src: str) -> float:
+            try:
+                return max(shared, (fp.root / src).stat().st_mtime if (fp.root / src).exists()
+                           else (src_dir / src).stat().st_mtime)
+            except OSError:
+                return shared
+
+        return sorted((s for s in todo if s not in failed or changed(s) > at.get(s, 0.0)),
+                      key=lambda s: (s in failed, at.get(s, 0.0), s))
+
+    def _note_link(self, proj, linked: list[str] = (), failed: dict | None = None, error: str = "") -> None:
+        """What the last link did, for the files' page and the helpers' stop: a link whose checksum check failed
+        before it began stopped linking for good, saying nothing anywhere."""
+        cfg = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+        cfg["link_last"] = {"at": time.time(), "linked": list(linked), "failed": sorted(failed or ()), "error": error[-2000:]}
+        self._save_cfg(proj, cfg)
+
+    def link_note(self, slug: str) -> str:
+        """Why linking stopped, when the last link said so ("" otherwise)."""
+        proj = self.net._project(slug)
+        return (json.loads(proj["config"]).get("link_last") or {}).get("error") or ""
 
     def _remember_link_failures(self, proj, linked: list[str], failed: dict[str, str]) -> None:
         cfg = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
@@ -2196,7 +2276,7 @@ class ForkEngine:
                 continue
             folder = "auto" if module == "main" else f"REL/{module}"
             ext = ".cpp" if u.name in cpp else ".c"
-            starts = self._starts(dtksplits.symbols(mods[module].symbols), *extent)
+            starts = self._starts(dtksplits.symbols(mods[module].symbols, labels=False), *extent)
             cuts = [extent[0], *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], extent[1]]
             for lo, hi in zip(cuts, cuts[1:]):
                 name = f"{folder}/text_{lo:08X}{ext}"
@@ -2321,7 +2401,7 @@ class ForkEngine:
                 continue
             lo, hi = f.sections[".text"]
             syms = dtksplits.symbols(mod.symbols)
-            starts = self._starts(syms, lo, hi)
+            starts = self._starts(dtksplits.symbols(mod.symbols, labels=False), lo, hi)  # (CodeWarrior's linker hangs on a cut at a label)
             cuts = [lo, *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], hi]
             if len(cuts) <= 2:
                 continue
@@ -2452,7 +2532,8 @@ class ForkEngine:
                 addr = syms[self._meta(fn_row).get("symbol")][1]
             except (NetworkError, KeyError):
                 raise NetworkError(f"`{at}` isn't a function of {rel}: give its name or .text offset") from None
-        starts = sorted(a for sec, a, _ in syms.values() if sec == ".text" and lo < a < hi)
+        starts = sorted(a for sec, a, _ in dtksplits.symbols(mod.symbols, labels=False).values()
+                        if sec == ".text" and lo < a < hi)  # (not a label: CodeWarrior's linker hangs on one)
         if addr not in starts:
             raise NetworkError(f"`{at}` (0x{addr:X}) isn't the start of a function in {rel} (after its first one); "
                                f"its code is .text 0x{lo:X}-0x{hi:X}")
@@ -3116,9 +3197,25 @@ class ForkEngine:
         return f"✅ {old} is {new} now, in the game's symbols and in {len(saved)} file(s); every match still matches."
 
     def _commit_paths(self, proj, fp: ForkProject, paths: list[str], message: str) -> None:
+        """Commit these files, waiting out a locked index (a room's sync, the user's git tools). A commit that failed
+        was let go without a word, and the app's start put the uncommitted config back as a try's leftover: a GameCube
+        game's linked file and its data step were undone, while the project's record said both were done."""
+        said = ""
+        if not paths:
+            return
         with self._git_lock(proj):
-            fp.git("add", "--", *paths)
-            fp.git("commit", "-q", "-m", message, "--", *paths)
+            for attempt in range(COMMIT_TRIES):
+                ok, said = fp.git("add", "--", *paths)
+                if ok:
+                    ok, said = fp.git("commit", "-q", "-m", message, "--", *paths)
+                if ok or any(m in said for m in ("nothing to commit", "nothing added to commit", "no changes added")):
+                    return
+                if "index.lock" not in said:
+                    break
+                time.sleep(1 + attempt)
+        logging.getLogger("decompdecomp").error("%s: couldn't commit %s: %s", proj["slug"], ", ".join(paths), said)
+        raise ForkError(f"the project's change to {', '.join(paths[:3])} couldn't be committed (git: {said[-300:]}); "
+                        "it's undone the next time the app starts")
 
     @staticmethod
     def _count_uncovered(rep: dict) -> dict:
@@ -6014,6 +6111,11 @@ class ForkEngine:
             if lost:
                 undo()
                 return f"❌ REJECTED and undone: the edit breaks {len(lost)} matched function(s): {', '.join(sorted(lost)[:10])}"
+            lower = sorted(f"{n} {pct:.1f}% → {(now.get(n) or 0):.1f}%" for u in units
+                           for now in [after[u.name] or {}]
+                           for n, pct in ((bases[u.name][0] if bases[u.name][0] is not None
+                                           else self._last_scores(proj, u)) or {}).items()
+                           if pct is not None and after[u.name] is not None and (now.get(n) or 0) < pct - 0.5)
             if linked and not (ok := self._verify(proj, fp))[0]:
                 undo()
                 return (f"❌ REJECTED and undone: {rel} is linked into the game, and with your edit the game no longer "
@@ -6032,7 +6134,11 @@ class ForkEngine:
         if any(v is None for v in after.values()):
             return f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured."
         done = "".join(self._file_done(proj["slug"], proj, fp, u, after[u.name] or {}, agent) for u in units[:1])
-        return f"✅ {rel} updated; every matched function still matches.{done}{self.data_jobs.after_edit(agent, proj['slug'], rel)}"
+        dropped = (f"\n⚠️ It lowers {len(lower)} function(s) that weren't matched yet: {', '.join(lower[:8])}"
+                   f"{' ...' if len(lower) > 8 else ''}. Kept, as you may be partway through one; put back what "
+                   "you didn't mean to change.") if lower else ""
+        return (f"✅ {rel} updated; every matched function still matches.{dropped}{done}"
+                f"{self.data_jobs.after_edit(agent, proj['slug'], rel)}")
 
     def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str,
                      edits: list[tuple[str, str]], message: str) -> str:

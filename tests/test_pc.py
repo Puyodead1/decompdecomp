@@ -566,7 +566,7 @@ def test_two_renames_at_once_both_reach_every_file(tmp_path, monkeypatch):
     monkeypatch.setattr(ForkProject, "report", lambda self: report)
     monkeypatch.setattr(ForkProject, "units", lambda self: [Unit("u", None, None, "src/auto/u.cpp", False, None)])
     monkeypatch.setattr(ForkProject, "setup_commands", lambda self, version: [])
-    monkeypatch.setattr(ForkProject, "git", lambda self, *args: "")
+    monkeypatch.setattr(ForkProject, "git", lambda self, *args: (True, ""))
     net.forks.sync("p", log=lambda *_: None)
     agent, _ = net.local_agent("claude-1")
     said = {}
@@ -622,7 +622,7 @@ def test_an_agents_constructor_and_destructor_name_the_functions_they_are(tmp_pa
     monkeypatch.setattr(ForkProject, "linkable", lambda self: False)
     monkeypatch.setattr(ForkProject, "build_problem", lambda self: None)
     monkeypatch.setattr(ForkProject, "build_unit", lambda self, u, log=None: ("CBar::" not in source.read_text(), "C2059"))
-    monkeypatch.setattr(ForkProject, "git", lambda self, *args: committed.append(args) or "")
+    monkeypatch.setattr(ForkProject, "git", lambda self, *args: committed.append(args) or (True, ""))
 
     def diff(self, u, symbol):
         """What tools/names.py pairs: CFoo::~CFoo's code with the function functions.json names so."""

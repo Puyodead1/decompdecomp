@@ -103,8 +103,9 @@ def modules(root: Path, version: str) -> dict[str, Module]:
 _SYMBOL = re.compile(r"^(\S+)\s*=\s*(\.\w+):(0x[0-9A-Fa-f]+);(.*)$")
 
 
-def symbols(path: Path) -> dict[str, tuple[str, int, int]]:
-    """symbols.txt: name -> (section, address, size)."""
+def symbols(path: Path, labels: bool = True) -> dict[str, tuple[str, int, int]]:
+    """symbols.txt: name -> (section, address, size). `labels`: with dtk's type:label symbols too (a place inside
+    code or data, not a function or object of its own)."""
     out = {}
     try:
         lines = path.read_text(errors="replace", encoding="utf-8").splitlines()
@@ -112,10 +113,57 @@ def symbols(path: Path) -> dict[str, tuple[str, int, int]]:
         return out
     for line in lines:
         m = _SYMBOL.match(line)
-        if m:
+        if m and (labels or "type:label" not in m.group(4)):
             size = re.search(r"size:(0x[0-9A-Fa-f]+)", m.group(4))
             out[m.group(1)] = (m.group(2), int(m.group(3), 16), int(size.group(1), 16) if size else 0)
     return out
+
+
+CODE = (".init", ".text")
+
+
+def label_starts(splits: Path, syms: Path) -> list[tuple[str, int]]:
+    """(name, size) of each type:label symbol that starts a file's code with no function there. CodeWarrior's linker
+    hangs on one, forever and saying nothing: a GameCube game's build hung on __OSSystemCallVectorStart once its
+    file began there. The size reaches the next symbol, or the file's end."""
+    try:
+        files = Splits.parse(splits.read_text(encoding="utf-8")).files
+        lines = syms.read_text(errors="replace", encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    at: dict[tuple[str, int], list[tuple[str, str]]] = {}
+    for line in lines:
+        if m := _SYMBOL.match(line):
+            kind = re.search(r"type:(\w+)", m.group(4))
+            at.setdefault((m.group(2), int(m.group(3), 16)), []).append((m.group(1), kind.group(1) if kind else ""))
+    starts = sorted(at)
+    out = []
+    for f in files:
+        for sec, (lo, hi) in f.sections.items():
+            here = at.get((sec, lo), [])
+            if sec not in CODE or any(kind == "function" for _, kind in here):
+                continue
+            for name, kind in here:
+                if kind == "label":
+                    nxt = next((a for s, a in starts if s == sec and a > lo), hi)
+                    out.append((name, min(nxt, hi) - lo))
+    return out
+
+
+def retype_labels(splits: Path, syms: Path) -> list[str]:
+    """Make each label_starts symbol a function of its size, as the community's projects declare such code. Returns
+    their names."""
+    found = dict(label_starts(splits, syms))
+    if not found:
+        return []
+    lines = syms.read_text(errors="replace", encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = _SYMBOL.match(line.rstrip("\r\n"))
+        if m and m.group(1) in found:
+            tail = re.sub(r"type:label", f"type:function size:0x{found[m.group(1)]:X}", m.group(4), count=1)
+            lines[i] = f"{m.group(1)} = {m.group(2)}:{m.group(3)};{tail}" + line[len(line.rstrip("\r\n")):]
+    syms.write_text("".join(lines), encoding="utf-8")
+    return sorted(found)
 
 
 # ------------------------------------------------------------------ configure.py

@@ -1453,12 +1453,14 @@ class Manager:
         blocked = self.net.forks.data_jobs.blocked(slug)
         if not blocked:
             return ""
+        note = self.net.forks.link_note(slug)
         n = sum(len(v) for v in blocked.values())
         parts = [f"{len(files)} {datajobs.BLOCKED[kind]}" + (f" ({', '.join(Path(s).name for s, _ in files[:4])}"
                                                               f"{', ...' if len(files) > 4 else ''})")
                  for kind, files in sorted(blocked.items(), key=lambda kv: -len(kv[1]))]
         return (f"no function or data job is left, and {n} file{'s' * (n != 1)} still "
-                f"{'aren' if n != 1 else 'isn'}'t linked: " + "; ".join(parts))
+                f"{'aren' if n != 1 else 'isn'}'t linked: " + "; ".join(parts)
+                + (f". The last link said: {note[:400]}" if note else ""))
 
     def _build_problem(self, slug: str) -> str | None:
         """Before each session: why the project can't build here, after its setup ran again (ForkEngine.preflight),
