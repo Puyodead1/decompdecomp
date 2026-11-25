@@ -156,13 +156,13 @@ def retype_labels(splits: Path, syms: Path) -> list[str]:
     found = dict(label_starts(splits, syms))
     if not found:
         return []
-    lines = syms.read_text(errors="replace", encoding="utf-8").splitlines(keepends=True)
+    lines = syms.read_bytes().decode("utf-8", "replace").splitlines(keepends=True)  # (its line endings as they are)
     for i, line in enumerate(lines):
         m = _SYMBOL.match(line.rstrip("\r\n"))
         if m and m.group(1) in found:
             tail = re.sub(r"type:label", f"type:function size:0x{found[m.group(1)]:X}", m.group(4), count=1)
             lines[i] = f"{m.group(1)} = {m.group(2)}:{m.group(3)};{tail}" + line[len(line.rstrip("\r\n")):]
-    syms.write_text("".join(lines), encoding="utf-8")
+    syms.write_bytes("".join(lines).encode("utf-8"))
     return sorted(found)
 
 
