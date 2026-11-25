@@ -10,6 +10,7 @@ import pytest
 from decompnet import classes, seeds, toolchains
 from decompnet.app import drafts, tools
 from decompnet.app.engine import RomNetwork, briefs
+from decompnet.forks import drafts as fork_drafts
 from decompnet.network import NetworkError
 
 from .test_rom import built  # noqa: F401  (fixture that builds the demo ROM)
@@ -332,3 +333,33 @@ def test_a_rooms_first_sync_comes_before_its_drafts(built, tmp_path, monkeypatch
     finally:
         net.drafter.stop(SLUG)
         net.links.pop(SLUG, None)
+
+
+DTK_ASM = """.include "macros.inc"
+.file "half.c"
+
+.section .text, "ax"
+
+.fn get_ten, global
+/* 80003100 00000000  C0 22 80 00 */\tlfs f1, lbl_80400000@sda21(r0)
+/* 80003104 00000004  4E 80 00 20 */\tblr
+.endfn get_ten
+
+.section .sdata2, "a"
+.balign 8
+
+.obj lbl_80400000, local
+\t.float 10
+.endobj lbl_80400000
+"""
+
+
+@needs_m2c
+def test_a_dtk_draft_reads_the_files_data_and_writes_its_constants(tmp_path):
+    """m2c was given the function's code alone: each float came out as an extern lbl_, or no draft came out."""
+    asm = tmp_path / "build" / "GAME" / "asm" / "half.s"
+    asm.parent.mkdir(parents=True)
+    asm.write_text(DTK_ASM, encoding="utf-8")
+    assert fork_drafts.data_of(DTK_ASM).startswith(".section .sdata2") and ".fn" not in fork_drafts.data_of(DTK_ASM)
+    text = fork_drafts.draft(tmp_path, "gc", "main/half", "get_ten", None)
+    assert text and "10.0f" in text and "lbl_80400000" not in text, text

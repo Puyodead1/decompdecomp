@@ -49,6 +49,21 @@ def _block(text: str, symbol: str) -> str:
     return m.group(0) if m else text
 
 
+_SECTION = re.compile(r"^\.section\s+([.\w]+)", re.M)
+CODE_SECTIONS = (".text", ".init")
+
+
+def data_of(text: str) -> str:
+    """The data sections of a dtk assembly file (its .data, .rodata, .sdata2, .bss...), for m2c beside one function:
+    with them it reads a constant's value and writes the literal, and without them it gave no draft at all for many
+    of a GameCube game's functions, or `extern f32 lbl_803C79C4` for each float."""
+    starts = [(m.start(), m.group(1)) for m in _SECTION.finditer(text)]
+    parts = [text[at:(starts[i + 1][0] if i + 1 < len(starts) else len(text))]
+             for i, (at, name) in enumerate(starts) if name not in CODE_SECTIONS]
+    data = "".join(parts)
+    return data if len(data) <= MAX_ASM else ""
+
+
 def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: str | None,
           compiler_hint: str = "", timeout: float = 30, valid: bool = False) -> str | None:
     """m2c's draft of one function; `valid`: in a form that compiles (m2c's macros for what it couldn't tell, which
@@ -64,9 +79,10 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
         text = consoles.get(platform).unit_function_asm(root, unit_name, symbol)
         return text and seeds.run_m2c(text, symbol, f"{target}-{lang}", timeout=timeout, valid=valid)
     text = asm.read_text(errors="replace", encoding="utf-8")
+    data = data_of(text) if ".fn " in text else ""
     if len(text) > MAX_ASM or ".fn " in text:
         text = _block(text, symbol)
-    return seeds.run_m2c(text, symbol, f"{target}-{lang}", timeout=timeout, valid=valid)
+    return seeds.run_m2c(text, symbol, f"{target}-{lang}", timeout=timeout, valid=valid, data_asm=data or None)
 
 
 def add_m2c_macros(header: Path) -> bool:
