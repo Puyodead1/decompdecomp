@@ -134,6 +134,11 @@ def _said(out: list[str]) -> str:
 
 _NO_WORK = "ninja: no work to do."  # what ninja says when everything asked for is built
 UNIT_SECONDS = 600  # a unit's build, at most (a run of several builds them side by side: the same)
+# A build that prints nothing for this long is stuck: ninja prints a line as each step ends, and no step takes longer
+# than a unit. CodeWarrior's linker hangs, silent, on a label starting a file's code (dtksplits.label_starts): a
+# GameCube game's link waited out the whole build's half hour every time.
+SILENT_SECONDS = UNIT_SECONDS
+GIT_SECONDS = 120
 OUTPUT_SECONDS = 30  # after a step ends, how long its output may go on
 
 
@@ -731,11 +736,12 @@ class ForkProject:
         except FileNotFoundError:
             return None, [f"{cmd[0]} isn't installed"], ""
         attach_job(proc)  # (Windows: its commands are stopped with it, even once it's gone; elsewhere its session)
-        out, seen, quiet = [], collections.Counter(), [0]
+        out, seen, quiet, heard = [], collections.Counter(), [0], [time.monotonic()]
 
         def read() -> None:
             for line in proc.stdout:
                 line = line.rstrip()
+                heard[0] = time.monotonic()
                 out.append(line)
                 if failed is not None and (m := _FAILED.match(line)):
                     failed.extend(t for t in (m.group(1) or m.group(2)).split()
@@ -750,15 +756,30 @@ class ForkProject:
         reader.start()
         # (macOS: the whole build's memory, as its systemd scope caps it on Linux; limits.py's docstring)
         watchdog = CompilerMemoryWatchdog(proc, limit=default_cap(), whole_tree=True)
+        deadline, silent = time.monotonic() + timeout, False
         try:
             with watchdog:
-                code = proc.wait(timeout=timeout)
+                while True:
+                    try:
+                        code = proc.wait(timeout=min(5.0, max(0.0, deadline - time.monotonic())))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            raise
+                        if time.monotonic() - heard[0] > min(SILENT_SECONDS, timeout):
+                            silent = True
+                            raise
         except subprocess.TimeoutExpired:
             stop_group(proc, watchdog.seen)  # what's still in its session or job, its own parent gone too
             _stop_tree(proc)  # ninja and the compiler it started: killing ninja alone left the compiler running
             reader.join(OUTPUT_SECONDS)
             release_job(proc)
             said = [ln for ln in list(out) if not _NOISE.match(ln)][-40:]
+            if silent:
+                return None, [*said, f"stopped: the build printed nothing for {min(SILENT_SECONDS, timeout):.0f} "
+                                     "seconds, so a step of it hung and it was stopped with everything it started. "
+                                     "CodeWarrior's linker hangs like this on a label at the start of a file's code; "
+                                     "a compiler that never finishes on new code does too."], ""
             return None, [*said, f"stopped: the build didn't finish in {timeout:.0f} seconds, so it was stopped with "
                                  "everything it started. A compiler that never finishes on this code is the usual "
                                  "cause: change the code that was just added."], ""
@@ -1277,7 +1298,27 @@ class ForkProject:
             return False, "this project has no checksum check to run"
         cfg = self.objdiff_config()
         make = cfg.get("custom_make") or "ninja"
+        if self.kind() == "dtk":
+            self.retype_labels(log)
         return self.run([_tool(make) or make, *cfg.get("custom_args", []), target], log=log, timeout=1800)
+
+    def retype_labels(self, log=lambda *_: None) -> list[str]:
+        """Before a build: a label starting a file's code made a function (dtksplits.label_starts), so CodeWarrior's
+        linker doesn't hang on it. Returns the symbols changed."""
+        from . import dtksplits
+
+        changed = []
+        for version in self.versions():
+            try:
+                mods = dtksplits.modules(self.root, version)
+            except (OSError, ValueError):
+                continue
+            for mod in mods.values():
+                if names := dtksplits.retype_labels(mod.splits, mod.symbols):
+                    log(f"{', '.join(names)}: a label starting a file's code, declared a function (CodeWarrior's "
+                        "linker hangs on such a label)")
+                    changed += names
+        return changed
 
     # ------------------------------------------------------------------ files agents may touch
 
@@ -1297,8 +1338,13 @@ class ForkProject:
         return p
 
     def git(self, *args: str) -> tuple[bool, str]:
+        """A git command in the project: (whether it worked, what it said). Within GIT_SECONDS: a git that waited on
+        something (a credential prompt, a locked index) held the project's lock with it."""
         if not (self.root / ".git").exists() or not shutil.which("git"):
             return False, "not a git checkout"
-        res = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root),
-                             encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+        try:
+            res = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root),
+                                 encoding="utf-8", errors="replace", creationflags=NO_WINDOW, timeout=GIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return False, f"git {args[0] if args else ''} didn't finish in {GIT_SECONDS} seconds"
         return res.returncode == 0, (res.stdout + res.stderr).strip()

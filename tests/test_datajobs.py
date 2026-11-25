@@ -131,7 +131,7 @@ def test_helpers_with_nothing_left_but_files_unlinked_pause_and_say_why(jobs):
     said = {}
     m = SimpleNamespace(_left=lambda slug, task: 0, _pause=lambda s, why, hint="": said.update(pause=why),
                         _finish=lambda s, why: said.update(finish=why),
-                        net=SimpleNamespace(fork_slug=lambda slug: slug, forks=SimpleNamespace(data_jobs=jobs)))
+                        net=SimpleNamespace(fork_slug=lambda slug: slug, forks=SimpleNamespace(data_jobs=jobs, link_note=lambda slug: "")))
     m._unlinked = lambda slug: Manager._unlinked(m, slug)
     assert Manager._ready(m, SimpleNamespace(slug="game"), agent(1), "") is None
     assert "finish" not in said

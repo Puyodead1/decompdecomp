@@ -230,3 +230,45 @@ def test_modules_that_need_a_module_the_disc_keeps_compressed_are_left_out_at_on
     assert scratch_dtk._drop_module(tmp_path, gid, tail) == ["ev000b", "ev000c"]
     text = cfg.read_text()
     assert "\n- object: files/adv00.rel" in text and "\n- object: files/ev000b.rel" not in text and "# - object: files/ev000c.rel" in text
+
+
+LABEL_SPLITS = """Sections:
+\t.init       type:code align:4
+\t.text       type:code align:4
+
+os/OSStart.c:
+\t.init       start:0x80003000 end:0x80003100
+
+os/OSVector.c:
+\t.init       start:0x80003100 end:0x80003400
+
+game/main.c:
+\t.text       start:0x80005000 end:0x80005100
+"""
+
+LABEL_SYMBOLS = (
+    "__start = .init:0x80003000; // type:function size:0x100\r\n"
+    "__OSSystemCallVectorStart = .init:0x80003100; // type:label scope:global\r\n"
+    "__OSSystemCallVectorEnd = .init:0x80003120; // type:label scope:global\r\n"
+    "lbl_80003200 = .init:0x80003200; // type:label scope:local\r\n"
+    "main = .text:0x80005000; // type:function size:0x100\r\n"
+    "lbl_80005000 = .text:0x80005000; // type:label scope:local\r\n"
+)
+
+
+def test_a_label_starting_a_files_code_becomes_a_function_and_no_cut_lands_on_one(tmp_path):
+    """CodeWarrior's linker hangs, silent, on a label at the start of a file's code: a GameCube game's build waited
+    out its half hour on __OSSystemCallVectorStart every time."""
+    splits, syms = tmp_path / "splits.txt", tmp_path / "symbols.txt"
+    splits.write_text(LABEL_SPLITS, encoding="utf-8")
+    syms.write_bytes(LABEL_SYMBOLS.encode())
+    # (one inside a file isn't its start, and one where a function starts is that function's)
+    assert dtksplits.label_starts(splits, syms) == [("__OSSystemCallVectorStart", 0x20)]
+    assert dtksplits.retype_labels(splits, syms) == ["__OSSystemCallVectorStart"]
+    text = syms.read_bytes().decode()
+    assert "__OSSystemCallVectorStart = .init:0x80003100; // type:function size:0x20 scope:global\r\n" in text
+    assert "__OSSystemCallVectorEnd = .init:0x80003120; // type:label" in text
+    assert "lbl_80005000 = .text:0x80005000; // type:label" in text
+    assert text.count("\r\n") == 6  # (the file's line endings kept)
+    assert dtksplits.retype_labels(splits, syms) == []
+    assert "lbl_80003200" in dtksplits.symbols(syms) and "lbl_80003200" not in dtksplits.symbols(syms, labels=False)

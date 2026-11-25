@@ -194,3 +194,17 @@ def test_a_file_whose_data_differs_says_what_and_stays_unlinked(fork):
     assert fp.link_states()["src/math.c"][0] == "NonMatching" and fp.verify()[0]
     assert "The last try to link it failed" in net.forks.file_status(slug, "src/math.c")
     assert net.forks.file_status(slug, "sub").startswith("## src/math.c")
+
+
+def test_a_machine_pass_is_kept_only_when_the_object_stays_the_same(fork):
+    net, slug, agent, fp = fork
+    proj, unit = net.forks.get(slug)[0], fp.unit("math")
+    path = fp.root / "src" / "math.c"
+    assert net.forks.same_object(proj, fp, unit, path, "/* tidied */\n" + ADD) == (True, "")
+    assert path.read_text().startswith("/* tidied */")
+    kept, why = net.forks.same_object(proj, fp, unit, path, "static int helper(int a) {\n    return a * 3;\n}\n"
+                                      "int use(int a) {\n    return helper(a);\n}\n" + ADD)
+    assert not kept and "differs" in why, why
+    assert path.read_text() == "/* tidied */\n" + ADD  # (put back, and built again)
+    kept, why = net.forks.same_object(proj, fp, unit, path, ADD + "this isn't C\n")
+    assert not kept and "doesn't compile" in why and path.read_text() == "/* tidied */\n" + ADD
