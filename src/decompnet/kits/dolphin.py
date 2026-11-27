@@ -17,7 +17,9 @@ from pathlib import Path
 
 from . import Kit
 
-MAX_DEPTH = 8  # (an SDK's libraries: <copy>/dolphin/HW2/lib/os.a, under a folder of SDKs)
+# (an SDK's libraries: <copy>/dolphin/HW2/lib/os.a, under a folder of SDKs; in a library of SDKs, two more levels:
+# gc/<product>/<version>/..., where CodeWarrior's MSL and MetroTRK archives sat at 9 and 10 and were never read)
+MAX_DEPTH = 10
 
 
 def _ppc_archive(path: Path) -> bool:

@@ -16,7 +16,9 @@ from pathlib import Path
 
 from . import Kit
 
-MAX_DEPTH = 12  # (a library's folder in an SDK: NitroSDK-4_2/NitroSDK/lib/ARM9-TS/Rom, under a folder of SDKs)
+# (a library's folder in an SDK: NitroSDK-4_2/NitroSDK/lib/ARM9-TS/Rom, under a folder of SDKs; in a library of SDKs,
+# ds/<product>/<version>/..., two levels more)
+MAX_DEPTH = 14
 # (the folder of a library's version header, include/<folder>/version.h, and the library it versions)
 VERSION_HEADERS = {"nitro": "NitroSDK", "twl": "TwlSDK", "nnsys": "NitroSystem", "nitrowifi": "NitroWiFi",
                    "nitrocrypto": "NitroCrypto"}

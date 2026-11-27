@@ -705,3 +705,21 @@ def test_a_kit_copys_status_is_worked_out_once_while_its_folder_is_unchanged(tmp
     os.utime(folder, ns=(folder.stat().st_atime_ns, folder.stat().st_mtime_ns + 10**9))
     toolchains._local_status(tc, {"folder": str(folder)})
     assert len(calls) == 2
+
+
+def test_a_library_of_sdks_has_its_archives_found_two_levels_deeper(tmp_path):
+    """A library of SDKs lays each out as <platform>/<product>/<version>/...: CodeWarrior's MSL and MetroTRK archives
+    sat 9 and 10 levels into it, past the 8 the Dolphin kit read, so the library finder never saw them."""
+    from decompnet import kits
+
+    elf = b"\x7fELF\x01\x02\x01" + b"\x00" * 9 + b"\x00\x01" + b"\x00\x14"  # (big-endian PowerPC, e_machine 20)
+    archive = b"!<arch>\n" + b"x" * 60 + elf + b"\x00" * 64
+    deep = tmp_path / "gc" / "CodeWarrior" / "v1.3.2" / "gb.ace" / "CW_GAMECUBE_R1.3.2.exe" / "files" / "Disk1" / \
+        "data1.cab" / "PPC_EABI_Support" / "MetroTRK"
+    deep.mkdir(parents=True)
+    (deep / "TRK_MINNOW_DOLPHIN.a").write_bytes(archive)
+    too_deep = deep / "a" / "b"
+    too_deep.mkdir(parents=True)
+    (too_deep / "past.a").write_bytes(archive)
+    found = kits.get("dolphin-sdk").libraries(tmp_path / "gc")
+    assert [p.name for p in found] == ["TRK_MINNOW_DOLPHIN.a"]
