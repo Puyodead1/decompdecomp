@@ -1291,6 +1291,28 @@ class ForkProject:
             text = text[:start] + word + text[end:]
         return text
 
+    def built_digest(self) -> str | None:
+        """A digest of the programs the build made (the DOL and RELs the checksum check compares: each config's
+        build.sha1 names them), or None when it names none or one wasn't built. What a change of the files' layout
+        must leave as it was in a game that doesn't build byte for byte yet."""
+        h, named = hashlib.sha1(), False
+        for sha in sorted(self.root.glob("config/*/build.sha1")):
+            try:
+                lines = sha.read_text(errors="replace", encoding="utf-8").splitlines()
+            except OSError:
+                return None
+            for line in lines:
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                path = self.root / parts[1].strip().lstrip("*")
+                try:
+                    h.update(parts[1].strip().encode() + b"\0" + hashlib.sha1(path.read_bytes()).digest())
+                except OSError:
+                    return None
+                named = True
+        return h.hexdigest() if named else None
+
     def verify(self, log=lambda *_: None) -> tuple[bool, str]:
         """Build the game and check it against its checksums (regenerating the build when configure.py changed)."""
         target = self.check_target()

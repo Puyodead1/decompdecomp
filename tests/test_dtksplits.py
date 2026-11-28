@@ -299,3 +299,36 @@ def test_a_label_starting_a_files_code_becomes_a_function_and_no_cut_lands_on_on
     assert text.count("\r\n") == 6  # (the file's line endings kept)
     assert dtksplits.retype_labels(splits, syms) == []
     assert "lbl_80003200" in dtksplits.symbols(syms) and "lbl_80003200" not in dtksplits.symbols(syms, labels=False)
+
+
+def test_a_game_that_doesnt_build_byte_for_byte_yet_takes_a_change_that_builds_the_same(tmp_path):
+    """A Wii game imported from its main.dol builds a DOL a few bytes off its own: every cut of its 13 big files was
+    refused ("the game didn't build identically"), though none changed a byte of what it built. A change of the
+    files' layout keeps a byte-for-byte build so, and leaves the program a game not there yet builds as it was."""
+    from decompnet.app.forkengine import ForkEngine
+    from decompnet.forks.project import ForkProject
+
+    (tmp_path / "config" / "R8BB42").mkdir(parents=True)
+    (tmp_path / "config" / "R8BB42" / "build.sha1").write_text("0123  build/R8BB42/main.dol\n", encoding="utf-8")
+    dol = tmp_path / "build" / "R8BB42" / "main.dol"
+    dol.parent.mkdir(parents=True)
+    dol.write_bytes(b"built")
+
+    class Project(ForkProject):
+        identical = False
+
+        def verify(self, log=lambda *_: None):
+            return self.identical, "FAILED: build/R8BB42/ok"
+
+    fp = Project(tmp_path)
+    before = ForkEngine._built_before(fp)
+    assert before and before == fp.built_digest()
+    assert ForkEngine._still_builds(fp, before)[0]  # (the same program)
+    dol.write_bytes(b"built differently")
+    assert not ForkEngine._still_builds(fp, before)[0]
+    fp.identical = True  # (a game that builds byte for byte must still)
+    assert ForkEngine._built_before(fp) is None and ForkEngine._still_builds(fp, None)[0]
+    fp.identical = False
+    assert not ForkEngine._still_builds(fp, None)[0]
+    dol.unlink()  # (nothing built: no digest, nothing to compare)
+    assert fp.built_digest() is None and not ForkEngine._still_builds(fp, "")[0]
