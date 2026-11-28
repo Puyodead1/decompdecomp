@@ -35,6 +35,10 @@ shows that any time. The usual fixes:
 - Data the file defines must be defined in it, with the original's values, not declared `extern`.
 <!-- only: ppc -->
   (A linker error "undefined: 'lbl_…'" in file_status means the file uses a label its own data should provide.)
+- No padding arrays (`gap_…`) to fill the layout: the compiler aligns each variable itself, and the tidy pass removes
+  them. Padding at a section's end is the next file's alignment, which decompdecomp sets in the config when the file
+  links (`align:` in symbols.txt), as it keeps the functions nothing calls (`force_active:` in config.yml). A gap that
+  alignment doesn't explain is another file's data: the split is what's wrong, not something to write.
 <!-- end -->
 - Once linked, a file must keep building the same game: a change that alters it is undone.
 A file whose functions all match and whose data doesn't is a job of its own: `claim_function` hands it out as a DATA

@@ -287,6 +287,39 @@ def without_unused(text: str) -> tuple[str, list[str]]:
     return _drop(text, every, gone), sorted(gone)
 
 
+_GAP_DECL = re.compile(r"^[ \t]*([^\n;{}]*?)\b(gap_\w+)\b([^\n;{}]*?(?:=\s*\{[^{};]*\}[^\n;{}]*)?);[ \t]*(?:\n|$)", re.M)
+
+
+def gaps(text: str) -> list[tuple[int, int, str]]:
+    """The file-scope padding arrays written to fill the layout (`u8 gap_10_803C70B1_sbss[3];`, named after the gaps
+    dtk's assembly labels between symbols): (start, end, name). Each declares only itself."""
+    blank = _blank(text)
+    depth = _depths(blank)
+    out = []
+    for m in _GAP_DECL.finditer(blank):
+        head, tail = m.group(1), re.sub(r"\{[^{}]*\}", "", m.group(3))
+        if depth[m.start()] or "," in head + tail or "(" in re.sub(r"__declspec\s*\([^()]*(?:\([^()]*\))?[^()]*\)", "", head):
+            continue
+        if not re.search(r"[A-Za-z_]\w*\s*\**\s*$", head):  # (a type before it: a declaration, not a use)
+            continue
+        out.append((m.start(), m.end(), m.group(2)))
+    return out
+
+
+def without_gaps(text: str, only: set[str] | None = None) -> tuple[str, list[str]]:
+    """The file without its padding arrays (ADDON 5: they made a GameCube game's layout wrong, and the compiler's own
+    alignment made it right), or only those named; and their names."""
+    found = [g for g in gaps(text) if only is None or g[2] in only]
+    if not found:
+        return text, []
+    out, at = [], 0
+    for start, end, _ in found:
+        out.append(text[at:start])
+        at = end
+    out.append(text[at:])
+    return "".join(out), [name for _, _, name in found]
+
+
 def _names_at(blank: str, d: Decl) -> list[str]:
     """All the names a declaration declares (only some of them may be unused)."""
     body = blank[d.start:d.end]

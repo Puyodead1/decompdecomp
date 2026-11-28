@@ -339,6 +339,25 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   - two files that share a literal pool are one file (the next step: cuts checked against the pools);
   - moving a definition between two files' C when its data moves, for the files that keep their part now.
 
+- **A link sets what the project's config must say for the file.** Two things a file needs from a dtk project's
+  config only once it's compiled, both found by hand on a GameCube game (ADDON 5), are now worked out at link
+  (`forks/linklayout.py`, `ForkEngine.link`):
+  - functions nothing refers to go in config.yml's `force_active:`. The linker strips them from a compiled file, so
+    the game is short by their bytes. "Refers to" counts every relocation in every object dtk links
+    (`build/<version>/config.json`) and the branches an assembled object resolved itself. On that game's splits it
+    picked the same two debugger functions as the hand fix. The GameCube demo's autopilot link failed on main
+    (0x20 bytes short) and links with it;
+  - a file whose compiled data section ends short of the split's by zeros (the split's trailing padding) gets the
+    next file's first symbol aligned in symbols.txt (`align:N`, the smallest that keeps it in place). On that game
+    it gives the OS reboot buffer's `align:32`, the original's `ATTRIBUTE_ALIGN(32)`.
+
+  Both are written only for the files that then link, and the commit says why. Padding arrays (`gap_...`) written
+  in the C to fill the layout are removed by the tidy pass when the object comes out the same without them. Tested
+  in `tests/test_linklayout.py`, `tests/test_fork_link.py` and `tests/test_gc.py`. Still to do:
+  - a gap that alignment doesn't explain is another file's data, the split's to fix (ADDON 8 §5);
+  - each compiler's own section alignment (ADDON 8 §4: GC/2.7 aligns `.sbss` to 8), and a split that starts
+    unaligned giving its first symbol to the file before.
+
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
   (`arch/mips_observations.py`, `Arch.diff_observations`) adds a few lines: the frames' sizes, and when only the frame
