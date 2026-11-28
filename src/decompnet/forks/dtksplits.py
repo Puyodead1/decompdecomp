@@ -138,6 +138,22 @@ def symbol_rows(path: Path, labels: bool = True) -> list[tuple[str, str, int, in
 
 
 CODE = (".init", ".text")
+# A stretch is cut into files of at most FILE_FUNCTIONS functions: a GameCube game's one stretch of 16,695 in one file
+# made every claim and compile read all of them (objdiff's whole unit, 17 s and 32 s each; with 8 agents waiting on
+# one another, minutes: they timed out). Files this size are what contributors start from too.
+FILE_FUNCTIONS = 200
+
+
+def cut_points(syms: dict, lo: int, hi: int, section: str = ".text") -> list[int]:
+    """Where code in [lo, hi) may be cut: each symbol's start that's inside no other symbol (syms: symbols()). Not
+    __save_gpr's _savegpr_14..31 labels, which dtk refuses a file to end within; and give it symbols without labels
+    (symbols(labels=False)): CodeWarrior's linker hangs on a file that starts at one."""
+    out, end = [], lo
+    for a, size in sorted((a, size) for sec, a, size in syms.values() if sec == section and lo <= a < hi):
+        if a >= end and (not out or out[-1] != a):
+            out.append(a)
+        end = max(end, a + size)
+    return out
 
 
 def label_starts(splits: Path, syms: Path) -> list[tuple[str, int]]:

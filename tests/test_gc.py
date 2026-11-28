@@ -17,7 +17,8 @@ from elftools.elf.elffile import ELFFile
 
 from decompnet import toolchains
 from decompnet.app.engine import RomNetwork
-from decompnet.forks import csource
+from decompnet.forks import csource, dtksplits
+from decompnet.network import NetworkError
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "projects" / "demo-gc"
@@ -50,6 +51,47 @@ def test_project_rebuilds_the_program(gc):
     assert res.returncode == 0, res.stdout[-2000:]
     files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True).stdout.split()
     assert files and not [f for f in files if f.startswith(("orig/", "build/"))]
+
+
+def test_files_are_cut_where_the_pools_say_and_never_inside_one(gc):
+    """The compiler's literal pools say where files end (forks/pools.py, #ADDON 6 §7). On the demo, whose ELF names
+    its files: every run of functions sharing a constant is in one file and every two copies of a value in two; the
+    project's files were cut so (mathx.c ends where shade.c's copies start), and a split between two functions using
+    one constant is refused. (It runs before the tests that take files out and cut them again.)"""
+    net, slug = gc
+    proj, fp, cfg = net.forks.get(slug)
+    found = net.forks._pools(fp, cfg)
+    assert found is not None and len(found.functions) > 80
+    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()
+            if s["st_info"]["type"] == "STT_FUNC" and s["st_size"]}
+    files = {}  # function's address -> its file, from the demo's own objects
+    for obj in DOL.parent.glob("*.o"):
+        with open(obj, "rb") as f:
+            for s in ELFFile(f).get_section_by_name(".symtab").iter_symbols():
+                if s["st_info"]["type"] == "STT_FUNC" and s["st_shndx"] != "SHN_UNDEF" and s.name in syms:
+                    files[syms[s.name]] = obj.stem
+    starts = sorted(files.items())
+
+    def file_of(a):
+        return next(f for at, f in reversed(starts) if at <= a)
+    together, apart = found.together(), found.apart()
+    assert (syms["scale_add"], syms["scale_sub"]) in [(a, b) for a, b, _ in together]
+    pairs = {(after, upto) for after, upto, _, _ in apart}  # (0.5f: halve's copy, dim's; the double: scale_sub's, tint's)
+    assert {(syms["halve"], syms["dim"]), (syms["scale_sub"], syms["tint"])} <= pairs, pairs
+    assert all(file_of(a) == file_of(b) for a, b, _ in together)
+    names = {a: n for n, a in syms.items()}
+    assert all(file_of(a) != file_of(b) for a, b, _, _ in apart), [
+        (names.get(a), names.get(b), file_of(a), hex(c1), hex(c2), found.values[c1].hex())
+        for a, b, c1, c2 in apart if file_of(a) == file_of(b)]
+    # the project's files: one starts at tint (shade.c), and mathx.c's three functions are one's
+    mod = dtksplits.modules(fp.root, cfg["version"])["main"]
+    texts = {f.name: f.sections[".text"] for f in dtksplits.Splits.parse(mod.splits.read_text()).files
+             if ".text" in f.sections}
+    holder = next(n for n, (lo, hi) in texts.items() if lo <= syms["scale_add"] < hi)
+    assert texts[holder][0] <= syms["halve"] < texts[holder][1] <= syms["tint"]
+    assert any(lo == syms["tint"] for lo, _ in texts.values()), texts
+    with pytest.raises(NetworkError, match="load the same pooled constant"):
+        net.forks.split_file(None, slug, f"src/{holder}", f"{syms['scale_sub']:X}")
 
 
 def test_agents_match_functions(gc):
@@ -223,21 +265,23 @@ def test_a_stretch_gets_files_of_a_few_hundred_functions_and_a_file_too_big_is_c
     fp = net.forks.get(slug)[1]
     proj = net.project_row(slug)
     mod = dtksplits.modules(fp.root, json.loads(proj["config"])["version"])["main"]
-    sp = dtksplits.Splits.parse(mod.splits.read_text())
     syms = dtksplits.symbols(mod.symbols)
 
     def count(f):
         return len(forkengine.ForkEngine._starts(syms, *f.sections.get(".text", (0, 0))))
 
-    gone = max((f for f in sp.files if ".text" in f.sections), key=count)
-    assert count(gone) >= 3
-    sp.files.remove(gone)
-    mod.splits.write_text(sp.render())
     conf = fp.root / "configure.py"
-    conf.write_text(re.sub(rf'\s*Object\(\w+, "{re.escape(gone.name)}"\),', "", conf.read_text()))
-    (fp.root / "src" / gone.name).unlink()
-    fp.git("commit", "-qam", "Take a file out")  # (as committed: what isn't is a try's leftover, put back)
-    assert fp.verify()[0]
+    # (the engine's locks held: a link the tests before started cuts files and builds in the background)
+    with net.forks._tree(proj).exclusive(), net.forks._build_lock(proj):
+        sp = dtksplits.Splits.parse(mod.splits.read_text())
+        gone = max((f for f in sp.files if ".text" in f.sections), key=count)
+        assert count(gone) >= 3
+        sp.files.remove(gone)
+        mod.splits.write_text(sp.render())
+        conf.write_text(re.sub(rf'\s*Object\(\w+, "{re.escape(gone.name)}"\),', "", conf.read_text()))
+        (fp.root / "src" / gone.name).unlink()
+        fp.git("commit", "-qam", "Take a file out")  # (as committed: what isn't is a try's leftover, put back)
+        assert fp.verify()[0]
     net.forks.check(slug, log=lambda *_: None)
 
     monkeypatch.setattr(forkengine, "FILE_FUNCTIONS", 2)

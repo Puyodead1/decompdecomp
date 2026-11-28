@@ -54,9 +54,10 @@ def main() -> None:
         shutil.copytree(src, BUILD / "src" / name)
     mw = toolchains.require("mwcc") / "GC" / "1.3.2" / "mwcceppc.exe"
     wibo = [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
-    for name in ("crt0.c", "ppcrt.c"):
+    for name in ("crt0.c", "ppcrt.c", "mathx.c", "shade.c"):
         shutil.copy(HERE / name, BUILD / "src" / name)
-    jobs = [("src/crt0.c", []), ("src/ppcrt.c", []), ("src/demo/main.c", ["-i", "src/game"]), ("src/demo/libc.c", []),
+    jobs = [("src/crt0.c", []), ("src/ppcrt.c", []), ("src/mathx.c", []), ("src/shade.c", []),
+            ("src/demo/main.c", ["-i", "src/game"]), ("src/demo/libc.c", []),
             ("src/game/game.c", ["-i", "src/game"])]
     jobs += [(f"src/zlib/{u}.c", ["-i", "src/sysinclude", "-i", "src/zlib"]) for u in ZLIB_UNITS]
     objs = []

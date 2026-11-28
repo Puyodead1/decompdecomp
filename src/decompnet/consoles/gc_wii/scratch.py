@@ -37,7 +37,7 @@ from pathlib import Path
 from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import toolchains
-from ...forks import dtksplits, symsizes
+from ...forks import dtksplits, linklayout, pools, symsizes
 from ...forks.project import ForkError, ForkProject
 from ...limits import capped
 from . import GAMECUBE, WII, template_paths
@@ -818,6 +818,28 @@ def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, st
     return sorted(out, key=lambda u: (u[0] or "", u[1]))
 
 
+def _files_of(root: Path, game_id: str, units: list[tuple[str | None, int, int, str]]) -> list:
+    """The code regions cut into the files they hold: where the compiler's literal pools say one of the game's files
+    ends (forks/pools.py; the program's code), and into files of at most dtksplits.FILE_FUNCTIONS functions."""
+    found = None
+    try:
+        syms_path = root / "config" / game_id / "symbols.txt"
+        objects = linklayout.linked_objects(root / "build" / game_id, modules=False)
+        if objects:
+            found = pools.read(objects, dtksplits.symbol_rows(syms_path))
+    except (OSError, ValueError):
+        found = None
+    out = []
+    for module, start, end, section in units:
+        if module is not None or section != ".text":
+            out.append((module, start, end, section))  # (a REL's addresses are its own: the pools are the program's)
+            continue
+        starts = dtksplits.cut_points(dtksplits.symbols(syms_path, labels=False), start, end)
+        cuts = pools.cuts(starts, start, end, found, dtksplits.FILE_FUNCTIONS)
+        out += [(module, a, b, section) for a, b in zip(cuts, cuts[1:])]
+    return out
+
+
 def _drop_module(root: Path, game_id: str, log_tail: str) -> list[str] | None:
     """A REL module decomp-toolkit can't analyse is left out (its code isn't decompiled; the game keeps the original
     module): Mario Party 6's m433Dll refers to an address the program doesn't have ("Failed to locate DOL section"),
@@ -972,7 +994,7 @@ write_asm: true
 
     if (sized := _size_symbols(root, gid, info["dol"])):
         log(f"{sized} data symbols sized to their objects (decomp-toolkit counted the padding after each as its own)")
-    units = _code_units(root, gid)
+    units = _files_of(root, gid, _code_units(root, gid))
     sources = []
     splits: dict[str | None, str] = {}
     for module, start, end, section in units:

@@ -48,6 +48,7 @@ from ..forks import (
     ltcg,
     methods,
     objdiff,
+    pools,
     standins,
     symsizes,
     unresolved,
@@ -557,7 +558,7 @@ _SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 TRY_ALL_SECONDS = 120  # try_compiler "all" stops trying more versions after this (Codex gives a tool call 180)
 COMPARE_SECONDS = 900  # a comparison of every compiler and flag variant on one function stops after this
-FILE_FUNCTIONS = 200  # functions a file decompdecomp gives code holds at most (start_files)
+FILE_FUNCTIONS = dtksplits.FILE_FUNCTIONS  # functions a file decompdecomp gives code holds at most (start_files)
 COMMIT_TRIES = 5  # a commit waits out a locked index this often
 # Files a link tries one at a time, in one run: each is a whole build and check, with every helper's compile waiting
 # on it. A GameCube game retried the same 40 failing files after every match, and never got to the rest.
@@ -2385,6 +2386,10 @@ class ForkEngine:
 
         def run() -> None:
             while True:
+                try:  # (files cut where their pools say first: a file's data goes with its code)
+                    self.divide_files(slug, log=lambda *_: None)
+                except Exception:
+                    logging.getLogger("decompdecomp").exception("%s: cutting files failed", slug)
                 try:  # (finished files tidied first: an extern of a file's own constant never links)
                     self.tidy(slug)
                 except Exception:
@@ -2697,13 +2702,30 @@ class ForkEngine:
                        "project_id=? AND unit=? AND json_extract(meta, '$.symbol')=?", (name, new, proj["id"], unit, old))
 
     # ------------------------------------------------------------------ source files for all the code
-    # A stretch is cut into files of at most FILE_FUNCTIONS functions: a GameCube game's one stretch of 16,695 in one
-    # file made every claim and compile read all of them (objdiff's whole unit, 17 s and 32 s each; with 8 agents
-    # waiting on one another, minutes: they timed out). Files this size are what contributors start from too.
+    # A stretch is cut where the compiler's literal pools say the game's files end (forks/pools.py), and into files
+    # of at most FILE_FUNCTIONS functions (dtksplits.FILE_FUNCTIONS says why).
     # Code no source file covers (dtk's auto_..._text units) can't be decompiled: there's nowhere to write it. Real
     # projects split it into files by hand. decompdecomp gives each such stretch of code a file of its own, the way
     # contributors start (split_file divides one further), and keeps the change only if the game still builds byte
     # for byte. A file listed in configure.py that doesn't exist yet gets created too.
+
+    def _pools(self, fp: ForkProject, cfg: dict) -> pools.Pools | None:
+        """The program's pooled constants (forks/pools.py), from the original's objects dtk links; None before a
+        build made them. Read again once the build or the symbols change (a second, on a GameCube game)."""
+        version = cfg.get("version") or (fp.versions() or [None])[0]
+        try:
+            build = fp.root / "build" / version
+            syms = dtksplits.modules(fp.root, version)["main"].symbols
+            stamp = ((build / "config.json").stat().st_mtime_ns, syms.stat().st_mtime_ns)
+        except (OSError, KeyError, ValueError, TypeError):
+            return None
+        cache = self.__dict__.setdefault("_pool_cache", {})
+        if (hit := cache.get(fp.root)) and hit[0] == stamp:
+            return hit[1]
+        objects = linklayout.linked_objects(build, modules=False)
+        found = pools.read(objects, dtksplits.symbol_rows(syms)) if objects else None
+        cache[fp.root] = (stamp, found)
+        return found
 
     def _modules(self, fp: ForkProject, cfg: dict) -> dict:
         if fp.kind() not in ("dtk", "manifest") or not fp.linkable():
@@ -2780,7 +2802,7 @@ class ForkEngine:
             folder = "auto" if module == "main" else f"REL/{module}"
             ext = ".cpp" if u.name in cpp else ".c"
             starts = self._starts(dtksplits.symbols(mods[module].symbols, labels=False), *extent)
-            cuts = [extent[0], *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], extent[1]]
+            cuts = pools.cuts(starts, *extent, self._pools(fp, cfg) if module == "main" else None, FILE_FUNCTIONS)
             for lo, hi in zip(cuts, cuts[1:]):
                 name = f"{folder}/text_{lo:08X}{ext}"
                 while name in taken or (fp.root / src / name).exists() or f"{src}/{name}" in listed:
@@ -2862,6 +2884,23 @@ class ForkEngine:
         log(f"{len(made)} new source files; {n} more functions can be decompiled")
         return {"created": plan["create"], "split": [i[1] for i in plan["split"]], "functions": n}
 
+    def divide_files(self, slug: str, log=print) -> list[str]:
+        """Cut the files decompdecomp made where their pools say the game's files end, and those too big
+        (_divide_big_files; start_files does it too, but only while some code has no file). Returns the new files."""
+        proj, fp, cfg = self.get(slug)
+        if self.net.links.get(slug) is not None:  # (a room's member leaves its files to the host)
+            return []
+        try:
+            mods = self._modules(fp, cfg)
+        except NetworkError:
+            return []
+        with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)
+            divided = self._divide_big_files(proj, fp, mods, fp.src_dir(), fp.report(), log)
+        if divided:
+            self.sync(slug, log=lambda *_: None, rep=fp.report())
+        return divided
+
     @staticmethod
     def _built_before(fp: ForkProject) -> str | None:
         """Before a change of the files' layout (a cut, a split, new files, files' data): None when the game builds
@@ -2883,29 +2922,32 @@ class ForkEngine:
 
     @staticmethod
     def _starts(syms: dict, lo: int, hi: int) -> list[int]:
-        """Where code in .text [lo, hi) may be cut: each symbol's start that's inside no other symbol (not
-        __save_gpr's _savegpr_14..31 labels, which dtk refuses a file to end within)."""
-        out, end = [], lo
-        for a, size in sorted((a, size) for sec, a, size in syms.values() if sec == ".text" and lo <= a < hi):
-            if a >= end and (not out or out[-1] != a):
-                out.append(a)
-            end = max(end, a + size)
-        return out
+        """Where code in .text [lo, hi) may be cut (dtksplits.cut_points)."""
+        return dtksplits.cut_points(syms, lo, hi)
 
     @staticmethod
     def _big_units(rep: dict) -> list[dict]:
         """The report's units of files decompdecomp gave code (auto/text_XXXXXXXX, REL/<module>/text_XXXXXXXX) with
         more than FILE_FUNCTIONS functions: an older decompdecomp made one file of a whole stretch."""
-        return [u for u in rep.get("units", []) if len(u.get("functions") or []) > FILE_FUNCTIONS
+        return [u for u in ForkEngine._made_units(rep) if len(u["functions"]) > FILE_FUNCTIONS]
+
+    @staticmethod
+    def _made_units(rep: dict) -> list[dict]:
+        """The report's units of files decompdecomp gave code (auto/text_XXXXXXXX, REL/<module>/text_XXXXXXXX)."""
+        return [u for u in rep.get("units", []) if u.get("functions")
                 and re.search(r"/(?:auto|REL/[^/]+)/text_[0-9A-F]{8}_*$", u["name"])]
 
     def _divide_big_files(self, proj, fp: ForkProject, mods: dict, src: str, rep: dict, log) -> list[str]:
-        """Cut each file decompdecomp made that holds more than FILE_FUNCTIONS functions into files of that many, its
-        C going with its functions (as split_file does, all cuts at once): kept only if the game still builds byte
-        for byte and every function that matched still matches. Returns the new files. The caller holds the tree."""
+        """Cut each file decompdecomp made where the compiler's literal pools say the game's files end
+        (forks/pools.py), and into files of at most FILE_FUNCTIONS functions, its C going with its functions (as
+        split_file does, all cuts at once): kept only if the game still builds byte for byte and every function that
+        matched still matches. A file refused its cuts isn't tried with the same cuts again. Returns the new files.
+        The caller holds the tree."""
         made_all: list[str] = []
-        program_before = self._built_before(fp) if self._big_units(rep) else None
-        for entry in self._big_units(rep):
+        program_before: str | None | bool = False  # (False: not asked yet; asked before the first cut only)
+        cfg = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+        refused = dict(cfg.get("cuts_refused") or {})
+        for entry in self._made_units(rep):
             try:
                 unit = fp.unit(entry["name"])
             except (ForkError, ValueError):
@@ -2926,9 +2968,11 @@ class ForkEngine:
             lo, hi = f.sections[".text"]
             syms = dtksplits.symbols(mod.symbols)
             starts = self._starts(dtksplits.symbols(mod.symbols, labels=False), lo, hi)  # (CodeWarrior's linker hangs on a cut at a label)
-            cuts = [lo, *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], hi]
-            if len(cuts) <= 2:
+            cuts = pools.cuts(starts, lo, hi, self._pools(fp, cfg) if mod.name == "main" else None, FILE_FUNCTIONS)
+            if len(cuts) <= 2 or refused.get(rel) == [f"{c:X}" for c in cuts]:
                 continue
+            if program_before is False:
+                program_before = self._built_before(fp)
             ext = Path(name).suffix or ".c"
             parts = [(a, b, f"{Path(name).parent.as_posix()}/text_{a:08X}{ext}") for a, b in zip(cuts[1:], cuts[2:])]
             if any((fp.root / src / n).exists() or any(x.name == n for x in sp.files) for _, _, n in parts):
@@ -2948,7 +2992,7 @@ class ForkEngine:
             saved = {conf: conf.read_text(encoding="utf-8"), mod.splits: mod.splits.read_text(encoding="utf-8"),
                      old_path: text}
             made: list[Path] = []
-            log(f"cutting {rel} ({len(starts):,} functions) into {len(cuts) - 1} files of up to {FILE_FUNCTIONS}")
+            log(f"cutting {rel} ({len(starts):,} functions) into {len(cuts) - 1} files")
             try:
                 rest, texts = text, {}
                 for a, b, n in reversed(parts):  # (from the end: each cut takes what's after it)
@@ -2993,11 +3037,21 @@ class ForkEngine:
                     p_.unlink(missing_ok=True)
                 fp.verify()
                 log(f"{rel} wasn't cut, nothing changed: {e}")
+                refused[rel] = [f"{c:X}" for c in cuts]
+                fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+                fresh["cuts_refused"] = refused
+                self._save_cfg(proj, fresh)
                 continue
+            even = [lo, *starts[FILE_FUNCTIONS::FILE_FUNCTIONS], hi]
+            why = ("One file of the whole stretch made every claim and compile read all of its functions."
+                   if cuts == even else
+                   "The compiler pools each file's constants (floats, doubles, short strings) on their own, one copy "
+                   "of a value per file: two functions using one constant are one file's, two copies of a value are "
+                   "two files' pools. The file is cut where its pools say the game's files end"
+                   + (f", and into files of at most {FILE_FUNCTIONS} functions." if len(starts) > FILE_FUNCTIONS else "."))
             self._commit_paths(proj, fp, [str(p_.relative_to(fp.root)) for p_ in [*saved, *made]],
-                               f"Cut {Path(name).name} into {len(cuts) - 1} files of up to {FILE_FUNCTIONS} functions\n\n"
-                               "One file of the whole stretch made every claim and compile read all of its functions; "
-                               "the game still builds byte for byte and every match still matches.\n\nCut by decompdecomp.")
+                               f"Cut {Path(name).name} into {len(cuts) - 1} files\n\n{why} The game still builds byte "
+                               "for byte and every match still matches.\n\nCut by decompdecomp.")
             with self.net.store.tx() as db:
                 self.net._event(db, proj["id"], None, "split", f"{rel} cut into {len(cuts) - 1} files")
             made_all += [f"{src}/{n}" for _, _, n in parts]
@@ -3061,6 +3115,14 @@ class ForkEngine:
         if addr not in starts:
             raise NetworkError(f"`{at}` (0x{addr:X}) isn't the start of a function in {rel} (after its first one); "
                                f"its code is .text 0x{lo:X}-0x{hi:X}")
+        if module == "main" and (found := self._pools(fp, cfg)):
+            for first, last, constant in found.together():
+                if first < addr <= last:
+                    names = {a: n for n, (sec, a, _) in syms.items() if sec == ".text"}
+                    raise NetworkError(
+                        f"not split: {names.get(first, hex(first))} and {names.get(last, hex(last))} load the same "
+                        f"pooled constant (0x{constant:X}), and the compiler pools constants per file: they and "
+                        f"everything between them are one file. Split before 0x{first:X} or after 0x{last:X}")
         ext = Path(name).suffix or ".c"
         new = (new_name.strip().lstrip("./") or f"{Path(name).parent.as_posix()}/text_{addr:08X}{ext}")
         new = new[len(src) + 1:] if new.startswith(src + "/") else new
