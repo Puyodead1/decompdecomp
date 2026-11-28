@@ -37,7 +37,7 @@ from pathlib import Path
 from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import toolchains
-from ...forks import dtksplits, linklayout, pools, symsizes
+from ...forks import dtksplits, libunits, linklayout, pools, symsizes
 from ...forks.project import ForkError, ForkProject
 from ...limits import capped
 from . import GAMECUBE, WII, template_paths
@@ -818,25 +818,39 @@ def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, st
     return sorted(out, key=lambda u: (u[0] or "", u[1]))
 
 
-def _files_of(root: Path, game_id: str, units: list[tuple[str | None, int, int, str]]) -> list:
-    """The code regions cut into the files they hold: where the compiler's literal pools say one of the game's files
-    ends (forks/pools.py; the program's code), and into files of at most dtksplits.FILE_FUNCTIONS functions."""
-    found = None
+def _files_of(root: Path, game_id: str, units: list[tuple[str | None, int, int, str]], console=GAMECUBE,
+              log=print) -> list[tuple[str | None, int, int, str, str | None]]:
+    """The code regions cut into the files they hold, (module, start, end, section, name or None) each: each object
+    of the user's own library archives a file named as its decomps name it (forks/libunits.py: dolphin/os/OSAlarm.c),
+    and the rest where the compiler's literal pools say one of the game's files ends (forks/pools.py), into files of
+    at most dtksplits.FILE_FUNCTIONS functions. The program's code only: a REL's addresses are its own (and its
+    pools and library code aren't read yet)."""
+    from ... import kits
+
+    found, functions, archives = None, [], []
+    syms_path = root / "config" / game_id / "symbols.txt"
     try:
-        syms_path = root / "config" / game_id / "symbols.txt"
         objects = linklayout.linked_objects(root / "build" / game_id, modules=False)
         if objects:
             found = pools.read(objects, dtksplits.symbol_rows(syms_path))
+            archives = kits.libraries(console.kits)
+            functions = libunits.game_functions(objects) if archives else []
     except (OSError, ValueError):
         found = None
-    out = []
+    out: list[tuple[str | None, int, int, str, str | None]] = []
+    named = 0
     for module, start, end, section in units:
         if module is not None or section != ".text":
-            out.append((module, start, end, section))  # (a REL's addresses are its own: the pools are the program's)
+            out.append((module, start, end, section, None))
             continue
         starts = dtksplits.cut_points(dtksplits.symbols(syms_path, labels=False), start, end)
-        cuts = pools.cuts(starts, start, end, found, dtksplits.FILE_FUNCTIONS)
-        out += [(module, a, b, section) for a, b in zip(cuts, cuts[1:])]
+        runs = libunits.runs([f for f in functions if start <= f.addr < end], archives)
+        for a, b, name in libunits.pieces(starts, start, end, runs, console.library_file, found,
+                                          dtksplits.FILE_FUNCTIONS, {n for *_, n in out if n}):
+            out.append((module, a, b, section, name))
+            named += name is not None
+    if named:
+        log(f"{named} files of your {console.name} libraries' code, named as their archives name them")
     return out
 
 
@@ -994,20 +1008,22 @@ write_asm: true
 
     if (sized := _size_symbols(root, gid, info["dol"])):
         log(f"{sized} data symbols sized to their objects (decomp-toolkit counted the padding after each as its own)")
-    units = _files_of(root, gid, _code_units(root, gid))
+    units = _files_of(root, gid, _code_units(root, gid), WII if platform == "wii" else GAMECUBE, log)
     sources = []
     splits: dict[str | None, str] = {}
-    for module, start, end, section in units:
+    for module, start, end, section, own in units:
         path = config / "splits.txt" if module is None else config / "rels" / module / "splits.txt"
         if module not in splits:
             splits[module] = path.read_text(encoding="utf-8").rstrip("\n") + "\n"
-        name = f"auto/text_{start:08X}.c" if module is None else f"auto/{module}/text_{start:08X}.c"
+        name = own or (f"auto/text_{start:08X}.c" if module is None else f"auto/{module}/text_{start:08X}.c")
         sources.append(name)
         splits[module] += f"\n{name}:\n\t{section:<11} start:0x{start:08X} end:0x{end:08X}\n"
         src = root / "src" / name
         src.parent.mkdir(parents=True, exist_ok=True)
         where = "" if module is None else f" of {module}"
-        src.write_text(f'/* Functions from 0x{start:08X} to 0x{end:08X}{where}, found by decomp-toolkit. */\n'
+        found_by = ("one object of your own copy of its library, whose archive names it" if own else
+                    "found by decomp-toolkit")
+        src.write_text(f'/* Functions from 0x{start:08X} to 0x{end:08X}{where}, {found_by}. */\n'
                        f'#include "common.h"\n', encoding="utf-8")
     for module, text in splits.items():
         (config / "splits.txt" if module is None else config / "rels" / module / "splits.txt").write_text(text, encoding="utf-8")

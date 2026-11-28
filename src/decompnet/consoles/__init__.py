@@ -613,6 +613,12 @@ class Console:
         """A regex for how source files spell `old`, which rename_symbol replaces with the new name."""
         return rf"\b{re.escape(old)}\b"
 
+    def library_file(self, member) -> str | None:
+        """The source file a member of the user's library archives (forks/libunits.Member: os.a's OSAlarm.o) is in
+        this console's projects, relative to the source folder, as its decomps name it; None: its library code stays
+        in the files its analysis made (no project of this console names them yet)."""
+        return None
+
     def rename_source(self, fp, version: str, source: str, new: str) -> dict:
         """`source` (relative to the project) is `new` from now on, in the project's config (its compiler and flags
         follow it): what set_file_language changes besides the file's name, a .cpp file built as C with its name .c.
