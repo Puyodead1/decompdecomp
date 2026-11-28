@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,12 +60,25 @@ def report(project: Path, out: Path) -> dict:
 
     objdiff-cli stops at the first unit whose compiled object is missing (work-in-progress source that doesn't
     compile yet, or that the project's default build never compiles). Those units are measured from the game's
-    object alone, as not matched yet, the way the projects' own report scripts do it."""
+    object alone, as not matched yet, the way the projects' own report scripts do it.
+
+    Each report is written to a file of its own and then renamed onto `out`: two at once (a background link's and a
+    claim's) wrote the same file, and one read it empty."""
+    own = out.with_name(f"{out.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        rep = _generate(project, own.resolve())
+        os.replace(own, out)
+    finally:
+        own.unlink(missing_ok=True)
+    return _judged(project, rep)
+
+
+def _generate(project: Path, out: Path) -> dict:
     cfg = json.loads((project / "objdiff.json").read_text(encoding="utf-8"))
     missing = [u for u in cfg.get("units", []) if u.get("base_path") and not (project / u["base_path"]).is_file()]
     if not missing:
         _run(["report", "generate", "-p", str(project), "-o", str(out)], cwd=project, timeout=1800)
-        return _judged(project, json.loads(out.read_text(encoding="utf-8")))
+        return json.loads(out.read_text(encoding="utf-8"))
     for unit in cfg.get("units", []):
         for key in ("target_path", "base_path"):
             if unit.get(key):
@@ -72,8 +87,8 @@ def report(project: Path, out: Path) -> dict:
         del unit["base_path"]
     with tempfile.TemporaryDirectory(prefix="decompwtf-report-") as tmp:
         (Path(tmp) / "objdiff.json").write_text(json.dumps(cfg), encoding="utf-8")
-        _run(["report", "generate", "-p", tmp, "-o", str(out.resolve())], cwd=project, timeout=1800)
-    return _judged(project, json.loads(out.read_text(encoding="utf-8")))
+        _run(["report", "generate", "-p", tmp, "-o", str(out)], cwd=project, timeout=1800)
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 def _judged(project: Path, rep: dict) -> dict:

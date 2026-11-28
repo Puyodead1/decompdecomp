@@ -40,7 +40,7 @@ def _sext(value: int, bits: int) -> int:
     return value - (1 << bits) if value & (1 << (bits - 1)) else value
 
 
-def _branches(code: bytes, relocated: set[int]) -> list[tuple[int, int]]:
+def branches(code: bytes, relocated: set[int]) -> list[tuple[int, int]]:
     """(where, target) of each PowerPC branch in this code the assembler resolved itself (no relocation): a call to
     a function in the same object has none."""
     out = []
@@ -96,7 +96,7 @@ def _refers_to(elf: ELFFile) -> set[str]:
     for index, sec in enumerate(secs):
         if sec["sh_flags"] & 0x4 and sec["sh_type"] == "SHT_PROGBITS" and index in spans:
             funcs = _Functions(spans[index])
-            for at, to in _branches(sec.data(), relocated.get(index, set())):
+            for at, to in branches(sec.data(), relocated.get(index, set())):
                 if (name := funcs.at(to)) and name != funcs.at(at):
                     out.add(name)
     return out
@@ -140,17 +140,17 @@ def unreferenced(obj: Path, refs: set[str]) -> list[str]:
                    if (i := bisect_left(at.get(index, []), lo)) >= len(at.get(index, [])) or at[index][i] >= hi})
 
 
-def linked_objects(build: Path) -> list[Path] | None:
-    """Every object dtk links into the game, the program's and each REL's (build/<version>/config.json), auto units
-    too; None without it. Only these: an object left in obj/ from before a split refers to things nothing links
-    (#ADDON 8)."""
+def linked_objects(build: Path, modules: bool = True) -> list[Path] | None:
+    """Every object dtk links into the game, the program's and each REL's (build/<version>/config.json; `modules`
+    False: the program's only), auto units too; None without it. Only these: an object left in obj/ from before a
+    split refers to things nothing links (#ADDON 8)."""
     try:
         cfg = json.loads((build / "config.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     root = build.parent.parent
     out = []
-    for part in [cfg, *(cfg.get("modules") or [])]:
+    for part in [cfg, *((cfg.get("modules") or []) if modules else [])]:
         out += [root / u["object"] for u in part.get("units") or [] if u.get("object")]
     return out
 

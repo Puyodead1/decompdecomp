@@ -336,7 +336,8 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   linked file's C doesn't define yet. Another 224 differ because the hand copy also re-cut the code. Tested in
   `tests/test_dtkdata.py` and `tests/test_gc.py`. Still to do:
   - names as evidence, for data no code of its owner refers to (ADDON 5 §1: SDK names, version strings);
-  - two files that share a literal pool are one file (the next step: cuts checked against the pools);
+  - two files that share a literal pool are one file (cuts now follow the pools, see below; files already
+    made apart still need joining);
   - moving a definition between two files' C when its data moves, for the files that keep their part now.
 
 - **A link sets what the project's config must say for the file.** Two things a file needs from a dtk project's
@@ -357,6 +358,28 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   - a gap that alignment doesn't explain is another file's data, the split's to fix (ADDON 8 §5);
   - each compiler's own section alignment (ADDON 8 §4: GC/2.7 aligns `.sbss` to 8), and a split that starts
     unaligned giving its first symbol to the file before.
+
+- **Files are cut where the compiler's literal pools say the game's files end.** CodeWarrior pools each file's
+  floats, doubles and short strings on their own (`.sdata2`, `.rodata` with `-sdata2 0`), one copy of a value per
+  file, in the order of first use. So two functions that load one pooled constant are one file's, with everything
+  between them, and two copies of one value are two files' pools. `forks/pools.py` reads this from the original's
+  objects as dtk splits them (each symbol's address in the game from dtk's note), counting only loads: a constant
+  whose address is taken, that is stored to or that a table points at is a variable. The evidence is used:
+  - when a project is made (`consoles/gc_wii/scratch.py`): each code stretch dtk finds is cut where its pools end,
+    and into files of at most `dtksplits.FILE_FUNCTIONS` functions, never inside one file's run of shared constants;
+  - by `start_files` and, before each link, `divide_files`: a file decompdecomp made is cut the same way, kept only
+    if the game still builds byte for byte and every match still matches (`cuts_refused` keeps a refused cut from
+    being tried again);
+  - by `split_file`: a split between two functions that load the same constant is refused, with where it could go.
+
+  On a hand-split copy of a GameCube game (2,511 functions, 1,011 constants) it found 246 runs of shared constants
+  and 660 pairs of copies; the five that disagree with the hand split are all in its collision code. On the
+  GameCube demo, whose ELF names its files, every run is in one file and every pair in two (`tests/test_gc.py`,
+  `tests/test_pools.py`). Still to do:
+  - joining two files decompdecomp already made that share a pool (a dtk join for GameCube and Wii: `join_files`
+    is the PC's only; one server project has 15 such pairs);
+  - a module's (REL's) pools, read from its own objects: RELs are cut by size only (—);
+  - placing functions that load no constant better than at the latest cut with the fewest calls across it.
 
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
