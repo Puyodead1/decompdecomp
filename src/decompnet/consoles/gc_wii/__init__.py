@@ -50,6 +50,13 @@ class GameCube(Console):
     packs = (("mwcc", "CodeWarrior, the compilers of GameCube and Wii games (proprietary)"),)
     # Nintendo's libraries, the user's own copies: their code in a game set aside by the library finder (kits/dolphin.py)
     kits = ("dolphin-sdk",)
+    # The SDK's own libraries, whose objects its decomps keep under dolphin/<library>/ (dolphin/os/OSAlarm.c);
+    # CodeWarrior's (MSL_C, Runtime, TRK_MINNOW_DOLPHIN) and the rest (thp, a wheel maker's lg) keep their archive's
+    # name, as a hand-split GameCube game has them (library_file)
+    sdk_folder = "dolphin"
+    sdk_libraries = frozenset({"ai", "am", "amc", "ar", "arq", "ax", "axart", "axfx", "base", "card", "db", "demo",
+                               "dsp", "dtk", "dvd", "exi", "fileCache", "G2D", "gba", "gd", "gx", "hio", "mcc", "mix",
+                               "mtx", "os", "pad", "perf", "seq", "si", "sp", "support", "syn", "texPalette", "vi"})
     guides = ("ppc", "mwcc", "cpp")
     compiler_guide = "mwcc"  # CodeWarrior's register and stack rules decide most of what's left
     compiler_family = "mwcc"
@@ -71,6 +78,10 @@ class GameCube(Console):
         if not isinstance(file, Path):
             return scratch.is_dol(bytes(file))
         return file.stat().st_size < SMALL and scratch.is_dol(file.read_bytes())
+
+    def library_file(self, member) -> str | None:
+        folder = f"{self.sdk_folder}/{member.library}" if member.library in self.sdk_libraries else member.library
+        return f"{folder}/{member.name}{'.cpp' if member.cpp else '.c'}"
 
     def upload_name(self, data: bytes) -> str:
         from . import scratch
@@ -236,6 +247,11 @@ class Wii(GameCube):
     ram = (0x80000000, 0x94000000)  # MEM1, then MEM2
     demo = ""  # none yet: the GameCube demo's tests cover the same code
     usual = "Wii/1.0"
+    sdk_folder = "revolution"  # (the Revolution SDK's libraries: revolution/os/OSAlarm.c)
+    sdk_libraries = frozenset({"ai", "arc", "ax", "axart", "axfx", "base", "bte", "card", "cnt", "cx", "darch", "db",
+                               "dsp", "dvd", "enc", "esp", "euart", "exi", "fs", "gd", "gx", "hio2", "homebuttonLib",
+                               "ipc", "kpad", "mem", "mix", "mtx", "nand", "net", "nwc24", "os", "pad", "rso", "sc",
+                               "si", "sp", "tpl", "usb", "vf", "vi", "wenc", "wpad", "wud"})
     disc_kinds = ("wii",)  # its programs (DOLs) and compressed discs are taken for a GameCube's, and told apart later
 
     def sniff(self, head: bytes, file) -> bool:

@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 
 from elftools.common.exceptions import ELFError
 
-from .. import __version__, arch, classes, coffobj, consoles, seeds, similarity, structs, toolchains
+from .. import __version__, arch, classes, coffobj, consoles, kits, seeds, similarity, structs, toolchains
 from ..arch import advice as arch_advice
 from ..forks import (
     cleanup,
@@ -43,6 +43,7 @@ from ..forks import (
     dtksplits,
     ghidra,
     identity,
+    libunits,
     linkcheck,
     linklayout,
     ltcg,
@@ -2727,6 +2728,40 @@ class ForkEngine:
         cache[fp.root] = (stamp, found)
         return found
 
+    def _pieces(self, fp: ForkProject, cfg: dict, module: str, starts: list[int], lo: int, hi: int,
+                 taken: set[str] = frozenset()) -> list[tuple[int, int, str | None]]:
+        """The code from lo to hi cut into files: each object of the user's library archives a file named as the
+        console's decomps name it (forks/libunits.py: dolphin/os/OSAlarm.c), the rest where the literal pools say
+        the game's files end, at most FILE_FUNCTIONS functions a file (libunits.pieces). The program's code only:
+        a module's (REL's) addresses are its own, and its pools and library code aren't read yet."""
+        if module != "main":
+            cuts = pools.cuts(starts, lo, hi, None, FILE_FUNCTIONS)
+            return [(a, b, None) for a, b in zip(cuts, cuts[1:])]
+        console = consoles.get(cfg.get("platform"))
+        archives = kits.libraries(console.kits)
+        found = []
+        if archives and (functions := self._game_functions(fp, cfg)):
+            found = libunits.runs([f for f in functions if lo <= f.addr < hi], archives)
+        return libunits.pieces(starts, lo, hi, found, console.library_file, self._pools(fp, cfg), FILE_FUNCTIONS,
+                               taken)
+
+    def _game_functions(self, fp: ForkProject, cfg: dict) -> list:
+        """The program's functions as dtk splits the original (libunits.game_functions), read again once the build
+        or the symbols change; [] before a build made them."""
+        version = cfg.get("version") or (fp.versions() or [None])[0]
+        try:
+            build = fp.root / "build" / version
+            syms = dtksplits.modules(fp.root, version)["main"].symbols
+            stamp = ((build / "config.json").stat().st_mtime_ns, syms.stat().st_mtime_ns)
+        except (OSError, KeyError, ValueError, TypeError):
+            return []
+        cache = self.__dict__.setdefault("_function_cache", {})
+        if (hit := cache.get(fp.root)) and hit[0] == stamp:
+            return hit[1]
+        found = libunits.game_functions(linklayout.linked_objects(build, modules=False))
+        cache[fp.root] = (stamp, found)
+        return found
+
     def _modules(self, fp: ForkProject, cfg: dict) -> dict:
         if fp.kind() not in ("dtk", "manifest") or not fp.linkable():
             raise NetworkError("giving code source files works on dtk-template projects (GameCube, Wii)")
@@ -2802,13 +2837,18 @@ class ForkEngine:
             folder = "auto" if module == "main" else f"REL/{module}"
             ext = ".cpp" if u.name in cpp else ".c"
             starts = self._starts(dtksplits.symbols(mods[module].symbols, labels=False), *extent)
-            cuts = pools.cuts(starts, *extent, self._pools(fp, cfg) if module == "main" else None, FILE_FUNCTIONS)
-            for lo, hi in zip(cuts, cuts[1:]):
-                name = f"{folder}/text_{lo:08X}{ext}"
-                while name in taken or (fp.root / src / name).exists() or f"{src}/{name}" in listed:
-                    name = name[:-len(ext)] + "_" + ext
+            pieces = self._pieces(fp, cfg, module, starts, *extent,
+                                  taken | {n for n in (str(PurePosixPath(x).relative_to(src)) for x in listed
+                                                       if x.startswith(src + "/"))})
+            for lo, hi, own in pieces:
+                if own and not (fp.root / src / own).exists():
+                    name = own  # (an object of the user's library archives: its own name)
+                else:
+                    name = f"{folder}/text_{lo:08X}{ext}"
+                    while name in taken or (fp.root / src / name).exists() or f"{src}/{name}" in listed:
+                        name = name[:-len(ext)] + "_" + ext
                 taken.add(name)
-                n = sum(1 for a in starts if lo <= a < hi) if len(cuts) > 2 else rep_fns.get(u.name, 0)
+                n = sum(1 for a in starts if lo <= a < hi) if len(pieces) > 1 else rep_fns.get(u.name, 0)
                 split.append((module, name, lo, hi, n))
         return {"create": sorted(set(create)), "split": sorted(split), "never": sorted(never)}
 
@@ -2968,13 +3008,16 @@ class ForkEngine:
             lo, hi = f.sections[".text"]
             syms = dtksplits.symbols(mod.symbols)
             starts = self._starts(dtksplits.symbols(mod.symbols, labels=False), lo, hi)  # (CodeWarrior's linker hangs on a cut at a label)
-            cuts = pools.cuts(starts, lo, hi, self._pools(fp, cfg) if mod.name == "main" else None, FILE_FUNCTIONS)
+            pieces = self._pieces(fp, cfg, mod.name, starts, lo, hi, {x.name for x in sp.files})
+            cuts = [a for a, _, _ in pieces] + [hi]
             if len(cuts) <= 2 or refused.get(rel) == [f"{c:X}" for c in cuts]:
                 continue
             if program_before is False:
                 program_before = self._built_before(fp)
             ext = Path(name).suffix or ".c"
-            parts = [(a, b, f"{Path(name).parent.as_posix()}/text_{a:08X}{ext}") for a, b in zip(cuts[1:], cuts[2:])]
+            # (an object of the user's library archives takes its own name, in the file's language: its C goes with it)
+            parts = [(a, b, str(PurePosixPath(own).with_suffix(ext)) if own else
+                      f"{Path(name).parent.as_posix()}/text_{a:08X}{ext}") for a, b, own in pieces[1:]]
             if any((fp.root / src / n).exists() or any(x.name == n for x in sp.files) for _, _, n in parts):
                 log(f"{rel}: a file of the names it would be cut into exists already; left as it is")
                 continue
@@ -3049,6 +3092,10 @@ class ForkEngine:
                    "of a value per file: two functions using one constant are one file's, two copies of a value are "
                    "two files' pools. The file is cut where its pools say the game's files end"
                    + (f", and into files of at most {FILE_FUNCTIONS} functions." if len(starts) > FILE_FUNCTIONS else "."))
+            if (library := [n for _, _, own in pieces[1:] if own for n in [own]]):
+                why += (f" {len(library)} of the files are one object of your own copy of the game's libraries each, "
+                        f"found by their code and named as their archives name them ({', '.join(library[:4])}"
+                        f"{', ...' if len(library) > 4 else ''}).")
             self._commit_paths(proj, fp, [str(p_.relative_to(fp.root)) for p_ in [*saved, *made]],
                                f"Cut {Path(name).name} into {len(cuts) - 1} files\n\n{why} The game still builds byte "
                                "for byte and every match still matches.\n\nCut by decompdecomp.")

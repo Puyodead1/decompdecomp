@@ -381,6 +381,27 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   - a module's (REL's) pools, read from its own objects: RELs are cut by size only (—);
   - placing functions that load no constant better than at the latest cut with the fewest calls across it.
 
+- **A game's library code gets one file per object of the user's own library archives, named as they name it.** A
+  GameCube game's OS, GX, MSL and TRK code sat in a few big files of 10 to 30 objects each; a hand-split copy has
+  `dolphin/os/OSAlarm.c`, `MSL_C/printf.c`, `TRK_MINNOW_DOLPHIN/nubinit.c`. `forks/libunits.py` finds each function
+  of the game in the archives of the kit the console names (`kits.libraries`, `libraryid.kit_signatures`: relocated
+  bytes masked), labels it with the one archive member it is in, and takes a member's run of functions as its file,
+  extended over the functions its code found too little of when their names in the game or their opcodes say they are
+  the member's next. A member found in two places gets no file, nor a lone function under 64 bytes. The console names
+  the file (`Console.library_file`: GameCube `dolphin/<lib>/<Member>.c`, Wii `revolution/...`, CodeWarrior's own
+  libraries `MSL_C/`, `Runtime/`, `TRK_MINNOW_DOLPHIN/`; C++ when most of its functions' names are mangled). Used
+  when a project is made (`consoles/gc_wii/scratch.py`), by `start_files` and by `divide_files`, between the
+  literal pools' cuts. On a hand-split copy of a GameCube game with the Dolphin SDK as the kit, 120 files were found:
+  99 the same as the hand copy's, 15 a few functions shorter at one end, none crossing a hand-split boundary, and 68 of
+  its 182 library files missed (library builds the kit hasn't, short code). Still to do:
+  - renaming a file decompdecomp already made whose first functions are one object (a GameCube and Wii rename
+    through dtk);
+  - library objects in `.init` (`__start.c`, `__mem.c`) and in modules (RELs: —);
+  - other consoles' `library_file` (DS: the Nitro SDK's archives; PS2: the SCE libraries; —);
+  - reaching an object's first functions when the game's library build differs from the user's (the pools'
+    shared constants did not reach them on that game);
+  - CodeWarrior's runtime C++ files: named `.cpp` by their mangled names, where the hand copy kept `.c`.
+
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
   (`arch/mips_observations.py`, `Arch.diff_observations`) adds a few lines: the frames' sizes, and when only the frame
