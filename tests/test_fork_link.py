@@ -198,6 +198,37 @@ def test_a_file_whose_data_differs_says_what_and_stays_unlinked(fork):
     assert net.forks.file_status(slug, "sub").startswith("## src/math.c")
 
 
+TENTH = "double tenth(void) {\n    return k;\n}\n"
+
+
+def test_a_finished_file_is_tidied_and_each_change_kept_only_if_its_object_allows(fork, tmp_path):
+    net, slug, agent, fp = fork
+    proj, unit = net.forks.get(slug)[0], fp.unit("math")
+    assert net.forks.tidy(slug) == {}  # (sub isn't decompiled yet: not a finished file)
+    # the original holds the constant (a double: GCC pools those, as MWCC pools floats); the C reads it as an extern
+    flags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2"]
+    built = compile_source(compiler_config(tmp_path, {"compiler": {"toolchain": "gcc-2.7.2-kmc", "flags": flags}}),
+                           "", "const double k = 0.1;\n" + TENTH + ADD)
+    assert built.ok, built.log
+    (fp.root / "expected" / "math.o").write_bytes(built.obj)
+    path = fp.root / "src" / "math.c"
+    path.write_text("extern const double k;\nextern int nobody;\nint unused_helper(int a);\n" + TENTH + ADD)
+    fp.git("commit", "-q", "-am", "an extern of the file's own constant")
+    done = net.forks.tidy_file(proj, fp, "src/math.c")
+    assert len(done) == 2 and "literals" in done[0] and "nobody" in done[1] and "unused_helper" in done[1], done
+    assert path.read_text() == "double tenth(void) {\n    return 0.1;\n}\n" + ADD
+    assert fp.git("log", "-1", "--format=%s")[1] == "Tidy math.c" and fp.git("status", "--short", "src")[1] == ""
+    # a constant whose literal isn't the original's value: the code points at other bytes, and nothing is kept
+    path.write_text("extern const double k;\n" + TENTH + ADD)
+    fp.git("commit", "-q", "-am", "the extern again")
+    (fp.root / "expected" / "math.o").write_bytes(compile_source(
+        compiler_config(tmp_path, {"compiler": {"toolchain": "gcc-2.7.2-kmc", "flags": flags}}),
+        "", "const double k = 0.1;\n" + TENTH + ADD).obj)
+    assert net.forks.same_object(proj, fp, unit, path, "double tenth(void) {\n    return 0.25;\n}\n" + ADD,
+                                 data_may_change=True)[0] is False
+    assert path.read_text() == "extern const double k;\n" + TENTH + ADD
+
+
 def test_a_machine_pass_is_kept_only_when_the_object_stays_the_same(fork):
     net, slug, agent, fp = fork
     proj, unit = net.forks.get(slug)[0], fp.unit("math")

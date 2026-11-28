@@ -270,6 +270,22 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   each relocation pointing at the same name or the same bytes) and by its data getting no further from the
   original's (`ForkEngine.same_object(data_may_change=True)`). Tested in `tests/test_linkcheck.py`.
 
+- **Finished files are tidied before a link.** Once every function in a GameCube or Wii file matches, decompdecomp
+  rewrites what it can without changing the object (`forks/cleanup.py`, `ForkEngine.tidy`, a few files before each
+  link):
+  - The file's own pooled constants declared `extern` become values. All of a file's change at once, because the
+    pool follows first use. The pass tries literals, then local variables for the values the compiler folds (0.0,
+    1.0), then every constant as a local; each local is then turned back into a literal where that keeps the code.
+  - Declarations nothing in the file uses are removed.
+
+  Each change is kept only when the unit's code is byte for byte the same with every relocation pointing at the same
+  bytes and its data no further from the original's, or, for pruning, when the object is the same. On 10 of a
+  GameCube game's files, all literals kept the code of none (MWCC reloads an extern after a store, and pools a float
+  literal in a double's sum as a double). 7 were tidied: 14 constants became literals and 16 became locals. Tested
+  in `tests/test_fork_cleanup.py` and `tests/test_fork_link.py`. Still to do:
+  - names for the locals (evidence-only naming);
+  - read-only strings for the files whose original has them in `.rodata`.
+
 - **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
   code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a
   file's data, every file whose functions matched was linked, and each link failed with its C's data defined twice

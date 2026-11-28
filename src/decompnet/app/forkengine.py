@@ -33,6 +33,7 @@ from elftools.common.exceptions import ELFError
 from .. import __version__, arch, classes, coffobj, consoles, seeds, similarity, structs, toolchains
 from ..arch import advice as arch_advice
 from ..forks import (
+    cleanup,
     convention,
     csource,
     datadiff,
@@ -559,6 +560,8 @@ COMMIT_TRIES = 5  # a commit waits out a locked index this often
 # Files a link tries one at a time, in one run: each is a whole build and check, with every helper's compile waiting
 # on it. A GameCube game retried the same 40 failing files after every match, and never got to the rest.
 LINK_ONE_BY_ONE = 10
+TIDY_PER_RUN = 5  # finished files a link's run tidies first (forks/cleanup.py), each a few builds of its unit
+TIDY_REFINE = 8  # a file's constants kept as local variables each tried as a literal again, at most
 
 
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
@@ -1037,6 +1040,109 @@ class ForkEngine:
                 return False, "its object differs: " + "; ".join(why)
             finally:
                 kept.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------ machine passes over finished files
+    # (forks/cleanup.py: the file's own constants as literals, declarations nothing uses gone; each kept only when the
+    # unit's object stays as it must, same_object)
+
+    def tidy_file(self, proj, fp: ForkProject, source: str) -> list[str]:
+        """Tidy one source file: what was done, in words ([]: nothing). Committed. A file with changes not
+        committed yet (an agent's, the user's) is left alone."""
+        units = [u for u in fp.units_for(source) if u.base is not None]
+        if len(units) != 1:  # (same_object judges one unit's object)
+            return []
+        unit, path = units[0], fp.root / source
+        done: list[str] = []
+        with self._tree(proj).shared(), self._units_locked(proj, [unit.name]):
+            ok, _ = fp.git("diff", "--quiet", "HEAD", "--", source)
+            if not ok or not path.exists():
+                return []
+            text = path.read_text(errors="replace", encoding="utf-8")
+            if unit.target is not None and unit.target.exists():
+                if said := self._own_constants(proj, fp, unit, path, text):
+                    done.append(said)
+                    text = path.read_text(errors="replace", encoding="utf-8")
+            new, gone = cleanup.without_unused(text)
+            if gone and self.same_object(proj, fp, unit, path, new)[0]:
+                done.append(f"{len(gone)} declaration{'s' * (len(gone) != 1)} nothing in it uses removed "
+                            f"({', '.join(gone[:6])}{' and more' if len(gone) > 6 else ''})")
+            if done:
+                self._commit(proj, fp, source, f"Tidy {Path(source).name}\n\n" + "\n".join(f"- {d}" for d in done)
+                             + "\n\nIts object is unchanged where it must be: decompdecomp built and compared it.")
+        return done
+
+    def _own_constants(self, proj, fp: ForkProject, unit, path: Path, text: str) -> str:
+        """The file's own pooled constants, declared extern, written as values (the caller holds the unit): what was
+        done, "" for nothing. All of a file's at once (the pool's order is the order of first use). On a GameCube
+        game's 10 files with them, all as literals kept the code in none: MWCC reloads an extern after a store and
+        not a literal, and a float literal in a double's sum is pooled as a double. So: literals; then the ones the
+        compiler folds (0.0, 1.0) as a local variable in each function using them; then every one as a local
+        (7 of the 10 kept their code), each then made a literal again where that keeps it."""
+        names = {n for d in cleanup.float_externs(text) for n in d.names}
+        own = cleanup.own_constants(text, cleanup.values([unit.target], names)) if names else {}
+        if not own:
+            return ""
+        folding = {n for n, lit in own.items() if abs(float(lit.rstrip("f"))) in (0.0, 1.0)}
+        tries = [set(), *([folding] if folding and folding != set(own) else []), set(own)]
+        local: set[str] | None = None
+        for attempt in tries:
+            new = cleanup.with_literals(text, own, attempt)
+            if new != text and self.same_object(proj, fp, unit, path, new, data_may_change=True)[0]:
+                local = set(attempt)
+                break
+        if local is None:
+            return ""
+        for name in sorted(local)[:TIDY_REFINE]:
+            new = cleanup.with_literals(text, own, local - {name})
+            if self.same_object(proj, fp, unit, path, new, data_may_change=True)[0]:
+                local.discard(name)
+        literal = sorted(set(own) - local)
+        parts = []
+        if literal:
+            parts.append(f"{len(literal)} written as literals ({', '.join(literal[:6])}"
+                         f"{' and more' if len(literal) > 6 else ''})")
+        if local:
+            parts.append(f"{len(local)} as a local variable in each function using it, where a literal changes "
+                         f"the code ({', '.join(sorted(local)[:6])}{' and more' if len(local) > 6 else ''})")
+        return f"its own constants, declared extern (they link only against the original's object): {'; '.join(parts)}"
+
+    def tidy(self, slug: str, most: int = TIDY_PER_RUN) -> dict[str, list[str]]:
+        """Tidy the files whose every function matches, each version of a file once, at most `most` a run (each is
+        a few builds of its unit). A room's member leaves it to the host, whose changes it follows."""
+        if self.net.links.get(slug) is not None:
+            return {}
+        proj, fp, cfg = self.get(slug)
+        open_units = {r["unit"] for r in self.net.store.all(
+            "SELECT DISTINCT unit FROM functions WHERE project_id=? AND status!='matched'", proj["id"])}
+        sources: dict[str, bool] = {}
+        for u in fp.units():
+            if u.source:
+                sources[u.source] = sources.get(u.source, True) and u.name not in open_units
+        seen = cfg.get("tidied") or {}
+        out: dict[str, list[str]] = {}
+        for src in sorted(s for s, finished in sources.items() if finished):
+            if len(out) >= most:
+                break
+            try:
+                digest = hashlib.sha1((fp.root / src).read_bytes()).hexdigest()
+            except OSError:
+                continue
+            if seen.get(src) == digest:
+                continue
+            try:
+                done = self.tidy_file(proj, fp, src)
+            except (ForkError, OSError, ELFError) as e:
+                logging.getLogger("decompdecomp").warning("%s: couldn't tidy %s: %s", slug, src, e)
+                done = []
+            out[src] = done
+            try:
+                digest = hashlib.sha1((fp.root / src).read_bytes()).hexdigest()
+            except OSError:
+                continue
+            fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+            fresh.setdefault("tidied", {})[src] = digest
+            self._save_cfg(proj, fresh)
+        return {s: d for s, d in out.items() if d}
 
     @staticmethod
     def _changed_data(unit, before: Path) -> list[str]:
@@ -2054,6 +2160,10 @@ class ForkEngine:
 
         def run() -> None:
             while True:
+                try:  # (finished files tidied first: an extern of a file's own constant never links)
+                    self.tidy(slug)
+                except Exception:
+                    logging.getLogger("decompdecomp").exception("%s: tidying failed", slug)
                 try:
                     self.link(slug, log=lambda *_: None, agent=agent)
                 except Exception:  # a background tidy-up: the next match tries again (the log says why this one failed)
