@@ -263,15 +263,25 @@ def disc_modules(disc: Path, packed: list[str] | None = None) -> list[tuple[str,
     return out
 
 
+def dol_platform(dol: bytes) -> str:
+    """A bare program's console, which no disc header says: "wii" when Nintendo's Revolution SDK built it (its
+    libraries stamp "<< RVL_SDK - OS ... >>" into the program, the Dolphin SDK's "<< Dolphin SDK - OS ... >>"), else
+    "gc". Every main.dol was taken for a GameCube one, and a Wii game's was set up with GameCube's CodeWarrior, whose
+    linker then refused its small-data sections."""
+    return "wii" if b"<< RVL_SDK" in dol and b"<< Dolphin SDK" not in dol else "gc"
+
+
 def game_info(path: Path) -> dict:
     """What the user dropped: {"platform": gc|wii, "id", "title", "kind": dol|disc, "dol": bytes}."""
     with open(path, "rb") as f:
         head = f.read(DISC_HEAD_BYTES)
     if is_dol(path.read_bytes() if path.stat().st_size < DOL_WHOLE_BYTES else head):
         dol = path.read_bytes()
+        platform = dol_platform(dol)
         stem = re.sub(r"[^A-Z0-9]", "", path.stem.upper())[:GAME_ID_CHARS]
-        game_id = stem if len(stem) >= 4 and stem != "MAIN" else "G" + hashlib.sha1(dol).hexdigest()[:5].upper()
-        return {"platform": "gc", "id": game_id, "title": path.stem, "kind": "dol", "dol": dol}
+        game_id = stem if len(stem) >= 4 and stem != "MAIN" else \
+            ("R" if platform == "wii" else "G") + hashlib.sha1(dol).hexdigest()[:5].upper()  # (Wii ids start R or S)
+        return {"platform": platform, "id": game_id, "title": path.stem, "kind": "dol", "dol": dol}
     kind = disc_kind(head)
     if kind is None:
         raise ForkError("this isn't a GameCube or Wii disc image or program (DOL)")
@@ -564,6 +574,9 @@ def _standard_module_sections(root: Path, game_id: str) -> list[str]:
     return named
 
 
+SMALL_DATA = {".sdata": ".sbss", ".sdata2": ".sbss2"}  # (each small-data section, and the bss that follows it)
+
+
 def _unique_in(path: Path) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -575,6 +588,17 @@ def _unique_in(path: Path) -> list[str]:
     lines = m.group(1).rstrip("\n").split("\n")
     names = [(_SECTION_LINE.match(line) or [None, None])[1] for line in lines]
     renamed = []
+    for i, name in enumerate(names):
+        # CodeWarrior's small data comes in pairs, in this order: .sdata, .sbss, .sdata2, .sbss2. A Wii game's two
+        # small-bss sections both came as ".sbss"; the first renamed (".sbss11") left the linker with no .sbss after
+        # .sdata ("Related small data sections must be contiguous and in the proper order"). A duplicate right after
+        # one of the pair's data sections takes the name that pairs with it.
+        paired = SMALL_DATA.get(names[i - 1]) if i else None
+        if name and names.count(name) > 1 and paired and paired != name and paired not in names \
+                and SMALL_DATA.get(names[i - 1].rstrip("2")) == name.rstrip("2"):
+            names[i] = paired
+            lines[i] = f"\t{paired:<11} {_SECTION_LINE.match(lines[i]).group(2).strip()}"
+            renamed.append(paired)
     for i, name in enumerate(names):
         if name and names.count(name) > 1 and name in names[i + 1:]:
             new, k = f"{name}{i}", i  # letters and digits only: dtk reads no other section names in symbols.txt
@@ -824,6 +848,12 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
     info = game_info(game)
     gid, platform = info["id"], info["platform"]
+    if compiler and compiler.startswith("Wii/") != (platform == "wii"):
+        # (a program taken for the other console's when it was dropped: a bare main.dol says which only inside, and
+        # a Wii game's set up with GameCube's CodeWarrior failed its first link)
+        log(f"{info['title']} is a {'Wii' if platform == 'wii' else 'GameCube'} program: built with that console's "
+            f"CodeWarrior, not {compiler}")
+        compiler = None
     compiler = compiler or (WII_DEFAULT if platform == "wii" else GC_DEFAULT)
     template = toolchains.ensure("dtk-template", log=log)
     shutil.copytree(template, root, ignore=shutil.ignore_patterns(".decompnet-toolchain.json"))

@@ -101,6 +101,33 @@ def test_a_program_with_two_sections_of_one_name_gets_unique_names(tmp_path):
     assert _unique_sections(tmp_path, "GM4P01") == []  # nothing left to rename
 
 
+def test_a_second_small_bss_section_after_sdata2_is_sbss2(tmp_path):
+    """A Wii game's two small-bss sections both came from dtk as ".sbss", and the first was renamed (".sbss11"): the
+    linker found no .sbss after .sdata and refused ("Related small data sections must be contiguous and in the proper
+    order"). CodeWarrior's order is .sdata, .sbss, .sdata2, .sbss2: the one after .sdata2 is .sbss2."""
+    from decompnet.consoles.gc_wii.scratch import _unique_sections
+
+    config = tmp_path / "config" / "R8BB42"
+    config.mkdir(parents=True)
+    (config / "splits.txt").write_text(
+        "Sections:\n\t.data       type:data align:32\n\t.bss        type:bss align:4\n\t.sdata      type:data align:32\n"
+        "\t.sbss       type:bss align:32\n\t.sdata2     type:rodata align:32\n\t.sbss       type:bss align:32\n",
+        encoding="utf-8")
+    assert _unique_sections(tmp_path, "R8BB42") == [".sbss2"]
+    sections = (config / "splits.txt").read_text(encoding="utf-8")
+    assert [line.split()[0] for line in sections.splitlines()[1:]] == [".data", ".bss", ".sdata", ".sbss", ".sdata2",
+                                                                       ".sbss2"]
+
+
+def test_a_bare_wii_program_is_told_from_a_gamecubes_by_its_sdk(tmp_path):
+    """Every main.dol was taken for a GameCube program (no disc header says otherwise), and a Wii game's was set up
+    with GameCube's CodeWarrior: its libraries' "<< RVL_SDK - ... >>" stamps say it's the Wii's."""
+    from decompnet.consoles.gc_wii.scratch import dol_platform
+
+    assert dol_platform(b"\0" * 64 + b"<< RVL_SDK - OS \trelease build: Apr 24 2007 >>\0") == "wii"
+    assert dol_platform(b"\0" * 64 + b"<< Dolphin SDK - OS\trelease build: Apr  5 2004 >>\0") == "gc"
+    assert dol_platform(b"\0" * 64) == "gc"
+
 def test_hand_written_code_gets_a_function_hint(tmp_path):
     """Mario Kart Wii's copy routine has branch targets dtk takes for a function inside a function ("Overlapping
     functions"): the first is declared to end where the second starts, and the analysis runs again."""
