@@ -2082,7 +2082,7 @@ class ForkEngine:
         given: list[str] = []
         renames: dict[tuple[str, str], str] = {}
         size = 0
-        before = self._built_before(fp)
+        program_before = self._built_before(fp)
         try:
             for mod, sp, parts in plans.values():
                 saved[mod.splits] = mod.splits.read_text(encoding="utf-8")
@@ -2091,7 +2091,7 @@ class ForkEngine:
                 given += [f"{src}/{name}" for name in parts]
                 size += sum(b - a for secs in parts.values() for a, b in secs.values())
             log(f"giving {len(given)} file(s) their data ({size:,} bytes); the build splits the game again")
-            ok, out = self._still_builds(fp, before)
+            ok, out = self._still_builds(fp, program_before)
             if not ok:
                 raise ForkError(f"the game didn't build as it did with the files' data:\n{_tail(out)}")
             fp.build_all()
@@ -2306,7 +2306,7 @@ class ForkEngine:
                 return {"created": [], "split": divided, "functions": 0}
             saved = {conf: conf.read_text(encoding="utf-8")}
             made: list[Path] = []
-            before = self._built_before(fp)
+            program_before = self._built_before(fp)
             try:
                 for path in plan["create"]:
                     p = fp.root / path
@@ -2335,7 +2335,7 @@ class ForkEngine:
                     text = dtksplits.add_objects(text, module, [name for _, name, _, _, _ in items])
                 conf.write_text(text, encoding="utf-8")
                 log(f"giving {len(plan['split'])} stretch(es) of code a source file; the build splits the game again")
-                ok, out = self._still_builds(fp, before)
+                ok, out = self._still_builds(fp, program_before)
                 if not ok:
                     raise ForkError(f"the game didn't build as it did with the new files:\n{_tail(out)}")
             except (ForkError, OSError, ValueError) as e:
@@ -2402,7 +2402,7 @@ class ForkEngine:
         C going with its functions (as split_file does, all cuts at once): kept only if the game still builds byte
         for byte and every function that matched still matches. Returns the new files. The caller holds the tree."""
         made_all: list[str] = []
-        before = self._built_before(fp) if self._big_units(rep) else None
+        program_before = self._built_before(fp) if self._big_units(rep) else None
         for entry in self._big_units(rep):
             try:
                 unit = fp.unit(entry["name"])
@@ -2471,7 +2471,7 @@ class ForkEngine:
                     p_.write_text(body, encoding="utf-8")
                     made.append(p_)
                 old_path.write_text(rest, encoding="utf-8")
-                ok, out = self._still_builds(fp, before)
+                ok, out = self._still_builds(fp, program_before)
                 if not ok:
                     raise ForkError(f"the game didn't build as it did with the file cut:\n{_tail(out)}")
                 now: dict[str, float | None] = {}
@@ -2591,7 +2591,7 @@ class ForkEngine:
             scores_before = self._baseline(proj, fp, unit, text)[0] or {}
             saved = {conf: conf.read_text(encoding="utf-8"), mod.splits: mod.splits.read_text(encoding="utf-8"), old_path: text}
             protected = {n for n, pct in scores_before.items() if pct is not None and pct >= 100}
-            before = self._built_before(fp)
+            program_before = self._built_before(fp)
             try:
                 f.sections = kept
                 sp.files.append(dtksplits.FileSplit(new, moved_sections))
@@ -2609,7 +2609,7 @@ class ForkEngine:
                 new_path.parent.mkdir(parents=True, exist_ok=True)
                 new_path.write_text(new_text, encoding="utf-8")
                 old_path.write_text(rest, encoding="utf-8")
-                ok, out = self._still_builds(fp, before)
+                ok, out = self._still_builds(fp, program_before)
                 if not ok:
                     raise ForkError(f"the game didn't build as it did with the files divided there:\n{_tail(out)}")
                 after_units = [u for u in fp.units() if u.source in (rel, f"{src}/{new}")]
