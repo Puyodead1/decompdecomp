@@ -2273,6 +2273,10 @@ class ForkEngine:
                     self.size_symbols(slug, log=lambda *_: None)
                 except Exception:
                     logging.getLogger("decompdecomp").exception("%s: sizing data symbols failed", slug)
+                try:  # (and each file's data the file whose code uses it: another's never links)
+                    self.regive_data(slug, log=lambda *_: None)
+                except Exception:
+                    logging.getLogger("decompdecomp").exception("%s: giving the files their data again failed", slug)
                 try:
                     self.link(slug, log=lambda *_: None, agent=agent)
                 except Exception:  # a background tidy-up: the next match tries again (the log says why this one failed)
@@ -2310,8 +2314,10 @@ class ForkEngine:
                     if f"{src}/{f.name}" in sources and ".text" in f.sections and not set(f.sections) & set(dtkdata.DATA)]
         return sorted(out)
 
-    def _data_plan(self, fp: ForkProject, cfg: dict) -> dict:
-        """module -> (its Module, its parsed splits, {file: {section: (start, end)}}) for the modules with data to give."""
+    def _data_plan(self, fp: ForkProject, cfg: dict, again: bool = False, fixed: set[str] = frozenset()) -> dict:
+        """module -> (its Module, its parsed splits, {file: {section: (start, end)}}) for the modules with data to give.
+        again: every file's part worked out anew, for the files whose part changes ({}: it has none now); fixed: files
+        (splits names) that keep theirs."""
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
         states = fp.link_states()
@@ -2330,7 +2336,12 @@ class ForkEngine:
                     continue
             # a linked file's object is built from its C, which defines its own data: it keeps what it has
             linked = {f.name for f in sp.files if states.get(f"{src}/{f.name}", ("NonMatching",))[0] != "NonMatching"}
-            given = dtkdata.parts(sp.files, dtksplits.symbols(mod.symbols), uses, skip=linked)
+            rows = dtksplits.symbol_rows(mod.symbols)
+            if again:  # (a file whose code nothing was read of keeps its part: there's no telling what it uses)
+                keep = linked | set(fixed) | {f.name for f in sp.files if f.name not in uses}
+                given = dtkdata.again(sp.files, rows, uses, fixed=keep)
+            else:
+                given = dtkdata.parts(sp.files, rows, uses, skip=linked)
             if given:
                 plans[module] = (mod, sp, given)
         return plans
@@ -2427,6 +2438,98 @@ class ForkEngine:
         if not isinstance(t, dict) or t.get("version") != __version__:
             return {"files": set(), "failed": set(), "error": ""}
         return {"files": set(t.get("files") or ()), "failed": set(t.get("failed") or ()), "error": t.get("error") or ""}
+
+    def regive_data(self, slug: str, log=print) -> list[str]:
+        """Give each file's data again to the file whose code uses it: a part given by an older rule, or before a
+        file was split (the new file got none of its data), sits in the file before its owner. A GameCube game's OS
+        strings and tables were in a game file's .data, and two of dtk's auto units held only literals of the files
+        around them. Kept only while the game builds byte for byte, no function stops matching and no file matches
+        fewer bytes of its data: a file whose C defines data that would move keeps its part, and isn't tried again
+        (`data_refused`). A room's member leaves it to the host."""
+        if self.net.links.get(slug) is not None:
+            return []
+        proj, fp, cfg = self.get(slug)
+        if fp.kind() not in ("dtk", "manifest") or not fp.linkable():
+            return []
+        refused = set(cfg.get("data_refused") or ())
+        try:
+            if not self._data_plan(fp, cfg, again=True, fixed=refused):
+                return []
+        except (NetworkError, OSError, ValueError):
+            return []
+        with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)
+            fp.build_all()
+            before = fp.report()
+            matched = _matched_in(before)
+            program_before = self._built_before(fp)
+            src = fp.src_dir()
+            saved: dict[Path, str] = {}
+            moved: list[str] = []
+            why = ""
+            for _ in range(SIZE_ROUNDS):
+                plans = self._data_plan(fp, cfg, again=True, fixed=refused)
+                if not plans:
+                    break
+                for mod, sp, parts in plans.values():
+                    saved.setdefault(mod.splits, mod.splits.read_text(encoding="utf-8"))
+                    dtkdata.apply(sp.header, sp.files, parts, again=True)
+                    mod.splits.write_text(sp.render(), encoding="utf-8")
+                moved = [f"{src}/{name}" for _, _, parts in plans.values() for name in parts]
+                files = {f"{m}/{PurePosixPath(name).with_suffix('')}": name
+                         for m, (_, _, parts) in plans.items() for name in parts}
+                ok, out = self._still_builds(fp, program_before)
+                if not ok:  # (dtk or the link refused the parts: none of these files is tried again)
+                    why = _tail(out)
+                    refused |= set(files.values())
+                    moved = []
+                    break
+                fp.build_all()
+                rep = fp.report()
+                worse = {u for u, _ in matched - _matched_in(rep)} | self._fewer_data_bytes(before, rep)
+                if not worse:
+                    break
+                why = f"{len(worse)} file(s) would match less: {', '.join(sorted(worse)[:4])}"
+                # (a unit that lost a match without its part moving: whatever moved is refused, to be safe)
+                refused |= {files[u] for u in worse if u in files} or set(files.values())
+                for path, old in saved.items():
+                    path.write_text(old, encoding="utf-8")
+                moved = []
+            if not moved:
+                for path, old in saved.items():
+                    path.write_text(old, encoding="utf-8")
+                if saved:
+                    fp.verify()
+                    fp.build_all()
+            fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+            fresh["data_refused"] = sorted(refused)
+            self._save_cfg(proj, fresh)
+            if not moved:
+                if why:
+                    logging.getLogger("decompdecomp").warning("%s: the files keep their data: %s", slug, why)
+                return []
+            self._commit_paths(proj, fp, [p_.relative_to(fp.root).as_posix() for p_ in saved],
+                               f"Give {len(moved)} files the data their code uses\n\n"
+                               "Each file's part of the data is worked out again by what its code refers to: data "
+                               "given by an older rule, or before a file was split, sat in the file before its owner. "
+                               "The game still builds byte for byte, and every file matches as much of its code and "
+                               "data as before.\n\n" + "\n".join(f"- {name}" for name in moved)
+                               + "\n\nSplit by decompdecomp.")
+            with self.net.store.tx() as db:
+                self.net._event(db, proj["id"], None, "files", f"{len(moved)} files given the data their code uses")
+            self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+            self.sync(slug, log=lambda *_: None, rep=rep)
+            log(f"{len(moved)} file(s) given the data their code uses")
+            return moved
+
+    @staticmethod
+    def _fewer_data_bytes(before: dict, after: dict) -> set[str]:
+        """The units that match fewer bytes of data in `after` (a part that moves changes a file's share, not the
+        bytes it matches; data a file's C defines leaving it lowers them)."""
+        def matched(rep: dict) -> dict[str, int]:
+            return {u["name"]: int((u.get("measures") or {}).get("matched_data") or 0) for u in rep.get("units", [])}
+        was, now = matched(before), matched(after)
+        return {name for name, n in now.items() if n < was.get(name, 0)}
 
     def _note_data_try(self, proj, cfg: dict, tried, error: str | None = None) -> None:
         """Record a data step for these files: begun (error None), done (""), or backed out (why)."""

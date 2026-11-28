@@ -121,6 +121,22 @@ def symbols(path: Path, labels: bool = True) -> dict[str, tuple[str, int, int]]:
     return out
 
 
+def symbol_rows(path: Path, labels: bool = True) -> list[tuple[str, str, int, int]]:
+    """symbols.txt as (name, section, address, size), one per line: symbols() keeps one of each name, but MWCC's local
+    names (@84, lbl_...) repeat from file to file."""
+    out = []
+    try:
+        lines = path.read_text(errors="replace", encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = _SYMBOL.match(line)
+        if m and (labels or "type:label" not in m.group(4)):
+            size = re.search(r"size:(0x[0-9A-Fa-f]+)", m.group(4))
+            out.append((m.group(1), m.group(2), int(m.group(3), 16), int(size.group(1), 16) if size else 0))
+    return out
+
+
 CODE = (".init", ".text")
 
 
