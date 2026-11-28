@@ -10,22 +10,24 @@ HEADER = "Sections:\n\t.text       type:code align:4\n\t.rodata     type:rodata 
 
 def files():
     return [FileSplit("a.c", {".text": (0x100, 0x200)}), FileSplit("b.c", {".text": (0x200, 0x300)}),
-            FileSplit("c.c", {".text": (0x300, 0x400)}), FileSplit("d.c", {".text": (0x400, 0x500), ".bss": (0x2000, 0x2010)})]
+            FileSplit("c.c", {".text": (0x300, 0x400)}), FileSplit("d.c", {".text": (0x400, 0x500), ".bss": (0x2010, 0x2020)})]
 
 
 SYMS = {
     "a1": (".data", 0x1000, 8),       # only a's code
     "loose": (".data", 0x1008, 4),    # no code's: stays with the file before it
-    "b0": (".data", 0x100C, 4),       # b's and c's, not a's: b starts here, snapped to an aligned symbol
+    "b0": (".data", 0x100C, 4),       # b's and c's, not a's: b starts here (4-aligned is enough for dtk)
     "b1": (".data", 0x1010, 8),
     "c1": (".data", 0x1018, 8),
     "g": (".data", 0x1020, 8),        # only a's, but after c's: a global placed out of code order, nobody's part
-    "d_own": (".bss", 0x2000, 0x10),  # (d's already)
-    "a_bss": (".bss", 0x2010, 4),
-    "r0": (".rodata", 0x3000, 4),     # before a's first: a's part starts aligned, here
+    "a_bss": (".bss", 0x2000, 4),
+    "d_own": (".bss", 0x2010, 0x10),  # (d's already)
+    "late": (".bss", 0x2020, 4),      # a's, but after d's part: a comes before d in the link, so it isn't a's
+    "r0": (".rodata", 0x3000, 4),     # before a's first: a's part starts here, the section's start
     "r1": (".rodata", 0x3004, 4),
 }
-USES = {"a.c": {"a1", "g", "a_bss", "r1", "memcpy"}, "b.c": {"b0", "b1"}, "c.c": {"b0", "c1"}, "d.c": {"d_own"}}
+USES = {"a.c": {"a1", "g", "a_bss", "late", "r1", "memcpy"}, "b.c": {"b0", "b1"}, "c.c": {"b0", "c1"},
+        "d.c": {"d_own"}}
 
 
 def test_each_file_gets_the_stretch_its_code_uses_in_link_order():
@@ -33,8 +35,8 @@ def test_each_file_gets_the_stretch_its_code_uses_in_link_order():
     and its C's constants collided with dtk's auto units: every link failed."""
     given = dtkdata.parts(files(), SYMS, USES)
     assert given == {
-        "a.c": {".rodata": (0x3000, 0x3008), ".data": (0x1000, 0x1010), ".bss": (0x2010, 0x2014)},
-        "b.c": {".data": (0x1010, 0x1018)},
+        "a.c": {".rodata": (0x3000, 0x3008), ".data": (0x1000, 0x100C), ".bss": (0x2000, 0x2010)},  # (up to d's)
+        "b.c": {".data": (0x100C, 0x1018)},
         "c.c": {".data": (0x1018, 0x1020)},
     }
 
@@ -44,13 +46,60 @@ def test_a_linked_file_gets_nothing_and_its_data_stays_out_of_the_others():
     a GameCube game's first try gave a linked file some)."""
     given = dtkdata.parts(files(), SYMS, USES, skip={"b.c"})
     assert "b.c" not in given
-    assert given["a.c"][".data"] == (0x1000, 0x1010) and given["c.c"][".data"] == (0x1018, 0x1020)
+    assert given["a.c"][".data"] == (0x1000, 0x100C) and given["c.c"][".data"] == (0x1018, 0x1020)
 
 
 def test_a_cut_with_no_aligned_symbol_gives_the_next_file_nothing():
-    syms = {"a1": (".data", 0x1000, 4), "b1": (".data", 0x1004, 4), "z": (".data", 0x1010, 4)}
+    syms = {"a1": (".data", 0x1000, 2), "b1": (".data", 0x1002, 2), "z": (".data", 0x1010, 4)}
     given = dtkdata.parts(files()[:2], syms, {"a.c": {"a1"}, "b.c": {"b1"}})
-    assert given == {"a.c": {".data": (0x1000, 0x1004)}}
+    assert given == {"a.c": {".data": (0x1000, 0x1002)}}
+
+
+def test_data_is_known_by_its_address_not_its_name():
+    """dtk names another file's local symbol name_<address> in the objects that refer to it, and MWCC's local names
+    repeat from file to file: read by name, a GameCube game's OS strings were nobody's and stayed with the game file
+    before them."""
+    rows = [("@84", ".data", 0x1000, 4), ("@84", ".data", 0x1004, 4), ("@85", ".data", 0x1008, 4),
+            ("@85", ".data", 0x100C, 4)]
+    uses = {"a.c": {"@84"}, "b.c": {"@84", "@85_00001008"}, "c.c": {"@85_0000100C"}}
+    # (a's @84 and b's are the same name: no telling which is whose, so they say nothing; b's @85 is its own)
+    assert dtkdata.parts(files()[:3], rows, uses) == {"b.c": {".data": (0x1000, 0x100C)},
+                                                     "c.c": {".data": (0x100C, 0x1010)}}
+    address = dtkdata.resolver(rows)
+    assert (address("@85_00001008"), address("@84"), address("@84_00001234"), address("memcpy")) == (0x1008, None,
+                                                                                                    None, None)
+
+
+def test_a_kept_part_fences_the_order_around_it():
+    """A linked file's part fixes the order: a GameCube game's vtable before a linked file's .data, used by a later
+    file, made that file's part start before the linked one's and end at it, and the rest of its data was nobody's."""
+    fs = files()
+    fs[1].sections[".data"] = (0x1010, 0x1018)  # b's, linked
+    syms = {"a1": (".data", 0x1000, 8), "vt": (".data", 0x1008, 8), "b1": (".data", 0x1010, 8),
+            "c1": (".data", 0x1018, 8), "c2": (".data", 0x1020, 8)}
+    given = dtkdata.parts(fs, syms, {"a.c": {"a1"}, "b.c": {"b1"}, "c.c": {"vt", "c1", "c2"}}, skip={"b.c"})
+    assert given == {"a.c": {".data": (0x1000, 0x1010)}, "c.c": {".data": (0x1018, 0x1028)}}
+
+
+def test_data_given_before_a_file_was_split_goes_to_the_file_whose_code_uses_it():
+    """split_file moved code, not data: the new file's data stayed with the first part (a GameCube game's OS strings
+    in a game file's .data, ADDON 5 §1), and dtk's auto units held only literals of the files around them."""
+    fs = [FileSplit("a.c", {".text": (0x100, 0x200), ".data": (0x1000, 0x1018)}),
+          FileSplit("os.c", {".text": (0x200, 0x300)}), FileSplit("c.c", {".text": (0x300, 0x400)})]
+    syms = {"a1": (".data", 0x1000, 8), "@84": (".data", 0x1008, 0x10), "lit": (".data", 0x1018, 8)}
+    uses = {"a.c": {"a1"}, "os.c": {"@84_00001008"}, "c.c": {"lit"}}
+    plan = dtkdata.again(fs, syms, uses, fixed=set())
+    assert plan == {"a.c": {".data": (0x1000, 0x1008)}, "os.c": {".data": (0x1008, 0x1018)},
+                    "c.c": {".data": (0x1018, 0x1020)}}
+    assert dtkdata.apply("Sections:\n\t.text type:code\n\t.data type:data", fs, plan, again=True) == 3
+    assert fs[1].sections == {".text": (0x200, 0x300), ".data": (0x1008, 0x1018)}
+    assert dtkdata.again(fs, syms, uses, fixed=set()) == {}  # (worked out again: nothing changes)
+    # a file that keeps its part (linked, or refused) isn't touched, and nothing of its is given away
+    fs[0].sections[".data"] = (0x1000, 0x1018)
+    assert dtkdata.again(fs, syms, uses, fixed={"a.c"}) == {"os.c": {}}
+    # one that loses all its data has none left
+    dtkdata.apply("Sections:\n\t.text type:code\n\t.data type:data", fs, {"os.c": {}}, again=True)
+    assert fs[1].sections == {".text": (0x200, 0x300)}
 
 
 def test_the_parts_go_into_splits_in_the_sections_order():

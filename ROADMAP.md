@@ -317,6 +317,28 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   checksum says where: `forks/dolcheck.py` names the first symbols at which the built DOL differs from the game's
   (`file_status` shows it; a REL's difference isn't named yet).
 
+- **Each file's data goes to the file whose code uses it.** Data given by the first rule, or before a file was split
+  (`split_file` moves code, not data), sat in the file before its owner: a GameCube game's OS strings and tables in a
+  game file's `.data`, its literals in two of dtk's auto units that held nothing else. Three causes in
+  `forks/dtkdata.py`:
+  - symbols were read by name, but dtk names another file's local symbol `name_<address>` in the objects that refer
+    to it, and MWCC's local names (`@84`) repeat. Symbols are now known by their address
+    (`dtksplits.symbol_rows`, `dtkdata.resolver`);
+  - a linked file's part didn't fence the order around it, so a file's part could start before it and end at it;
+  - cuts snapped to 8 bytes, but dtk takes any 4-aligned start (it warns and halves the alignment), so a file whose
+    first symbol was 4 bytes off got no part at all.
+
+  `ForkEngine.regive_data` works every file's part out again before a link. A file's change is kept only if the game
+  still builds byte for byte, no function stops matching and no file matches fewer bytes of its data. A file whose C
+  defines data that would move keeps its part, and isn't tried again (`data_refused`). On a GameCube game's splits,
+  compared with a hand-fixed copy, the data in a file with none of its owner's code went from 198 symbols to 39.
+  The rest are mostly SDK tables only game code reads, like the video modes, which need names to place, and data a
+  linked file's C doesn't define yet. Another 224 differ because the hand copy also re-cut the code. Tested in
+  `tests/test_dtkdata.py` and `tests/test_gc.py`. Still to do:
+  - names as evidence, for data no code of its owner refers to (ADDON 5 §1: SDK names, version strings);
+  - two files that share a literal pool are one file (the next step: cuts checked against the pools);
+  - moving a definition between two files' C when its data moves, for the files that keep their part now.
+
 - **Processor observations under MIPS compile feedback and briefs.** A diff's rows say what differs, not why: a frame
   16 bytes bigger moves every saved register's slot and reads as ten stack rows. The MIPS reader
   (`arch/mips_observations.py`, `Arch.diff_observations`) adds a few lines: the frames' sizes, and when only the frame

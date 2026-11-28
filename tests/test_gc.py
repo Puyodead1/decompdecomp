@@ -375,7 +375,8 @@ def test_files_with_only_code_get_their_data(gc):
     res = net.forks.give_data(slug, log=lambda *_: None)
     assert not res.get("error"), res
     # (given here, or already by an earlier test's link: a file whose functions all match asks for it first)
-    assert re.search(r"^Give \d+ files their data", fp.git("log", "--format=%s")[1], re.M)
+    # (or by regive_data, which a link runs first and which works out every file's part)
+    assert re.search(r"^Give \d+ files (their data|the data their code uses)", fp.git("log", "--format=%s")[1], re.M)
     assert {f.split("/", 1)[1] for f in res["files"]} <= with_data() and len(with_data()) > 1
     assert fp.verify()[0]
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='matched'", pid)["n"] >= matched
@@ -411,6 +412,72 @@ def test_data_symbols_are_sized_to_their_objects(gc):
     assert fp.git("log", "-1", "--format=%s")[1].startswith("Size 1 data symbols")
     assert fp.verify()[0]
     assert net.forks.size_symbols(slug, log=lambda *_: None) == []  # (nothing left to size)
+
+
+def _refs_by_offset(obj: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """(each function's (offset, name) in an object's .text, each relocation's (offset, symbol) in it)."""
+    from elftools.elf.relocation import RelocationSection
+
+    with obj.open("rb") as f:
+        elf = ELFFile(f)
+        tab = elf.get_section_by_name(".symtab")
+        text = next(i for i, s in enumerate(elf.iter_sections()) if s.name == ".text")
+        funcs = sorted((s["st_value"], s.name) for s in tab.iter_symbols()
+                       if s["st_info"]["type"] == "STT_FUNC" and s["st_shndx"] == text)
+        relocs = [(r["r_offset"], tab.get_symbol(r["r_info_sym"]).name) for sec in elf.iter_sections()
+                  if isinstance(sec, RelocationSection) and sec.name == ".rela.text" for r in sec.iter_relocations()]
+    return funcs, relocs
+
+
+def test_data_follows_its_code_when_a_file_is_split(gc):
+    """split_file moves code, not data: the new file's data stayed with the first part, and the next file's own
+    data sat in the file before it (a GameCube game's OS strings in a game file's .data). regive_data gives it to the
+    file whose code uses it; the game still builds byte for byte."""
+    from decompnet.forks import dtkdata, dtksplits
+
+    net, slug = gc
+    proj, fp, cfg = net.forks.get(slug)
+    mod = dtksplits.modules(fp.root, cfg["version"])["main"]
+    net.forks.regive_data(slug, log=lambda *_: None)  # (whatever an earlier test's split left)
+    assert net.forks.regive_data(slug, log=lambda *_: None) == []
+    rows = dtksplits.symbol_rows(mod.symbols)
+    address = dtkdata.resolver(rows)
+    states = fp.link_states()
+    found = None
+    for f in dtksplits.Splits.parse(mod.splits.read_text()).files:
+        rel = f"{fp.src_dir()}/{f.name}"
+        data = {k: v for k, v in f.sections.items() if k in dtkdata.DATA}
+        units = fp.units_for(rel)
+        if not data or states.get(rel, ("",))[0] != "NonMatching" or not units or units[0].target is None:
+            continue
+        funcs, relocs = _refs_by_offset(units[0].target)
+        for k, (start, _) in enumerate(funcs[1:], start=1):
+            before = {address(s) for off, s in relocs if off < start}
+            after = {a for off, s in relocs if off >= start and (a := address(s)) is not None}
+            mine = sorted(a for a in after - before if any(lo <= a < hi for lo, hi in data.values()))
+            if mine:
+                found = (rel, f.sections[".text"][0] + start, mine[-1])
+                break
+        if found:
+            break
+    if found is None:
+        pytest.skip("no file of the demo has data only its later functions use")
+    rel, at, owned = found
+    out = net.forks.split_file(None, slug, rel, f"0x{at:X}")
+    assert out.startswith("✅"), out
+    new = f"auto/text_{at:08X}.c" if "/" not in rel[len(fp.src_dir()) + 1:] else \
+        f"{Path(rel[len(fp.src_dir()) + 1:]).parent.as_posix()}/text_{at:08X}.c"
+
+    def holder():
+        return next((f.name for f in dtksplits.Splits.parse(mod.splits.read_text()).files
+                     for k, (lo, hi) in f.sections.items() if k in dtkdata.DATA and lo <= owned < hi), None)
+    assert holder() == rel[len(fp.src_dir()) + 1:]  # (the split left it with the first part)
+    moved = net.forks.regive_data(slug, log=lambda *_: None)
+    assert f"{fp.src_dir()}/{new}" in moved, moved
+    assert holder() == new
+    assert fp.git("log", "-1", "--format=%s")[1].startswith(f"Give {len(moved)} files the data their code uses")
+    assert fp.verify()[0]
+    assert net.forks.regive_data(slug, log=lambda *_: None) == []
 
 
 def test_a_files_data_that_matches_less_refuses_the_sizes():
