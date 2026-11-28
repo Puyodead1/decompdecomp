@@ -3235,6 +3235,10 @@ class ForkEngine:
                     return
                 if "index.lock" not in said:
                     break
+                if fp.stale_git_lock():  # (a git that died holding it: it would never let go)
+                    logging.getLogger("decompdecomp").warning("%s: removed a git index lock a git that died left",
+                                                              proj["slug"])
+                    continue
                 time.sleep(1 + attempt)
         logging.getLogger("decompdecomp").error("%s: couldn't commit %s: %s", proj["slug"], ", ".join(paths), said)
         raise ForkError(f"the project's change to {', '.join(paths[:3])} couldn't be committed (git: {said[-300:]}); "

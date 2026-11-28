@@ -332,3 +332,22 @@ def test_a_game_that_doesnt_build_byte_for_byte_yet_takes_a_change_that_builds_t
     assert not ForkEngine._still_builds(fp, None)[0]
     dol.unlink()  # (nothing built: no digest, nothing to compare)
     assert fp.built_digest() is None and not ForkEngine._still_builds(fp, "")[0]
+
+
+def test_a_git_lock_a_dead_git_left_is_removed_and_a_fresh_one_waited_for(tmp_path):
+    """A git that died while committing (or was stopped at decompdecomp's limit) left .git/index.lock, and every
+    commit after failed on it until the app started again: a Wii game's file cuts among them."""
+    import os
+    import time
+
+    from decompnet.forks.project import GIT_SECONDS, ForkProject
+
+    lock = tmp_path / ".git" / "index.lock"
+    lock.parent.mkdir()
+    lock.write_bytes(b"")
+    fp = ForkProject(tmp_path)
+    assert not fp.stale_git_lock() and lock.exists()  # (a git at work holds a fresh one)
+    old = time.time() - 3 * GIT_SECONDS
+    os.utime(lock, (old, old))
+    assert fp.stale_git_lock() and not lock.exists()
+    assert not fp.stale_git_lock()  # (none there)

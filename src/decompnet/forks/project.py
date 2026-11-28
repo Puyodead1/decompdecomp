@@ -1359,6 +1359,20 @@ class ForkProject:
             raise ForkError("that path isn't readable")
         return p
 
+    def stale_git_lock(self) -> bool:
+        """Remove the project's git index lock when it's older than any git command decompdecomp lets run
+        (GIT_SECONDS, twice over): a git it stopped at that limit, or one that died, leaves it, and every commit after
+        failed on it ("Unable to create .git/index.lock: File exists") until the app started again, a Wii game's
+        file cuts among them. Returns whether it removed one."""
+        lock = self.root / ".git" / "index.lock"
+        try:
+            if time.time() - lock.stat().st_mtime < 2 * GIT_SECONDS:
+                return False
+            lock.unlink()
+        except OSError:
+            return False
+        return True
+
     def git(self, *args: str) -> tuple[bool, str]:
         """A git command in the project: (whether it worked, what it said). Within GIT_SECONDS: a git that waited on
         something (a credential prompt, a locked index) held the project's lock with it."""
