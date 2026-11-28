@@ -37,7 +37,7 @@ from pathlib import Path
 from decompnet.hostenv import NO_WINDOW, replace_file
 
 from ... import toolchains
-from ...forks import dtksplits
+from ...forks import dtksplits, symsizes
 from ...forks.project import ForkError, ForkProject
 from ...limits import capped
 from . import GAMECUBE, WII, template_paths
@@ -771,6 +771,20 @@ def _end_jump_table(root: Path, game_id: str, dol: bytes, log_tail: str) -> tupl
     return f"0x{start:08X}", size
 
 
+def _size_symbols(root: Path, game_id: str, dol: bytes) -> int:
+    """Size the program's data symbols to their objects (forks/symsizes.py): one symbol per string, a small variable as
+    big as the code uses it. Sizes move no byte, so the build stays as it was. The number of symbols changed."""
+    path = root / "config" / game_id / "symbols.txt"
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return 0
+    new, changes = symsizes.resize(text, dol)
+    if changes:
+        path.write_bytes(new.encode("utf-8"))
+    return len(changes)
+
+
 def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
     """(name, address, size) of the program's sections, named as dtk names them."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-dol-") as tmp:
@@ -956,6 +970,8 @@ write_asm: true
         log(f"note: {len(diff)} of the game's files don't rebuild byte for byte yet ({', '.join(diff[:5])}"
             f"{', ...' if len(diff) > 5 else ''}). Decompiling works anyway: every function is compared with your copy's.")
 
+    if (sized := _size_symbols(root, gid, info["dol"])):
+        log(f"{sized} data symbols sized to their objects (decomp-toolkit counted the padding after each as its own)")
     units = _code_units(root, gid)
     sources = []
     splits: dict[str | None, str] = {}

@@ -86,6 +86,7 @@ class Module:
     name: str  # "main" for the DOL, else the REL's name (as objdiff.json's unit names start)
     splits: Path
     symbols: Path
+    program: Path | None = None  # the game's own DOL (config.yml's object), for the program only
 
 
 def modules(root: Path, version: str) -> dict[str, Module]:
@@ -93,7 +94,8 @@ def modules(root: Path, version: str) -> dict[str, Module]:
     cfg = yaml.safe_load((root / "config" / version / "config.yml").read_text(encoding="utf-8"))
     out = {}
     if cfg.get("splits"):
-        out["main"] = Module("main", root / cfg["splits"], root / cfg.get("symbols", ""))
+        out["main"] = Module("main", root / cfg["splits"], root / cfg.get("symbols", ""),
+                             root / (cfg.get("object_base") or "") / cfg["object"] if cfg.get("object") else None)
     for m in cfg.get("modules") or []:
         if m.get("splits"):
             out[Path(m["object"]).stem] = Module(Path(m["object"]).stem, root / m["splits"], root / m.get("symbols", ""))

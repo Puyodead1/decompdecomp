@@ -48,6 +48,7 @@ from ..forks import (
     methods,
     objdiff,
     standins,
+    symsizes,
     unresolved,
 )
 from ..forks.objdiff import MappingConflict, ObjdiffError
@@ -562,6 +563,7 @@ COMMIT_TRIES = 5  # a commit waits out a locked index this often
 LINK_ONE_BY_ONE = 10
 TIDY_PER_RUN = 5  # finished files a link's run tidies first (forks/cleanup.py), each a few builds of its unit
 TIDY_REFINE = 8  # a file's constants kept as local variables each tried as a literal again, at most
+SIZE_ROUNDS = 3  # symbol sizes tried again without those a file's data match refused, at most
 
 
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
@@ -1143,6 +1145,109 @@ class ForkEngine:
             fresh.setdefault("tidied", {})[src] = digest
             self._save_cfg(proj, fresh)
         return {s: d for s, d in out.items() if d}
+
+    def size_symbols(self, slug: str, log=print) -> list[str]:
+        """Size the program's data symbols to their objects (forks/symsizes.py): a symbol dtk sized with the padding
+        after it can't match however exactly a file's C defines it. Kept only while the game builds byte for byte, no
+        function stops matching and no file's data matches less: a file whose C was written to dtk's padded size
+        keeps it, and its symbols aren't tried again. A room's member leaves it to the host."""
+        if self.net.links.get(slug) is not None:
+            return []
+        proj, fp, cfg = self.get(slug)
+        try:
+            main = self._modules(fp, cfg).get("main")
+        except NetworkError:
+            return []
+        if main is None or main.program is None or not main.program.is_file() or not main.symbols.is_file():
+            return []
+        refused = set(cfg.get("sizes_refused") or ())
+        dol = main.program.read_bytes()
+        if not symsizes.resize(main.symbols.read_bytes().decode("utf-8"), dol, keep=refused)[1]:
+            return []
+        with self._tree(proj).exclusive(), self._build_lock(proj):
+            self._put_back_config(proj, fp)
+            fp.build_all()
+            old = main.symbols.read_bytes()  # (its own line endings: dtk's, or the user's system's)
+            before = fp.report()
+            matched = _matched_in(before)
+            program_before = self._built_before(fp)
+            owners = self._data_owners(fp, main)
+            changes: list = []
+            why = ""
+            for _ in range(SIZE_ROUNDS):
+                new, changes = symsizes.resize(old.decode("utf-8"), dol, keep=refused)
+                if not changes:
+                    break
+                main.symbols.write_bytes(new.encode("utf-8"))
+                ok, out = self._still_builds(fp, program_before)
+                if ok:
+                    fp.build_all()
+                    rep = fp.report()
+                    if lost := sorted(matched - _matched_in(rep)):
+                        ok, out = False, f"{len(lost)} function(s) stopped matching: " + ", ".join(n for _, n in lost[:6])
+                if not ok:  # (sizes don't move a byte: whatever broke, none of them is kept)
+                    why = _tail(out)
+                    refused |= {name for name, _, _ in changes}
+                    changes = []
+                    break
+                worse = self._less_data(before, rep)
+                if not worse:
+                    break
+                why = f"{len(worse)} file(s) matched less of their data: {', '.join(sorted(worse)[:4])}"
+                refused |= {name for name, address, _ in changes if owners(address) in worse}
+                changes = []
+            if not changes:
+                main.symbols.write_bytes(old)
+                fp.verify()
+                fp.build_all()
+            fresh = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+            fresh["sizes_refused"] = sorted(refused)
+            self._save_cfg(proj, fresh)
+            if not changes:
+                if why:
+                    logging.getLogger("decompdecomp").warning("%s: data symbols keep their sizes: %s", slug, why)
+                return []
+            lines = [f"{name}: {what}" for name, _, what in changes]
+            self._commit_paths(proj, fp, [main.symbols.relative_to(fp.root).as_posix()],
+                               f"Size {len(changes)} data symbols to their objects\n\n"
+                               "dtk sized each by the distance to the next, the padding after it included, so no C "
+                               "could match it. A run of strings is one symbol per string, its NUL included; a "
+                               "variable in small data is as big as the code's loads and stores of it. The game still "
+                               "builds byte for byte.\n\n" + "\n".join(f"- {line}" for line in lines)
+                               + "\n\nSized by decompdecomp.")
+            with self.net.store.tx() as db:
+                self.net._event(db, proj["id"], None, "files", f"{len(changes)} data symbols sized to their objects")
+            self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+            self.sync(slug, log=lambda *_: None, rep=rep)
+            log(f"{len(changes)} data symbol(s) sized to their objects")
+            return lines
+
+    @staticmethod
+    def _data_owners(fp: ForkProject, mod):
+        """address -> the report's name of the unit whose split holds it (None: dtk's own, no file's)."""
+        try:
+            files = dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8")).files
+        except OSError:
+            files = []
+        ranges = [(a, b, f"{mod.name}/{PurePosixPath(f.name).with_suffix('')}")
+                  for f in files for a, b in f.sections.values()]
+
+        def owner(address: int) -> str | None:
+            return next((name for a, b, name in ranges if a <= address < b), None)
+        return owner
+
+    @staticmethod
+    def _less_data(before: dict, after: dict) -> set[str]:
+        """The units whose share of matched data is lower in `after`."""
+        def shares(rep: dict) -> dict[str, float]:
+            out = {}
+            for u in rep.get("units", []):
+                m = u.get("measures") or {}
+                total = int(m.get("total_data") or 0)
+                out[u["name"]] = int(m.get("matched_data") or 0) / total if total else 1.0
+            return out
+        was, now = shares(before), shares(after)
+        return {name for name, share in now.items() if name in was and share < was[name] - 1e-9}
 
     @staticmethod
     def _changed_data(unit, before: Path) -> list[str]:
@@ -2164,6 +2269,10 @@ class ForkEngine:
                     self.tidy(slug)
                 except Exception:
                     logging.getLogger("decompdecomp").exception("%s: tidying failed", slug)
+                try:  # (and data symbols sized to their objects: a padded one never matches)
+                    self.size_symbols(slug, log=lambda *_: None)
+                except Exception:
+                    logging.getLogger("decompdecomp").exception("%s: sizing data symbols failed", slug)
                 try:
                     self.link(slug, log=lambda *_: None, agent=agent)
                 except Exception:  # a background tidy-up: the next match tries again (the log says why this one failed)
