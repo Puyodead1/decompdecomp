@@ -723,3 +723,24 @@ def test_a_library_of_sdks_has_its_archives_found_two_levels_deeper(tmp_path):
     (too_deep / "past.a").write_bytes(archive)
     found = kits.get("dolphin-sdk").libraries(tmp_path / "gc")
     assert [p.name for p in found] == ["TRK_MINNOW_DOLPHIN.a"]
+
+
+def test_an_sdk_inline_is_the_definition_most_of_the_sdks_give(tmp_path, monkeypatch):
+    """A library of SDKs holds dozens of versions, and the first header in path order was an early revision's (a
+    plain `inline` OSInitFastCast) rather than the one every released SDK has: the definition most give wins."""
+    from decompnet import kits
+    from decompnet.kits import dolphin, inlines
+
+    def header(where, text):
+        path = tmp_path / where / "include" / "os.h"
+        path.parent.mkdir(parents=True)
+        path.write_text(text)
+        return path
+
+    early = header("a-early", "inline void InitCasts(void)\n{\n    asm { li r3, 4 }\n}\n")
+    standard = "static inline void InitCasts(void)\n{\n    asm\n    {\n        li r3, 4\n    }\n}\n"
+    released = [header(f"b-sdk-{n}", standard) for n in (1, 2)]
+    monkeypatch.setattr(kits, "headers", lambda kids: [(dolphin.DOLPHIN, p) for p in (early, *released)])
+    monkeypatch.setattr(kits, "folders", lambda kid: [tmp_path])
+    body, where = inlines.find(["dolphin-sdk"], "InitCasts")
+    assert body.startswith("static inline") and where == "b-sdk-2/include/os.h"

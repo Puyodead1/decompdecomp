@@ -12,6 +12,7 @@ never write its body.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 _DIRECTIVE = re.compile(r"^\s*#\s*(\w+)\s*(.*)$")
 _DEFINE = re.compile(r"(\w+)(?:\s+(.*))?$")  # an object-like macro (a function-like one has `(` right after its name)
@@ -108,12 +109,17 @@ def definition(text: str, name: str, defines: tuple[str, ...]) -> str | None:
 
 
 def find(kids, name: str) -> tuple[str, str] | None:
-    """(the definition, the header it's from, relative to its copy) of the first inline function `name` in the
-    headers of the user's copies of the kits `kids` (kits.headers), or None."""
+    """(the definition, the header it's from, relative to its copy) of the inline function `name` in the headers of
+    the user's copies of the kits `kids` (kits.headers), or None: the definition most of them give, from the last
+    header (in path order) that gives it. A library of SDKs holds dozens of versions, and the first header in path
+    order was an early 2001 revision's (a plain `inline` OSInitFastCast, with an empty fallback), not the one every
+    released SDK has."""
     from . import folders, headers
 
     if not re.fullmatch(r"[A-Za-z_]\w*", name or ""):
         return None
+    count: Counter = Counter()
+    where: dict[str, tuple[str, str]] = {}
     for kit, path in headers(kids):
         try:
             text = path.read_text(errors="replace", encoding="utf-8")
@@ -123,6 +129,8 @@ def find(kids, name: str) -> tuple[str, str] | None:
             continue
         found = definition(text, name, kit.defines)
         if found is not None:
+            key = " ".join(found.split())
             base = next((f for f in folders(kit.id) if path.is_relative_to(f.resolve())), None)
-            return found, (path.relative_to(base.resolve()).as_posix() if base else path.name)
-    return None
+            count[key] += 1
+            where[key] = found, (path.relative_to(base.resolve()).as_posix() if base else path.name)
+    return where[max(count, key=count.__getitem__)] if count else None
