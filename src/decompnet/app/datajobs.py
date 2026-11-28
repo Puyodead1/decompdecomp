@@ -303,6 +303,8 @@ class DataJobs:
                                     + "\n".join(f"- {line}" for line in lines[:12]))
                 except (ELFError, OSError, ValueError) as e:
                     diff.append(f"(couldn't compare the data: {e})")
+        if causes := self.forks.link_causes(fp, source):
+            diff.append("What keeps the file's objects from linking (whatever the data above says):\n" + causes.text())
         if why := self.forks.link_failures(fp.root, cfg).get(source):  # (its data is the original's bytes, and it still didn't)
             said += f"\n- decompdecomp's last try to link it failed (the game didn't build identically):\n{why[-1500:]}"
         return BRIEF.format(source=source, left=left, zeroed=ZEROED, diff="\n".join(d for d in diff if d) or "(nothing differs)",

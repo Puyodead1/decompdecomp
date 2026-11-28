@@ -190,7 +190,9 @@ def test_a_file_whose_data_differs_says_what_and_stays_unlinked(fork):
     status = net.forks.file_status(slug, "src/math.c")
     assert "not linked yet" in status and "2/2 functions match" in status and "gCount" in status, status
     res = net.forks.link(slug, log=lambda *_: None)
-    assert res["linked"] == [] and "FAILED" in res["failed"]["src/math.c"], res
+    # (its object holds data the original's doesn't: said without a build of the game, forks/linkcheck.py)
+    why = res["failed"]["src/math.c"]
+    assert res["linked"] == [] and "wasn't tried" in why and ".data" in why and "gCount" in why, res
     assert fp.link_states()["src/math.c"][0] == "NonMatching" and fp.verify()[0]
     assert "The last try to link it failed" in net.forks.file_status(slug, "src/math.c")
     assert net.forks.file_status(slug, "sub").startswith("## src/math.c")

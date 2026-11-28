@@ -59,7 +59,7 @@ def test_a_commit_waits_out_a_locked_index_and_a_failed_one_is_said(monkeypatch)
     monkeypatch.setattr(forkengine.time, "sleep", lambda s: None)
     said = iter([(False, "fatal: Unable to create '.git/index.lock': File exists."), (True, ""), (True, "")])
     calls = []
-    fp = SimpleNamespace(git=lambda *a: (calls.append(a[0]), next(said))[1])
+    fp = SimpleNamespace(git=lambda *a: (calls.append(a[0]), next(said))[1], stale_git_lock=lambda: False)
     e = SimpleNamespace(_git_lock=lambda proj: __import__("contextlib").nullcontext())
     ForkEngine._commit_paths(e, {"slug": "game"}, fp, ["configure.py"], "Link a.c")
     assert calls == ["add", "add", "commit"]

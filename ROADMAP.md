@@ -259,6 +259,17 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   agent never gets back a job it released. On that game, 3 of the files its helpers called unfinishable from C.
   Tested in `tests/test_data_layout.py`.
 
+- **A file that certainly won't link says why before a build tries it.** A GameCube game's 8 files at 100% failed
+  to link for causes objdiff's scores can't see, each found by hand: the file's own pooled constant declared
+  `extern`, a global another file uses made static or given to this file by the split, a data section longer than
+  the split's (padding arrays written to fill the layout), an assembled function MWCC dropped because nothing calls
+  it (it needs `force_active:` in the project's config). `forks/linkcheck.py` reads them from the file's object next
+  to the original's: what certainly fails isn't built (each try is the whole game), the rest is added to a failed
+  link's message, and both reach `file_status`, the data job's brief and the helpers' stop. A machine pass that moves
+  a constant into a literal or renames a static is judged by `identity.code_differences` (the code byte for byte,
+  each relocation pointing at the same name or the same bytes) and by its data getting no further from the
+  original's (`ForkEngine.same_object(data_may_change=True)`). Tested in `tests/test_linkcheck.py`.
+
 - **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
   code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a
   file's data, every file whose functions matched was linked, and each link failed with its C's data defined twice

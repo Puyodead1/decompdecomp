@@ -9,6 +9,7 @@ import pytest
 
 from decompnet.app import datajobs
 from decompnet.app.datajobs import DataJobs
+from decompnet.forks import linkcheck
 from decompnet.forks.datadiff import Item, Section
 from decompnet.network import Network, NetworkError
 from decompnet.store import Store
@@ -54,7 +55,8 @@ def jobs(tmp_path, monkeypatch):
                          units_for=lambda s: [u for u in units if u.source == s])
     net, cfg = Net(store), {}
     forks = SimpleNamespace(net=net, get=lambda slug: (net._project(slug), fp, cfg),
-                            link_failures=lambda root, cfg: cfg.get("link_failed") or {})
+                            link_failures=lambda root, cfg: cfg.get("link_failed") or {},
+                            link_causes=lambda fp, source: linkcheck.Causes())
     monkeypatch.setattr(DataJobs, "_bytes_left", lambda self, u, alike=True: LEFT.get(u.name, 0))
     return DataJobs(forks)
 

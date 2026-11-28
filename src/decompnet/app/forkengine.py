@@ -42,6 +42,7 @@ from ..forks import (
     dtksplits,
     ghidra,
     identity,
+    linkcheck,
     ltcg,
     methods,
     objdiff,
@@ -993,11 +994,16 @@ class ForkEngine:
         self._keep_scores(proj, unit, text, d.unit_scores)
         return d.unit_scores, True
 
-    def same_object(self, proj, fp: ForkProject, unit, path: Path, new_text: str) -> tuple[bool, str]:
+    def same_object(self, proj, fp: ForkProject, unit, path: Path, new_text: str,
+                    data_may_change: bool = False) -> tuple[bool, str]:
         """Write `new_text` to the unit's source file and keep it only if the unit builds to the same object
         (forks/identity.py): the check every machine pass over the source is judged by. objdiff's scores can't be:
         an extra function, another order or a constant read through a symbol keep every one. Returns (kept, why
-        not). The caller commits."""
+        not). The caller commits.
+
+        `data_may_change`: for a pass meant to change the data (an extern of the file's own constant made a literal,
+        a static renamed): the code must stay byte for byte with each relocation pointing at the same name or the
+        same bytes, and the data must get no further from the original's (datadiff.layout's measure)."""
         with self._tree(proj).shared(), self._units_locked(proj, [unit.name]):
             try:
                 text = path.read_text(errors="replace", encoding="utf-8")
@@ -1010,18 +1016,43 @@ class ForkEngine:
             if before is None:
                 return False, ("it doesn't build as it is" if not ok else
                                "its object isn't one decompdecomp compares (not ELF)")
-            _rewrite(path, new_text)
-            ok, log = self._build_unit(proj, fp, unit)
-            after = identity.fingerprint(unit.base) if ok else None
-            if after == before:
-                if hit := self._scores.get((proj["id"], unit.name)):
-                    self._keep_scores(proj, unit, new_text, hit[2])
-                return True, ""
-            _rewrite(path, text)
-            self._build_unit(proj, fp, unit)
-            if not ok:
-                return False, f"it doesn't compile so: {_tail(log, 6)}"
-            return False, "its object differs: " + "; ".join(before.differences(after) if after else ["unreadable"])
+            kept = unit.base.with_name(unit.base.name + ".before")
+            if data_may_change:
+                shutil.copyfile(unit.base, kept)
+            try:
+                _rewrite(path, new_text)
+                ok, log = self._build_unit(proj, fp, unit)
+                after = identity.fingerprint(unit.base) if ok else None
+                why = (["it doesn't compile"] if not ok else ["unreadable"] if after is None
+                       else [] if after == before else self._changed_data(unit, kept) if data_may_change
+                       else before.differences(after))
+                if not why:
+                    if hit := self._scores.get((proj["id"], unit.name)):
+                        self._keep_scores(proj, unit, new_text, hit[2])
+                    return True, ""
+                _rewrite(path, text)
+                self._build_unit(proj, fp, unit)
+                if not ok:
+                    return False, f"it doesn't compile so: {_tail(log, 6)}"
+                return False, "its object differs: " + "; ".join(why)
+            finally:
+                kept.unlink(missing_ok=True)
+
+    @staticmethod
+    def _changed_data(unit, before: Path) -> list[str]:
+        """Why a pass allowed to change the data isn't kept ([]: it is): its code or relocations differ, or its data
+        got further from the original's."""
+        target = unit.target if unit.target is not None and unit.target.exists() else None
+        why = identity.code_differences(before, unit.base, also=(target,) if target else ())
+        if why is None:
+            return ["its object can't be compared (not ELF)"]
+        if why or target is None:
+            return why
+        try:
+            was, now = datadiff.layout(target, before)[0], datadiff.layout(target, unit.base)[0]
+        except (ELFError, OSError, ValueError) as e:
+            return [f"its data can't be compared: {e}"]
+        return [f"its data gets further from the original's (about {was} bytes differ, then {now})"] if now > was else []
 
     def _trying_units(self) -> set[str]:
         """The units this thread is trying compilers on (try_compiler, compare_compilers): their file's compiler is
@@ -1786,8 +1817,17 @@ class ForkEngine:
                 self._remember_link_failures(proj, [], {s: f"{datajobs.NOT_GIVEN}, so it wasn't linked: "
                                                            f"{tried['error']}" for s in stuck})
             todo = self._fresh_first(fp, cfg, todo)
+            # what certainly fails is said without a build (each is the whole game, with every compile waiting)
+            causes = {src: self.link_causes(fp, src) for src in todo}
+            hopeless = {src: "It wasn't tried: its object certainly doesn't link, because\n" + c.text()
+                        for src, c in causes.items() if c.certain}
+            if hopeless:
+                todo = [s for s in todo if s not in hopeless]
+                self._remember_link_failures(proj, [], hopeless)
             if not todo:
-                return {"linked": [], "failed": {}}
+                if hopeless:
+                    self._note_link(proj, failed=hopeless)
+                return {"linked": [], "failed": hopeless}
             conf = fp.root / "configure.py"
             original = conf.read_text(errors="replace", encoding="utf-8")
             ok, out = fp.verify()
@@ -1817,11 +1857,14 @@ class ForkEngine:
                             failed[src] = _tail(out)
                             if "FAILED" in out:  # (the checksum's one line says nothing to fix: say where it differs)
                                 failed[src] += "\n" + dolcheck.report(fp.root, cfg.get("version") or (fp.versions() or [""])[0])
+                            if c := causes.get(src):
+                                failed[src] += "\nWhat its object shows next to the original's:\n" + c.text()
                     ok, out = build_with(linked)
                     if not ok:  # (it built a moment ago with these: no file's failure, but said)
                         together = f"the files that linked one by one didn't build again together:\n{_tail(out)}"
                         linked = []
                 self._remember_link_failures(proj, linked, failed)
+                failed = {**hopeless, **failed}
                 if not linked:
                     self._note_link(proj, failed=failed, error=together)
                     return {"linked": [], "failed": failed}
@@ -1855,7 +1898,7 @@ class ForkEngine:
         if (unit.complete or not unit.source or not fp.linkable() or not scores
                 or any(v is None or v < 100 for v in scores.values())):
             return ""
-        data = self._data_status(unit)
+        data = self._data_status(unit, fp=fp)
         self.link_soon(slug, agent)  # the checksum decides; the comparison below is what to fix if it fails
         if data is None:  # (objects whose data can't be compared here)
             return f"\n🔗 Every function in {unit.source} matches: decompdecomp is linking the file into the game now."
@@ -1865,7 +1908,22 @@ class ForkEngine:
         return (f"\n🔗 Every function in {unit.source} matches. To link the file into the game (the goal: the game "
                 f"built from this C), its data must match too. Fix it with edit_file, then file_status to check:\n{data}")
 
-    def _data_status(self, unit, max_rows: int = 40) -> str | None:
+    @staticmethod
+    def link_causes(fp: ForkProject, source: str) -> linkcheck.Causes:
+        """Why a source file's objects may not link, next to the original's (forks/linkcheck.py), all its units'."""
+        out = linkcheck.Causes()
+        path = fp.root / source if (fp.root / source).exists() else fp.root / fp.src_dir() / source
+        try:
+            text = path.read_text(errors="replace", encoding="utf-8")
+        except OSError:
+            text = ""
+        for u in fp.units_for(source):
+            if u.target is not None and (c := linkcheck.causes(u.target, u.base, text)):
+                out.certain += c.certain
+                out.maybe += c.maybe
+        return out
+
+    def _data_status(self, unit, max_rows: int = 40, fp: ForkProject | None = None) -> str | None:
         """The file's data sections that differ from the original's ("" when all match, None when there's no
         verdict: COFF objects, PC and Xbox, which pyelftools can't read)."""
         if unit.target is None or not unit.target.exists():
@@ -1876,6 +1934,8 @@ class ForkEngine:
             shown = datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
             if not shown and (lines := datadiff.layout(unit.target, unit.base)[1]):  # (its layout, then)
                 shown = "\n".join(["differs from the original's, names aside:", *(f"- {line}" for line in lines[:12])])
+            if shown and fp is not None and unit.source and (c := self.link_causes(fp, unit.source)):
+                shown += "\nWhat keeps the file's objects from linking:\n" + c.text()
             return shown
         except ELFError:  # "Magic number does not match" was shown as "data: differs" (legobatman, PC)
             return None
@@ -1907,7 +1967,7 @@ class ForkEngine:
                          f"{len(rows) - len(left)}/{len(rows)} functions match")
                          + (": still to do " + ", ".join(f"{r['name']} ({r['n_insns']} insns)" for r in left[:12])
                             if left else ""))
-            if state != "Matching" and (data := self._data_status(u)) is not None:
+            if state != "Matching" and (data := self._data_status(u, fp=fp)) is not None:
                 lines.append(f"data: {'matches' if not data else 'differs'}" + (f"\n{data}" if data else ""))
         try:
             mods = self._modules(fp, cfg)
