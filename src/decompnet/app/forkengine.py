@@ -44,6 +44,7 @@ from ..forks import (
     ghidra,
     identity,
     linkcheck,
+    linklayout,
     ltcg,
     methods,
     objdiff,
@@ -1064,6 +1065,9 @@ class ForkEngine:
                 if said := self._own_constants(proj, fp, unit, path, text):
                     done.append(said)
                     text = path.read_text(errors="replace", encoding="utf-8")
+            if said := self._without_gaps(proj, fp, unit, path, text):
+                done.append(said)
+                text = path.read_text(errors="replace", encoding="utf-8")
             new, gone = cleanup.without_unused(text)
             if gone and self.same_object(proj, fp, unit, path, new)[0]:
                 done.append(f"{len(gone)} declaration{'s' * (len(gone) != 1)} nothing in it uses removed "
@@ -1072,6 +1076,25 @@ class ForkEngine:
                 self._commit(proj, fp, source, f"Tidy {Path(source).name}\n\n" + "\n".join(f"- {d}" for d in done)
                              + "\n\nIts object is unchanged where it must be: decompdecomp built and compared it.")
         return done
+
+    def _without_gaps(self, proj, fp: ForkProject, unit, path: Path, text: str) -> str:
+        """The file's padding arrays (gap_...) removed where its data stays as close to the original's (the caller
+        holds the unit): what was done, "" for nothing. All at once, else each alone: one at a section's end is the
+        split's padding before the next file, and the data comes out shorter without it."""
+        names = [name for _, _, name in cleanup.gaps(text)]
+        if not names:
+            return ""
+        new, gone = cleanup.without_gaps(text)
+        if not self.same_object(proj, fp, unit, path, new, data_may_change=True)[0]:
+            gone = []
+            for name in names[:TIDY_REFINE]:  # (same_object writes what it keeps: each try starts from the file as it is)
+                new, one = cleanup.without_gaps(path.read_text(errors="replace", encoding="utf-8"), only={name})
+                if one and self.same_object(proj, fp, unit, path, new, data_may_change=True)[0]:
+                    gone.append(name)
+        if not gone:
+            return ""
+        return (f"{len(gone)} padding array{'s' * (len(gone) != 1)} removed ({', '.join(gone[:6])}"
+                f"{' and more' if len(gone) > 6 else ''}): the compiler's own alignment lays the data out the same")
 
     def _own_constants(self, proj, fp: ForkProject, unit, path: Path, text: str) -> str:
         """The file's own pooled constants, declared extern, written as values (the caller holds the unit): what was
@@ -2046,8 +2069,11 @@ class ForkEngine:
                 error = f"the project's checksum check fails before linking anything, so nothing was linked:\n{_tail(out)}"
                 self._note_link(proj, error=error)
                 return {"linked": [], "failed": {}, "error": error}
+            needs = self._link_needs(fp, cfg, todo)
+            layout_files = {p: p.read_bytes() for p in self._layout_paths(fp, cfg)} if needs else {}
 
             def build_with(sources: list[str]) -> tuple[bool, str]:
+                self._write_layout(layout_files, needs, sources)
                 conf.write_text(fp.marked_matching(original, sources, cfg.get("version")), encoding="utf-8")
                 return fp.verify()
 
@@ -2081,15 +2107,20 @@ class ForkEngine:
                     return {"linked": [], "failed": failed}
                 names = ", ".join(Path(s).name for s in linked[:6]) + (f" and {len(linked) - 6} more" if len(linked) > 6 else "")
                 who = f"\n\nLinked by decompdecomp after {agent.name}'s match." if agent else "\n\nLinked by decompdecomp."
-                self._commit(proj, fp, "configure.py", f"Link {names}\n\nEvery function and all data match, and the "
-                                                       f"game still builds byte for byte from the C.{who}")
+                said = self._layout_said(needs, linked)
+                changed = [p.relative_to(fp.root).as_posix() for p, old in layout_files.items() if p.read_bytes() != old]
+                self._commit_paths(proj, fp, ["configure.py", *changed],
+                                   f"Link {names}\n\nEvery function and all data match, and the game still builds byte "
+                                   f"for byte from the C.{said}{who}")
                 kept = True
             except (ForkError, OSError) as e:
                 self._note_link(proj, error=f"linking stopped: {e}")
                 raise
             finally:
-                if not kept:  # (whatever stopped it: configure.py as it was, and the game built from it)
+                if not kept:  # (whatever stopped it: configure.py and the config as they were, and the game built so)
                     conf.write_text(original, encoding="utf-8")
+                    for path, old in layout_files.items():
+                        path.write_bytes(old)
                     fp.verify()
             self._note_link(proj, linked=linked, failed=failed)
             with self.net.store.tx() as db:
@@ -2099,6 +2130,95 @@ class ForkEngine:
             self.sync(slug, log=lambda *_: None, rep=fp.report())
         log(f"linked {len(linked)} file(s)" + (f"; {len(failed)} didn't link" if failed else ""))
         return {"linked": linked, "failed": failed}
+
+    def _layout_paths(self, fp: ForkProject, cfg: dict) -> list[Path]:
+        """The config files a link may change for its files (forks/linklayout.py): config.yml and each symbols.txt."""
+        version = cfg.get("version") or (fp.versions() or [""])[0]
+        return [fp.root / "config" / version / "config.yml",
+                *dict.fromkeys(m.symbols for m in self._modules(fp, cfg).values() if m.symbols.is_file())]
+
+    def _link_needs(self, fp: ForkProject, cfg: dict, sources: list[str]) -> dict[str, dict]:
+        """{source: what its link needs from the config} (forks/linklayout.py): "force", the functions nothing refers
+        to, which the linker drops from a compiled file unless config.yml lists them under force_active:; "align",
+        (symbols.txt, section, address, alignment, name) for the next file's section where this one's compiled data
+        ends short of it by padding. Each kept only for a file that links."""
+        if not sources or fp.kind() not in ("dtk", "manifest") or not fp.linkable():
+            return {}
+        try:
+            mods = self._modules(fp, cfg)
+            config = self._layout_paths(fp, cfg)[0]
+            forced = set(linklayout.force_active(config.read_text(encoding="utf-8")))
+        except (NetworkError, OSError):
+            return {}
+        units = fp.units()
+        by_name = {u.name: u for u in units}
+        refs: set[str] | None = None
+        src_dir = fp.src_dir()
+        out: dict[str, dict] = {}
+        for module, mod in mods.items():
+            try:
+                sp = dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8"))
+                syms = mod.symbols.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for f in sp.files:
+                src = f"{src_dir}/{f.name}"
+                u = by_name.get(f"{module}/{PurePosixPath(f.name).with_suffix('')}")
+                if src not in sources or u is None or u.target is None or not u.target.exists():
+                    continue
+                need = out.setdefault(src, {"force": [], "align": []})
+                if refs is None:  # (every object the game links, once: what refers to what)
+                    objects = linklayout.linked_objects(fp.root / "build" / (cfg.get("version") or (fp.versions() or [""])[0]))
+                    refs = linklayout.references(objects if objects is not None else
+                                                 [x.target for x in units if x.target is not None and x.target.exists()])
+                need["force"] += [n for n in linklayout.unreferenced(u.target, refs) if n not in forced]
+                if u.base is None or not u.base.exists():
+                    continue
+                try:
+                    short = linklayout.short_ends(u.target, u.base)
+                except (ELFError, OSError, ValueError):
+                    continue
+                for sec, missing in short.items():
+                    if sec not in f.sections:
+                        continue
+                    end = f.sections[sec][1]
+                    later = [lo for g in sp.files for lo, _ in [g.sections.get(sec, (0, 0))] if lo > end]
+                    now = linklayout.split_align(syms, sec, end, min(later, default=end + linklayout.MOST_ALIGN))
+                    if (align := linklayout.needed_align(end - missing, end, now)) is None:
+                        continue
+                    if (done := linklayout.with_align(syms, sec, end, align)) is not None:
+                        need["align"].append((mod.symbols, sec, end, align, done[1]))
+        return {src: need for src, need in out.items() if need["force"] or need["align"]}
+
+    def _write_layout(self, files: dict[Path, bytes], needs: dict[str, dict], sources: list[str]) -> None:
+        """The config files as they were (files), with what these sources' links need (_link_needs)."""
+        if not files:
+            return
+        texts = {p: old.decode("utf-8") for p, old in files.items()}
+        config = next(iter(files))
+        for src in sources:
+            need = needs.get(src) or {}
+            if need.get("force"):
+                texts[config] = linklayout.with_force_active(texts[config], need["force"])
+            for path, sec, address, align, _ in need.get("align", ()):
+                if path in texts and (done := linklayout.with_align(texts[path], sec, address, align)):
+                    texts[path] = done[0]
+        for path, text in texts.items():
+            if (new := text.encode("utf-8")) != path.read_bytes():
+                path.write_bytes(new)
+
+    @staticmethod
+    def _layout_said(needs: dict[str, dict], linked: list[str]) -> str:
+        """The commit message's lines for what the linked files needed from the config."""
+        force = sorted({n for s in linked for n in (needs.get(s) or {}).get("force", ())})
+        align = [(sec, address, align, name) for s in linked for _, sec, address, align, name in (needs.get(s) or {}).get("align", ())]
+        lines = []
+        if force:
+            lines.append(f"- force_active: {', '.join(force[:8])}{' and more' if len(force) > 8 else ''} (nothing "
+                         "refers to them: the linker drops them from a compiled file unless the config keeps them)")
+        lines += [f"- {name} ({sec} 0x{address:08X}) aligned to {align}: the file before it, compiled, ends short of it "
+                  "by padding its split had" for sec, address, align, name in align]
+        return ("\n\nWhat the config needed for them:\n" + "\n".join(lines)) if lines else ""
 
     def _verify(self, proj, fp: ForkProject) -> tuple[bool, str]:
         with self._build_lock(proj):

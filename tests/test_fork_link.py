@@ -229,6 +229,25 @@ def test_a_finished_file_is_tidied_and_each_change_kept_only_if_its_object_allow
     assert path.read_text() == "extern const double k;\n" + TENTH + ADD
 
 
+def test_a_padding_array_goes_where_the_compilers_alignment_lays_the_data_out_the_same(fork, tmp_path):
+    """A GameCube game's files had gap_... arrays written to fill the layout (#ADDON 5): the compiler aligns each
+    variable itself."""
+    net, slug, agent, fp = fork
+    proj = net.forks.get(slug)[0]
+    flags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2"]
+    data = "char a = 1;\nint b = 2;\n"
+    built = compile_source(compiler_config(tmp_path, {"compiler": {"toolchain": "gcc-2.7.2-kmc", "flags": flags}}),
+                           "", data + ADD)
+    assert built.ok, built.log
+    (fp.root / "expected" / "math.o").write_bytes(built.obj)
+    path = fp.root / "src" / "math.c"
+    path.write_text("char a = 1;\nchar gap_00_80001001_data[3] = {0};\nint b = 2;\n" + ADD)
+    fp.git("commit", "-q", "-am", "a padding array")
+    done = net.forks.tidy_file(proj, fp, "src/math.c")
+    assert any("padding array" in d and "gap_00_80001001_data" in d for d in done), done
+    assert path.read_text() == data + ADD and fp.git("log", "-1", "--format=%s")[1] == "Tidy math.c"
+
+
 def test_a_machine_pass_is_kept_only_when_the_object_stays_the_same(fork):
     net, slug, agent, fp = fork
     proj, unit = net.forks.get(slug)[0], fp.unit("math")

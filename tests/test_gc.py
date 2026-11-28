@@ -414,6 +414,52 @@ def test_data_symbols_are_sized_to_their_objects(gc):
     assert net.forks.size_symbols(slug, log=lambda *_: None) == []  # (nothing left to size)
 
 
+def test_what_a_link_needs_from_the_config_leaves_the_game_as_it_is(gc):
+    """A function nothing refers to is kept by force_active: when its file links (a GameCube game's debugger file lost
+    two once compiled), and the next file's alignment makes up for padding a compiled file lacks. Neither may change
+    the game while the files are still assembled: dtk takes both, and the game builds byte for byte."""
+    from decompnet.forks import linklayout
+
+    net, slug = gc
+    proj, fp, cfg = net.forks.get(slug)
+    sources = sorted({u.source for u in fp.units() if u.source})
+    # a linked file's (the demo's autopilot links one whose two functions nothing calls; without them kept, its build
+    # was 0x20 bytes short and the link failed): already in the config
+    linked = [s for s, (state, *_) in fp.link_states().items() if state == "Matching"]
+    assert not any(need["force"] for need in net.forks._link_needs(fp, cfg, linked).values())
+    needs = net.forks._link_needs(fp, cfg, sources)
+    forced = sorted({n for need in needs.values() for n in need["force"]})
+    if not forced:
+        pytest.skip("every function of the demo is referred to")
+    # (the demo keeps every function by FORCEACTIVE, uncalled ones too: none the rule picks is a branch's target)
+    from decompnet.forks import dtksplits
+
+    where = {n: a for n, (_, a, _) in dtksplits.symbols(dtksplits.modules(fp.root, cfg["version"])["main"].symbols).items()}
+    dol = DOL.read_bytes()
+    reached = set()
+    for i in range(7):  # (a DOL's text sections: file offset, address, size)
+        off, addr, size = (int.from_bytes(dol[k + 4 * i:k + 4 * i + 4], "big") for k in (0, 0x48, 0x90))
+        for at in range(0, size, 4):
+            word = int.from_bytes(dol[off + at:off + at + 4], "big")
+            if word >> 26 == 18 and not word & 2 and word & 0x03FFFFFC:  # (b, bl; not `b .`, exit's endless loop)
+                reached.add(addr + at + ((word & 0x03FFFFFC) ^ 0x02000000) - 0x02000000)
+    assert len(forced) > 10 and not {where[n] for n in forced} & reached, forced
+    paths = net.forks._layout_paths(fp, cfg)
+    files = {p: p.read_bytes() for p in paths}
+    # (a file an earlier test linked has its own already: the demo's autopilot links one whose functions nothing calls)
+    before = linklayout.force_active(files[paths[0]].decode())
+    with net.forks._tree(proj).exclusive(), net.forks._build_lock(proj):  # (as a link holds them: the app builds too)
+        try:
+            net.forks._write_layout(files, needs, sources)
+            assert linklayout.force_active(paths[0].read_text(encoding="utf-8")) == before + forced
+            ok, out = fp.verify()
+            assert ok, out[-2000:]
+        finally:
+            net.forks._write_layout(files, needs, [])
+            fp.verify()
+    assert {p: p.read_bytes() for p in paths} == files
+
+
 def _refs_by_offset(obj: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
     """(each function's (offset, name) in an object's .text, each relocation's (offset, symbol) in it)."""
     from elftools.elf.relocation import RelocationSection
