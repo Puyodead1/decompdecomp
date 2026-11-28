@@ -286,6 +286,25 @@ from DWARF declares a class's methods for C++ only, so a method is defined as th
   - names for the locals (evidence-only naming);
   - read-only strings for the files whose original has them in `.rodata`.
 
+- **Data symbols are sized to their objects.** dtk sizes each data symbol by the distance to the next one, so the
+  padding after it counted as its own: a 4-byte variable in `.sbss` was 8, and a run of strings was one blob. No C
+  could match such a symbol (a GameCube game: 14 symbols fixed by hand, and one file's `.data` at 99.46% until its
+  blob was cut at the NULs). `forks/symsizes.py` sizes them from the game itself:
+  - a run of string literals, each at the next 4-byte boundary, becomes one symbol per string with its NUL;
+  - a variable in small data that the code only loads and stores is as big as the widest access, never more than
+    its padding.
+
+  Projects are made with their symbols sized, and older projects are sized before a link
+  (`ForkEngine.size_symbols`). A size is kept only if the game still builds byte for byte, no function stops
+  matching and no file's data matches less. A file whose C was written to dtk's padded size keeps that size, and
+  the symbol isn't tried again. On a GameCube game, the pass agreed with every hand fix it made (31), and it split
+  22 more blobs into 150 strings and sized 108 more small variables. Tested in `tests/test_symsizes.py` and
+  `tests/test_gc.py`. Still to do:
+  - RELs: their symbols are section-relative, and they have no small data;
+  - empty strings, which read the same as a zero `double`;
+  - sizes taken from a file's compiled object, when its C defines an object shorter than the original's (structs,
+    vtables, `.bss` arrays) and only zeros follow.
+
 - **GameCube and Wii files get their data before they link.** A game started from scratch gave its files only their
   code: every constant and global stayed in dtk's auto units (auto_06_..._rodata), so objdiff compared 0 bytes of a
   file's data, every file whose functions matched was linked, and each link failed with its C's data defined twice

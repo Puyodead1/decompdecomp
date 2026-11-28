@@ -381,3 +381,44 @@ def test_files_with_only_code_get_their_data(gc):
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='matched'", pid)["n"] >= matched
     assert not fp.git("status", "--porcelain", "--", "config")[1].strip()  # (committed)
     assert net.forks.give_data(slug, log=lambda *_: None)["files"] == []  # (nothing left that the rules can place)
+
+
+def test_data_symbols_are_sized_to_their_objects(gc):
+    """dtk sized each data symbol by the distance to the next, so a 4-byte variable in .sbss was 8 and a run of strings
+    one blob: no C matched them (a GameCube game: 14 symbols, a file's .data at 99.46% until its blob was cut at the
+    NULs). A project is made with them sized; one made before is sized before a link, the game still byte for byte."""
+    from decompnet.forks import dtksplits, symsizes
+
+    net, slug = gc
+    proj, fp, cfg = net.forks.get(slug)
+    mod = dtksplits.modules(fp.root, cfg["version"])["main"]
+    dol = mod.program.read_bytes()
+    text = mod.symbols.read_bytes().decode()
+    assert symsizes.resize(text, dol)[1] == []  # (made sized)
+    used, taken = symsizes.accesses(dol)
+    sizes = dtksplits.symbols(mod.symbols)
+    starts = sorted(a for _, a, _ in sizes.values())
+    small = next((n for n, (sec, a, z) in sizes.items() if sec in (".sbss", ".sdata") and z == 4 and a % 8 == 0
+                  and a + 8 in starts and (a, 4) in used and a not in taken), None)
+    if small is None:
+        pytest.skip("the demo has no 4-byte variable in small data with room after it")
+    padded = re.sub(rf"^({re.escape(small)} = .*?size:)0x4\b", r"\g<1>0x8", text, flags=re.M)
+    mod.symbols.write_bytes(padded.encode())
+    fp.git("commit", "-q", "-m", "an older copy of the app: padded", "--", str(mod.symbols.relative_to(fp.root)))
+    lines = net.forks.size_symbols(slug, log=lambda *_: None)
+    assert any(line.startswith(f"{small}: 0x8 -> 0x4") for line in lines), lines
+    assert mod.symbols.read_bytes().decode() == text
+    assert fp.git("log", "-1", "--format=%s")[1].startswith("Size 1 data symbols")
+    assert fp.verify()[0]
+    assert net.forks.size_symbols(slug, log=lambda *_: None) == []  # (nothing left to size)
+
+
+def test_a_files_data_that_matches_less_refuses_the_sizes():
+    from decompnet.app.forkengine import ForkEngine
+
+    def rep(**shares):
+        return {"units": [{"name": n, "measures": {"matched_data": m, "total_data": t}} for n, (m, t) in shares.items()]}
+
+    before = rep(a=(8, 8), b=(0, 8), c=(4, 8))
+    after = rep(a=(4, 8), b=(4, 4), c=(4, 8), d=(0, 4))
+    assert ForkEngine._less_data(before, after) == {"a"}
